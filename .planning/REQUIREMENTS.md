@@ -17,14 +17,14 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### State & Tracking
 
-- [ ] **STAT-01**: Each ticket tracks state: queued → investigating → fixing → verifying → done/failed
-- [ ] **STAT-02**: Each state transition is timestamped with duration calculated per phase
+- [x] **STAT-01**: Each ticket tracks state: queued → investigating → fixing → verifying → done/failed
+- [x] **STAT-02**: Each state transition is timestamped with duration calculated per phase
 - [ ] **STAT-03**: Ticket records fix details: files changed, investigation notes, verification evidence, commit hash
 - [ ] **STAT-04**: Session-end summary dashboard shows: N fixed, M failed, total time, per-bug breakdown
 
 ### Investigation & Browser
 
-- [ ] **BROW-01**: Implementation agent reads project CLAUDE.md to discover dev server URL, build commands, and HMR support
+- [x] **BROW-01**: Implementation agent reads project CLAUDE.md to discover dev server URL, build commands, and HMR support
 - [ ] **BROW-02**: Implementation agent uses Playwright CLI to navigate to the app and reproduce the reported bug
 - [ ] **BROW-03**: Implementation agent uses Playwright CLI to verify the fix by re-running reproduction steps and confirming the bug is gone
 - [ ] **BROW-04**: Implementation agent investigates the codebase (reads files, traces code paths) to understand root cause before attempting a fix
@@ -86,11 +86,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTK-03 | Phase 2 | Pending |
 | INTK-04 | Phase 2 | Pending |
 | INTK-05 | Phase 2 | Pending |
-| STAT-01 | Phase 1 | Pending |
-| STAT-02 | Phase 1 | Pending |
+| STAT-01 | Phase 1 | Complete |
+| STAT-02 | Phase 1 | Complete |
 | STAT-03 | Phase 4 | Pending |
 | STAT-04 | Phase 5 | Pending |
-| BROW-01 | Phase 1 | Pending |
+| BROW-01 | Phase 1 | Complete |
 | BROW-02 | Phase 3 | Pending |
 | BROW-03 | Phase 5 | Pending |
 | BROW-04 | Phase 3 | Pending |

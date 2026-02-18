@@ -12,7 +12,7 @@ Fixme delivers a streaming bug-fix pipeline for Claude Code: bugs flow in as rep
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation & Skeleton** - Skill directory, ticket template, state machine, project context discovery
+- [x] **Phase 1: Foundation & Skeleton** - Skill directory, ticket template, state machine, project context discovery
 - [ ] **Phase 2: Intake Pipeline** - Bug reports become structured ticket files via background agent
 - [ ] **Phase 3: Investigation & Reproduction** - Browser-based bug reproduction and codebase investigation
 - [ ] **Phase 4: Fix & Commit** - Implement fixes, atomic commits, orchestrator dispatch loop
@@ -33,8 +33,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- fixme-tools.cjs: state gatekeeper with ticket, session, and context subcommands
-- [ ] 01-02-PLAN.md -- SKILL.md entry point, ticket/session templates, and reference documentation
+- [x] 01-01-PLAN.md -- fixme-tools.cjs: state gatekeeper with ticket, session, and context subcommands
+- [x] 01-02-PLAN.md -- SKILL.md entry point, ticket/session templates, and reference documentation
 
 ### Phase 2: Intake Pipeline
 **Goal**: Users can submit bug reports mid-session and they become structured, queued ticket files without interrupting ongoing work
@@ -100,7 +100,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Skeleton | 0/2 | Planned | - |
+| 1. Foundation & Skeleton | 2/2 | Complete | 2026-02-18 |
 | 2. Intake Pipeline | 0/1 | Not started | - |
 | 3. Investigation & Reproduction | 0/1 | Not started | - |
 | 4. Fix & Commit | 0/2 | Not started | - |
@@ -108,4 +108,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-18*
+*Last updated: 2026-02-18 (phase 1 complete)*

@@ -11,26 +11,26 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 
 Phase: 1 of 5 (Foundation & Skeleton)
 Plan: 2 of 2 in current phase
-Status: Executing
-Last activity: 2026-02-18 -- Completed 01-02-PLAN.md
+Status: Phase complete
+Last activity: 2026-02-18 -- Completed 01-01-PLAN.md (re-execution)
 
 Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 5min
-- Total execution time: 0.08 hours
+- Total plans completed: 2
+- Average duration: 7min
+- Total execution time: 0.22 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation-skeleton | 1/2 | 5min | 5min |
+| 01-foundation-skeleton | 2/2 | 13min | 7min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (5min)
+- Last 5 plans: 01-01 (8min), 01-02 (5min)
 - Trend: Starting
 
 *Updated after each plan completion*
@@ -44,6 +44,9 @@ Recent decisions affecting current work:
 
 - [Roadmap]: 5-phase structure derived from requirement clusters -- Foundation, Intake, Investigation, Fix, Verification
 - [Roadmap]: Merged dashboard (STAT-04) into Phase 5 to avoid single-requirement phase
+- [01-01]: Zero-padded ticket numbers stored as YAML strings to avoid integer parsing
+- [01-01]: Inline object format for transitions/durations (compact single-line entries)
+- [01-01]: Context detection uses yarn prefix per user CLAUDE.md preference
 - [01-02]: SKILL.md uses $ARGUMENTS parsing for sub-commands rather than separate command files
 - [01-02]: Session template includes status field with completion stats placeholders
 - [01-02]: State machine durations are cumulative across retry visits to the same state
@@ -61,5 +64,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-18
-Stopped at: Completed 01-02-PLAN.md
-Resume file: .planning/phases/01-foundation-skeleton/01-02-SUMMARY.md
+Stopped at: Completed 01-01-PLAN.md (re-execution, phase 1 fully complete)
+Resume file: .planning/phases/01-foundation-skeleton/01-01-SUMMARY.md
