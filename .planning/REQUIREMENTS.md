@@ -81,34 +81,34 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INTK-01 | — | Pending |
-| INTK-02 | — | Pending |
-| INTK-03 | — | Pending |
-| INTK-04 | — | Pending |
-| INTK-05 | — | Pending |
-| STAT-01 | — | Pending |
-| STAT-02 | — | Pending |
-| STAT-03 | — | Pending |
-| STAT-04 | — | Pending |
-| BROW-01 | — | Pending |
-| BROW-02 | — | Pending |
-| BROW-03 | — | Pending |
-| BROW-04 | — | Pending |
-| FIXR-01 | — | Pending |
-| FIXR-02 | — | Pending |
-| FIXR-03 | — | Pending |
-| FIXR-04 | — | Pending |
-| FIXR-05 | — | Pending |
-| SYST-01 | — | Pending |
-| SYST-02 | — | Pending |
-| SYST-03 | — | Pending |
-| SYST-04 | — | Pending |
+| INTK-01 | Phase 2 | Pending |
+| INTK-02 | Phase 2 | Pending |
+| INTK-03 | Phase 2 | Pending |
+| INTK-04 | Phase 2 | Pending |
+| INTK-05 | Phase 2 | Pending |
+| STAT-01 | Phase 1 | Pending |
+| STAT-02 | Phase 1 | Pending |
+| STAT-03 | Phase 4 | Pending |
+| STAT-04 | Phase 5 | Pending |
+| BROW-01 | Phase 1 | Pending |
+| BROW-02 | Phase 3 | Pending |
+| BROW-03 | Phase 5 | Pending |
+| BROW-04 | Phase 3 | Pending |
+| FIXR-01 | Phase 4 | Pending |
+| FIXR-02 | Phase 4 | Pending |
+| FIXR-03 | Phase 4 | Pending |
+| FIXR-04 | Phase 5 | Pending |
+| FIXR-05 | Phase 4 | Pending |
+| SYST-01 | Phase 1 | Pending |
+| SYST-02 | Phase 1 | Pending |
+| SYST-03 | Phase 1 | Pending |
+| SYST-04 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 22 total
-- Mapped to phases: 0
-- Unmapped: 22
+- Mapped to phases: 22
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-18*
-*Last updated: 2026-02-18 after initial definition*
+*Last updated: 2026-02-18 after roadmap creation*
