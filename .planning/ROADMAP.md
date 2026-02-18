@@ -21,20 +21,20 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Foundation & Skeleton
-**Goal**: The skill directory exists at ~/.claude/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
+**Goal**: The skill directory exists at ~/.claude/skills/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
 **Depends on**: Nothing (first phase)
 **Requirements**: SYST-01, SYST-02, SYST-03, SYST-04, STAT-01, STAT-02, BROW-01
 **Success Criteria** (what must be TRUE):
-  1. Running /fixme:start (or equivalent command) from any project directory launches the skill without errors
+  1. Running /fixme (or equivalent command) from any project directory launches the skill without errors
   2. A ticket created from the template contains YAML frontmatter with state, timestamps, and all structured sections
   3. Ticket state transitions (queued -> investigating -> fixing -> verifying -> done/failed) update frontmatter and record timestamps with durations
-  4. The skill reads a project's CLAUDE.md and extracts dev server URL, build commands, and HMR support into a usable context object
+  4. The skill reads a project's package.json and config files to extract dev server URL, build commands, and HMR support into a usable context object
   5. Ticket files in the working directory survive context compaction -- re-reading them after compaction yields the same state
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md -- fixme-tools.cjs: state gatekeeper with ticket, session, and context subcommands
+- [ ] 01-02-PLAN.md -- SKILL.md entry point, ticket/session templates, and reference documentation
 
 ### Phase 2: Intake Pipeline
 **Goal**: Users can submit bug reports mid-session and they become structured, queued ticket files without interrupting ongoing work
@@ -100,7 +100,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Skeleton | 0/2 | Not started | - |
+| 1. Foundation & Skeleton | 0/2 | Planned | - |
 | 2. Intake Pipeline | 0/1 | Not started | - |
 | 3. Investigation & Reproduction | 0/1 | Not started | - |
 | 4. Fix & Commit | 0/2 | Not started | - |
