@@ -39,10 +39,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### System & Architecture
 
-- [ ] **SYST-01**: The skill installs at ~/.claude/fixme/ and is invoked via /fixme:start (or similar command)
-- [ ] **SYST-02**: Structured ticket MD template ensures consistent agent output across all tickets
-- [ ] **SYST-03**: Architecture supports future parallel implementation agents (separate concerns, no shared mutable state)
-- [ ] **SYST-04**: Ticket files serve as persistent state that survives context compaction
+- [x] **SYST-01**: The skill installs at ~/.claude/fixme/ and is invoked via /fixme:start (or similar command)
+- [x] **SYST-02**: Structured ticket MD template ensures consistent agent output across all tickets
+- [x] **SYST-03**: Architecture supports future parallel implementation agents (separate concerns, no shared mutable state)
+- [x] **SYST-04**: Ticket files serve as persistent state that survives context compaction
 
 ## v2 Requirements
 
@@ -99,10 +99,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FIXR-03 | Phase 4 | Pending |
 | FIXR-04 | Phase 5 | Pending |
 | FIXR-05 | Phase 4 | Pending |
-| SYST-01 | Phase 1 | Pending |
-| SYST-02 | Phase 1 | Pending |
-| SYST-03 | Phase 1 | Pending |
-| SYST-04 | Phase 1 | Pending |
+| SYST-01 | Phase 1 | Complete |
+| SYST-02 | Phase 1 | Complete |
+| SYST-03 | Phase 1 | Complete |
+| SYST-04 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 22 total
