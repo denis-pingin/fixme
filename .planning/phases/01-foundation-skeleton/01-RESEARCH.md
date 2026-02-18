@@ -168,7 +168,7 @@ This was the CRITICAL architecture investigation called out in CONTEXT.md. After
 
 | Technology | Why Not Yet |
 |------------|------------|
-| Playwright MCP | Phase 3+ (browser automation). Phase 1 has no browser interaction. |
+| Playwright (MCP or CLI) | Phase 3+ (browser automation). Phase 1 has no browser interaction. |
 | Agent SDK | Only if Fixme needs headless/CI mode. Interactive skill is sufficient for v1. |
 | `chokidar` / file watchers | Phase 2+ (streaming intake). Phase 1 has no file watching. |
 

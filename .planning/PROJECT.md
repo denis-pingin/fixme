@@ -56,7 +56,7 @@ Fixme follows this pattern but is much simpler — fewer agent types, simpler st
 2. **Intake agent** — captures incoming bug report to ticket file
 3. **Implementation agent** — investigates, fixes, verifies a single bug
 
-**Browser automation:** Uses Playwright MCP tools (browser_snapshot, browser_click, browser_navigate, browser_take_screenshot, etc.) for both reproduction and verification. Agents interact with the app the same way a human tester would.
+**Browser automation:** Uses Playwright (MCP or CLI) for both reproduction and verification. MCP provides tools like browser_snapshot, browser_click, browser_navigate; CLI provides equivalent automation via bash commands. Agents use whichever is available in the environment.
 
 **Project context:** The skill reads the target project's CLAUDE.md to discover:
 - Dev server URL and how to start it
@@ -71,7 +71,7 @@ Fixme follows this pattern but is much simpler — fewer agent types, simpler st
 - **Platform**: Claude Code skill system — must follow skill file conventions (MD-based, Skill tool invocation)
 - **Installation**: Global at `~/.claude/fixme/`, not project-specific
 - **Agent model**: Use Claude Code's Task tool for subagent dispatch — constrained to available subagent types
-- **Browser**: Playwright MCP — single browser instance per agent, must manage tabs
+- **Browser**: Playwright (MCP or CLI) — single browser instance per agent, must manage tabs
 - **Context budget**: Main loop must stay lean; all investigation/fix/verify work happens in subagents
 - **Sequential execution**: v1 processes bugs one at a time (architecture allows future parallelism)
 
@@ -82,7 +82,7 @@ Fixme follows this pattern but is much simpler — fewer agent types, simpler st
 | Model after GSD architecture | Proven pattern for Claude Code skill systems with agent orchestration | — Pending |
 | Ticket files as persistent state | Survives context compaction, provides audit trail, human-readable | — Pending |
 | Background intake + sequential dispatch | Keeps main loop responsive while ensuring orderly execution | — Pending |
-| Playwright MCP for verification | Built into Claude Code, no external dependencies needed | — Pending |
+| Playwright (MCP or CLI) for verification | Built into Claude Code, no external dependencies needed | — Pending |
 | Project context from CLAUDE.md | Standard Claude Code convention, no extra config needed | — Pending |
 | Detailed state tracking with timestamps | Enables audit trail, performance analysis, user oversight | — Pending |
 | Hot-reload awareness | Saves tokens and time by skipping unnecessary refresh/rebuild commands | — Pending |

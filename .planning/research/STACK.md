@@ -12,7 +12,7 @@
 |------------|---------|---------|-----------------|
 | Claude Code Skills | Current (v2.1.3+) | Skill system framework | Native skill discovery, slash-command invocation, frontmatter config, supporting files. Skills replaced slash commands as the unified invocation model. Every "fixme" workflow is a skill directory with SKILL.md + supporting files. **Confidence: HIGH** (Official docs verified) |
 | Claude Code Subagents | Current | Agent orchestration | Built-in Task tool spawns isolated agents with custom system prompts, tool restrictions, model selection, and permission modes. Subagents cannot spawn sub-subagents, but the main thread can chain them. Supports foreground (blocking) and background (concurrent) execution. **Confidence: HIGH** (Official docs verified) |
-| Playwright MCP (`@playwright/mcp`) | Latest | Browser automation | Microsoft's official MCP server for Playwright. Uses accessibility tree snapshots (not screenshots), so no vision model needed. Registered via `claude mcp add` or inline in subagent `mcpServers` config. **Confidence: HIGH** (Official docs verified) |
+| Playwright (MCP or CLI) | Latest | Browser automation | Playwright MCP is Microsoft's official MCP server; Playwright CLI is the bash-based alternative. Both use accessibility tree snapshots (not screenshots), so no vision model needed. MCP registered via `claude mcp add`, CLI invoked via Bash. **Confidence: HIGH** (Official docs verified) |
 | Markdown (MD files) | N/A | Agent definitions, skill definitions, templates, state | The entire Claude Code extension system is Markdown-native. Skills are SKILL.md, agents are .md with YAML frontmatter, templates are .md. This is the lingua franca. **Confidence: HIGH** (Official docs verified) |
 | CommonJS (`.cjs`) | Node.js 18+ | CLI tooling scripts | GSD reference uses `.cjs` for tooling (`gsd-tools.cjs`). CJS runs without bundling, works with `node` directly, no ESM import issues. Perfect for utility scripts invoked from skill files. **Confidence: HIGH** (Verified from GSD reference architecture) |
 | JSON | N/A | Configuration and state persistence | `config.json` for project settings, structured state files for ticket tracking. JSON is parseable by both shell (`jq`) and Node.js, and Claude Code natively handles JSON output. **Confidence: HIGH** |
@@ -32,7 +32,7 @@
 | `claude mcp add` | Register MCP servers | One-time setup: `claude mcp add playwright npx @playwright/mcp@latest`. Persists in `.claude/settings.json` or `~/.claude/.claude.json`. |
 | `jq` | Parse JSON from CLI | Used extensively in GSD patterns for parsing init output, extracting fields from structured responses. Essential for shell-level JSON manipulation in skill scripts. |
 | `gh` CLI | GitHub operations | For PR creation, issue management. Already in use in existing skills (`create-pr`, `address-pr-comments`). |
-| Node.js 18+ | Runtime for CJS tools | Required by Playwright MCP (`npx`), GSD tools, and any custom `.cjs` utilities. |
+| Node.js 18+ | Runtime for CJS tools | Required by Playwright (`npx`), GSD tools, and any custom `.cjs` utilities. |
 
 ## File Structure Conventions
 
@@ -106,7 +106,7 @@ maxTurns: 20                       # Bounded execution
 |-------------|-------------|-------------------------|
 | Skills (`~/.claude/skills/`) | Agent SDK (`@anthropic-ai/claude-agent-sdk`) | When Fixme needs to run as a standalone daemon outside Claude Code (e.g., webhook receiver, CI/CD pipeline). SDK gives programmatic control but loses interactive skill invocation. |
 | Subagents (Task tool) | Agent Teams | When work requires sustained parallelism across independent sessions with inter-agent communication. Overkill for Fixme's linear intake->fix->verify pipeline. Agent Teams is still experimental (research preview). |
-| Playwright MCP plugin | Playwright CLI skill | When MCP overhead is too high per-invocation. A CLI-based skill wrapping Playwright commands is more token-efficient for simple checks but loses the rich tool set (snapshot, evaluate, form filling). |
+| Playwright MCP plugin only | Playwright (MCP or CLI) | Support both — MCP provides rich tool set (snapshot, evaluate, form filling), CLI is more token-efficient for simple checks. Agents use whichever is available. |
 | CJS tooling scripts | Shell scripts (bash/zsh) | When logic is trivial (< 20 lines). CJS is better for anything involving JSON parsing, state management, or complex control flow. |
 | File-based state (JSON/MD) | SQLite / LevelDB | When ticket volume exceeds hundreds. For a personal tool processing a handful of bugs, file-based is simpler and Claude Code can read/write files natively. |
 | Personal skills (`~/.claude/skills/`) | Project skills (`.claude/skills/`) | When the skill is project-specific. Fixme is a general-purpose personal tool, so personal scope is correct. |
@@ -117,7 +117,7 @@ maxTurns: 20                       # Bounded execution
 |-------|-----|-------------|
 | ESM modules (`.mjs`) for tool scripts | ESM requires `--experimental-vm-modules`, has import resolution issues, and Claude Code's own tooling uses CJS. GSD reference confirms CJS pattern. | CommonJS `.cjs` files executed with `node` |
 | Agent Teams for this use case | Experimental (research preview), requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` flag, designed for multi-session coordination with inter-agent communication. Fixme's workflow is sequential (intake -> fix -> verify), not parallel multi-agent. | Subagents via Task tool (foreground/background) |
-| Screenshot-based browser verification | Requires vision model, higher token cost, non-deterministic, slower. Playwright MCP uses accessibility tree snapshots which are text-based and LLM-native. | Playwright MCP `browser_snapshot` tool |
+| Screenshot-based browser verification | Requires vision model, higher token cost, non-deterministic, slower. Playwright (MCP or CLI) uses accessibility tree snapshots which are text-based and LLM-native. | Playwright `browser_snapshot` tool |
 | Custom MCP server | Building a custom MCP server for browser automation is unnecessary when `@playwright/mcp` exists and is maintained by Microsoft. Custom MCP only makes sense for domain-specific tools not covered by existing servers. | `@playwright/mcp@latest` via npx |
 | Python for tooling scripts | Adds a runtime dependency (Python + venv), when the entire Claude Code ecosystem is Node.js-native. GSD, existing skills, and the Agent SDK TypeScript package all use JS/Node. | Node.js CJS scripts |
 | `--system-prompt` override in subagents | Replaces Claude Code's default system prompt entirely, losing built-in capabilities. | Agent MD files with focused system prompts in the markdown body (additive, not replacing) |
@@ -130,7 +130,7 @@ maxTurns: 20                       # Bounded execution
 - Use `~/.claude/skills/fixme/SKILL.md` as entry point
 - Invoke with `/fixme <bug-description>` or `/fixme @bug-report.md`
 - Orchestrator spawns subagents via Task tool
-- Playwright MCP registered globally, available to all agents
+- Playwright (MCP or CLI) available to all agents
 - State persists in `~/.claude/fixme/state/` or `/tmp/fixme/`
 
 **If running as programmatic pipeline (CI/CD, webhook):**

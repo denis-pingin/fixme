@@ -57,7 +57,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Research]: Playwright MCP tab management under concurrent agents untested -- validate in Phase 3
+- [Research]: Playwright (MCP or CLI) tab/browser management under concurrent agents untested -- validate in Phase 3
 - [Research]: Context compaction behavior with repeated ticket file reads is theoretical -- validate empirically in Phase 1
 - [Research]: Streaming intake UX (how user submits bug mid-fix) is an open design question -- decide during Phase 2 planning
 

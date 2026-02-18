@@ -16,7 +16,7 @@ Features users assume exist. Missing these = product feels incomplete.
 | **Sequential dispatch queue** | If bugs pile up, they must process in order. Without queuing, the second report kills the first fix mid-work. | LOW | FIFO by arrival order. Numbered filenames (001-*, 002-*) for sort stability. |
 | **Ticket state machine** | Users need to know what's happening. "Is my bug being worked on?" is the first question after reporting. | LOW | States: `queued` -> `investigating` -> `fixing` -> `verifying` -> `done` / `failed`. Stored in ticket MD frontmatter. |
 | **Investigation phase** | Agents that jump straight to fixing without understanding the bug produce garbage patches. SWE-bench research shows root cause analysis is the bottleneck. | MEDIUM | Agent reads codebase, reproduces in browser, identifies root cause. Writes investigation notes to ticket. |
-| **Browser-based reproduction** | You can't fix what you can't see. Playwright MCP is the agent's eyes. Without reproduction, agents guess at fixes. | MEDIUM | Navigate to URL, interact with UI, capture state. Depends on project CLAUDE.md providing dev server URL. |
+| **Browser-based reproduction** | You can't fix what you can't see. Playwright (MCP or CLI) is the agent's eyes. Without reproduction, agents guess at fixes. | MEDIUM | Navigate to URL, interact with UI, capture state. Depends on project CLAUDE.md providing dev server URL. |
 | **Browser-based verification** | Research shows 18% of AI-generated fixes fail existing tests or introduce regressions. Verification closes the loop. | MEDIUM | After fix, agent re-navigates and confirms the bug is gone. Must check the specific behavior described in the report. |
 | **One commit per fix** | Atomic commits per bug. If fix 3 breaks something, you revert fix 3, not fixes 1-5. Non-negotiable for any dev workflow. | LOW | `git add` + `git commit` with ticket reference in message. |
 | **Project context discovery** | Agent needs to know: where's the app running, how to build, does HMR work. Without this, every fix starts from zero. | LOW | Read target project's CLAUDE.md for dev server URL, build commands, HMR support, project structure. |
@@ -188,7 +188,7 @@ Features to defer until product-market fit is established.
 | Bug intake from user | GitHub issue parsing | Chat-based | Chat-based | User describes in prompt | Structured ticket from free text, background intake agent |
 | Queue/batch processing | Single issue per run | Parallel agents per task | Single task per session | None (one at a time) | Streaming queue with sequential dispatch |
 | Investigation | Codebase exploration via shell | Codebase exploration | Full environment access | User-directed | Autonomous investigation with browser reproduction |
-| Browser verification | None (test suite only) | None (sandbox only) | Browser via Devin's VM | Manual Playwright MCP | Automated Playwright verification per ticket |
+| Browser verification | None (test suite only) | None (sandbox only) | Browser via Devin's VM | Manual Playwright | Automated Playwright (MCP or CLI) verification per ticket |
 | Fix isolation | Patch file | Branch per fix | Branch per fix | User manages commits | One commit per fix, atomic |
 | Failure recovery | Retry with different prompt | Retry internally | Human fallback | Manual | Mark failed, record reason, move to next |
 | State persistence | None (stateless) | Task state in cloud | Session state | Conversation context (lost on compaction) | MD ticket files survive context compaction |

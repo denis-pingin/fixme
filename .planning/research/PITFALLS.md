@@ -2,7 +2,7 @@
 
 **Domain:** Claude Code skill system with agent orchestration, browser automation, and file-based state management
 **Researched:** 2026-02-18
-**Confidence:** HIGH (verified against official Anthropic docs, Claude Code docs, and Playwright MCP docs)
+**Confidence:** HIGH (verified against official Anthropic docs, Claude Code docs, and Playwright MCP/CLI docs)
 
 ## Critical Pitfalls
 
@@ -62,7 +62,7 @@ Phase 1 (Intake Agent) and Phase 2 (Implementation Agent). The ticket template d
 The implementation agent takes a screenshot or snapshot after applying the fix, compares it to expected behavior, and declares success. But the verification is superficial: the agent checked that the page renders without errors, not that the specific bug behavior is resolved. Example: a button that was supposed to be disabled after click is verified as "present on page" — the agent never tested clicking it. Or: a form validation bug is marked fixed because the form renders, but the agent never submitted invalid input.
 
 **Why it happens:**
-Browser verification through Playwright MCP is inherently limited to what the agent explicitly tests. The accessibility snapshot tells you what's on the page right now, not how it behaves under interaction. Agents are biased toward confirming their own fixes — they look for evidence of success, not evidence of remaining failure. Additionally, if the page uses hot-reload, the agent may see stale state from before the code change was applied.
+Browser verification through Playwright (MCP or CLI) is inherently limited to what the agent explicitly tests. The accessibility snapshot tells you what's on the page right now, not how it behaves under interaction. Agents are biased toward confirming their own fixes — they look for evidence of success, not evidence of remaining failure. Additionally, if the page uses hot-reload, the agent may see stale state from before the code change was applied.
 
 **How to avoid:**
 1. The ticket template must include a "verification plan" field that the implementation agent writes BEFORE attempting the fix. This plan must describe the specific user actions to reproduce the bug and the expected post-fix outcome.
@@ -162,7 +162,7 @@ Phase 1 (Orchestrator Design). This is the core architectural discipline — a f
 The implementation agent saves a code change, then immediately takes a browser snapshot to verify. But the dev server's hot-reload hasn't completed yet — the browser still shows the old state. The agent sees the unfixed behavior, concludes its fix didn't work, and either reverts or tries a different approach. Alternatively, the agent waits "long enough" for simple changes but the specific change triggers a full rebuild (e.g., config file change), and the wait isn't long enough.
 
 **Why it happens:**
-HMR/hot-reload timing varies wildly depending on: what file was changed (component vs. config vs. style), the project's build pipeline, and current system load. There's no universal signal that the browser has finished updating. Playwright MCP doesn't expose dev server connection status.
+HMR/hot-reload timing varies wildly depending on: what file was changed (component vs. config vs. style), the project's build pipeline, and current system load. There's no universal signal that the browser has finished updating. Playwright (MCP or CLI) doesn't expose dev server connection status.
 
 **How to avoid:**
 1. After saving a code change, the implementation agent must wait for a reliable signal before verifying. The simplest: run `browser_wait_for` with the text that should change, or wait a fixed delay (3-5 seconds minimum).
@@ -187,7 +187,7 @@ Phase 2 (Implementation Agent) and Phase 3 (Verification Hardening). Basic wait 
 The implementation agent navigates to a page using a component library with Shadow DOM (Material UI, Shoelace, Lit-based components, Salesforce Lightning). The `browser_snapshot` accessibility tree shows the page structure but elements inside shadow roots are missing or flattened. The agent can't find the button it needs to click, reports "element not found," and either gives up or clicks the wrong thing.
 
 **Why it happens:**
-Playwright MCP's primary interaction mode uses the accessibility tree, which has known limitations with Shadow DOM. The Microsoft Playwright MCP GitHub repo has open issues about elements missing from accessibility snapshots (issue #514). Modern design systems increasingly use Web Components with shadow roots, and the AI agent literally can't see elements nested multiple shadow layers deep.
+Playwright's primary interaction mode uses the accessibility tree, which has known limitations with Shadow DOM. The Microsoft Playwright MCP GitHub repo has open issues about elements missing from accessibility snapshots (issue #514). Modern design systems increasingly use Web Components with shadow roots, and the AI agent literally can't see elements nested multiple shadow layers deep.
 
 **How to avoid:**
 1. The project-context discovery phase should detect if the project uses Shadow DOM-heavy libraries (check package.json for lit, shoelace, web components, etc.). Flag this in the context file.
@@ -221,11 +221,11 @@ Phase 3 (Browser Automation Hardening). Basic Playwright interaction works in Ph
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Playwright MCP browser instance | Assuming each subagent gets its own isolated browser. They may share a single browser process, causing tab conflicts | Each implementation agent should open its own tab via `browser_tabs` action: "new", and close it when done. Check tab state before assuming you're on the right page |
+| Playwright (MCP or CLI) browser instance | Assuming each subagent gets its own isolated browser. They may share a single browser process, causing tab conflicts | Each implementation agent should open its own tab via `browser_tabs` action: "new", and close it when done. Check tab state before assuming you're on the right page |
 | CLAUDE.md project context | Reading CLAUDE.md once at startup and caching in orchestrator memory | Read once, write to a `.fixme/project-context.md` file. Subagents read from disk, not from orchestrator context. Survives compaction |
 | Git operations in subagents | Subagent commits, but another subagent is already mid-edit on a different file. Dirty working tree conflicts | Implementation agents must: (1) commit only their own changes, (2) run `git status` before committing to check for unexpected changes, (3) use specific file paths in `git add` (never `git add .`) |
 | Dev server process | Starting the dev server in the subagent, which dies when the subagent context ends | Dev server must be started before the skill system runs (by the user or by the orchestrator in a persistent Bash process). Subagents assume the server is already running |
-| Background intake agent | Running intake as a background subagent that needs Playwright MCP tools | Background subagents cannot use MCP tools (official limitation). Intake agent should NOT need browser access — it only captures text to a file. Keep it lightweight: Read + Write tools only |
+| Background intake agent | Running intake as a background subagent that needs Playwright tools | Background subagents cannot use MCP tools (official limitation). Intake agent should NOT need browser access — it only captures text to a file. Keep it lightweight: Read + Write tools only |
 
 ## Performance Traps
 

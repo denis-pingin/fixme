@@ -57,7 +57,7 @@
          |                    |
 +--------v--------+  +-------v----------+
 | BROWSER LAYER   |  | CODEBASE LAYER   |
-| (Playwright MCP)|  | (Read/Write/Bash)|
+| (Playwright)    |  | (Read/Write/Bash)|
 |                 |  |                  |
 | navigate()      |  | grep/glob        |
 | snapshot()      |  | edit/write       |
@@ -77,7 +77,7 @@
 | **Queue state** (`state/`) | System-level state across tickets. Active queue, config, aggregate metrics. | `queue.md` (ordered list), `config.json` (settings) |
 | **Templates** (`templates/`) | Structured output templates for consistent file generation across agents. | MD files with placeholder patterns |
 | **References** (`references/`) | Shared reference docs loaded by multiple agents. Domain knowledge, protocols, conventions. | MD files with patterns, rules, lookup tables |
-| **Browser tools** (Playwright MCP) | Browser automation for reproduction and verification. Available as `mcp__plugin_playwright_playwright__*` tools. | Snapshot-driven interaction: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_screenshot` |
+| **Browser tools** (Playwright MCP or CLI) | Browser automation for reproduction and verification. MCP available as `mcp__plugin_playwright_playwright__*` tools; CLI via Bash. | Snapshot-driven interaction: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_screenshot` |
 
 ## Recommended Project Structure
 
@@ -243,7 +243,7 @@ Console errors: TypeError at Dashboard.tsx:45
 
 ### Pattern 3: Snapshot-Driven Browser Automation
 
-**What:** Use Playwright MCP's `browser_snapshot` (accessibility tree) for decision-making and `browser_screenshot` for evidence capture. Snapshots are text-based and parseable by the LLM. Screenshots are visual proof.
+**What:** Use Playwright's `browser_snapshot` (accessibility tree) for decision-making and `browser_screenshot` for evidence capture. Snapshots are text-based and parseable by the LLM. Screenshots are visual proof.
 
 **When to use:** For reproduction and verification of UI bugs.
 
@@ -305,7 +305,7 @@ Console errors: TypeError at Dashboard.tsx:45
       +------> [reproducer-agent]  (subagent, fresh 200k context)
       |              |
       |              |  reads: ticket repro steps
-      |              |  uses: Playwright MCP tools
+      |              |  uses: Playwright (MCP or CLI)
       |              |  actions: navigate, interact, capture screenshots
       |              |  captures: console errors, network failures
       |              |  writes: ticket "Reproduction Result" section
@@ -333,7 +333,7 @@ Console errors: TypeError at Dashboard.tsx:45
       +------> [verifier-agent]  (subagent, fresh 200k context)
                      |
                      |  reads: ticket (full), reproduction steps
-                     |  uses: Playwright MCP + Bash (test runner)
+                     |  uses: Playwright (MCP or CLI) + Bash (test runner)
                      |  actions: re-run reproduction (should NOT reproduce)
                      |  actions: run test suite (should pass)
                      |  writes: ticket "Verification" section
@@ -423,7 +423,7 @@ Console errors: TypeError at Dashboard.tsx:45
 | Command <-> Workflow | `@` file reference in `<execution_context>` | Command declares tools + args. Workflow contains full process. |
 | Workflow <-> Agent | `Task()` with file paths | Orchestrator spawns, passes ticket path. Agent reads file directly. |
 | Agent <-> Ticket | `Read` + `Write`/`Edit` tools | Agent reads ticket, does work, writes back specific sections. |
-| Agent <-> Browser | Playwright MCP tool calls | Snapshot for decisions, click/type for interaction, screenshot for evidence. |
+| Agent <-> Browser | Playwright (MCP or CLI) tool calls | Snapshot for decisions, click/type for interaction, screenshot for evidence. |
 | Agent <-> Codebase | `Grep`/`Glob`/`Read`/`Edit`/`Bash` | Standard code tools. Fixer agent does all codebase interaction. |
 
 ## Build Order (Dependency Chain)
@@ -448,7 +448,7 @@ Phase 2: Intake/Triage Pipeline
 Phase 3: Browser Reproduction
   - agents/reproducer-agent.md
   - references/playwright-patterns.md
-  - Playwright MCP integration patterns
+  - Playwright (MCP or CLI) integration patterns
   Depends on: Phase 2 (tickets exist to reproduce)
   Produces: Can reproduce bugs and capture evidence
 
@@ -473,13 +473,13 @@ Phase 6: Linear Integration
   Produces: Automated pipeline from Linear issue to closed fix
 ```
 
-**Key dependency insight:** Browser reproduction (Phase 3) is the highest-risk component and blocks both fixing and verification. Build it early, validate the Playwright MCP patterns work reliably, then the downstream phases can leverage those patterns.
+**Key dependency insight:** Browser reproduction (Phase 3) is the highest-risk component and blocks both fixing and verification. Build it early, validate the Playwright (MCP or CLI) patterns work reliably, then the downstream phases can leverage those patterns.
 
 ## Sources
 
 - GSD reference architecture at `~/.claude/get-shit-done/` (direct code analysis, HIGH confidence)
 - Claude Code skill system: `~/.claude/commands/`, `~/.claude/skills/` directory conventions (direct inspection, HIGH confidence)
-- Playwright MCP tools: available tool definitions in current session (direct observation, HIGH confidence)
+- Playwright (MCP or CLI) tools: available tool definitions in current session (direct observation, HIGH confidence)
 - Linear MCP tools: available tool definitions in current session (direct observation, HIGH confidence)
 - GSD agent patterns: `~/.claude/agents/gsd-*.md` (direct code analysis, HIGH confidence)
 
