@@ -45,10 +45,12 @@ Plans:
   2. The ticket filename contains a sequential number and a descriptive slug derived from the report (e.g., 001-login-button-not-responding.md)
   3. Intake runs as a background agent -- the orchestrator's main loop continues processing while intake writes the ticket
   4. User can submit a second bug report while an implementation agent is actively working on a previous bug, and both tickets exist correctly in the queue
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md -- fixme-tools.cjs: ticket rename subcommand + queued->failed transition
+- [ ] 02-02-PLAN.md -- intake-agent.md: agent instructions for processing bug reports
+- [ ] 02-03-PLAN.md -- SKILL.md: intake dispatch flow, /fixme:report, LLM intent detection
 
 ### Phase 3: Investigation & Reproduction
 **Goal**: The implementation agent can navigate to the app, reproduce the reported bug in a real browser, and investigate the codebase to understand root cause before attempting a fix
@@ -101,7 +103,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation & Skeleton | 2/2 | Complete    | 2026-02-18 |
-| 2. Intake Pipeline | 0/1 | Not started | - |
+| 2. Intake Pipeline | 0/3 | Not started | - |
 | 3. Investigation & Reproduction | 0/1 | Not started | - |
 | 4. Fix & Commit | 0/2 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Not started | - |
