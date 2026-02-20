@@ -9,8 +9,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Intake & Queue
 
-- [ ] **INTK-01**: User can submit a bug report (text + optional screenshots) during an active session and it gets captured to a numbered MD ticket file
-- [ ] **INTK-02**: Intake agent summarizes the request to generate a meaningful, descriptive title used for the ticket filename (e.g., 001-login-button-not-responding.md)
+- [x] **INTK-01**: User can submit a bug report (text + optional screenshots) during an active session and it gets captured to a numbered MD ticket file
+- [x] **INTK-02**: Intake agent summarizes the request to generate a meaningful, descriptive title used for the ticket filename (e.g., 001-login-button-not-responding.md)
 - [ ] **INTK-03**: Intake happens via background agent so the orchestrator continues its current work uninterrupted
 - [ ] **INTK-04**: Ticket files are numbered sequentially for sort-stable FIFO ordering
 - [ ] **INTK-05**: User can submit new bug reports while an implementation agent is actively fixing a previous bug (streaming intake)
@@ -81,8 +81,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INTK-01 | Phase 2 | Pending |
-| INTK-02 | Phase 2 | Pending |
+| INTK-01 | Phase 2 | Complete |
+| INTK-02 | Phase 2 | Complete |
 | INTK-03 | Phase 2 | Pending |
 | INTK-04 | Phase 2 | Pending |
 | INTK-05 | Phase 2 | Pending |

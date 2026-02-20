@@ -65,12 +65,15 @@ The three deliverables are: (1) the intake agent definition at `~/.claude/skills
 - New fixme-tools.cjs subcommand: `ticket rename` -- atomic file rename + frontmatter slug update
 - Intake agent writes structured fields directly to ticket file using Write/Edit tools (guided by HTML comment markers)
 
+### Model selection
+
+- Intake agent model (Opus, Sonnet, Haiku) must be configurable in settings. Defaults to the Orchestrator's model.
+
 ### Claude's Discretion
 
 - Exact wording of dispatch announcement and intake summary format
 - How to handle the case where fixme-tools.cjs pre-creates a file and the intake agent fails (cleanup strategy)
 - Temporary slug format for pre-created ticket files
-- Whether to use haiku or sonnet model for the intake agent Task dispatch
 
 ### Deferred Ideas (OUT OF SCOPE)
 
