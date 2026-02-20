@@ -9,12 +9,15 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 
 ## Current Position
 
-Phase: 2 of 5 (Intake Pipeline)
-Plan: 3 of 3 in current phase
-Status: Executing
-Last activity: 2026-02-20 -- Completed 02-01-PLAN.md
+**Current Phase:** 2
+**Current Phase Name:** Intake Pipeline
+**Total Phases:** 5
+**Current Plan:** 3
+**Total Plans in Phase:** 3
+**Status:** Phase complete — ready for verification
+**Last Activity:** 2026-02-20
 
-Progress: [████░░░░░░] 40%
+**Progress:** [██████████] 100%
 
 ## Performance Metrics
 
@@ -35,6 +38,7 @@ Progress: [████░░░░░░] 40%
 - Trend: Accelerating
 
 *Updated after each plan completion*
+| Phase 02 P03 | 2min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -57,6 +61,11 @@ Recent decisions affecting current work:
 - [02-01]: Slug sanitization normalizes invalid input rather than rejecting -- resilient to LLM-generated slugs
 - [02-01]: queued->failed transition added for intake agent failure cleanup
 - [02-01]: Fixed inline object parsing ({}) in YAML parser for durations/transitions roundtrip
+- [Phase 02-03]: Intake dispatch uses model: sonnet for balance of quality and cost
+- [Phase 02-03]: Temp slug format: intake-tmp-<4-hex> via /dev/urandom for uniqueness
+- [Phase 02-03]: Failed intake transitions ticket to failed (not skipped) with error reason preserved
+- [Phase 02-03]: Auto-close uses same session summary as manual stop for consistent UX
+- [Phase 02-03]: LLM intent detection errs on asking (LOW confidence) rather than mis-classifying as bug
 
 ### Pending Todos
 
@@ -71,5 +80,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 02-01-PLAN.md
-Resume file: .planning/phases/02-intake-pipeline/02-01-SUMMARY.md
+Stopped at: Completed 02-03-PLAN.md -- Phase 2 complete
+Resume file: .planning/phases/02-intake-pipeline/02-03-SUMMARY.md

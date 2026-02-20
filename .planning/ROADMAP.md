@@ -13,7 +13,7 @@ Fixme delivers a streaming bug-fix pipeline for Claude Code: bugs flow in as rep
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation & Skeleton** - Skill directory, ticket template, state machine, project context discovery
-- [ ] **Phase 2: Intake Pipeline** - Bug reports become structured ticket files via background agent
+- [x] **Phase 2: Intake Pipeline** - Bug reports become structured ticket files via background agent (completed 2026-02-20)
 - [ ] **Phase 3: Investigation & Reproduction** - Browser-based bug reproduction and codebase investigation
 - [ ] **Phase 4: Fix & Commit** - Implement fixes, atomic commits, orchestrator dispatch loop
 - [ ] **Phase 5: Verification & Close Loop** - Browser-verified fixes, revert on failure, session summary
@@ -48,9 +48,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- fixme-tools.cjs: ticket rename subcommand + queued->failed transition
-- [ ] 02-02-PLAN.md -- intake-agent.md: agent instructions for processing bug reports
-- [ ] 02-03-PLAN.md -- SKILL.md: intake dispatch flow, /fixme:report, LLM intent detection
+- [x] 02-01-PLAN.md -- fixme-tools.cjs: ticket rename subcommand + queued->failed transition
+- [x] 02-02-PLAN.md -- intake-agent.md: agent instructions for processing bug reports
+- [x] 02-03-PLAN.md -- SKILL.md: intake dispatch flow, /fixme:report, LLM intent detection
 
 ### Phase 3: Investigation & Reproduction
 **Goal**: The implementation agent can navigate to the app, reproduce the reported bug in a real browser, and investigate the codebase to understand root cause before attempting a fix
@@ -103,11 +103,11 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation & Skeleton | 2/2 | Complete    | 2026-02-18 |
-| 2. Intake Pipeline | 1/3 | In Progress | - |
+| 2. Intake Pipeline | 3/3 | Complete    | 2026-02-20 |
 | 3. Investigation & Reproduction | 0/1 | Not started | - |
 | 4. Fix & Commit | 0/2 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-20 (02-02 complete)*
+*Last updated: 2026-02-20 (Phase 2 complete)*
