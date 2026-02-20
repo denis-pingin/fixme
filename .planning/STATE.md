@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 ## Current Position
 
 Phase: 2 of 5 (Intake Pipeline)
-Plan: 2 of 3 in current phase
+Plan: 3 of 3 in current phase
 Status: Executing
-Last activity: 2026-02-20 -- Completed 02-02-PLAN.md
+Last activity: 2026-02-20 -- Completed 02-01-PLAN.md
 
 Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: 5min
-- Total execution time: 0.25 hours
+- Total execution time: 0.32 hours
 
 **By Phase:**
 
 | Phase                  | Plans | Total | Avg/Plan |
 |------------------------|-------|-------|----------|
 | 01-foundation-skeleton | 2/2   | 13min | 7min     |
-| 02-intake-pipeline     | 1/3   | 2min  | 2min     |
+| 02-intake-pipeline     | 2/3   | 6min  | 3min     |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (8min), 01-02 (5min), 02-02 (2min)
+- Last 5 plans: 01-01 (8min), 01-02 (5min), 02-02 (2min), 02-01 (4min)
 - Trend: Accelerating
 
 *Updated after each plan completion*
@@ -54,6 +54,9 @@ Recent decisions affecting current work:
 - [02-02]: Agent MD file ~120 lines with worked example -- concise but complete for Task dispatch
 - [02-02]: Vague reports still processed (best-effort slug/fields) -- investigation agent fills gaps
 - [02-02]: Screenshot handling: check existence, copy to assets dir, note missing in report
+- [02-01]: Slug sanitization normalizes invalid input rather than rejecting -- resilient to LLM-generated slugs
+- [02-01]: queued->failed transition added for intake agent failure cleanup
+- [02-01]: Fixed inline object parsing ({}) in YAML parser for durations/transitions roundtrip
 
 ### Pending Todos
 
@@ -68,5 +71,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 02-02-PLAN.md
-Resume file: .planning/phases/02-intake-pipeline/02-02-SUMMARY.md
+Stopped at: Completed 02-01-PLAN.md
+Resume file: .planning/phases/02-intake-pipeline/02-01-SUMMARY.md
