@@ -175,11 +175,12 @@ This is the core execution cycle. Repeat until the user stops the session or the
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
    ```
 
-3. **Create ticket asset directory:**
+3. **Ensure ticket asset directory exists:**
+   The ticket folder's `assets/` subdirectory is created by `ticket create`. If resuming an older ticket, ensure it exists:
    ```bash
-   mkdir -p .fixme/sessions/<session>/assets/<ticket-number>/
+   mkdir -p <ticket-dir>/assets/
    ```
-   Where `<ticket-number>` is the zero-padded number from the ticket (e.g., `0001`).
+   Where `<ticket-dir>` is the ticket folder path (e.g., `.fixme/sessions/<session>/0001-slug/`).
 
 4. **Dispatch investigation agent via Task tool:**
    ```
@@ -188,10 +189,9 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Then investigate this bug:
    - Ticket file: <ticket-path>
    - Project context: .fixme/project-context.yaml
-   - Asset directory: .fixme/sessions/<session>/assets/<ticket-number>/
+   - Asset directory: <ticket-dir>/assets/ (the assets/ subdirectory inside the ticket folder)
    - Dev server URL: <dev_server.url from project context>
    ```
-   Use model: opus.
 
 5. **After investigation agent returns:**
    ALWAYS read ticket state from disk. Never trust in-memory state or what the subagent reported:
@@ -293,9 +293,8 @@ This procedure is used by both `/fixme:report` and inline bug detection:
    Then process this bug report:
    - Ticket file: <ticket-path from step 1>
    - Bug description: <verbatim user text, stripped of /fixme:report prefix if present>
-   - Session assets directory: <session-dir>/assets/
+   - Ticket assets directory: <ticket-dir>/assets/ (the assets/ subdirectory inside the ticket folder)
    ```
-   Use model: sonnet.
 
 4. **On Task return:**
    - If agent returned a summary (starts with "Queued #"): relay it to the user verbatim.

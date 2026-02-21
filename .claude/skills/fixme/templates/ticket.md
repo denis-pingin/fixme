@@ -12,6 +12,11 @@ failure_reason:
 related: []
 max_attempts: 3
 current_attempt: 0
+base_commit:
+max_verify_cycles: 3
+max_timeout_minutes: 30
+fix_artifacts: []
+files_changed: []
 transitions: []
 durations: {}
 ---
@@ -47,5 +52,12 @@ durations: {}
 <!-- section: fix -->
 ## Fix
 
+<!-- Fixer agent writes brief status updates here. Detailed plans and verifications are stored as separate files in the ticket folder: -->
+<!-- plans/<NNNN>-plan-<N>.md -- fix plan per attempt -->
+<!-- verifications/<NNNN>-verify-<attempt>-<cycle>.md -- verification report per cycle -->
+<!-- research/<NNNN>-research.md -- codebase research output -->
+
 <!-- section: verification -->
 ## Verification
+
+<!-- Browser verification evidence added by Phase 5 verification agent -->

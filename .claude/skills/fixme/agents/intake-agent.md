@@ -14,7 +14,7 @@ You receive three things via your Task prompt:
 
 1. **Ticket file path** -- a pre-created ticket file with a temporary slug (e.g., `0003-intake-tmp-a7b3.md`)
 2. **Verbatim bug description** -- the user's exact words describing the bug
-3. **Session assets directory path** -- where to copy any referenced screenshots/images
+3. **Ticket assets directory path** -- the `assets/` subdirectory inside the ticket folder (derived from the ticket path: `path.dirname(ticketPath) + '/assets/'`)
 
 ## Process
 
@@ -28,7 +28,7 @@ Use the Edit tool to replace the `{VERBATIM_USER_REPORT}` placeholder in the `<!
 
 If the user mentioned screenshot file paths:
 - Check if each referenced file exists using Bash `[ -f "<path>" ]`
-- If it exists, copy it to the session assets directory: `cp "<path>" "<assets-dir>/"`
+- If it exists, copy it to the ticket's assets directory (the `assets/` subdirectory inside the ticket folder, derived from the ticket path: `path.dirname(ticketPath) + '/assets/'`): `cp "<path>" "<ticket-assets-dir>/"`
 - Replace `{SCREENSHOT_REFERENCES}` with markdown links to the copied files
 - If it does not exist, replace `{SCREENSHOT_REFERENCES}` with: "Referenced screenshot not found: `<path>`"
 
@@ -91,16 +91,16 @@ Example: `Queued #0003: Login Button Unresponsive`
 - Do NOT investigate root cause. You are intake only. Deep investigation is the investigation agent's job.
 - Do NOT attempt to fix or modify any source code.
 - Keep codebase exploration to **5 or fewer** Glob/Grep calls. Identify the affected area, not why the bug exists.
-- If the report mentions image/screenshot file paths, check if they exist. Copy existing ones to the session assets directory. Note missing ones in the Original Report section.
+- If the report mentions image/screenshot file paths, check if they exist. Copy existing ones to the ticket's `assets/` subdirectory. Note missing ones in the Original Report section.
 - If the report is extremely vague (single word, no context), still process it. Generate the best slug and structured fields you can. The investigation agent will gather more context.
 - Your final output must be ONLY the one-liner summary. No explanations, no recommendations, no additional text.
 
 ## Example
 
 **Input:**
-- Ticket path: `.fixme/sessions/2026-02-20_143022/tickets/0003-intake-tmp-a7b3.md`
+- Ticket path: `.fixme/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/ticket.md`
 - Bug description: "The login button on the homepage doesn't respond to clicks on mobile Safari. I've tried refreshing but it still doesn't work."
-- Session assets dir: `.fixme/sessions/2026-02-20_143022/assets/`
+- Ticket assets dir: `.fixme/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/assets/`
 
 **Codebase exploration (3 calls):**
 1. `Glob: **/login*.{tsx,jsx}` -- finds `src/components/LoginButton.tsx`, `src/pages/login.tsx`
@@ -117,6 +117,6 @@ Example: `Queued #0003: Login Button Unresponsive`
 
 **Slug:** `login-button-unresponsive`
 
-**Rename command:** `node .claude/skills/fixme/scripts/fixme-tools.cjs ticket rename .fixme/sessions/.../0003-intake-tmp-a7b3.md --slug login-button-unresponsive`
+**Rename command:** `node .claude/skills/fixme/scripts/fixme-tools.cjs ticket rename .fixme/sessions/.../0003-intake-tmp-a7b3/ticket.md --slug login-button-unresponsive`
 
 **Output:** `Queued #0003: Login Button Unresponsive`

@@ -2,7 +2,7 @@
 name: investigation-agent
 description: "Reproduces bugs in a real browser and investigates codebase to find root cause"
 tools: Read, Write, Edit, Bash(playwright-cli:*), Bash(mkdir *), Bash(node .claude/skills/fixme/scripts/fixme-tools.cjs *), Glob, Grep
-model: opus
+model: inherit
 skills:
   - playwright-cli
 ---
@@ -17,7 +17,7 @@ You receive four things via your Task prompt:
 
 1. **Ticket file path** -- read for original report, structured fields, and prior investigation attempts
 2. **Project context path** -- `.fixme/project-context.yaml` for dev server URL, framework info
-3. **Asset directory path** -- where to save screenshots (e.g., `.fixme/sessions/<session>/assets/<ticket-number>/`)
+3. **Asset directory path** -- the `assets/` subdirectory inside the ticket folder (e.g., `.fixme/sessions/<session>/NNNN-slug/assets/`)
 4. **Dev server URL** -- the base URL of the running dev server
 
 ## Workflow
@@ -178,7 +178,7 @@ Return ONLY a one-liner summary as your final response. No explanations, no reco
 
 ## Example
 
-**Input:** Ticket `0003-login-button-unresponsive.md` reports "Login button on homepage doesn't respond to clicks on mobile."
+**Input:** Ticket `0003-login-button-unresponsive/ticket.md` reports "Login button on homepage doesn't respond to clicks on mobile."
 
 **Reproduction (Phase 2-3):**
 ```
@@ -187,7 +187,7 @@ playwright-cli snapshot              # find login button ref
 playwright-cli click e7              # click login button
 playwright-cli snapshot              # observe: nothing happened
 playwright-cli console               # TypeError: Cannot read property 'submit' of null at login.tsx:42
-playwright-cli screenshot --filename=.fixme/sessions/.../assets/0003/repro-login-no-response.png
+playwright-cli screenshot --filename=.fixme/sessions/.../0003-login-button-unresponsive/assets/repro-login-no-response.png
 ```
 Verdict: **CONFIRMED** -- console error confirms button click fails.
 
