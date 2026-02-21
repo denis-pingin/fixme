@@ -33,7 +33,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **FIXR-01**: Each resolved bug produces exactly one atomic git commit with ticket reference in the message
 - [x] **FIXR-02**: If the implementation agent cannot fix a bug, it marks the ticket as failed with a reason and moves to the next queued bug
-- [ ] **FIXR-03**: The orchestrator main loop stays lean — all investigation, fixing, and verification work happens in subagents
+- [x] **FIXR-03**: The orchestrator main loop stays lean — all investigation, fixing, and verification work happens in subagents
 - [ ] **FIXR-04**: On failed verification, the implementation agent reverts changed files before retrying or moving on
 - [x] **FIXR-05**: The implementation agent iterates in a fix→verify loop — if verification is unsatisfactory, it retries with a different approach until satisfied or exhausted
 
@@ -96,7 +96,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BROW-04 | Phase 3 | Complete |
 | FIXR-01 | Phase 5 | Pending |
 | FIXR-02 | Phase 4 | Complete |
-| FIXR-03 | Phase 4 | Pending |
+| FIXR-03 | Phase 4 | Complete |
 | FIXR-04 | Phase 5 | Pending |
 | FIXR-05 | Phase 4 | Complete |
 | SYST-01 | Phase 1 | Complete |
