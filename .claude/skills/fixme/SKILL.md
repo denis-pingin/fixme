@@ -52,7 +52,9 @@ When sub-command is `start`:
      node .claude/skills/fixme/scripts/fixme-tools.cjs context save
      ```
 
-3. **Initial bug intake:**
+3. **Set up browser environment:** Follow the Session Environment Setup procedure below.
+
+4. **Initial bug intake:**
    - If the user provided a bug report alongside the `/fixme start` command: dispatch intake using the Intake Dispatch Procedure (see "Bug Intake" section below), then enter the dispatch loop.
    - If no bug report was provided: inform the user the session is ready and ask them to describe a bug.
 
@@ -88,12 +90,74 @@ When sub-command is `resume`:
    - If no name: use the most recent session.
    - If no sessions exist: inform user and suggest `start` instead.
 
-3. **Check for queued tickets:**
+3. **Set up browser environment:** Follow the Session Environment Setup procedure below.
+
+4. **Check for queued tickets:**
    ```bash
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket next <session-dir>
    ```
    - If queued tickets exist: enter the dispatch loop.
    - If no queued tickets: inform the user all tickets are processed and ask for a new bug.
+
+## Session Environment Setup
+
+After loading project context (during start or resume), set up the browser environment. This happens once per session start/resume, not per ticket.
+
+### 1. Start Dev Server (if not running)
+
+Load the dev server URL from project context:
+```bash
+node .claude/skills/fixme/scripts/fixme-tools.cjs context load
+```
+Extract `dev_server.url` and `dev_server.command` from the output.
+
+Check if the dev server is already reachable by attempting to open it in the browser:
+```bash
+playwright-cli open <dev_server.url>
+```
+
+If the browser shows a connection error (ERR_CONNECTION_REFUSED or similar):
+- Start the dev server in the background:
+  ```bash
+  <dev_server.command> &
+  ```
+- Wait for the server to be ready: retry `playwright-cli goto <dev_server.url>` every 2 seconds, up to 30 seconds.
+- If the server doesn't start within 30 seconds, inform the user and ask them to start it manually.
+
+If the browser successfully loads the page, the server is already running.
+
+### 2. Browser Setup
+
+The `playwright-cli open` command from step 1 already opens a headed browser window. The user can watch the agent work in real time.
+
+### 3. Login (if applicable)
+
+Check if saved auth state exists:
+```bash
+[ -f .fixme/auth.json ] && echo "exists" || echo "missing"
+```
+
+- If `.fixme/auth.json` exists:
+  ```bash
+  playwright-cli state-load .fixme/auth.json
+  ```
+  Then take a snapshot to verify the page shows authenticated content:
+  ```bash
+  playwright-cli snapshot
+  ```
+  If the snapshot shows a login page (not authenticated content), the saved auth state is stale. Proceed as if no auth state exists.
+
+- If `.fixme/auth.json` does NOT exist (or is stale):
+  Ask the user: "Does this app require login? If so, please log in now in the browser window, then tell me when you're ready."
+  Wait for user confirmation.
+  On confirmation, save the auth state:
+  ```bash
+  playwright-cli state-save .fixme/auth.json
+  ```
+
+### 4. Environment Ready
+
+Environment is now ready. Investigation agents assume the browser is open and authenticated. Proceed to the dispatch loop.
 
 ## Dispatch Loop
 
