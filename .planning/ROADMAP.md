@@ -21,7 +21,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Foundation & Skeleton
-**Goal**: The skill directory exists at ~/.claude/skills/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
+**Goal**: The skill directory exists at .claude/skills/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
 **Depends on**: Nothing (first phase)
 **Requirements**: SYST-01, SYST-02, SYST-03, SYST-04, STAT-01, STAT-02, BROW-01
 **Success Criteria** (what must be TRUE):
@@ -60,10 +60,11 @@ Plans:
   1. Given a ticket with a URL and reproduction steps, the implementation agent opens the app in Playwright, follows the steps, and captures a snapshot confirming the bug is present
   2. The implementation agent reads source files and traces code paths relevant to the bug, recording investigation findings in the ticket
   3. The ticket's investigation section contains enough detail (affected files, root cause hypothesis) that a human reviewer could understand the bug without additional context
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md -- investigation-agent.md: reproducer/verifier loop, codebase analysis, structured ticket output
+- [ ] 03-02-PLAN.md -- SKILL.md: session environment setup (dev server, browser, login) + investigation dispatch
 
 ### Phase 4: Fix & Commit
 **Goal**: The implementation agent fixes bugs, creates atomic commits, and the orchestrator dispatches work to subagents while staying lean
@@ -104,10 +105,10 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Foundation & Skeleton | 2/2 | Complete    | 2026-02-18 |
 | 2. Intake Pipeline | 3/3 | Complete    | 2026-02-20 |
-| 3. Investigation & Reproduction | 0/1 | Not started | - |
+| 3. Investigation & Reproduction | 0/2 | Not started | - |
 | 4. Fix & Commit | 0/2 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-20 (Phase 2 complete)*
+*Last updated: 2026-02-21 (Phase 3 planned)*
