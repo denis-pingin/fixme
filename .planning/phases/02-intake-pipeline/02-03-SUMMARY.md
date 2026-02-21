@@ -34,7 +34,7 @@ tech-stack:
 key-files:
   created: []
   modified:
-    - "~/.claude/skills/fixme/SKILL.md"
+    - ".claude/skills/fixme/SKILL.md"
 
 key-decisions:
   - "Intake dispatch uses model: sonnet for balance of quality and cost"
@@ -65,7 +65,7 @@ completed: 2026-02-20
 - **Started:** 2026-02-20T20:22:35Z
 - **Completed:** 2026-02-20T20:24:40Z
 - **Tasks:** 2
-- **Files modified:** 1 (~/.claude/skills/fixme/SKILL.md, 202 -> 287 lines)
+- **Files modified:** 1 (.claude/skills/fixme/SKILL.md, 202 -> 287 lines)
 
 ## Accomplishments
 - Added `/fixme:report` as a recognized sub-command with session bootstrap (creates session if none active)
@@ -79,13 +79,13 @@ completed: 2026-02-20
 
 ## Task Commits
 
-1. **Task 1: Update argument parsing and add /fixme:report command** - No project repo commit (SKILL.md at ~/.claude/skills/fixme/ outside project git repo)
+1. **Task 1: Update argument parsing and add /fixme:report command** - No project repo commit (SKILL.md at .claude/skills/fixme/ outside project git repo)
 2. **Task 2: Replace Bug Intake section with dispatch-based intake pipeline** - No project repo commit (same external file)
 
-_Note: All changes are to ~/.claude/skills/fixme/SKILL.md which is outside this project's git repository. Per-task commits are not applicable for external skill files. The SUMMARY.md and state updates are committed as the tracking mechanism._
+_Note: All changes are to .claude/skills/fixme/SKILL.md which is outside this project's git repository. Per-task commits are not applicable for external skill files. The SUMMARY.md and state updates are committed as the tracking mechanism._
 
 ## Files Created/Modified
-- `~/.claude/skills/fixme/SKILL.md` - Added `report` sub-command to argument table, added Report Flow section with session bootstrap, replaced Bug Intake section with Message Classification + Intake Dispatch Procedure + Intake Agent Tracking + One Bug Per Message, added Auto-Close subsection, updated Dispatch Loop and Session Start Flow references
+- `.claude/skills/fixme/SKILL.md` - Added `report` sub-command to argument table, added Report Flow section with session bootstrap, replaced Bug Intake section with Message Classification + Intake Dispatch Procedure + Intake Agent Tracking + One Bug Per Message, added Auto-Close subsection, updated Dispatch Loop and Session Start Flow references
 
 ## Decisions Made
 - Intake agent dispatched with `model: sonnet` per research recommendation (balance of quality and cost for intake tasks)
@@ -114,7 +114,7 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 
-- [x] SKILL.md exists at ~/.claude/skills/fixme/ with all new sections
+- [x] SKILL.md exists at .claude/skills/fixme/ with all new sections
 - [x] `report` sub-command in argument parsing table
 - [x] Report Flow section with session bootstrap
 - [x] Message Classification with HIGH/LOW/NOT confidence tiers

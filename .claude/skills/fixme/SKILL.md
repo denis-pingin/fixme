@@ -3,7 +3,7 @@ name: fixme
 description: "Bug fix session orchestrator. Start a bug-fixing session to report, track, and fix bugs in your web application."
 disable-model-invocation: true
 allowed-tools: Read, Write, Bash, Task, Glob, Grep
-argument-hint: "[start|resume|status|stop] [session-name]"
+argument-hint: "[start|resume|status|stop|report] [session-name|bug description]"
 ---
 
 # Fixme -- Bug Fix Session Orchestrator
@@ -23,6 +23,8 @@ Parse `$ARGUMENTS` for the sub-command and optional session name:
 | `resume my-session` | resume | `my-session` |
 | `status` | status | current/most recent |
 | `stop` | stop | current |
+| `report` | report | current (or bootstrap new) |
+| `report The login button is broken` | report | current (or bootstrap new) |
 
 Default sub-command is `start` when no arguments are provided.
 
@@ -51,8 +53,26 @@ When sub-command is `start`:
      ```
 
 3. **Initial bug intake:**
-   - If the user provided a bug report alongside the `/fixme` command: create the first ticket and begin the dispatch loop.
+   - If the user provided a bug report alongside the `/fixme start` command: dispatch intake using the Intake Dispatch Procedure (see "Bug Intake" section below), then enter the dispatch loop.
    - If no bug report was provided: inform the user the session is ready and ask them to describe a bug.
+
+## Report Flow
+
+When sub-command is `report`:
+
+1. **Parse report text:** Everything after `report` in `$ARGUMENTS` is the bug description. If empty, ask the user to describe the bug and wait for their response.
+
+2. **Ensure active session:**
+   - Check for an active session:
+     ```bash
+     node .claude/skills/fixme/scripts/fixme-tools.cjs session list .fixme/sessions
+     ```
+   - If an active session is found: use it.
+   - If NO active session: bootstrap one using the same flow as `start` (create session, detect/load context), then continue with intake.
+
+3. **Dispatch intake** using the Intake Dispatch Procedure (see "Bug Intake" section below).
+
+4. **Enter dispatch loop** -- check for queued tickets ready for investigation.
 
 ## Session Resume Flow
 
@@ -83,7 +103,8 @@ This is the core execution cycle. Repeat until the user stops the session or the
    ```bash
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket next <session-dir>
    ```
-   If no queued tickets, prompt the user for a new bug report.
+   If no queued tickets AND no intake agents are pending: auto-close the session (see Auto-Close).
+   If no queued tickets BUT intake agents are still running: wait for intake to complete, then re-check.
 
 2. **Transition ticket to investigating:**
    ```bash
@@ -119,22 +140,86 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
 ## Bug Intake (In-Session)
 
-When the user describes a bug during an active session:
+### Message Classification
 
-1. **Detect bug-like messages:** Look for problem descriptions, error reports, "X is broken", "X is not working", "when I do X, Y happens instead of Z" patterns.
+When the user sends a message during an active session that is NOT a recognized command (start/resume/status/stop/report):
 
-2. **Create ticket:**
+1. **HIGH confidence bug report** -- dispatch intake immediately, no confirmation:
+   - Problem descriptions: "X is broken", "X is not working", "X doesn't work"
+   - Error reports: "I'm getting an error when...", "I see a 500 error on..."
+   - Behavioral bugs: "When I do X, Y happens instead of Z"
+   - Contains stack traces, error messages, or error screenshots
+   - Visual bugs: "The button is overlapping the header", "The text is cut off"
+
+2. **LOW confidence** -- ask before dispatching:
+   - Ambiguous messages that MIGHT be bug reports but could be conversation
+   - Ask: "Is this a bug report you'd like me to track? (yes/no)"
+   - If yes: dispatch intake with the original message as the bug description
+   - If no: respond normally
+
+3. **NOT a bug report** -- respond normally:
+   - Questions about status, progress, how things work
+   - General conversation, clarifications about prior bugs
+   - Feedback or comments that aren't actionable bugs
+
+**Principle:** Err on the side of asking when unsure. Mis-classifying a normal message as a bug report is worse than asking to confirm.
+
+### Intake Dispatch Procedure
+
+This procedure is used by both `/fixme:report` and inline bug detection:
+
+1. **Pre-create ticket with temporary slug:**
    ```bash
-   node .claude/skills/fixme/scripts/fixme-tools.cjs ticket create <session-dir> --slug <descriptive-slug>
+   node .claude/skills/fixme/scripts/fixme-tools.cjs ticket create <session-dir> --slug intake-tmp-$(cat /dev/urandom | LC_ALL=C tr -dc 'a-f0-9' | head -c 4)
+   ```
+   Capture the output JSON: `{ path, number, slug, state }`.
+
+2. **Announce dispatch to user:** Single line, no ceremony:
+   ```
+   Intake dispatched for bug report (#NNNN)...
    ```
 
-3. **Write the user's verbatim report** into the ticket's Original Report section using the Write tool. Preserve the exact words the user used.
+3. **Dispatch intake agent via Task tool:**
+   ```
+   First, read .claude/skills/fixme/agents/intake-agent.md for your role instructions.
 
-4. **Continue dispatch loop.** The new ticket is queued and will be picked up in FIFO order.
+   Then process this bug report:
+   - Ticket file: <ticket-path from step 1>
+   - Bug description: <verbatim user text, stripped of /fixme:report prefix if present>
+   - Session assets directory: <session-dir>/assets/
+   ```
+   Use model: sonnet.
 
-5. **One bug at a time (v1).** If the user describes multiple bugs in one message, acknowledge all of them but ask them to submit one at a time. Create a ticket for the first bug described.
+4. **On Task return:**
+   - If agent returned a summary (starts with "Queued #"): relay it to the user verbatim.
+   - If agent returned an error or no summary: transition ticket to failed:
+     ```bash
+     node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Intake agent failed: <error summary>"
+     ```
+     Inform user: "Intake failed for bug report (#NNNN). The report is preserved -- you can resubmit."
+
+5. **Continue dispatch loop.** Check for next queued ticket to investigate.
+
+### Intake Agent Tracking
+
+Maintain a mental list of dispatched intake agents and their ticket paths. This is NOT a persistent data structure -- it's the orchestrator's in-memory awareness of what's running.
+
+- On intake dispatch: note the ticket path
+- On intake return (success or failure): remove from tracking
+- Before auto-closing session: verify no intake agents are pending
+
+### One Bug Per Message (v1)
+
+If the user describes multiple bugs in one message, acknowledge all of them but create a ticket for the first bug only. Ask the user to submit the remaining bugs as separate messages.
 
 ## Session Control
+
+### Auto-Close
+
+When the dispatch loop finds no queued tickets AND no intake agents are pending:
+1. Run session summary (same as graceful stop).
+2. Display the summary to the user.
+3. Session ends automatically -- no user action needed.
 
 ### Graceful Stop (`stop` or `end session`)
 

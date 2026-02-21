@@ -127,7 +127,7 @@ maxTurns: 20                       # Bounded execution
 ## Stack Patterns by Variant
 
 **If running as interactive Claude Code skill (recommended):**
-- Use `~/.claude/skills/fixme/SKILL.md` as entry point
+- Use `.claude/skills/fixme/SKILL.md` as entry point
 - Invoke with `/fixme <bug-description>` or `/fixme @bug-report.md`
 - Orchestrator spawns subagents via Task tool
 - Playwright (MCP or CLI) available to all agents

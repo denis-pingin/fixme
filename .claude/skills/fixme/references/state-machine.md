@@ -20,7 +20,7 @@ This document is the single source of truth for ticket state transitions. Both t
 
 | From | Valid To States |
 |------|-----------------|
-| `queued` | `investigating`, `skipped` |
+| `queued` | `investigating`, `skipped`, `failed` |
 | `investigating` | `fixing`, `skipped`, `failed` |
 | `fixing` | `verifying`, `failed` |
 | `verifying` | `done`, `investigating` (retry), `failed` |
@@ -34,7 +34,7 @@ This document is the single source of truth for ticket state transitions. Both t
 queued -----> investigating -----> fixing -----> verifying -----> done
   |              |                    |              |
   +-> skipped    +-> skipped          +-> failed     +-> investigating (retry)
-                 +-> failed                          +-> failed
+  +-> failed     +-> failed                          +-> failed
 ```
 
 ### Happy Path
@@ -72,6 +72,7 @@ Certain transitions require a `--reason` flag. The tool will throw an error if t
 | `fixing -> verifying` | No | |
 | `verifying -> done` | No | |
 | `queued -> skipped` | **Yes** | "Duplicate of #0001" |
+| `queued -> failed` | **Yes** | "Intake agent failed" |
 | `investigating -> skipped` | **Yes** | "Cannot reproduce" |
 | `investigating -> failed` | **Yes** | "No source code access to relevant module" |
 | `fixing -> failed` | **Yes** | "Fix requires schema migration, beyond scope" |

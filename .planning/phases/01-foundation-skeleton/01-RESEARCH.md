@@ -6,11 +6,11 @@
 
 ## Summary
 
-Phase 1 delivers the infrastructure layer: the skill directory at `~/.claude/skills/fixme/`, a ticket template with YAML frontmatter state machine, session management, project context auto-discovery, and a CJS tooling script for state operations. All downstream agents (intake, investigation, fix, verification) depend on these primitives being correct from day one. The critical architectural decision is **standalone skill** (not a GSD extension) — GSD's command-based single-turn model is fundamentally incompatible with Fixme's long-running session orchestrator.
+Phase 1 delivers the infrastructure layer: the skill directory at `.claude/skills/fixme/`, a ticket template with YAML frontmatter state machine, session management, project context auto-discovery, and a CJS tooling script for state operations. All downstream agents (intake, investigation, fix, verification) depend on these primitives being correct from day one. The critical architectural decision is **standalone skill** (not a GSD extension) — GSD's command-based single-turn model is fundamentally incompatible with Fixme's long-running session orchestrator.
 
 The skill uses Claude Code's native skills system (`SKILL.md` with frontmatter), file-based state through ticket markdown files with YAML frontmatter, and a CJS utility script (`fixme-tools.cjs`) for state management operations (ticket creation, state transitions, session lifecycle). The state machine is strict: invalid transitions throw errors, every transition is logged with timestamps, and terminal states (`done`, `failed`, `skipped`) are final. Project context lives in YAML format at `.fixme/project-context.yaml` and is auto-detected from CLAUDE.md, package.json, and other config files.
 
-**Primary recommendation:** Build as a standalone Claude Code skill at `~/.claude/skills/fixme/`. Use GSD's file patterns as a reference architecture (CJS tooling, MD agents, frontmatter conventions), but share zero runtime code with GSD. The two systems have incompatible execution models.
+**Primary recommendation:** Build as a standalone Claude Code skill at `.claude/skills/fixme/`. Use GSD's file patterns as a reference architecture (CJS tooling, MD agents, frontmatter conventions), but share zero runtime code with GSD. The two systems have incompatible execution models.
 
 <user_constraints>
 ## User Constraints (from CONTEXT.md)
@@ -96,8 +96,8 @@ The skill uses Claude Code's native skills system (`SKILL.md` with frontmatter),
 
 | ID | Description | Research Support |
 |----|-------------|-----------------|
-| SYST-01 | The skill installs at ~/.claude/fixme/ and is invoked via /fixme:start (or similar command) | Skill system docs verified: `~/.claude/skills/fixme/SKILL.md` is the entry point. `/fixme` invokes it. `disable-model-invocation: true` prevents auto-triggering. |
-| SYST-02 | Structured ticket MD template ensures consistent agent output across all tickets | Ticket template design with full lifecycle sections, YAML frontmatter with state machine fields. Template file at `~/.claude/skills/fixme/templates/ticket.md`. |
+| SYST-01 | The skill installs at ~/.claude/fixme/ and is invoked via /fixme:start (or similar command) | Skill system docs verified: `.claude/skills/fixme/SKILL.md` is the entry point. `/fixme` invokes it. `disable-model-invocation: true` prevents auto-triggering. |
+| SYST-02 | Structured ticket MD template ensures consistent agent output across all tickets | Ticket template design with full lifecycle sections, YAML frontmatter with state machine fields. Template file at `.claude/skills/fixme/templates/ticket.md`. |
 | SYST-03 | Architecture supports future parallel implementation agents (separate concerns, no shared mutable state) | File-per-ticket state, no shared index file, sequential-per-ticket agent execution. Queue derived from filesystem listing. Each ticket is self-contained. |
 | SYST-04 | Ticket files serve as persistent state that survives context compaction | Tickets are `.md` files on disk at `.fixme/sessions/<name>/tickets/`. Orchestrator reads from disk every cycle, never from memory. Survives compaction by design. |
 | STAT-01 | Each ticket tracks state: queued -> investigating -> fixing -> verifying -> done/failed | State machine with 7 states, valid transition matrix, hard error on invalid transitions. State stored in YAML frontmatter `state:` field. |
@@ -132,7 +132,7 @@ This was the CRITICAL architecture investigation called out in CONTEXT.md. After
 
 4. **Coupling risk.** Extending GSD means depending on GSD's release cycle (currently v1.20.4). Breaking changes in GSD could break Fixme. GSD is installed via `npx get-shit-done-cc@latest` and updates independently.
 
-5. **Skill system is the right abstraction.** Claude Code's skills system (`~/.claude/skills/fixme/SKILL.md`) gives everything needed: slash-command invocation, tool restrictions, supporting files, dynamic context injection. Skills are the official way to extend Claude Code — commands are legacy (still work, but skills are recommended).
+5. **Skill system is the right abstraction.** Claude Code's skills system (`.claude/skills/fixme/SKILL.md`) gives everything needed: slash-command invocation, tool restrictions, supporting files, dynamic context injection. Skills are the official way to extend Claude Code — commands are legacy (still work, but skills are recommended).
 
 ### What We Borrow from GSD (Patterns, Not Code)
 
@@ -140,7 +140,7 @@ This was the CRITICAL architecture investigation called out in CONTEXT.md. After
 |---------|-----------------|---------------------|
 | CJS tooling script | `gsd-tools.cjs` with subcommands | `fixme-tools.cjs` with ticket/session/context subcommands |
 | YAML frontmatter in MD files | Plans and summaries have frontmatter | Tickets have frontmatter with state machine fields |
-| Agent MD files | `~/.claude/agents/gsd-*.md` loaded by subagents | `~/.claude/skills/fixme/agents/*.md` loaded by Fixme subagents |
+| Agent MD files | `~/.claude/agents/gsd-*.md` loaded by subagents | `.claude/skills/fixme/agents/*.md` loaded by Fixme subagents |
 | Lean orchestrator | Orchestrator passes file paths, not content | Same pattern: pass ticket paths, agents read with fresh context |
 | State on disk | `STATE.md` + `ROADMAP.md` | Ticket files + session.md |
 | Subagent spawning via Task | `Task(subagent_type="gsd-executor", ...)` | `Task(prompt="Read fixme/agents/fixer.md for your role. Ticket: <path>")` |
@@ -177,7 +177,7 @@ This was the CRITICAL architecture investigation called out in CONTEXT.md. After
 ### Recommended Directory Structure
 
 ```
-~/.claude/skills/fixme/           # Skill root (personal scope)
+.claude/skills/fixme/           # Skill root (personal scope)
   SKILL.md                        # Entry point: /fixme
   agents/                         # Subagent role definitions
     intake-agent.md               # Bug report intake (Phase 2)
@@ -443,17 +443,17 @@ You are the Fixme orchestrator. You manage bug-fixing sessions.
 When invoked with `/fixme` or `/fixme start`:
 
 1. **Initialize session**
-   - Check for existing sessions: `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs session list`
+   - Check for existing sessions: `node .claude/skills/fixme/scripts/fixme-tools.cjs session list`
    - If resuming: load session, scan for queued tickets
    - If new: create session, detect project context
 
 2. **Project context** (first time only)
-   - Run: `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs context detect`
+   - Run: `node .claude/skills/fixme/scripts/fixme-tools.cjs context detect`
    - Present detected config to user for confirmation
-   - Save confirmed config: `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs context save`
+   - Save confirmed config: `node .claude/skills/fixme/scripts/fixme-tools.cjs context save`
 
 3. **Dispatch loop**
-   - Find next ticket: `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket next <session>`
+   - Find next ticket: `node .claude/skills/fixme/scripts/fixme-tools.cjs ticket next <session>`
    - If ticket found: dispatch appropriate subagent via Task tool
    - If no tickets: prompt user "Describe a bug to fix, or say 'stop' to end the session"
    - Report results between dispatches
@@ -683,14 +683,14 @@ function detectProjectContext() {
    - Recommendation: Build a purpose-specific parser for the known schema. Test with real-world CLAUDE.md examples containing complex commands. If parsing breaks, fall back to storing commands as JSON strings.
 
 2. **Skill vs Command for /fixme Entry Point**
-   - What we know: Skills (`~/.claude/skills/fixme/SKILL.md`) are the modern approach. Commands (`~/.claude/commands/fixme/start.md`) are legacy but work.
+   - What we know: Skills (`.claude/skills/fixme/SKILL.md`) are the modern approach. Commands (`~/.claude/commands/fixme/start.md`) are legacy but work.
    - What's unclear: Whether a single SKILL.md can handle multiple sub-commands (`/fixme start`, `/fixme status`, `/fixme stop`).
    - Recommendation: Use a single `/fixme` skill with `$ARGUMENTS` parsing for sub-commands. The SKILL.md parses `$ARGUMENTS[0]` to route: `start` (default), `status`, `stop`, `resume`. This matches the `argument-hint: "[start|resume|status|stop]"` pattern.
 
 3. **Subagent Type for Task Dispatch**
    - What we know: Task tool supports `subagent_type` field. Built-in types: `Explore`, `Plan`, `general-purpose`. Custom agents in `.claude/agents/` or `.claude/skills/fixme/agents/`.
-   - What's unclear: Whether agents in `~/.claude/skills/fixme/agents/` are auto-discovered as subagent types, or if they need to be in `~/.claude/agents/`.
-   - Recommendation: During Phase 1, use `subagent_type="general-purpose"` and pass the agent role file path in the prompt: `"First, read ~/.claude/skills/fixme/agents/fixer-agent.md for your role."` This is the GSD pattern and works regardless of auto-discovery. If custom subagent types work from skill directories, optimize later.
+   - What's unclear: Whether agents in `.claude/skills/fixme/agents/` are auto-discovered as subagent types, or if they need to be in `~/.claude/agents/`.
+   - Recommendation: During Phase 1, use `subagent_type="general-purpose"` and pass the agent role file path in the prompt: `"First, read .claude/skills/fixme/agents/fixer-agent.md for your role."` This is the GSD pattern and works regardless of auto-discovery. If custom subagent types work from skill directories, optimize later.
 
 ## Sources
 

@@ -8,7 +8,7 @@
 
 Phase 2 transforms the orchestrator from a direct ticket creator into a dispatch-based intake system. The core change: when a user submits a bug report, the orchestrator pre-creates a ticket file with a temporary slug (reserving the sequential number atomically), then dispatches an intake agent via the Task tool. The intake agent receives only the bug description, does light codebase exploration, writes structured fields and a generated title into the ticket, and renames the file to a descriptive slug via a new `ticket rename` subcommand in fixme-tools.cjs.
 
-The three deliverables are: (1) the intake agent definition at `~/.claude/skills/fixme/agents/intake-agent.md`, (2) updates to SKILL.md's intake flow to dispatch the agent instead of creating tickets directly, and (3) a `ticket rename` subcommand in fixme-tools.cjs for atomic file rename + frontmatter slug update. The existing `ticket create` already handles sequential numbering and template instantiation -- it just needs to accept a temporary slug. The rename operation uses Node.js `fs.renameSync` which is atomic on the same filesystem (POSIX guarantee).
+The three deliverables are: (1) the intake agent definition at `.claude/skills/fixme/agents/intake-agent.md`, (2) updates to SKILL.md's intake flow to dispatch the agent instead of creating tickets directly, and (3) a `ticket rename` subcommand in fixme-tools.cjs for atomic file rename + frontmatter slug update. The existing `ticket create` already handles sequential numbering and template instantiation -- it just needs to accept a temporary slug. The rename operation uses Node.js `fs.renameSync` which is atomic on the same filesystem (POSIX guarantee).
 
 **Primary recommendation:** Structure implementation as three plans: (1) `ticket rename` subcommand in fixme-tools.cjs, (2) intake-agent.md with its codebase exploration and structured field writing logic, (3) SKILL.md updates for dispatch flow with LLM intent detection. Plans 1 and 2 can execute in parallel (no dependency); Plan 3 depends on both.
 
@@ -60,7 +60,7 @@ The three deliverables are: (1) the intake agent definition at `~/.claude/skills
 
 #### File Structure
 
-- New file: `~/.claude/skills/fixme/agents/intake-agent.md` -- agent instructions for processing bug reports
+- New file: `.claude/skills/fixme/agents/intake-agent.md` -- agent instructions for processing bug reports
 - SKILL.md updated: intake section dispatches to intake agent instead of creating tickets directly
 - New fixme-tools.cjs subcommand: `ticket rename` -- atomic file rename + frontmatter slug update
 - Intake agent writes structured fields directly to ticket file using Write/Edit tools (guided by HTML comment markers)
@@ -105,7 +105,7 @@ The three deliverables are: (1) the intake agent definition at `~/.claude/skills
 | Claude Code Task tool | Current | Subagent dispatch for intake agent | Official API for spawning subagents. Supports `model` parameter for cost optimization. |
 | CommonJS (`.cjs`) | Node.js 18+ | `fixme-tools.cjs` with new `ticket rename` subcommand | Extends existing tool. No new runtime dependencies. |
 | `fs.renameSync` | Node.js built-in | Atomic file rename for ticket rename | POSIX rename is atomic on the same filesystem. Ticket files stay within the same session directory. |
-| Agent MD files | Claude Code format | `intake-agent.md` at `~/.claude/skills/fixme/agents/` | Same pattern as GSD agents. Loaded by subagent via `Read` tool in first turn. |
+| Agent MD files | Claude Code format | `intake-agent.md` at `.claude/skills/fixme/agents/` | Same pattern as GSD agents. Loaded by subagent via `Read` tool in first turn. |
 
 ### Supporting
 
@@ -128,7 +128,7 @@ The three deliverables are: (1) the intake agent definition at `~/.claude/skills
 ### Recommended File Structure Changes
 
 ```
-~/.claude/skills/fixme/
+.claude/skills/fixme/
   SKILL.md                          # MODIFIED: intake section dispatches to agent
   agents/
     intake-agent.md                 # NEW: intake agent instructions
@@ -186,7 +186,7 @@ When user submits a bug report:
 1. Pre-create ticket: fixme-tools.cjs ticket create <session-dir> --slug intake-tmp-<random>
 2. Announce: "Dispatching intake for bug report..."
 3. Dispatch via Task tool:
-   prompt: "First, read ~/.claude/skills/fixme/agents/intake-agent.md for your role.
+   prompt: "First, read .claude/skills/fixme/agents/intake-agent.md for your role.
             Ticket path: <ticket-path>
             Bug description: <verbatim user text>
             Session assets dir: <session-dir>/assets/"
@@ -233,7 +233,7 @@ When user sends a message during active session:
 **Example Task prompt for intake agent:**
 
 ```
-First, read ~/.claude/skills/fixme/agents/intake-agent.md for your role instructions.
+First, read .claude/skills/fixme/agents/intake-agent.md for your role instructions.
 
 Then process this bug report:
 - Ticket file: .fixme/sessions/<session>/tickets/0003-intake-tmp-a7b3.md
@@ -464,7 +464,7 @@ When the user describes a bug during an active session:
 
 4. **Dispatch intake agent via Task tool:**
    ```
-   First, read ~/.claude/skills/fixme/agents/intake-agent.md for your role instructions.
+   First, read .claude/skills/fixme/agents/intake-agent.md for your role instructions.
 
    Ticket path: <ticket-path>
    Bug description: <verbatim user text>
@@ -629,7 +629,7 @@ Add `rename` case to the ticket subcommand switch.
 
 2. **`/fixme:report` as Separate Skill vs SKILL.md Argument**
    - What we know: The decision says `/fixme:report` bootstraps the full orchestrator. This could be implemented as: (a) a new argument parsed by the existing `/fixme` skill (`/fixme report <text>`), or (b) a separate skill file `report/SKILL.md` that internally invokes the orchestrator.
-   - What's unclear: Whether Claude Code's skill system supports `/fixme:report` as a colon-separated namespace automatically, or if it requires a separate skill directory at `~/.claude/skills/fixme/commands/report.md`.
+   - What's unclear: Whether Claude Code's skill system supports `/fixme:report` as a colon-separated namespace automatically, or if it requires a separate skill directory at `.claude/skills/fixme/commands/report.md`.
    - Recommendation: Implement as `$ARGUMENTS` parsing in the existing SKILL.md. Add `report` as a sub-command alongside `start/resume/status/stop`. This is consistent with Phase 1's design and avoids creating a separate skill entry point.
 
 ## Sources
@@ -637,9 +637,9 @@ Add `rename` case to the ticket subcommand switch.
 ### Primary (HIGH confidence)
 - `/anthropics/claude-code` (Context7) - Task tool API, agent model selection, SKILL.md frontmatter fields, subagent dispatch patterns
 - `/websites/code_claude` (Context7) - Custom subagent file structure, model options (haiku/sonnet/opus/inherit), skill directory structure, `context: fork` pattern
-- Direct inspection of `~/.claude/skills/fixme/scripts/fixme-tools.cjs` (1306 lines) - Existing ticket create flow, frontmatter parser, transition matrix
-- Direct inspection of `~/.claude/skills/fixme/SKILL.md` (201 lines) - Current orchestrator instructions, bug intake section
-- Direct inspection of `~/.claude/skills/fixme/templates/ticket.md` - Template structure, HTML comment markers, placeholder format
+- Direct inspection of `.claude/skills/fixme/scripts/fixme-tools.cjs` (1306 lines) - Existing ticket create flow, frontmatter parser, transition matrix
+- Direct inspection of `.claude/skills/fixme/SKILL.md` (201 lines) - Current orchestrator instructions, bug intake section
+- Direct inspection of `.claude/skills/fixme/templates/ticket.md` - Template structure, HTML comment markers, placeholder format
 - Node.js `fs.renameSync` documentation - POSIX atomic rename guarantee on same filesystem
 
 ### Secondary (MEDIUM confidence)

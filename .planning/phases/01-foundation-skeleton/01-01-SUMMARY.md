@@ -25,9 +25,9 @@ tech-stack:
 
 key-files:
   created:
-    - "~/.claude/skills/fixme/scripts/fixme-tools.cjs"
-    - "~/.claude/skills/fixme/templates/ticket.md"
-    - "~/.claude/skills/fixme/templates/session.md"
+    - ".claude/skills/fixme/scripts/fixme-tools.cjs"
+    - ".claude/skills/fixme/templates/ticket.md"
+    - ".claude/skills/fixme/templates/session.md"
   modified: []
 
 key-decisions:
@@ -61,7 +61,7 @@ completed: 2026-02-18
 - **Started:** 2026-02-18T22:30:17Z
 - **Completed:** 2026-02-18T22:37:58Z
 - **Tasks:** 2
-- **Files created:** 3 (all at ~/.claude/skills/fixme/)
+- **Files created:** 3 (all at .claude/skills/fixme/)
 
 ## Accomplishments
 - Built fixme-tools.cjs (1306 lines) as sole state gatekeeper for all Fixme operations
@@ -74,15 +74,15 @@ completed: 2026-02-18
 
 Each task was committed atomically:
 
-1. **Task 1: Build fixme-tools.cjs with ticket and session subcommands** - Files at ~/.claude/skills/fixme/ (external to project repo, no git commit)
+1. **Task 1: Build fixme-tools.cjs with ticket and session subcommands** - Files at .claude/skills/fixme/ (external to project repo, no git commit)
 2. **Task 2: Add project context subcommands** - Same file extended (context detect/save/load already included in Task 1 implementation)
 
-_Note: All files live at ~/.claude/skills/fixme/ which is outside this project's git repository. Per-task commits are not applicable for external skill files. The SUMMARY.md and state updates are committed as the tracking mechanism._
+_Note: All files live at .claude/skills/fixme/ which is outside this project's git repository. Per-task commits are not applicable for external skill files. The SUMMARY.md and state updates are committed as the tracking mechanism._
 
 ## Files Created/Modified
-- `~/.claude/skills/fixme/scripts/fixme-tools.cjs` - 1306-line CJS CLI tool with all 10 subcommands (ticket create/transition/list/next, session create/list/summary, context detect/save/load)
-- `~/.claude/skills/fixme/templates/ticket.md` - Ticket template with YAML frontmatter (state, timestamps, transitions, durations) and lifecycle sections
-- `~/.claude/skills/fixme/templates/session.md` - Session manifest template with status tracking fields
+- `.claude/skills/fixme/scripts/fixme-tools.cjs` - 1306-line CJS CLI tool with all 10 subcommands (ticket create/transition/list/next, session create/list/summary, context detect/save/load)
+- `.claude/skills/fixme/templates/ticket.md` - Ticket template with YAML frontmatter (state, timestamps, transitions, durations) and lifecycle sections
+- `.claude/skills/fixme/templates/session.md` - Session manifest template with status tracking fields
 
 ## Decisions Made
 - Zero-padded ticket numbers (0001, 0002) stored as YAML strings to prevent integer parsing stripping leading zeros
@@ -99,7 +99,7 @@ _Note: All files live at ~/.claude/skills/fixme/ which is outside this project's
 - **Found during:** Task 1 (ticket transition verification)
 - **Issue:** After writing updated frontmatter, the closing `---` delimiter merged with the body content (`---# 0001: Title`) because no newline separator was added
 - **Fix:** Added conditional newline separator in `buildContent()` between closing `---` and body content
-- **Files modified:** ~/.claude/skills/fixme/scripts/fixme-tools.cjs
+- **Files modified:** .claude/skills/fixme/scripts/fixme-tools.cjs
 - **Verification:** All subsequent transition round-trips parse correctly
 - **Committed in:** Part of final file (external to repo)
 
@@ -107,7 +107,7 @@ _Note: All files live at ~/.claude/skills/fixme/ which is outside this project's
 - **Found during:** Task 1 (ticket create verification)
 - **Issue:** `parseScalar` converted `0001` to integer `1`, losing the zero padding needed for ticket filenames
 - **Fix:** Modified number regex to only parse integers that don't start with `0` (except `0` itself): `/^-?[1-9]\d*$/`
-- **Files modified:** ~/.claude/skills/fixme/scripts/fixme-tools.cjs
+- **Files modified:** .claude/skills/fixme/scripts/fixme-tools.cjs
 - **Verification:** `number: "0001"` preserved through parse/serialize round-trip
 - **Committed in:** Part of final file (external to repo)
 
@@ -120,7 +120,7 @@ _Note: All files live at ~/.claude/skills/fixme/ which is outside this project's
 - Task 2 (context subcommands) was implemented alongside Task 1 in a single file creation pass, since all subcommands share the same argument parsing, output helpers, and YAML parser infrastructure. The verification for Task 2 was run separately and passed.
 
 ## User Setup Required
-None - no external service configuration required. The skill files are written to ~/.claude/skills/fixme/ which is a standard Claude Code skill directory.
+None - no external service configuration required. The skill files are written to .claude/skills/fixme/ which is a standard Claude Code skill directory.
 
 ## Next Phase Readiness
 - fixme-tools.cjs is ready for Plan 02 to build SKILL.md entry point, finalize templates, and create reference docs
@@ -129,9 +129,9 @@ None - no external service configuration required. The skill files are written t
 
 ## Self-Check: PASSED
 
-- [x] fixme-tools.cjs exists at ~/.claude/skills/fixme/scripts/ (1306 lines, executable)
-- [x] ticket.md template exists at ~/.claude/skills/fixme/templates/
-- [x] session.md template exists at ~/.claude/skills/fixme/templates/
+- [x] fixme-tools.cjs exists at .claude/skills/fixme/scripts/ (1306 lines, executable)
+- [x] ticket.md template exists at .claude/skills/fixme/templates/
+- [x] session.md template exists at .claude/skills/fixme/templates/
 - [x] SUMMARY.md created at .planning/phases/01-foundation-skeleton/
 - [x] All 10 subcommands respond (ticket create/transition/list/next, session create/list/summary, context detect/save/load)
 

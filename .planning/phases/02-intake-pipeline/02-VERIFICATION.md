@@ -39,11 +39,11 @@ All truths derived from the three PLAN `must_haves` blocks (Plans 01, 02, 03).
 
 | Artifact                                                          | Expected                                              | Status     | Details                                                                    |
 |-------------------------------------------------------------------|-------------------------------------------------------|------------|----------------------------------------------------------------------------|
-| `~/.claude/skills/fixme/scripts/fixme-tools.cjs`                  | `ticketRename` function + updated transition matrix   | VERIFIED   | 1387 lines, `ticketRename` at line 779, `TRANSITIONS['queued']` at line 518 |
-| `~/.claude/skills/fixme/references/state-machine.md`              | Updated transition matrix with queued->failed         | VERIFIED   | 161 lines, line 23 shows `queued -> failed`, line 75 reason requirement    |
-| `~/.claude/skills/fixme/agents/intake-agent.md`                   | Complete 7-step intake agent instructions             | VERIFIED   | 122 lines, all 7 steps, frontmatter with name/description/tools            |
-| `~/.claude/skills/fixme/SKILL.md`                                 | Dispatch-based intake, /fixme:report, intent detection | VERIFIED   | 286 lines, Report Flow, Message Classification, Intake Dispatch Procedure  |
-| `~/.claude/skills/fixme/scripts/fixme-tools.test.cjs`             | 8 test cases (6 rename + 2 transition)                | VERIFIED   | 238 lines, all 8 tests pass: `8 passed, 0 failed`                          |
+| `.claude/skills/fixme/scripts/fixme-tools.cjs`                  | `ticketRename` function + updated transition matrix   | VERIFIED   | 1387 lines, `ticketRename` at line 779, `TRANSITIONS['queued']` at line 518 |
+| `.claude/skills/fixme/references/state-machine.md`              | Updated transition matrix with queued->failed         | VERIFIED   | 161 lines, line 23 shows `queued -> failed`, line 75 reason requirement    |
+| `.claude/skills/fixme/agents/intake-agent.md`                   | Complete 7-step intake agent instructions             | VERIFIED   | 122 lines, all 7 steps, frontmatter with name/description/tools            |
+| `.claude/skills/fixme/SKILL.md`                                 | Dispatch-based intake, /fixme:report, intent detection | VERIFIED   | 286 lines, Report Flow, Message Classification, Intake Dispatch Procedure  |
+| `.claude/skills/fixme/scripts/fixme-tools.test.cjs`             | 8 test cases (6 rename + 2 transition)                | VERIFIED   | 238 lines, all 8 tests pass: `8 passed, 0 failed`                          |
 
 ### Key Link Verification
 

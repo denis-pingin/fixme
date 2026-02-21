@@ -8,7 +8,7 @@ re_verification: false
 
 # Phase 1: Foundation Skeleton Verification Report
 
-**Phase Goal:** The skill directory exists at ~/.claude/skills/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
+**Phase Goal:** The skill directory exists at .claude/skills/fixme/ with working ticket state management, a structured template, and project context discovery -- everything downstream agents need to operate
 **Verified:** 2026-02-18T22:45:00Z
 **Status:** passed
 **Re-verification:** No -- initial verification
@@ -42,12 +42,12 @@ re_verification: false
 
 | Artifact | Min Lines | Actual Lines | Status | Details |
 |----------|-----------|-------------|--------|---------|
-| `~/.claude/skills/fixme/scripts/fixme-tools.cjs` | 400 | 1306 | VERIFIED | Executable (chmod +x), zero npm dependencies |
-| `~/.claude/skills/fixme/SKILL.md` | 80 | 201 | VERIFIED | Correct Claude Code skill frontmatter |
-| `~/.claude/skills/fixme/templates/ticket.md` | 50 | 51 | VERIFIED | All placeholders and section markers present |
-| `~/.claude/skills/fixme/templates/session.md` | 15 | 19 | VERIFIED | All completion stat fields present |
-| `~/.claude/skills/fixme/references/state-machine.md` | 40 | 160 | VERIFIED | Comprehensive, matches implementation |
-| `~/.claude/skills/fixme/references/project-context-schema.md` | 30 | 158 | VERIFIED | Full schema + detection sources documented |
+| `.claude/skills/fixme/scripts/fixme-tools.cjs` | 400 | 1306 | VERIFIED | Executable (chmod +x), zero npm dependencies |
+| `.claude/skills/fixme/SKILL.md` | 80 | 201 | VERIFIED | Correct Claude Code skill frontmatter |
+| `.claude/skills/fixme/templates/ticket.md` | 50 | 51 | VERIFIED | All placeholders and section markers present |
+| `.claude/skills/fixme/templates/session.md` | 15 | 19 | VERIFIED | All completion stat fields present |
+| `.claude/skills/fixme/references/state-machine.md` | 40 | 160 | VERIFIED | Comprehensive, matches implementation |
+| `.claude/skills/fixme/references/project-context-schema.md` | 30 | 158 | VERIFIED | Full schema + detection sources documented |
 
 Directory structure present: `agents/` (empty, reserved for Phase 2), `templates/`, `scripts/`, `references/`
 
@@ -58,8 +58,8 @@ Directory structure present: `agents/` (empty, reserved for Phase 2), `templates
 | `fixme-tools.cjs ticket transition` | `TRANSITIONS` matrix | `TRANSITIONS[currentState]` lookup | WIRED | Line 511 defines matrix, line 647 performs lookup |
 | `fixme-tools.cjs ticket create` | ticket template | `readFileSync` on template path | WIRED | Line 594: `fs.readFileSync(templatePath, 'utf8')` |
 | `fixme-tools.cjs context detect` | package.json + config files | multi-source detection | WIRED | Lines 965-1025: package.json, vite.config.*, next.config.*, .env |
-| `SKILL.md` | `fixme-tools.cjs` | Bash calls via `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs` | WIRED | 10+ references across all orchestrator flows |
-| `SKILL.md` | `state-machine.md` | Reference link | WIRED | Line 200: `~/.claude/skills/fixme/references/state-machine.md` |
+| `SKILL.md` | `fixme-tools.cjs` | Bash calls via `node .claude/skills/fixme/scripts/fixme-tools.cjs` | WIRED | 10+ references across all orchestrator flows |
+| `SKILL.md` | `state-machine.md` | Reference link | WIRED | Line 200: `.claude/skills/fixme/references/state-machine.md` |
 | `templates/ticket.md` | `fixme-tools.cjs ticket create` | `{NUMBER}`, `{SLUG}`, `{SESSION}`, `{TIMESTAMP}` placeholders | WIRED | All 4 placeholders present in template; tool fills them on create |
 
 ### Requirements Coverage
@@ -68,7 +68,7 @@ Directory structure present: `agents/` (empty, reserved for Phase 2), `templates
 |-------------|------------|-------------|--------|---------|
 | STAT-01 | 01-01-PLAN | Each ticket tracks state: queued through done/failed | SATISFIED | 7-state machine implemented with full TRANSITIONS matrix |
 | STAT-02 | 01-01-PLAN | Each state transition is timestamped with duration calculated per phase | SATISFIED | `durations.{state}.{entered,exited,seconds}` written on every transition |
-| SYST-01 | 01-02-PLAN | Skill installs at ~/.claude/skills/fixme/ and is invoked via /fixme | SATISFIED | Skill at `~/.claude/skills/fixme/SKILL.md` with `name: fixme` (invoked as `/fixme`) |
+| SYST-01 | 01-02-PLAN | Skill installs at .claude/skills/fixme/ and is invoked via /fixme | SATISFIED | Skill at `.claude/skills/fixme/SKILL.md` with `name: fixme` (invoked as `/fixme`) |
 | SYST-02 | 01-02-PLAN | Structured ticket MD template ensures consistent agent output | SATISFIED | Template with YAML frontmatter + 6 HTML-comment-marked lifecycle sections |
 | SYST-03 | 01-01-PLAN + 01-02-PLAN | Architecture supports future parallel agents (no shared mutable state) | SATISFIED | File-per-ticket design; queue derived from filesystem scan, no index file |
 | SYST-04 | 01-01-PLAN + 01-02-PLAN | Ticket files serve as persistent state that survives context compaction | SATISFIED | SKILL.md CRITICAL RULES explicitly enforce reading from disk after every subagent return |

@@ -77,6 +77,12 @@ function parseYamlLines(lines) {
         i++;
         continue;
       }
+      // Inline object: { key: val, ... }
+      if (valueStr.startsWith('{')) {
+        obj[key] = parseInlineObject(valueStr);
+        i++;
+        continue;
+      }
       // Scalar value
       obj[key] = parseScalar(valueStr);
       i++;
@@ -509,7 +515,7 @@ function buildContent(frontmatter, body, rawFields) {
 // ============================================================================
 
 const TRANSITIONS = {
-  'queued':        ['investigating', 'skipped'],
+  'queued':        ['investigating', 'skipped', 'failed'],
   'investigating': ['fixing', 'skipped', 'failed'],
   'fixing':        ['verifying', 'failed'],
   'verifying':     ['done', 'investigating', 'failed'],
@@ -768,6 +774,79 @@ function ticketNext(sessionDir) {
 
   const next = queued[0];
   return output({ path: next.path, number: next.number, slug: next.slug });
+}
+
+function ticketRename(ticketPath, flags) {
+  const newSlug = flags.slug;
+  if (!newSlug || typeof newSlug !== 'string') {
+    return error('--slug is required for ticket rename');
+  }
+
+  if (!fs.existsSync(ticketPath)) {
+    return error(`Ticket file not found: ${ticketPath}`);
+  }
+
+  // Validate/sanitize slug
+  const sanitized = newSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')   // Replace invalid chars with hyphens
+    .replace(/-+/g, '-')            // Collapse multiple hyphens
+    .replace(/^-|-$/g, '')          // Trim leading/trailing hyphens
+    .slice(0, 60);                  // Max 60 chars
+
+  if (!sanitized) {
+    return error('Slug is empty after sanitization');
+  }
+
+  // Read ticket to get number and update slug
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  const { frontmatter: fm, body, rawFields } = parseFrontmatter(content);
+
+  const number = fm.number || path.basename(ticketPath).match(/^(\d+)-/)?.[1] || '0000';
+  const oldSlug = fm.slug || null;
+
+  // Update frontmatter
+  fm.slug = sanitized;
+  fm.updated = new Date().toISOString();
+
+  // Derive new title from slug
+  const title = sanitized.split('-').map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1)
+  ).join(' ');
+
+  // Update body heading if it contains old title
+  let updatedBody = body;
+  if (oldSlug) {
+    const oldTitle = oldSlug.split('-').map(word =>
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(' ');
+    updatedBody = body.replace(
+      `# ${number}: ${oldTitle}`,
+      `# ${number}: ${title}`
+    );
+  }
+
+  const updatedContent = buildContent(fm, updatedBody, rawFields);
+
+  // Compute new filename
+  const dir = path.dirname(ticketPath);
+  const newFilename = `${number}-${sanitized}.md`;
+  const newPath = path.join(dir, newFilename);
+
+  // Write updated content first, then rename if path changed
+  fs.writeFileSync(ticketPath, updatedContent);
+  if (ticketPath !== newPath) {
+    fs.renameSync(ticketPath, newPath);
+  }
+
+  return output({
+    oldPath: ticketPath,
+    newPath,
+    oldSlug: oldSlug,
+    newSlug: sanitized,
+    number,
+    title
+  });
 }
 
 // ============================================================================
@@ -1267,8 +1346,10 @@ function main() {
             return ticketList(args[0], flags);
           case 'next':
             return ticketNext(args[0]);
+          case 'rename':
+            return ticketRename(args[0], flags);
           default:
-            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next`);
+            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename`);
         }
 
       case 'session':

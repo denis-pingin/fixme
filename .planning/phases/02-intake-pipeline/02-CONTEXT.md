@@ -56,7 +56,7 @@ Users can submit bug reports mid-session and they become structured, queued tick
 
 ### File Structure
 
-- New file: `~/.claude/skills/fixme/agents/intake-agent.md` — agent instructions for processing bug reports
+- New file: `.claude/skills/fixme/agents/intake-agent.md` — agent instructions for processing bug reports
 - SKILL.md updated: intake section dispatches to intake agent instead of creating tickets directly
 - New fixme-tools.cjs subcommand: `ticket rename` — atomic file rename + frontmatter slug update
 - Intake agent writes structured fields directly to ticket file using Write/Edit tools (guided by HTML comment markers)

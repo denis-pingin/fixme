@@ -28,18 +28,18 @@ tech-stack:
 
 key-files:
   created:
-    - "~/.claude/skills/fixme/SKILL.md"
-    - "~/.claude/skills/fixme/templates/ticket.md"
-    - "~/.claude/skills/fixme/templates/session.md"
-    - "~/.claude/skills/fixme/references/state-machine.md"
-    - "~/.claude/skills/fixme/references/project-context-schema.md"
+    - ".claude/skills/fixme/SKILL.md"
+    - ".claude/skills/fixme/templates/ticket.md"
+    - ".claude/skills/fixme/templates/session.md"
+    - ".claude/skills/fixme/references/state-machine.md"
+    - ".claude/skills/fixme/references/project-context-schema.md"
   modified: []
 
 key-decisions:
   - "SKILL.md uses $ARGUMENTS parsing for sub-commands (start/resume/status/stop) rather than separate command files"
   - "Session template includes status field with 'active' default plus completion stats placeholders"
   - "State machine durations are cumulative across retry visits to the same state"
-  - "All files live at ~/.claude/skills/fixme/ (external to project repo, tracked via empty commits)"
+  - "All files live at .claude/skills/fixme/ (external to project repo, tracked via empty commits)"
 
 patterns-established:
   - "Lean orchestrator: read status from disk, dispatch subagent, report result, repeat"
@@ -67,7 +67,7 @@ completed: 2026-02-18
 - **Files created:** 5
 
 ## Accomplishments
-- Created complete `~/.claude/skills/fixme/` directory structure with agents/, templates/, scripts/, references/
+- Created complete `.claude/skills/fixme/` directory structure with agents/, templates/, scripts/, references/
 - SKILL.md (201 lines) with full orchestrator instructions: session start/resume, dispatch loop, bug intake, session control, status query, and CRITICAL RULES
 - Ticket template with YAML frontmatter (all state machine fields) and 6 lifecycle sections with HTML comment markers
 - State machine reference (160 lines) documenting all 7 states, transition matrix, retry semantics, duration tracking, and enforcement rules
@@ -81,17 +81,17 @@ Each task was committed atomically:
 2. **Task 2: Create ticket template, session template, and reference documents** - `e409a79` (feat)
 
 ## Files Created/Modified
-- `~/.claude/skills/fixme/SKILL.md` - Skill entry point with complete orchestrator loop instructions (201 lines)
-- `~/.claude/skills/fixme/templates/ticket.md` - Full lifecycle ticket template with YAML frontmatter and HTML comment markers (51 lines)
-- `~/.claude/skills/fixme/templates/session.md` - Session manifest template with metadata and completion stats (19 lines)
-- `~/.claude/skills/fixme/references/state-machine.md` - State machine reference: 7 states, transition matrix, enforcement rules, retry semantics (160 lines)
-- `~/.claude/skills/fixme/references/project-context-schema.md` - Project context YAML schema, detection sources, lifecycle rules (158 lines)
+- `.claude/skills/fixme/SKILL.md` - Skill entry point with complete orchestrator loop instructions (201 lines)
+- `.claude/skills/fixme/templates/ticket.md` - Full lifecycle ticket template with YAML frontmatter and HTML comment markers (51 lines)
+- `.claude/skills/fixme/templates/session.md` - Session manifest template with metadata and completion stats (19 lines)
+- `.claude/skills/fixme/references/state-machine.md` - State machine reference: 7 states, transition matrix, enforcement rules, retry semantics (160 lines)
+- `.claude/skills/fixme/references/project-context-schema.md` - Project context YAML schema, detection sources, lifecycle rules (158 lines)
 
 ## Decisions Made
 - Used `$ARGUMENTS` parsing in SKILL.md for sub-command routing (start/resume/status/stop) rather than separate skill/command files per sub-command
 - Session template includes `status: active` field alongside completion stats placeholders to support active/completed lifecycle tracking
 - State machine durations are cumulative across retry visits (e.g., if a ticket visits `investigating` twice, the seconds add up)
-- All skill files live at `~/.claude/skills/fixme/` (user's home directory), tracked in project repo via empty commits since files are external
+- All skill files live at `.claude/skills/fixme/` (user's home directory), tracked in project repo via empty commits since files are external
 
 ## Deviations from Plan
 
@@ -101,7 +101,7 @@ Each task was committed atomically:
 - **Found during:** Task 2
 - **Issue:** A linter modified session.md, stripping completion stats fields (tickets_done, tickets_failed, tickets_skipped, tickets_total, completed, duration_seconds)
 - **Fix:** Re-wrote session.md with all required fields, keeping the linter's `status: active` addition
-- **Files modified:** `~/.claude/skills/fixme/templates/session.md`
+- **Files modified:** `.claude/skills/fixme/templates/session.md`
 - **Verification:** File confirmed to have all frontmatter fields
 - **Committed in:** e409a79 (Task 2 commit)
 
@@ -111,7 +111,7 @@ Each task was committed atomically:
 **Impact on plan:** Minor -- linter stripped fields that were immediately restored. No scope creep.
 
 ## Issues Encountered
-- All skill files are external to the project git repo (at `~/.claude/skills/fixme/`). Task commits are empty commits in the project repo to track progress. This is inherent to the Claude Code skills architecture where skills live in the user's home directory.
+- All skill files are external to the project git repo (at `.claude/skills/fixme/`). Task commits are empty commits in the project repo to track progress. This is inherent to the Claude Code skills architecture where skills live in the user's home directory.
 
 ## User Setup Required
 None - no external service configuration required.
