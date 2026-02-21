@@ -76,11 +76,12 @@ Plans:
   3. The orchestrator dispatches investigation and fixing to subagents -- its own context contains only ticket paths and status summaries, not investigation details or code diffs
   4. The ticket records fix details: files changed, approach taken, and commit hash
   5. When a fix attempt doesn't work, the agent retries with a different approach before giving up (fix-verify loop)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md -- Directory restructuring (ticket-centric layout), fixme-tools.cjs updates, ticket template, model inheritance
+- [ ] 04-02-PLAN.md -- Fixer agent files: fix-agent.md coordinator + 4 sub-agents (researcher, planner, implementer, verifier)
+- [ ] 04-03-PLAN.md -- SKILL.md: fixer dispatch integration, path updates for new layout, model inheritance cleanup
 
 ### Phase 5: Verification & Close Loop
 **Goal**: Every fix is browser-verified before closing, failed verifications trigger rollback, and the user gets a session summary of all work done
@@ -106,9 +107,9 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Foundation & Skeleton | 2/2 | Complete    | 2026-02-18 |
 | 2. Intake Pipeline | 3/3 | Complete    | 2026-02-20 |
 | 3. Investigation & Reproduction | 0/2 | Not started | - |
-| 4. Fix & Commit | 0/2 | Not started | - |
+| 4. Fix & Commit | 0/3 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-21 (Phase 3 planned)*
+*Last updated: 2026-02-21 (Phase 4 planned)*
