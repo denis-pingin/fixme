@@ -574,22 +574,26 @@ function ticketCreate(sessionDir, flags) {
     return error('--slug is required for ticket create');
   }
 
-  const ticketsDir = path.join(sessionDir, 'tickets');
-  if (!fs.existsSync(ticketsDir)) {
-    return error(`Tickets directory not found: ${ticketsDir}`);
-  }
-
-  // Determine next sequential number
-  const existing = fs.readdirSync(ticketsDir)
-    .filter(f => f.endsWith('.md'))
-    .map(f => {
-      const match = f.match(/^(\d+)-/);
-      return match ? parseInt(match[1], 10) : 0;
+  // Scan sessionDir for existing ticket folders matching /^\d{4}-/ with ticket.md
+  const existing = fs.readdirSync(sessionDir)
+    .filter(d => {
+      const dirPath = path.join(sessionDir, d);
+      return fs.statSync(dirPath).isDirectory() && /^\d{4}-/.test(d);
     })
+    .map(d => parseInt(d.match(/^(\d+)-/)[1], 10))
     .sort((a, b) => a - b);
 
   const nextNumber = existing.length > 0 ? existing[existing.length - 1] + 1 : 1;
   const paddedNumber = String(nextNumber).padStart(4, '0');
+
+  // Create ticket folder with subdirectories
+  const ticketFolderName = `${paddedNumber}-${slug}`;
+  const ticketDir = path.join(sessionDir, ticketFolderName);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.mkdirSync(path.join(ticketDir, 'assets'), { recursive: true });
+  fs.mkdirSync(path.join(ticketDir, 'research'), { recursive: true });
+  fs.mkdirSync(path.join(ticketDir, 'plans'), { recursive: true });
+  fs.mkdirSync(path.join(ticketDir, 'verifications'), { recursive: true });
 
   // Read template
   const templatePath = path.join(__dirname, '..', 'templates', 'ticket.md');
@@ -628,12 +632,11 @@ function ticketCreate(sessionDir, flags) {
 
   const finalContent = buildContent(parsed.frontmatter, parsed.body, parsed.rawFields);
 
-  // Write ticket file
-  const filename = `${paddedNumber}-${slug}.md`;
-  const ticketPath = path.join(ticketsDir, filename);
+  // Write ticket.md inside the ticket folder
+  const ticketPath = path.join(ticketDir, 'ticket.md');
   fs.writeFileSync(ticketPath, finalContent);
 
-  return output({ path: ticketPath, number: paddedNumber, slug, state: 'queued' });
+  return output({ path: ticketPath, dir: ticketDir, number: paddedNumber, slug, state: 'queued' });
 }
 
 function ticketTransition(ticketPath, newState, flags) {
@@ -717,27 +720,34 @@ function ticketTransition(ticketPath, newState, flags) {
 }
 
 function ticketList(sessionDir, flags) {
-  const ticketsDir = path.join(sessionDir, 'tickets');
-  if (!fs.existsSync(ticketsDir)) {
+  if (!fs.existsSync(sessionDir)) {
     return output([]);
   }
 
   const stateFilter = flags.state || null;
 
-  const tickets = fs.readdirSync(ticketsDir)
-    .filter(f => f.endsWith('.md'))
-    .sort()
-    .map(f => {
-      const filePath = path.join(ticketsDir, f);
-      const content = fs.readFileSync(filePath, 'utf8');
-      const { frontmatter: fm } = parseFrontmatter(content);
-      return {
-        number: fm.number || f.match(/^(\d+)-/)?.[1] || '0000',
-        slug: fm.slug || f.replace(/^\d+-/, '').replace(/\.md$/, ''),
-        state: fm.state || 'unknown',
-        path: filePath,
-      };
-    });
+  // Scan for ticket folders (NNNN-*/) containing ticket.md
+  const entries = fs.readdirSync(sessionDir)
+    .filter(d => {
+      const dirPath = path.join(sessionDir, d);
+      return fs.statSync(dirPath).isDirectory()
+        && /^\d{4}-/.test(d)
+        && fs.existsSync(path.join(dirPath, 'ticket.md'));
+    })
+    .sort();
+
+  const tickets = entries.map(d => {
+    const ticketPath = path.join(sessionDir, d, 'ticket.md');
+    const content = fs.readFileSync(ticketPath, 'utf8');
+    const { frontmatter: fm } = parseFrontmatter(content);
+    return {
+      number: fm.number || d.match(/^(\d+)-/)?.[1] || '0000',
+      slug: fm.slug || d.replace(/^\d+-/, ''),
+      state: fm.state || 'unknown',
+      path: ticketPath,
+      dir: path.join(sessionDir, d),
+    };
+  });
 
   const filtered = stateFilter
     ? tickets.filter(t => t.state === stateFilter)
@@ -747,25 +757,32 @@ function ticketList(sessionDir, flags) {
 }
 
 function ticketNext(sessionDir) {
-  const ticketsDir = path.join(sessionDir, 'tickets');
-  if (!fs.existsSync(ticketsDir)) {
+  if (!fs.existsSync(sessionDir)) {
     return output({ path: null });
   }
 
-  const tickets = fs.readdirSync(ticketsDir)
-    .filter(f => f.endsWith('.md'))
-    .sort()
-    .map(f => {
-      const filePath = path.join(ticketsDir, f);
-      const content = fs.readFileSync(filePath, 'utf8');
-      const { frontmatter: fm } = parseFrontmatter(content);
-      return {
-        number: fm.number || f.match(/^(\d+)-/)?.[1] || '0000',
-        slug: fm.slug || f.replace(/^\d+-/, '').replace(/\.md$/, ''),
-        state: fm.state || 'unknown',
-        path: filePath,
-      };
-    });
+  // Scan for ticket folders (NNNN-*/) containing ticket.md
+  const entries = fs.readdirSync(sessionDir)
+    .filter(d => {
+      const dirPath = path.join(sessionDir, d);
+      return fs.statSync(dirPath).isDirectory()
+        && /^\d{4}-/.test(d)
+        && fs.existsSync(path.join(dirPath, 'ticket.md'));
+    })
+    .sort();
+
+  const tickets = entries.map(d => {
+    const ticketPath = path.join(sessionDir, d, 'ticket.md');
+    const content = fs.readFileSync(ticketPath, 'utf8');
+    const { frontmatter: fm } = parseFrontmatter(content);
+    return {
+      number: fm.number || d.match(/^(\d+)-/)?.[1] || '0000',
+      slug: fm.slug || d.replace(/^\d+-/, ''),
+      state: fm.state || 'unknown',
+      path: ticketPath,
+      dir: path.join(sessionDir, d),
+    };
+  });
 
   const queued = tickets.filter(t => t.state === 'queued');
   if (queued.length === 0) {
@@ -773,7 +790,7 @@ function ticketNext(sessionDir) {
   }
 
   const next = queued[0];
-  return output({ path: next.path, number: next.number, slug: next.slug });
+  return output({ path: next.path, dir: next.dir, number: next.number, slug: next.slug });
 }
 
 function ticketRename(ticketPath, flags) {
@@ -802,7 +819,7 @@ function ticketRename(ticketPath, flags) {
   const content = fs.readFileSync(ticketPath, 'utf8');
   const { frontmatter: fm, body, rawFields } = parseFrontmatter(content);
 
-  const number = fm.number || path.basename(ticketPath).match(/^(\d+)-/)?.[1] || '0000';
+  const number = fm.number || path.basename(path.dirname(ticketPath)).match(/^(\d+)-/)?.[1] || '0000';
   const oldSlug = fm.slug || null;
 
   // Update frontmatter
@@ -828,25 +845,37 @@ function ticketRename(ticketPath, flags) {
 
   const updatedContent = buildContent(fm, updatedBody, rawFields);
 
-  // Compute new filename
-  const dir = path.dirname(ticketPath);
-  const newFilename = `${number}-${sanitized}.md`;
-  const newPath = path.join(dir, newFilename);
-
-  // Write updated content first, then rename if path changed
+  // Write updated content back to ticket.md
   fs.writeFileSync(ticketPath, updatedContent);
-  if (ticketPath !== newPath) {
-    fs.renameSync(ticketPath, newPath);
+
+  // Rename the parent directory (ticket folder)
+  const oldDir = path.dirname(ticketPath);
+  const parentDir = path.dirname(oldDir);
+  const newFolderName = `${number}-${sanitized}`;
+  const newDir = path.join(parentDir, newFolderName);
+  const newPath = path.join(newDir, 'ticket.md');
+
+  if (oldDir !== newDir) {
+    fs.renameSync(oldDir, newDir);
   }
 
   return output({
     oldPath: ticketPath,
     newPath,
+    oldDir,
+    newDir,
     oldSlug: oldSlug,
     newSlug: sanitized,
     number,
     title
   });
+}
+
+function ticketDir(ticketPath) {
+  if (!fs.existsSync(ticketPath)) {
+    return error(`Ticket file not found: ${ticketPath}`);
+  }
+  return output({ dir: path.dirname(ticketPath) });
 }
 
 // ============================================================================
@@ -877,10 +906,8 @@ function sessionCreate(baseDir, flags) {
     sessionDir = path.join(baseDir, name);
   }
 
-  // Create directories
+  // Create session directory (ticket folders are created by ticketCreate)
   fs.mkdirSync(sessionDir, { recursive: true });
-  fs.mkdirSync(path.join(sessionDir, 'tickets'), { recursive: true });
-  fs.mkdirSync(path.join(sessionDir, 'assets'), { recursive: true });
 
   // Read session template
   const templatePath = path.join(__dirname, '..', 'templates', 'session.md');
@@ -916,17 +943,20 @@ function sessionList(baseDir) {
       const sessionContent = fs.readFileSync(path.join(sessionDir, 'session.md'), 'utf8');
       const { frontmatter: fm } = parseFrontmatter(sessionContent);
 
-      // Count tickets by state
-      const ticketsDir = path.join(sessionDir, 'tickets');
+      // Count tickets by state -- scan for NNNN-*/ticket.md
       const ticketCounts = {};
-      if (fs.existsSync(ticketsDir)) {
-        const ticketFiles = fs.readdirSync(ticketsDir).filter(f => f.endsWith('.md'));
-        for (const f of ticketFiles) {
-          const content = fs.readFileSync(path.join(ticketsDir, f), 'utf8');
-          const { frontmatter: tfm } = parseFrontmatter(content);
-          const state = tfm.state || 'unknown';
-          ticketCounts[state] = (ticketCounts[state] || 0) + 1;
-        }
+      const ticketDirs = fs.readdirSync(sessionDir)
+        .filter(d => {
+          const dp = path.join(sessionDir, d);
+          return fs.statSync(dp).isDirectory()
+            && /^\d{4}-/.test(d)
+            && fs.existsSync(path.join(dp, 'ticket.md'));
+        });
+      for (const d of ticketDirs) {
+        const content = fs.readFileSync(path.join(sessionDir, d, 'ticket.md'), 'utf8');
+        const { frontmatter: tfm } = parseFrontmatter(content);
+        const state = tfm.state || 'unknown';
+        ticketCounts[state] = (ticketCounts[state] || 0) + 1;
       }
 
       return {
@@ -949,50 +979,54 @@ function sessionSummary(sessionDir) {
   const sessionContent = fs.readFileSync(sessionMdPath, 'utf8');
   const { frontmatter: fm, body, rawFields } = parseFrontmatter(sessionContent);
 
-  // Read all tickets
-  const ticketsDir = path.join(sessionDir, 'tickets');
+  // Read all tickets -- scan for NNNN-*/ticket.md
   const tickets = [];
   const stateCounts = {};
   let totalSeconds = 0;
 
-  if (fs.existsSync(ticketsDir)) {
-    const ticketFiles = fs.readdirSync(ticketsDir).filter(f => f.endsWith('.md')).sort();
+  const ticketDirs = fs.readdirSync(sessionDir)
+    .filter(d => {
+      const dp = path.join(sessionDir, d);
+      return fs.statSync(dp).isDirectory()
+        && /^\d{4}-/.test(d)
+        && fs.existsSync(path.join(dp, 'ticket.md'));
+    })
+    .sort();
 
-    for (const f of ticketFiles) {
-      const content = fs.readFileSync(path.join(ticketsDir, f), 'utf8');
-      const { frontmatter: tfm } = parseFrontmatter(content);
+  for (const d of ticketDirs) {
+    const content = fs.readFileSync(path.join(sessionDir, d, 'ticket.md'), 'utf8');
+    const { frontmatter: tfm } = parseFrontmatter(content);
 
-      const state = tfm.state || 'unknown';
-      stateCounts[state] = (stateCounts[state] || 0) + 1;
+    const state = tfm.state || 'unknown';
+    stateCounts[state] = (stateCounts[state] || 0) + 1;
 
-      // Compute total seconds for this ticket across all durations
-      let ticketSeconds = 0;
-      if (tfm.durations && typeof tfm.durations === 'object') {
-        for (const [, dur] of Object.entries(tfm.durations)) {
-          if (dur && typeof dur === 'object' && typeof dur.seconds === 'number') {
-            ticketSeconds += dur.seconds;
-          }
+    // Compute total seconds for this ticket across all durations
+    let ticketSeconds = 0;
+    if (tfm.durations && typeof tfm.durations === 'object') {
+      for (const [, dur] of Object.entries(tfm.durations)) {
+        if (dur && typeof dur === 'object' && typeof dur.seconds === 'number') {
+          ticketSeconds += dur.seconds;
         }
       }
-
-      // For active states, add time since entered
-      if (tfm.durations && typeof tfm.durations === 'object') {
-        const currentDur = tfm.durations[state];
-        if (currentDur && currentDur.entered && !currentDur.exited) {
-          const entered = new Date(currentDur.entered);
-          ticketSeconds += Math.round((Date.now() - entered.getTime()) / 1000);
-        }
-      }
-
-      totalSeconds += ticketSeconds;
-
-      tickets.push({
-        number: tfm.number || f.match(/^(\d+)-/)?.[1] || '0000',
-        slug: tfm.slug || f.replace(/^\d+-/, '').replace(/\.md$/, ''),
-        state,
-        total_seconds: ticketSeconds,
-      });
     }
+
+    // For active states, add time since entered
+    if (tfm.durations && typeof tfm.durations === 'object') {
+      const currentDur = tfm.durations[state];
+      if (currentDur && currentDur.entered && !currentDur.exited) {
+        const entered = new Date(currentDur.entered);
+        ticketSeconds += Math.round((Date.now() - entered.getTime()) / 1000);
+      }
+    }
+
+    totalSeconds += ticketSeconds;
+
+    tickets.push({
+      number: tfm.number || d.match(/^(\d+)-/)?.[1] || '0000',
+      slug: tfm.slug || d.replace(/^\d+-/, ''),
+      state,
+      total_seconds: ticketSeconds,
+    });
   }
 
   // Compute session duration
@@ -1348,8 +1382,10 @@ function main() {
             return ticketNext(args[0]);
           case 'rename':
             return ticketRename(args[0], flags);
+          case 'dir':
+            return ticketDir(args[0]);
           default:
-            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename`);
+            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename, dir`);
         }
 
       case 'session':
