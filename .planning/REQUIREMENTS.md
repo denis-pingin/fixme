@@ -25,9 +25,9 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Investigation & Browser
 
 - [x] **BROW-01**: Implementation agent reads project CLAUDE.md to discover dev server URL, build commands, and HMR support
-- [ ] **BROW-02**: Implementation agent uses Playwright (MCP or CLI) to navigate to the app and reproduce the reported bug
+- [x] **BROW-02**: Implementation agent uses Playwright (MCP or CLI) to navigate to the app and reproduce the reported bug
 - [ ] **BROW-03**: Implementation agent uses Playwright (MCP or CLI) to verify the fix by re-running reproduction steps and confirming the bug is gone
-- [ ] **BROW-04**: Implementation agent investigates the codebase (reads files, traces code paths) to understand root cause before attempting a fix
+- [x] **BROW-04**: Implementation agent investigates the codebase (reads files, traces code paths) to understand root cause before attempting a fix
 
 ### Fix & Recovery
 
@@ -91,9 +91,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STAT-03 | Phase 4 | Pending |
 | STAT-04 | Phase 5 | Pending |
 | BROW-01 | Phase 1 | Complete |
-| BROW-02 | Phase 3 | Pending |
+| BROW-02 | Phase 3 | Complete |
 | BROW-03 | Phase 5 | Pending |
-| BROW-04 | Phase 3 | Pending |
+| BROW-04 | Phase 3 | Complete |
 | FIXR-01 | Phase 4 | Pending |
 | FIXR-02 | Phase 4 | Pending |
 | FIXR-03 | Phase 4 | Pending |

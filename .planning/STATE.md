@@ -5,19 +5,19 @@
 See: .planning/PROJECT.md (updated 2026-02-18)
 
 **Core value:** Bugs flow in continuously and get fixed reliably with browser-verified results
-**Current focus:** Phase 2: Intake Pipeline
+**Current focus:** Phase 3: Investigation & Reproduction
 
 ## Current Position
 
-**Current Phase:** 02
-**Current Phase Name:** Intake Pipeline
+**Current Phase:** 03
+**Current Phase Name:** Investigation & Reproduction
 **Total Phases:** 5
-**Current Plan:** Not started
-**Total Plans in Phase:** 3
-**Status:** Milestone complete
-**Last Activity:** 2026-02-20
+**Current Plan:** 2
+**Total Plans in Phase:** 2
+**Status:** In progress
+**Last Activity:** 2026-02-21
 
-**Progress:** [██████████] 100%
+**Progress:** [█████████░] 86%
 
 ## Performance Metrics
 
@@ -39,6 +39,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 
 *Updated after each plan completion*
 | Phase 02 P03 | 2min | 2 tasks | 1 files |
+| Phase 03 P01 | 2min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,9 @@ Recent decisions affecting current work:
 - [Phase 02-03]: Failed intake transitions ticket to failed (not skipped) with error reason preserved
 - [Phase 02-03]: Auto-close uses same session summary as manual stop for consistent UX
 - [Phase 02-03]: LLM intent detection errs on asking (LOW confidence) rather than mis-classifying as bug
+- [Phase 03-01]: Structured prompting over sub-sub-agents: reproducer/verifier roles are sequential phases within one context window
+- [Phase 03-01]: Investigation agent uses model: opus for reasoning depth needed for vague report interpretation and multi-file code tracing
+- [Phase 03-01]: Screenshots use repro-<descriptive-name>.png naming with --filename= flag for traceability
 
 ### Pending Todos
 
@@ -80,5 +84,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-investigation-reproduction/03-CONTEXT.md
+Stopped at: Completed 03-01-PLAN.md
+Resume file: .planning/phases/03-investigation-reproduction/03-01-SUMMARY.md
