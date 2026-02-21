@@ -2,7 +2,7 @@
 name: fixme
 description: "Bug fix session orchestrator. Start a bug-fixing session to report, track, and fix bugs in your web application."
 disable-model-invocation: true
-allowed-tools: Read, Write, Bash, Task, Glob, Grep
+allowed-tools: Read, Write, Bash, Bash(playwright-cli:*), Task, Glob, Grep
 argument-hint: "[start|resume|status|stop|report] [session-name|bug description]"
 ---
 
@@ -175,32 +175,75 @@ This is the core execution cycle. Repeat until the user stops the session or the
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
    ```
 
-3. **Dispatch subagent via Task tool:**
-   Use the Task tool to spawn a subagent. Pass:
-   - The ticket file path (subagent reads it with fresh context)
-   - The project context file path (`.fixme/project-context.yaml`)
-   - The subagent role file path (`.claude/skills/fixme/agents/<agent>.md`)
-
-   Example prompt for the Task tool:
+3. **Create ticket asset directory:**
+   ```bash
+   mkdir -p .fixme/sessions/<session>/assets/<ticket-number>/
    ```
-   First, read .claude/skills/fixme/agents/fixer-agent.md for your role instructions.
-   Then read the ticket at: <ticket-path>
-   And the project context at: .fixme/project-context.yaml
-   Execute the full investigate -> fix -> verify cycle for this ticket.
-   ```
+   Where `<ticket-number>` is the zero-padded number from the ticket (e.g., `0001`).
 
-4. **After subagent returns:**
+4. **Dispatch investigation agent via Task tool:**
+   ```
+   First, read .claude/skills/fixme/agents/investigation-agent.md for your role instructions.
+
+   Then investigate this bug:
+   - Ticket file: <ticket-path>
+   - Project context: .fixme/project-context.yaml
+   - Asset directory: .fixme/sessions/<session>/assets/<ticket-number>/
+   - Dev server URL: <dev_server.url from project context>
+   ```
+   Use model: opus.
+
+5. **After investigation agent returns:**
    ALWAYS read ticket state from disk. Never trust in-memory state or what the subagent reported:
    ```bash
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
    ```
+   Also read the agent's summary response.
 
-5. **Report result to user:**
-   - If ticket is `done`: report success with brief summary.
-   - If ticket is `failed`: report failure with the failure reason.
-   - If ticket is `skipped`: report skip with reason.
+6. **Handle investigation result:**
+   - If agent returned "Investigated #NNNN: ..." (success/partial/failed reproduction):
+     Report findings to user with the agent's summary. The ticket stays in `investigating` state.
+     (Phase 4 will add the `investigating -> fixing` transition here.)
+   - If agent returned "BLOCKER #NNNN: ..." (environment blocker):
+     Report the blocker to the user. Attempt recovery (see Browser Recovery below).
+     If recovery succeeds, re-dispatch the investigation agent (the ticket already has partial findings).
+     If recovery fails, inform the user and wait for their guidance.
 
-6. **Loop:** Go back to step 1 to check for next queued ticket.
+7. **Loop:** Go back to step 1 to check for next queued ticket.
+
+### Browser Recovery
+
+When the investigation agent reports a BLOCKER (browser crash, server down, auth expired):
+
+1. **Diagnose:** Check the BLOCKER message for the issue type.
+
+2. **Browser crash recovery:**
+   ```bash
+   playwright-cli open <dev_server.url>
+   ```
+   If auth state exists:
+   ```bash
+   playwright-cli state-load .fixme/auth.json
+   ```
+   Take a snapshot to verify recovery. If successful, re-dispatch the investigation agent.
+
+3. **Server down recovery:**
+   Restart the dev server:
+   ```bash
+   <dev_server.command> &
+   ```
+   Wait for readiness, then re-dispatch.
+
+4. **Auth expired recovery:**
+   Ask the user to log in again in the browser window. On confirmation:
+   ```bash
+   playwright-cli state-save .fixme/auth.json
+   ```
+   Re-dispatch the investigation agent.
+
+5. **Unrecoverable:**
+   If recovery fails after one attempt, inform the user and wait for their guidance.
+   Do NOT automatically fail the ticket from a blocker -- the user decides.
 
 ## Bug Intake (In-Session)
 
@@ -344,7 +387,10 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 
 7. **Never modify ticket frontmatter directly.** All state changes go through `fixme-tools.cjs ticket transition`. The tool validates transitions and maintains the transition log.
 
+8. **NEVER use Playwright MCP tools.** Browser automation is done exclusively via `playwright-cli` commands (e.g., `playwright-cli open`, `playwright-cli snapshot`). The `mcp__plugin_playwright_playwright__*` tools are forbidden.
+
 ## References
 
 - **State machine rules:** See `.claude/skills/fixme/references/state-machine.md` for the complete list of valid state transitions, enforcement rules, and retry semantics.
 - **Project context format:** See `.claude/skills/fixme/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
+- **Investigation agent:** See `.claude/skills/fixme/agents/investigation-agent.md` for the investigation agent's instructions, tool access, and output format.
