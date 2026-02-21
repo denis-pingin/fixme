@@ -5,19 +5,19 @@
 See: .planning/PROJECT.md (updated 2026-02-18)
 
 **Core value:** Bugs flow in continuously and get fixed reliably with browser-verified results
-**Current focus:** Phase 3: Investigation & Reproduction
+**Current focus:** Phase 4: Fix & Commit
 
 ## Current Position
 
-**Current Phase:** 03
-**Current Phase Name:** Investigation & Reproduction
+**Current Phase:** 04
+**Current Phase Name:** Fix & Commit
 **Total Phases:** 5
-**Current Plan:** Not started
-**Total Plans in Phase:** 2
-**Status:** Milestone complete
+**Current Plan:** 2
+**Total Plans in Phase:** 3
+**Status:** Ready to execute
 **Last Activity:** 2026-02-21
 
-**Progress:** [██████████] 100%
+**Progress:** [████████░░] 80%
 
 ## Performance Metrics
 
@@ -41,6 +41,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 02 P03 | 2min | 2 tasks | 1 files |
 | Phase 03 P01 | 2min | 1 tasks | 1 files |
 | Phase 03 P02 | 2min | 2 tasks | 1 files |
+| Phase 04 P01 | 7min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 03-02]: Auth state persisted to .fixme/auth.json with stale detection via snapshot comparison
 - [Phase 03-02]: Phase 3 dispatch loop stops after investigation -- does not transition to fixing (Phase 4 scope)
 - [Phase 03-02]: Playwright MCP tools explicitly forbidden as CRITICAL RULE 8 in SKILL.md
+- [Phase 04-01]: Ticket-centric directory layout: NNNN-slug/ticket.md with assets/, research/, plans/, verifications/ subdirectories
+- [Phase 04-01]: Model inheritance applied retroactively: all agents use model: inherit, SKILL.md dispatch has no hardcoded model values
+- [Phase 04-01]: SKILL.md asset paths updated from session-level to ticket-level for consistency with new layout
 
 ### Pending Todos
 
@@ -89,5 +93,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-fix-commit/04-CONTEXT.md
+Stopped at: Completed 04-01-PLAN.md
+Resume file: .planning/phases/04-fix-commit/04-02-PLAN.md
