@@ -12,12 +12,12 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 **Current Phase:** 04
 **Current Phase Name:** Fix & Commit
 **Total Phases:** 5
-**Current Plan:** 2
+**Current Plan:** 3
 **Total Plans in Phase:** 3
 **Status:** Ready to execute
 **Last Activity:** 2026-02-21
 
-**Progress:** [████████░░] 80%
+**Progress:** [█████████░] 90%
 
 ## Performance Metrics
 
@@ -42,6 +42,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 03 P01 | 2min | 1 tasks | 1 files |
 | Phase 03 P02 | 2min | 2 tasks | 1 files |
 | Phase 04 P01 | 7min | 2 tasks | 6 files |
+| Phase 04 P02 | 4min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,10 @@ Recent decisions affecting current work:
 - [Phase 04-01]: Ticket-centric directory layout: NNNN-slug/ticket.md with assets/, research/, plans/, verifications/ subdirectories
 - [Phase 04-01]: Model inheritance applied retroactively: all agents use model: inherit, SKILL.md dispatch has no hardcoded model values
 - [Phase 04-01]: SKILL.md asset paths updated from session-level to ticket-level for consistency with new layout
+- [Phase 04]: Researcher runs ONCE per bug -- output reused across all retry attempts
+- [Phase 04]: Verifier loads build/lint/test commands dynamically from project context, never hardcodes
+- [Phase 04]: Git revert on final failure uses checkout + clean --exclude=.fixme/ to preserve artifacts
+- [Phase 04]: Coordinator returns structured {status, ticket_path, commit_hash: null, attempts, duration, summary}
 
 ### Pending Todos
 
