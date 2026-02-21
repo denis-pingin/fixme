@@ -161,6 +161,8 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 ## Dispatch Loop
 
+**Model inheritance:** Sub-agents inherit the orchestrator's model by default. Do not specify a model in Task dispatch prompts unless overriding for a specific reason.
+
 This is the core execution cycle. Repeat until the user stops the session or there are no more queued tickets:
 
 1. **Find next ticket:**
@@ -175,41 +177,73 @@ This is the core execution cycle. Repeat until the user stops the session or the
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
    ```
 
-3. **Ensure ticket asset directory exists:**
-   The ticket folder's `assets/` subdirectory is created by `ticket create`. If resuming an older ticket, ensure it exists:
-   ```bash
-   mkdir -p <ticket-dir>/assets/
-   ```
-   Where `<ticket-dir>` is the ticket folder path (e.g., `.fixme/sessions/<session>/0001-slug/`).
-
-4. **Dispatch investigation agent via Task tool:**
+3. **Dispatch investigation agent via Task tool:**
+   The ticket folder (including `assets/`) is created by `ticket create`. Pass the ticket folder's assets path to the agent:
    ```
    First, read .claude/skills/fixme/agents/investigation-agent.md for your role instructions.
 
    Then investigate this bug:
    - Ticket file: <ticket-path>
    - Project context: .fixme/project-context.yaml
-   - Asset directory: <ticket-dir>/assets/ (the assets/ subdirectory inside the ticket folder)
+   - Asset directory: <ticket-folder>/assets/
    - Dev server URL: <dev_server.url from project context>
    ```
+   Where `<ticket-folder>` is the directory containing ticket.md (derived from `ticket next` output's `dir` field).
 
-5. **After investigation agent returns:**
+4. **After investigation agent returns:**
    ALWAYS read ticket state from disk. Never trust in-memory state or what the subagent reported:
    ```bash
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
    ```
    Also read the agent's summary response.
 
-6. **Handle investigation result:**
-   - If agent returned "Investigated #NNNN: ..." (success/partial/failed reproduction):
-     Report findings to user with the agent's summary. The ticket stays in `investigating` state.
-     (Phase 4 will add the `investigating -> fixing` transition here.)
+5. **Handle investigation result:**
+   - If agent returned "Investigated #NNNN: ..." (success or partial with CONFIRMED/PARTIAL verdict):
+     Report findings to user with the agent's summary.
+     Proceed to fixing:
+
+     a. **Transition ticket to fixing:**
+        ```bash
+        node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> fixing
+        ```
+
+     b. **Dispatch fixer agent via Task tool:**
+        ```
+        First, read .claude/skills/fixme/agents/fix-agent.md for your role instructions.
+
+        Fix this bug:
+        - Ticket folder: <ticket-folder-dir>
+        - Project context: .fixme/project-context.yaml
+        ```
+
+     c. **After fixer agent returns:**
+        ALWAYS read ticket state from disk:
+        ```bash
+        node .claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
+        ```
+        Read the fixer's return summary.
+
+     d. **Handle fixer result:**
+        - If fixer returned "Fixed #NNNN: ..." (success):
+          Report to user: "Fixed #NNNN: <summary>. Awaiting browser verification (Phase 5)."
+          The ticket should now be in `fixing` state on success. Phase 5 will handle the final transition to done.
+          NOTE: Actually re-read the ticket state from disk to determine actual state.
+        - If fixer returned "Failed #NNNN: ..." (failure):
+          Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
+          The ticket is already in `failed` state (the fixer handles the transition and revert).
+
+   - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
+     Report findings to user. The investigation was inconclusive -- ask user if they want to:
+     1. Skip this ticket and move to next
+     2. Provide more details for a re-investigation
+     If skip: transition to skipped with reason. If more details: keep ticket in investigating and wait.
+
    - If agent returned "BLOCKER #NNNN: ..." (environment blocker):
      Report the blocker to the user. Attempt recovery (see Browser Recovery below).
-     If recovery succeeds, re-dispatch the investigation agent (the ticket already has partial findings).
+     If recovery succeeds, re-dispatch the investigation agent.
      If recovery fails, inform the user and wait for their guidance.
 
-7. **Loop:** Go back to step 1 to check for next queued ticket.
+6. **Loop:** Go back to step 1 to check for next queued ticket.
 
 ### Browser Recovery
 
@@ -279,7 +313,7 @@ This procedure is used by both `/fixme:report` and inline bug detection:
    ```bash
    node .claude/skills/fixme/scripts/fixme-tools.cjs ticket create <session-dir> --slug intake-tmp-$(cat /dev/urandom | LC_ALL=C tr -dc 'a-f0-9' | head -c 4)
    ```
-   Capture the output JSON: `{ path, number, slug, state }`.
+   Capture the output JSON: `{ path, dir, number, slug, state }`.
 
 2. **Announce dispatch to user:** Single line, no ceremony:
    ```
@@ -293,7 +327,8 @@ This procedure is used by both `/fixme:report` and inline bug detection:
    Then process this bug report:
    - Ticket file: <ticket-path from step 1>
    - Bug description: <verbatim user text, stripped of /fixme:report prefix if present>
-   - Ticket assets directory: <ticket-dir>/assets/ (the assets/ subdirectory inside the ticket folder)
+   - Ticket assets directory: <ticket-folder>/assets/
+   Where `<ticket-folder>` is the `dir` field from the ticket create output in step 1.
    ```
 
 4. **On Task return:**
@@ -393,3 +428,4 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 - **State machine rules:** See `.claude/skills/fixme/references/state-machine.md` for the complete list of valid state transitions, enforcement rules, and retry semantics.
 - **Project context format:** See `.claude/skills/fixme/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
 - **Investigation agent:** See `.claude/skills/fixme/agents/investigation-agent.md` for the investigation agent's instructions, tool access, and output format.
+- **Fixer agent:** See `.claude/skills/fixme/agents/fix-agent.md` for the fixer coordinator's instructions, sub-agent dispatch, retry loop, and revert logic.
