@@ -89,5 +89,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-investigation-reproduction/03-01-SUMMARY.md
+Stopped at: Phase 4 context gathered
+Resume file: .planning/phases/04-fix-commit/04-CONTEXT.md
