@@ -94,7 +94,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BROW-02 | Phase 3 | Complete |
 | BROW-03 | Phase 5 | Pending |
 | BROW-04 | Phase 3 | Complete |
-| FIXR-01 | Phase 4 | Pending |
+| FIXR-01 | Phase 5 | Pending |
 | FIXR-02 | Phase 4 | Pending |
 | FIXR-03 | Phase 4 | Pending |
 | FIXR-04 | Phase 5 | Pending |
@@ -111,4 +111,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-02-18*
-*Last updated: 2026-02-18 after roadmap creation*
+*Last updated: 2026-02-21 (FIXR-01 moved from Phase 4 to Phase 5 — Phase 4 makes no commits)*

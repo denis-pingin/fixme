@@ -15,8 +15,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation & Skeleton** - Skill directory, ticket template, state machine, project context discovery
 - [x] **Phase 2: Intake Pipeline** - Bug reports become structured ticket files via background agent (completed 2026-02-20)
 - [ ] **Phase 3: Investigation & Reproduction** - Browser-based bug reproduction and codebase investigation
-- [ ] **Phase 4: Fix & Commit** - Implement fixes, atomic commits, orchestrator dispatch loop
-- [ ] **Phase 5: Verification & Close Loop** - Browser-verified fixes, revert on failure, session summary
+- [ ] **Phase 4: Fix & Commit** - Implement fixes, orchestrator dispatch loop, fix-verify retry loop
+- [ ] **Phase 5: Verification & Close Loop** - Browser-verified fixes, atomic commits, revert on failure, session summary
 
 ## Phase Details
 
@@ -67,15 +67,14 @@ Plans:
 - [ ] 03-02-PLAN.md -- SKILL.md: session environment setup (dev server, browser, login) + investigation dispatch
 
 ### Phase 4: Fix & Commit
-**Goal**: The implementation agent fixes bugs, creates atomic commits, and the orchestrator dispatches work to subagents while staying lean
+**Goal**: The implementation agent fixes bugs via a structured fix-verify loop, and the orchestrator dispatches work to subagents while staying lean
 **Depends on**: Phase 3
-**Requirements**: FIXR-01, FIXR-02, FIXR-03, FIXR-05, STAT-03
+**Requirements**: FIXR-02, FIXR-03, FIXR-05, STAT-03
 **Success Criteria** (what must be TRUE):
-  1. After a successful fix, exactly one git commit exists with the ticket reference in the commit message and only the relevant file changes
-  2. If the implementation agent cannot fix a bug, the ticket is marked failed with a documented reason, and the orchestrator moves to the next queued bug
-  3. The orchestrator dispatches investigation and fixing to subagents -- its own context contains only ticket paths and status summaries, not investigation details or code diffs
-  4. The ticket records fix details: files changed, approach taken, and commit hash
-  5. When a fix attempt doesn't work, the agent retries with a different approach before giving up (fix-verify loop)
+  1. If the implementation agent cannot fix a bug, the ticket is marked failed with a documented reason, and the orchestrator moves to the next queued bug
+  2. The orchestrator dispatches investigation and fixing to subagents -- its own context contains only ticket paths and status summaries, not investigation details or code diffs
+  3. The ticket records fix details: files changed, approach taken, and base commit (commit hash set by Phase 5)
+  4. When a fix attempt doesn't work, the agent retries with a different approach before giving up (fix-verify loop with timeout and attempt count enforcement)
 **Plans**: 3 plans
 
 Plans:
@@ -84,13 +83,14 @@ Plans:
 - [ ] 04-03-PLAN.md -- SKILL.md: fixer dispatch integration, path updates for new layout, model inheritance cleanup
 
 ### Phase 5: Verification & Close Loop
-**Goal**: Every fix is browser-verified before closing, failed verifications trigger rollback, and the user gets a session summary of all work done
+**Goal**: Every fix is browser-verified before closing, each resolved bug gets an atomic commit, failed verifications trigger rollback, and the user gets a session summary of all work done
 **Depends on**: Phase 4
-**Requirements**: BROW-03, FIXR-04, STAT-04
+**Requirements**: BROW-03, FIXR-01, FIXR-04, STAT-04
 **Success Criteria** (what must be TRUE):
   1. After a fix is applied, the implementation agent re-navigates to the app, re-runs the original reproduction steps, and confirms the bug behavior is gone -- recording verification evidence in the ticket
-  2. If verification fails, the agent reverts the changed files before retrying or moving to the next bug -- no broken code left behind
-  3. At session end, a summary shows: number of bugs fixed, number failed, total time, and per-bug breakdown (title, status, duration)
+  2. After successful browser verification, exactly one git commit exists with the ticket reference in the commit message and only the relevant file changes
+  3. If verification fails, the agent reverts the changed files before retrying or moving to the next bug -- no broken code left behind
+  4. At session end, a summary shows: number of bugs fixed, number failed, total time, and per-bug breakdown (title, status, duration)
 **Plans**: TBD
 
 Plans:
@@ -112,4 +112,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-21 (Phase 4 planned)*
+*Last updated: 2026-02-21 (Phase 4 revised — FIXR-01 moved to Phase 5)*
