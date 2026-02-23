@@ -5,19 +5,19 @@
 See: .planning/PROJECT.md (updated 2026-02-18)
 
 **Core value:** Bugs flow in continuously and get fixed reliably with browser-verified results
-**Current focus:** Phase 5: Verification & Close Loop
+**Current focus:** Phase 6: Fix Agent State Boundary Alignment
 
 ## Current Position
 
-**Current Phase:** 5
-**Current Phase Name:** Verification & Close Loop
-**Total Phases:** 5
-**Current Plan:** Not started
-**Total Plans in Phase:** 2
-**Status:** Milestone complete
+**Current Phase:** 6
+**Current Phase Name:** Fix Agent State Boundary Alignment
+**Total Phases:** 6
+**Current Plan:** 2
+**Total Plans in Phase:** 3
+**Status:** In progress
 **Last Activity:** 2026-02-23
 
-**Progress:** [██████████] 100%
+**Progress:** [███-------] 33%
 
 ## Performance Metrics
 
@@ -46,6 +46,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 04 P03 | 3min | 2 tasks | 1 files |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 2 tasks | 2 files |
+| Phase 06 P01 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Title extracted from first markdown heading with slug-to-title fallback
 - [Phase 05]: Session Summary Format shared section referenced by auto-close, graceful stop, and immediate stop
 - [Phase 05]: Commit messages use title field from ticket list instead of slug derivation
+- [Phase 06-01]: prior_seconds field tracks cumulative time when state is re-entered (hadPriorEntry check, not value > 0)
+- [Phase 06-01]: Retry path is verifying->planning (not verifying->investigating) -- researcher runs once per bug
+- [Phase 06-01]: 9-state lifecycle: queued -> investigating -> researching -> planning -> implementing -> verifying -> done
 
 ### Pending Todos
 
@@ -111,5 +115,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-23
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-fix-agent-state-boundary-alignment/06-CONTEXT.md
+Stopped at: Completed 06-01-PLAN.md
+Resume file: .planning/phases/06-fix-agent-state-boundary-alignment/06-02-PLAN.md
