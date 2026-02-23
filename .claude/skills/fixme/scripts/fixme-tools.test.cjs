@@ -321,24 +321,20 @@ test('rename: unchanged slug updates frontmatter without folder rename', () => {
 });
 
 // ============================================================================
-// Test Suite: ticket dir
+// Test Suite: dead code removal -- ticket dir should be rejected
 // ============================================================================
 
-console.log('\n=== ticket dir tests ===\n');
+console.log('\n=== dead code removal tests (ticket dir rejected) ===\n');
 
-test('dir: returns parent directory of ticket.md', () => {
+test('dir: ticket dir subcommand is rejected as unknown', () => {
   const sessionDir = createTmpDir();
   const ticketPath = createTicketFolder(sessionDir, '0001', 'my-bug', 'queued');
 
   const result = run(`ticket dir "${ticketPath}"`);
-  assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.dir === path.join(sessionDir, '0001-my-bug'), `dir should be ticket folder, got ${result.data.dir}`);
-});
-
-test('dir: nonexistent file errors', () => {
-  const result = run(`ticket dir "/tmp/nonexistent/ticket.md"`);
-  assert(!result.ok, 'Should fail');
+  assert(!result.ok, 'ticket dir should fail (removed subcommand)');
   assert(result.data && result.data.error, 'Should have error message');
+  assert(result.data.error.includes('Unknown ticket subcommand'), `Error should mention unknown subcommand: ${result.data.error}`);
+  assert(!result.data.error.includes('dir'), 'Error valid-list should not mention dir');
 });
 
 // ============================================================================
@@ -434,6 +430,199 @@ test('session summary: scans NNNN-slug/ticket.md', () => {
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
   assert(result.data.total_tickets === 2, `Should have 2 tickets, got ${result.data.total_tickets}`);
   assert(result.data.counts.queued === 2, `Should have 2 queued, got ${JSON.stringify(result.data.counts)}`);
+});
+
+// ============================================================================
+// Test Suite: new state transitions -- happy path through all 9 states
+// ============================================================================
+
+console.log('\n=== new state transitions: happy path ===\n');
+
+test('happy path: queued -> investigating -> researching -> planning -> implementing -> verifying -> done', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'full-path', 'queued');
+
+  const states = ['investigating', 'researching', 'planning', 'implementing', 'verifying', 'done'];
+  for (const nextState of states) {
+    const result = run(`ticket transition "${ticketPath}" ${nextState}`);
+    assert(result.ok, `Transition to ${nextState} should succeed, got: ${JSON.stringify(result.data)}`);
+  }
+
+  // Verify final state
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('state: done'), 'Final state should be done');
+
+  // Verify transitions log has 6 entries
+  // Parse the ticket to check transitions count
+  const transitions = content.match(/from:/g);
+  assert(transitions && transitions.length === 6, `Should have 6 transitions, got ${transitions ? transitions.length : 0}`);
+});
+
+// ============================================================================
+// Test Suite: retry path (verifying -> planning)
+// ============================================================================
+
+console.log('\n=== retry path: verifying -> planning ===\n');
+
+test('retry: verifying -> planning with --reason succeeds and increments attempt', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'retry-test', 'queued');
+
+  // Walk to verifying
+  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
+  for (const s of walkStates) {
+    const r = run(`ticket transition "${ticketPath}" ${s}`);
+    assert(r.ok, `Walk to ${s} should succeed`);
+  }
+
+  // Retry: verifying -> planning with reason
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Build failed"`);
+  assert(result.ok, `Retry transition should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'verifying', `from should be verifying, got ${result.data.from}`);
+  assert(result.data.to === 'planning', `to should be planning, got ${result.data.to}`);
+
+  // Verify current_attempt incremented
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('current_attempt: 1'), `current_attempt should be 1, content: ${content.substring(0, 500)}`);
+
+  // Verify reason appears in transitions log
+  assert(content.includes('Build failed'), 'Reason should appear in transitions');
+});
+
+// ============================================================================
+// Test Suite: invalid old transition (investigating -> fixing)
+// ============================================================================
+
+console.log('\n=== invalid old transitions ===\n');
+
+test('invalid: investigating -> fixing is rejected', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'invalid-test', 'queued');
+
+  // Walk to investigating
+  const r = run(`ticket transition "${ticketPath}" investigating`);
+  assert(r.ok, 'Walk to investigating should succeed');
+
+  // Try the old invalid transition
+  const result = run(`ticket transition "${ticketPath}" fixing`);
+  assert(!result.ok, 'investigating -> fixing should fail');
+  assert(result.data && result.data.error, 'Should have error message');
+  assert(result.data.error.includes('Valid transitions from'), `Error should list valid transitions: ${result.data.error}`);
+});
+
+// ============================================================================
+// Test Suite: new failure paths (researching/planning/implementing -> failed)
+// ============================================================================
+
+console.log('\n=== new failure paths ===\n');
+
+test('failure: researching -> failed with --reason succeeds', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-research', 'queued');
+
+  const r1 = run(`ticket transition "${ticketPath}" investigating`);
+  assert(r1.ok, 'Walk to investigating should succeed');
+  const r2 = run(`ticket transition "${ticketPath}" researching`);
+  assert(r2.ok, 'Walk to researching should succeed');
+
+  // Verify we're actually in researching before testing failure path
+  const pre = fs.readFileSync(ticketPath, 'utf8');
+  assert(pre.includes('state: researching'), 'Should be in researching state before failure test');
+
+  const result = run(`ticket transition "${ticketPath}" failed --reason "No root cause found"`);
+  assert(result.ok, `researching -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'researching', `from should be researching, got ${result.data.from}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('state: failed'), 'State should be failed');
+});
+
+test('failure: planning -> failed with --reason succeeds', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-plan', 'queued');
+
+  const r1 = run(`ticket transition "${ticketPath}" investigating`);
+  assert(r1.ok, 'Walk to investigating should succeed');
+  const r2 = run(`ticket transition "${ticketPath}" researching`);
+  assert(r2.ok, 'Walk to researching should succeed');
+  const r3 = run(`ticket transition "${ticketPath}" planning`);
+  assert(r3.ok, 'Walk to planning should succeed');
+
+  // Verify we're actually in planning
+  const pre = fs.readFileSync(ticketPath, 'utf8');
+  assert(pre.includes('state: planning'), 'Should be in planning state before failure test');
+
+  const result = run(`ticket transition "${ticketPath}" failed --reason "No viable fix"`);
+  assert(result.ok, `planning -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'planning', `from should be planning, got ${result.data.from}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('state: failed'), 'State should be failed');
+});
+
+test('failure: implementing -> failed with --reason succeeds', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-impl', 'queued');
+
+  const r1 = run(`ticket transition "${ticketPath}" investigating`);
+  assert(r1.ok, 'Walk to investigating should succeed');
+  const r2 = run(`ticket transition "${ticketPath}" researching`);
+  assert(r2.ok, 'Walk to researching should succeed');
+  const r3 = run(`ticket transition "${ticketPath}" planning`);
+  assert(r3.ok, 'Walk to planning should succeed');
+  const r4 = run(`ticket transition "${ticketPath}" implementing`);
+  assert(r4.ok, 'Walk to implementing should succeed');
+
+  // Verify we're actually in implementing
+  const pre = fs.readFileSync(ticketPath, 'utf8');
+  assert(pre.includes('state: implementing'), 'Should be in implementing state before failure test');
+
+  const result = run(`ticket transition "${ticketPath}" failed --reason "Implementation blocked"`);
+  assert(result.ok, `implementing -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'implementing', `from should be implementing, got ${result.data.from}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('state: failed'), 'State should be failed');
+});
+
+// ============================================================================
+// Test Suite: cumulative durations on state re-entry
+// ============================================================================
+
+console.log('\n=== cumulative durations on re-entry ===\n');
+
+test('cumulative: planning duration preserved across retry', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'cumul-test', 'queued');
+
+  // Walk to planning
+  run(`ticket transition "${ticketPath}" investigating`);
+  run(`ticket transition "${ticketPath}" researching`);
+  run(`ticket transition "${ticketPath}" planning`);
+
+  // Read the ticket to note the first planning.entered timestamp
+  const content1 = fs.readFileSync(ticketPath, 'utf8');
+  // The planning duration entry should exist with an entered timestamp
+  assert(content1.includes('planning:'), 'Should have planning duration entry after first visit');
+
+  // Continue through implementing -> verifying
+  run(`ticket transition "${ticketPath}" implementing`);
+  run(`ticket transition "${ticketPath}" verifying`);
+
+  // Read ticket -- planning should now have seconds computed (exited when going to implementing)
+  const content2 = fs.readFileSync(ticketPath, 'utf8');
+  // planning entry should have seconds field (even if 0, since transitions are fast)
+  assert(content2.includes('planning:'), 'planning duration should still exist');
+
+  // Retry: verifying -> planning
+  run(`ticket transition "${ticketPath}" planning --reason "Tests failed"`);
+
+  // Read ticket after re-entry
+  const content3 = fs.readFileSync(ticketPath, 'utf8');
+  // The planning entry should have a NEW entered timestamp
+  assert(content3.includes('planning:'), 'planning duration should exist after re-entry');
+  // Check for prior_seconds field (cumulative tracking)
+  assert(content3.includes('prior_seconds:'), 'planning should have prior_seconds field for cumulative tracking');
 });
 
 // ============================================================================
