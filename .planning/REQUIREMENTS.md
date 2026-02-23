@@ -26,15 +26,15 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **BROW-01**: Implementation agent reads project CLAUDE.md to discover dev server URL, build commands, and HMR support
 - [x] **BROW-02**: Implementation agent uses Playwright (MCP or CLI) to navigate to the app and reproduce the reported bug
-- [ ] **BROW-03**: Implementation agent uses Playwright (MCP or CLI) to verify the fix by re-running reproduction steps and confirming the bug is gone
+- [x] **BROW-03**: Implementation agent uses Playwright (MCP or CLI) to verify the fix by re-running reproduction steps and confirming the bug is gone
 - [x] **BROW-04**: Implementation agent investigates the codebase (reads files, traces code paths) to understand root cause before attempting a fix
 
 ### Fix & Recovery
 
-- [ ] **FIXR-01**: Each resolved bug produces exactly one atomic git commit with ticket reference in the message
+- [x] **FIXR-01**: Each resolved bug produces exactly one atomic git commit with ticket reference in the message
 - [x] **FIXR-02**: If the implementation agent cannot fix a bug, it marks the ticket as failed with a reason and moves to the next queued bug
 - [x] **FIXR-03**: The orchestrator main loop stays lean — all investigation, fixing, and verification work happens in subagents
-- [ ] **FIXR-04**: On failed verification, the implementation agent reverts changed files before retrying or moving on
+- [x] **FIXR-04**: On failed verification, the implementation agent reverts changed files before retrying or moving on
 - [x] **FIXR-05**: The implementation agent iterates in a fix→verify loop — if verification is unsatisfactory, it retries with a different approach until satisfied or exhausted
 
 ### System & Architecture
@@ -92,12 +92,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STAT-04 | Phase 5 | Pending |
 | BROW-01 | Phase 1 | Complete |
 | BROW-02 | Phase 3 | Complete |
-| BROW-03 | Phase 5 | Pending |
+| BROW-03 | Phase 5 | Complete |
 | BROW-04 | Phase 3 | Complete |
-| FIXR-01 | Phase 5 | Pending |
+| FIXR-01 | Phase 5 | Complete |
 | FIXR-02 | Phase 4 | Complete |
 | FIXR-03 | Phase 4 | Complete |
-| FIXR-04 | Phase 5 | Pending |
+| FIXR-04 | Phase 5 | Complete |
 | FIXR-05 | Phase 4 | Complete |
 | SYST-01 | Phase 1 | Complete |
 | SYST-02 | Phase 1 | Complete |
