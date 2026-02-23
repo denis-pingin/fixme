@@ -107,7 +107,12 @@ Plans:
   1. fix-agent.md does NOT attempt any state transition to `fixing` — it receives a ticket already in `fixing` state from SKILL.md
   2. Retry semantics are clearly documented or wired: either state-machine.md reflects internal retry (no state transitions), or fix-agent uses verifying→investigating transitions for outer retries
   3. The full E2E flow (bug report → intake → investigate → fix → verify → commit → done) completes without state machine errors
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md -- TDD: fixme-tools.cjs new transition matrix, cumulative durations fix, dead code removal
+- [ ] 06-02-PLAN.md -- Agent files: Phase 0 transitions for 5 sub-agents, fix-agent.md stateless rewrite, ticket template cleanup
+- [ ] 06-03-PLAN.md -- SKILL.md dispatch boundary rewrite, state-machine.md rewrite, 05-01-SUMMARY.md correction
 
 ## Progress
 
@@ -121,7 +126,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. Investigation & Reproduction | 0/2 | Not started | - |
 | 4. Fix & Commit | 0/3 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Complete    | 2026-02-23 |
-| 6. Fix Agent State Boundary Alignment | 0/? | Not started | - |
+| 6. Fix Agent State Boundary Alignment | 0/3 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
