@@ -235,13 +235,13 @@ This is the core execution cycle. Repeat until the user stops the session or the
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> verifying
              ```
-          b. **Read ticket state** to get `files_changed` and `slug`:
+          b. **Read ticket state** to get `files_changed` and `title`:
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
              ```
-             Derive title from slug: replace hyphens with spaces, lowercase.
+             Read the ticket's `title` from `ticket list` output.
           c. **Stage only the fix files:** `git add <file1> <file2> ...` from `files_changed`.
-          d. **Create commit:** `git commit -m "fix: <title>"` (no ticket number, no body -- one-liner only).
+          d. **Create commit:** `git commit -m "fix: <title in lowercase>"` (e.g., `fix: login button broken`). No ticket number, no body -- one-liner only.
           e. **Capture commit hash:** `git rev-parse HEAD`. Use Edit to set `commit_hash:` in ticket frontmatter.
           f. **Transition to done:**
              ```bash
@@ -368,8 +368,11 @@ If the user describes multiple bugs in one message, acknowledge all of them but 
 ### Auto-Close
 
 When the dispatch loop finds no queued tickets AND no intake agents are pending:
-1. Run session summary (same as graceful stop).
-2. Display the summary to the user.
+1. Run session summary:
+   ```bash
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs session summary <session-dir>
+   ```
+2. **Format and display session summary** using the Session Summary Format below.
 3. Session ends automatically -- no user action needed.
 
 ### Graceful Stop (`stop` or `end session`)
@@ -379,7 +382,7 @@ When the dispatch loop finds no queued tickets AND no intake agents are pending:
    ```bash
    node ~/.claude/skills/fixme/scripts/fixme-tools.cjs session summary <session-dir>
    ```
-3. Display the summary to the user.
+3. **Format and display session summary** using the Session Summary Format below.
 
 ### Immediate Stop (`stop now` or `abort`)
 
@@ -391,7 +394,31 @@ When the dispatch loop finds no queued tickets AND no intake agents are pending:
    ```bash
    node ~/.claude/skills/fixme/scripts/fixme-tools.cjs session summary <session-dir>
    ```
-3. Display the summary to the user.
+3. **Format and display session summary** using the Session Summary Format below.
+
+### Session Summary Format
+
+Parse the `session summary` JSON output. Format as a markdown table:
+
+```
+Session Complete: <session name> (<total duration formatted as Xh Ym Zs>)
+
+  # | Bug                    | Status  | Time
+ ---|------------------------|---------|------
+  1 | <title>                | <state> | Xm Ys
+  2 | <title>                | <state> | Xm Ys
+  ...
+
+X fixed, Y failed[, Z skipped][, W other]
+```
+
+**Formatting rules:**
+- Title: use the `title` field from the summary's `tickets` array (already human-readable)
+- Duration per ticket: format `total_seconds` as `Xm Ys` (e.g., `3m 5s`). For 0 seconds: `0m 0s`
+- Total duration: format `duration_seconds` from the summary. Use `Xh Ym Zs` format if over 1 hour, `Xm Ys` if under
+- Status: use raw state names (done, failed, skipped, queued, investigating, fixing, verifying)
+- Summary line: show counts for done ("fixed"), failed, and any other states present. Omit zero counts except for "fixed" (always show it even if 0)
+- For early stop (graceful stop with non-terminal tickets): non-terminal states appear as-is in the table and count in the summary line as their state name (e.g., "2 queued")
 
 ## Status Query
 
