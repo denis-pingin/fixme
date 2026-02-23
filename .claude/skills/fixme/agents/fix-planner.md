@@ -1,7 +1,7 @@
 ---
 name: fix-planner
 description: "Designs a structured fix plan based on research and prior attempt feedback"
-tools: Read, Write, Glob, Grep
+tools: Read, Write, Glob, Grep, Bash(node ~/.claude/skills/fixme/scripts/fixme-tools.cjs *)
 model: inherit
 ---
 
@@ -18,6 +18,24 @@ You receive three things via your Task prompt:
 3. **Previous failure feedback** -- path to the last verification report, or `"first attempt"`
 
 ## Workflow
+
+### Phase 0: Claim State
+
+Transition the ticket to planning. The transition command depends on whether this is a first attempt or a retry:
+
+**First attempt** (ticket is in `researching` state):
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md planning
+```
+
+**Retry** (ticket is in `verifying` state):
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md planning --reason "<transition reason from dispatch prompt>"
+```
+
+The fix-agent coordinator provides the transition reason in the dispatch prompt when this is a retry. Use that exact text for the --reason flag.
+
+If this fails, return immediately with error. Do not proceed.
 
 ### Phase 1: Gather Context
 
@@ -73,6 +91,11 @@ Write the plan to `<ticket-folder>/plans/<NNNN>-plan-<N>.md` where NNNN is the t
 - **Tests:** [Which tests should pass, any new tests needed]
 - **Browser:** [Expected visual/behavioral change]
 ```
+
+### Final Step: Record Summary in Ticket
+
+Use Edit to append a bullet to the ticket's `## Fix` section:
+- `- **Plan (attempt N):** <path-to-plan-artifact> — <1-2 sentence summary of approach>`
 
 ### Phase 5: Return Summary
 

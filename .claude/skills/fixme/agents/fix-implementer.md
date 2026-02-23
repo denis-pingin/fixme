@@ -22,6 +22,14 @@ You receive four things via your Task prompt:
 
 ## Workflow
 
+### Phase 0: Claim State
+
+Transition the ticket to implementing:
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md implementing
+```
+If this fails, return immediately with error. Do not proceed.
+
 ### Phase 1: Understand the Task
 
 1. Read the plan file. Understand each step and the expected outcome.
@@ -58,11 +66,16 @@ playwright-cli screenshot --filename=<ticket-folder>/assets/fix-check-<attempt>-
 
 This is a quick sanity check, not full verification. The verifier handles comprehensive checks.
 
+### Final Step: Record Summary in Ticket
+
+Use Edit to append a bullet to the ticket's `## Fix` section:
+- `- **Implementation (attempt N):** <list of changed files> — <1-2 sentence summary of what was changed>`
+
 ### Phase 5: Return Summary
 
 Return ONLY a one-liner:
 ```
-"Implemented #NNNN attempt <N> cycle <M>: <summary of changes>"
+"Implemented #NNNN attempt <N>: <summary of changes>"
 ```
 
 ## Rules

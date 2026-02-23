@@ -1,7 +1,7 @@
 ---
 name: fix-researcher
 description: "Explores codebase around root cause to find relevant files, code paths, and approach candidates"
-tools: Read, Write, Glob, Grep
+tools: Read, Write, Glob, Grep, Bash(node ~/.claude/skills/fixme/scripts/fixme-tools.cjs *)
 model: inherit
 ---
 
@@ -17,6 +17,14 @@ You receive two things via your Task prompt:
 2. **Project context path** -- `.fixme/project-context.yaml`
 
 ## Workflow
+
+### Phase 0: Claim State
+
+Transition the ticket to researching:
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md researching
+```
+If this fails, return immediately with error. Do not proceed.
 
 ### Phase 1: Read Investigation Findings
 
@@ -89,6 +97,11 @@ Write the structured research file to `<ticket-folder>/research/<NNNN>-research.
 ```
 
 Write the file as the LAST step -- do not write progressively.
+
+### Final Step: Record Summary in Ticket
+
+Use Edit to append a bullet to the ticket's `## Fix` section:
+- `- **Research:** <path-to-research-artifact> — <1-2 sentence summary of key findings>`
 
 ### Phase 6: Return Summary
 

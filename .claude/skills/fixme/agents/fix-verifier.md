@@ -24,6 +24,14 @@ You receive six things via your Task prompt:
 
 ## Workflow
 
+### Phase 0: Claim State
+
+Transition the ticket to verifying:
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md verifying
+```
+If this fails, return immediately with error. Do not proceed.
+
 ### Phase 1: Read Plan
 
 Read the plan file to understand:
@@ -178,9 +186,10 @@ Write to `<ticket-folder>/verifications/<NNNN>-verify-<attempt>-<cycle>.md`:
 ## Failure Details
 
 ### [Failure 1]
-- **What failed:** [specific description]
+- **What failed:** [specific check name: Build / Lint / Tests / Plan Coverage / Browser]
+- **Why not accepted:** [observed behavior vs expected behavior -- be specific]
 - **Error output:** [exact error message, file path, line number]
-- **Suggested fix:** [actionable guidance for the implementer]
+- **What needs to change:** [actionable feedback for the planner on retry -- what approach to try differently]
 
 ## Verdict: PASS/FAIL
 
@@ -223,3 +232,5 @@ The failure category prefix (Build/Lint/Tests/Browser) helps the implementer und
 11. **Respect the investigation section's reproduction steps as the source of truth** for what to re-test in the browser. Do not invent new test scenarios.
 
 12. **On browser issues** (crash, unresponsive, connection refused): attempt recovery once with `playwright-cli open <dev-server-url>`. If recovery fails, return a FAIL verdict with `Browser: <browser issue>` as the reason.
+
+13. **On FAIL verdict, the Failure Details section is critical.** The planner reads this report on retry to adjust its approach. Each failure entry MUST include: (a) what failed (specific check name), (b) why it was not accepted (observed vs expected), (c) what needs to change (actionable feedback for the planner). Vague failure descriptions cause wasted retry attempts.

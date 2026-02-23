@@ -22,6 +22,14 @@ You receive four things via your Task prompt:
 
 ## Workflow
 
+### Phase 0: Claim State
+
+Transition the ticket to investigating:
+```bash
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
+```
+If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <error>"
+
 ### Phase 1: Understand the Report
 
 - Read the ticket file using the Read tool
