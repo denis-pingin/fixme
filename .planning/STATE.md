@@ -14,10 +14,10 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 **Total Phases:** 5
 **Current Plan:** 2
 **Total Plans in Phase:** 2
-**Status:** In progress
+**Status:** Phase complete — ready for verification
 **Last Activity:** 2026-02-23
 
-**Progress:** [█████████░] 92%
+**Progress:** [██████████] 100%
 
 ## Performance Metrics
 
@@ -45,6 +45,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 04 P02 | 4min | 2 tasks | 5 files |
 | Phase 04 P03 | 3min | 2 tasks | 1 files |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
+| Phase 05 P02 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,9 @@ Recent decisions affecting current work:
 - [Phase 05]: Commit format: fix: <title> from slug, no ticket number, no body
 - [Phase 05]: Fix-agent skips researcher on re-entry from browser verification failure (Rule 11)
 - [Phase 05]: Browser verification failure re-enters fix-agent via verifying->investigating->fixing transitions
+- [Phase 05]: Title extracted from first markdown heading with slug-to-title fallback
+- [Phase 05]: Session Summary Format shared section referenced by auto-close, graceful stop, and immediate stop
+- [Phase 05]: Commit messages use title field from ticket list instead of slug derivation
 
 ### Pending Todos
 

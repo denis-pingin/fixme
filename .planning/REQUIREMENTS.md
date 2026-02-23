@@ -20,7 +20,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **STAT-01**: Each ticket tracks state: queued → investigating → fixing → verifying → done/failed
 - [x] **STAT-02**: Each state transition is timestamped with duration calculated per phase
 - [x] **STAT-03**: Ticket records fix details: files changed, investigation notes, verification evidence, commit hash
-- [ ] **STAT-04**: Session-end summary dashboard shows: N fixed, M failed, total time, per-bug breakdown
+- [x] **STAT-04**: Session-end summary dashboard shows: N fixed, M failed, total time, per-bug breakdown
 
 ### Investigation & Browser
 
@@ -89,7 +89,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STAT-01 | Phase 1 | Complete |
 | STAT-02 | Phase 1 | Complete |
 | STAT-03 | Phase 4 | Complete |
-| STAT-04 | Phase 5 | Pending |
+| STAT-04 | Phase 5 | Complete |
 | BROW-01 | Phase 1 | Complete |
 | BROW-02 | Phase 3 | Complete |
 | BROW-03 | Phase 5 | Complete |
