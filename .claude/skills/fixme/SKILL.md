@@ -228,12 +228,82 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
      d. **Handle fixer result:**
         - If fixer returned "Fixed #NNNN: ..." (success):
-          Report to user: "Fixed #NNNN: <summary>. Awaiting browser verification (Phase 5)."
-          The ticket should now be in `fixing` state on success. Phase 5 will handle the final transition to done.
-          NOTE: Actually re-read the ticket state from disk to determine actual state.
+          Proceed to browser verification (step 5e below).
         - If fixer returned "Failed #NNNN: ..." (failure):
           Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
           The ticket is already in `failed` state (the fixer handles the transition and revert).
+
+     e. **Browser verification flow** (after fixer success):
+
+        **i. Transition to verifying:**
+        ```bash
+        node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> verifying
+        ```
+
+        **ii. Dispatch browser-verifier via Task tool:**
+        ```
+        First, read ~/.claude/skills/fixme/agents/browser-verifier.md for your role instructions.
+
+        Verify this fix in the browser:
+        - Ticket folder: <ticket-folder-dir>
+        - Project context: .fixme/project-context.yaml
+        - Dev server URL: <dev_server.url from project context>
+        ```
+
+        **iii. After browser verifier returns:**
+        ALWAYS read ticket state from disk:
+        ```bash
+        node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
+        ```
+
+        **iv. Handle browser verification result:**
+
+        - If "Browser verified #NNNN: PASS":
+          a. Read ticket frontmatter to get `files_changed` and `slug`. Derive title from slug: replace hyphens with spaces, lowercase.
+          b. Stage only the fix files: `git add <file1> <file2> ...` from `files_changed`.
+          c. Create commit: `git commit -m "fix: <title>"` (no ticket number, no body -- one-liner only).
+          d. Capture commit hash: `git rev-parse HEAD`. Use Edit to set `commit_hash:` in ticket frontmatter.
+          e. Transition: `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> done`
+          f. Report to user: "Fixed and committed #NNNN: <summary>"
+
+        - If "Browser verified #NNNN: FAIL":
+          a. Read ticket frontmatter for `current_attempt` and `max_attempts`.
+          b. If `current_attempt < max_attempts`:
+             - Transition back to investigating:
+               ```bash
+               node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating --reason "<browser failure summary>"
+               ```
+             - Then transition to fixing:
+               ```bash
+               node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> fixing
+               ```
+             - Re-dispatch fix-agent via Task tool (same as step 5b) with added context:
+               ```
+               First, read ~/.claude/skills/fixme/agents/fix-agent.md for your role instructions.
+
+               You are the fix COORDINATOR. You dispatch sub-agents via Task tool -- you do NOT write code, run builds, or investigate yourself.
+
+               Fix this bug:
+               - Ticket folder: <ticket-folder-dir>
+               - Project context: .fixme/project-context.yaml
+               - Browser verification failure: <ticket-folder>/verifications/<NNNN>-browser-verify-<N>.md
+               ```
+             - After fix-agent returns: go back to step 5c to re-read state, then step 5d to re-evaluate the result (the fix->verify->commit/retry cycle).
+          c. If `current_attempt >= max_attempts`:
+             - Read `base_commit` from ticket frontmatter.
+             - Revert tracked changes:
+               ```bash
+               git checkout <base_commit> -- .
+               ```
+             - Remove untracked files created by fixer:
+               ```bash
+               git clean -fd --exclude=.fixme/
+               ```
+             - Transition to failed:
+               ```bash
+               node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Browser verification failed after all attempts: <last failure summary>"
+               ```
+             - Report to user: "Failed to fix #NNNN after all attempts. Changes reverted."
 
    - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
      Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip: transition to skipped with reason. If more details: keep ticket in investigating and wait for user's follow-up message.
@@ -425,3 +495,4 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 - **Project context format:** See `~/.claude/skills/fixme/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
 - **Investigation agent:** See `~/.claude/skills/fixme/agents/investigation-agent.md` for the investigation agent's instructions, tool access, and output format.
 - **Fixer agent:** See `~/.claude/skills/fixme/agents/fix-agent.md` for the fixer coordinator's instructions, sub-agent dispatch, retry loop, and revert logic.
+- **Browser verifier:** See `~/.claude/skills/fixme/agents/browser-verifier.md` for the browser verification agent's instructions, reproduction re-run, PASS/FAIL verdict, and evidence collection.
