@@ -17,6 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: Investigation & Reproduction** - Browser-based bug reproduction and codebase investigation
 - [ ] **Phase 4: Fix & Commit** - Implement fixes, orchestrator dispatch loop, fix-verify retry loop
 - [x] **Phase 5: Verification & Close Loop** - Browser-verified fixes, atomic commits, revert on failure, session summary (completed 2026-02-23)
+- [ ] **Phase 6: Fix Agent State Boundary Alignment** - Close audit gaps: double fixing transition, retry state divergence, E2E flow fix
 
 ## Phase Details
 
@@ -97,10 +98,21 @@ Plans:
 - [ ] 05-01-PLAN.md -- Browser verifier agent, SKILL.md dispatch loop (verify + commit + retry), fix-agent re-entry
 - [ ] 05-02-PLAN.md -- Title field in fixme-tools.cjs CLI output, formatted session summary display
 
+### Phase 6: Fix Agent State Boundary Alignment
+**Goal**: Close audit integration gaps — remove duplicate fixing transition, align retry state semantics, and unblock the E2E happy path flow
+**Depends on**: Phase 5
+**Requirements**: STAT-01, STAT-02, FIXR-01, FIXR-05
+**Gap Closure:** Closes INT-01, INT-02, and broken happy path flow from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. fix-agent.md does NOT attempt any state transition to `fixing` — it receives a ticket already in `fixing` state from SKILL.md
+  2. Retry semantics are clearly documented or wired: either state-machine.md reflects internal retry (no state transitions), or fix-agent uses verifying→investigating transitions for outer retries
+  3. The full E2E flow (bug report → intake → investigate → fix → verify → commit → done) completes without state machine errors
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -109,7 +121,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 3. Investigation & Reproduction | 0/2 | Not started | - |
 | 4. Fix & Commit | 0/3 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Complete    | 2026-02-23 |
+| 6. Fix Agent State Boundary Alignment | 0/? | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-21 (Phase 4 revised — FIXR-01 moved to Phase 5)*
+*Last updated: 2026-02-23 (Phase 6 added — audit gap closure)*

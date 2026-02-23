@@ -104,6 +104,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SYST-03 | Phase 1 | Complete |
 | SYST-04 | Phase 1 | Complete |
 
+**Gap closure (Phase 6):** Integration gaps INT-01 and INT-02 affect STAT-01, STAT-02, FIXR-01, FIXR-05. These requirements are individually satisfied but have cross-phase integration defects addressed by Phase 6.
+
 **Coverage:**
 - v1 requirements: 22 total
 - Mapped to phases: 22
@@ -111,4 +113,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-02-18*
-*Last updated: 2026-02-21 (FIXR-01 moved from Phase 4 to Phase 5 — Phase 4 makes no commits)*
+*Last updated: 2026-02-23 (Phase 6 gap closure note added for INT-01/INT-02 affected requirements)*
