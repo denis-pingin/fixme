@@ -14,21 +14,27 @@ Browser-verify every fix before closing, create one atomic git commit per resolv
 ## Implementation Decisions
 
 ### Commit message format
-- One-line commit message reflecting the ticket title (e.g., `fix: resolve login redirect loop`)
+- Conventional commit prefix: `fix: <ticket title>` (e.g., `fix: resolve login redirect loop`)
 - No FIXME ticket numbers in the commit message -- keep it clean and project-native
 - No commit body -- one-liner only
 
-### Browser verification flow
-- After fix-agent returns "fixed" (build/lint/test passed), run browser verification: re-navigate to the affected URL, re-run the original reproduction steps, confirm the bug behavior is gone
-- Follows the same browser interaction pattern as the investigation agent: `playwright-cli open`, `playwright-cli snapshot`, `playwright-cli screenshot`, console/network checks
-- Browser verification evidence captured: screenshots (before/after), snapshots, console checks -- written to the ticket's `<!-- section: verification -->` section
-- Screenshots go to `<ticket-folder>/assets/`, verification reports to `<ticket-folder>/verifications/`
+### Browser verification: what "verified" means
+- Re-run the original reproduction steps from the investigation section of the ticket
+- Confirm that the reported bug symptom no longer occurs
+- Confirm that the expected/desired state is present (not just "no error" -- the page should show correct behavior)
+- This is a functional check, not just a visual glance
+
+### Browser verification evidence
+- Screenshot of the fixed state only -- the investigation agent already captured the "before" (bug-present) screenshots during reproduction
+- No before/after pair needed at verification time
+- Evidence goes to ticket's `<!-- section: verification -->` section, screenshots to `<ticket-folder>/assets/`
+- Verification reports to `<ticket-folder>/verifications/`
 
 ### Browser verification failure handling
 - On failure: do NOT revert code. Keep all changes in place
 - Write detailed failure evidence to the ticket (what was expected vs. what was observed, screenshots, why it failed)
 - Re-enter the fix-agent loop with accumulated context -- the fixer can read the browser verification report to understand what's still wrong
-- This counts toward the existing `max_attempts` budget from ticket frontmatter
+- Browser verification failure counts toward the existing `max_attempts` budget (default 3) -- same pool as fix attempts
 - Final failure (all attempts exhausted) still triggers the existing fix-agent Step 6 revert (checkout + clean)
 
 ### Commit mechanics
@@ -39,14 +45,15 @@ Browser-verify every fix before closing, create one atomic git commit per resolv
 
 ### Session summary
 - Already implemented: `session summary` command returns JSON with per-ticket stats (number, slug, state, total_seconds), updates session.md frontmatter
-- Phase 5 addition: include `commit_hash` per ticket in the summary output
+- Per-bug detail: minimal -- title + done/failed status
+- Session ends naturally when all tickets are resolved/addressed, or early if the user stops it
+- On early stop: show per-ticket state breakdown with counts (e.g., 3 done, 1 failed, 2 queued). Queued/in-progress tickets stay in their current state -- no automatic transitions
 - Display format: terminal output + persisted to session.md (already the pattern)
-- Per-bug detail: title + status + duration (per ROADMAP success criteria). Commit hash added for done tickets
 
 ### Claude's Discretion
-- Exact `fix:` prefix vs. bare title in commit message (as long as no ticket numbers appear)
 - Browser verification agent structure: whether it's a new agent file or integrated into the existing verification flow
 - How to format the session summary table in terminal output
+- Whether to include commit hash in the minimal summary line per done ticket
 
 </decisions>
 
