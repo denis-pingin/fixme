@@ -52,7 +52,7 @@ If the bug is visual (CSS, layout, rendering), use the browser for a quick sanit
 
 ```bash
 playwright-cli snapshot    # Check current page state
-playwright-cli goto <url>  # Navigate to affected page
+playwright-cli open <url>  # Navigate to affected page
 playwright-cli screenshot --filename=<ticket-folder>/assets/fix-check-<attempt>-<cycle>.png
 ```
 

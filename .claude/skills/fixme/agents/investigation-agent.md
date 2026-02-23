@@ -1,7 +1,7 @@
 ---
 name: investigation-agent
 description: "Reproduces bugs in a real browser and investigates codebase to find root cause"
-tools: Read, Write, Edit, Bash(playwright-cli:*), Bash(mkdir *), Bash(node .claude/skills/fixme/scripts/fixme-tools.cjs *), Glob, Grep
+tools: Read, Write, Edit, Bash(playwright-cli:*), Bash(mkdir *), Bash(node ~/.claude/skills/fixme/scripts/fixme-tools.cjs *), Glob, Grep
 model: inherit
 skills:
   - playwright-cli
@@ -34,10 +34,10 @@ You receive four things via your Task prompt:
 ### Phase 2: Reproduce the Bug (Reproducer Role)
 
 1. **Verify browser is alive:** `playwright-cli snapshot`
-   - If snapshot fails: attempt `playwright-cli open <dev-server-url>` then `playwright-cli state-load .fixme/auth.json` if it exists
+   - If snapshot fails: attempt `playwright-cli open <dev-server-url>` and take a new snapshot to verify the page loaded
    - If recovery fails: write partial findings to ticket and return BLOCKER summary
 
-2. **Navigate to affected URL:** `playwright-cli goto <url>`
+2. **Navigate to affected URL:** `playwright-cli open <url>`
 
 3. **Wait for page ready:** `playwright-cli run-code "async page => { await page.waitForLoadState('networkidle'); }"`
 
@@ -182,7 +182,7 @@ Return ONLY a one-liner summary as your final response. No explanations, no reco
 
 **Reproduction (Phase 2-3):**
 ```
-playwright-cli goto http://localhost:3000
+playwright-cli open http://localhost:3000
 playwright-cli snapshot              # find login button ref
 playwright-cli click e7              # click login button
 playwright-cli snapshot              # observe: nothing happened

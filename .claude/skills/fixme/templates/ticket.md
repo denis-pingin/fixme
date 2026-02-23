@@ -52,10 +52,7 @@ durations: {}
 <!-- section: fix -->
 ## Fix
 
-<!-- Fixer agent writes brief status updates here. Detailed plans and verifications are stored as separate files in the ticket folder: -->
-<!-- plans/<NNNN>-plan-<N>.md -- fix plan per attempt -->
-<!-- verifications/<NNNN>-verify-<attempt>-<cycle>.md -- verification report per cycle -->
-<!-- research/<NNNN>-research.md -- codebase research output -->
+<!-- Status updates added by fix-agent below -->
 
 <!-- section: verification -->
 ## Verification

@@ -1,7 +1,7 @@
 ---
 name: fix-agent
 description: "Coordinates bug fixing via 4 sub-agents: researcher, planner, implementer, verifier"
-tools: Read, Write, Edit, Bash(node .claude/skills/fixme/scripts/fixme-tools.cjs *), Bash(git *), Task, Glob
+tools: Read, Write, Edit, Bash(node ~/.claude/skills/fixme/scripts/fixme-tools.cjs *), Bash(git *), Task, Glob
 model: inherit
 ---
 
@@ -40,14 +40,14 @@ Update ticket frontmatter: use the Edit tool to set `base_commit:` to the hash v
 ### Step 3: Transition Ticket to Fixing
 
 ```bash
-node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md fixing
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md fixing
 ```
 
 ### Step 4: Dispatch Fix-Researcher
 
-Dispatch via Task tool:
+Dispatch via Task tool (use `subagent_type: "general-purpose"`):
 ```
-First, read .claude/skills/fixme/agents/fix-researcher.md for your role instructions.
+First, read ~/.claude/skills/fixme/agents/fix-researcher.md for your role instructions.
 
 Research the bug for fixing:
 - Ticket folder: <ticket-folder>
@@ -55,10 +55,19 @@ Research the bug for fixing:
 ```
 
 After return:
-- Verify research file exists in `<ticket-folder>/research/` (use Glob or Read)
-- Read the researcher's return summary
-- Use Edit to append to the `<!-- section: fix -->` section in the ticket: `"Research complete. See research/<NNNN>-research.md."`
-- Record researcher duration
+
+1. **HARD GATE -- verify research file exists:** Use Glob to check `<ticket-folder>/research/*-research.md`. If NO file exists, the researcher failed silently. Do NOT proceed to Step 5. Log the failure in the fix section and re-dispatch the researcher ONE more time. If the second attempt also produces no file, go to Step 6 (revert and fail) with reason `"Researcher failed to produce output after 2 attempts"`.
+2. Read the researcher's return summary
+3. Record researcher duration
+4. Use Edit to append to the fix section (after the `<!-- Status updates added by fix-agent below -->` comment). Write the attempt heading AND the research bullet together:
+
+  ```markdown
+  ### Attempt 1
+
+  - **Research** (<duration>s) → `research/<NNNN>-research.md`
+  ```
+
+  Each line must be on its own line. The blank line after the heading is required for markdown rendering.
 
 ### Step 5: Outer Loop (Attempts 1..max_attempts)
 
@@ -66,8 +75,9 @@ After return:
 
 #### 5a. Dispatch Fix-Planner
 
+Dispatch via Task tool (use `subagent_type: "general-purpose"`):
 ```
-First, read .claude/skills/fixme/agents/fix-planner.md for your role instructions.
+First, read ~/.claude/skills/fixme/agents/fix-planner.md for your role instructions.
 
 Create a fix plan:
 - Ticket folder: <ticket-folder>
@@ -76,9 +86,12 @@ Create a fix plan:
 ```
 
 After return:
-- Verify plan file exists in `<ticket-folder>/plans/`
-- Use Edit to append to ticket fix section: `"Plan <N> created. See plans/<NNNN>-plan-<N>.md."`
-- Record planner duration
+
+1. **HARD GATE -- verify plan file exists:** Use Glob to check `<ticket-folder>/plans/*-plan-*.md`. If NO file exists, the planner failed silently. Do NOT proceed to the inner loop. Go to Step 6 (revert and fail) with reason `"Planner failed to produce plan file"`.
+2. Record planner duration
+- Use Edit to append a new bullet to the current attempt section in the fix section:
+  `- **Plan** (<duration>s) → \`plans/<NNNN>-plan-<N>.md\``
+- If this is attempt 2+, first write a new `### Attempt <N>` heading (with blank line after) before the plan bullet.
 
 #### 5b. Inner Loop (Cycles 1..max_verify_cycles)
 
@@ -86,8 +99,10 @@ After return:
 
 ##### 5b-i. Dispatch Fix-Implementer
 
+Dispatch via Task tool (use `subagent_type: "general-purpose"`):
+
 ```
-First, read .claude/skills/fixme/agents/fix-implementer.md for your role instructions.
+First, read ~/.claude/skills/fixme/agents/fix-implementer.md for your role instructions.
 
 Implement the fix:
 - Ticket folder: <ticket-folder>
@@ -97,15 +112,19 @@ Implement the fix:
 ```
 
 After return:
-- Use Edit to append to ticket fix section: `"Implementation cycle <M> complete."`
+
 - Record implementer duration
+- Use Edit to append a new bullet to the current attempt section in the fix section:
+  `- **Implement** cycle <M> (<duration>s)`
 
 **Capture files_changed:** Run `git diff --name-only <base_commit> HEAD` to get changed files. Update the ticket frontmatter `files_changed` field with this list (use Edit tool to write the YAML array).
 
 ##### 5b-ii. Dispatch Fix-Verifier
 
+Dispatch via Task tool (use `subagent_type: "general-purpose"`):
+
 ```
-First, read .claude/skills/fixme/agents/fix-verifier.md for your role instructions.
+First, read ~/.claude/skills/fixme/agents/fix-verifier.md for your role instructions.
 
 Verify the fix:
 - Ticket folder: <ticket-folder>
@@ -115,14 +134,17 @@ Verify the fix:
 ```
 
 After return:
-- Read the verification report from `<ticket-folder>/verifications/`
-- Record verifier duration
+
+1. **HARD GATE -- verify report file exists:** Use Glob to check `<ticket-folder>/verifications/*-verify-<N>-<M>.md`. If NO file exists, the verifier failed silently. Treat this as a FAIL verdict and log it as such in the fix section.
+2. Read the verification report from `<ticket-folder>/verifications/`
+3. Record verifier duration
 
 ##### 5b-iii. Check Verdict
 
-- **PASS:** Append to ticket fix section: `"Fix verified successfully."` Return success (Step 7).
-- **FAIL + inner cycles remaining:** Continue inner loop (implementer gets verifier feedback path).
-- **FAIL + inner cycles exhausted:** Break to outer loop.
+- **PASS:** Append a bullet to the fix section: `- **Verify** cycle <M> (<duration>s) → PASS → \`verifications/<NNNN>-verify-<N>-<M>.md\`` Then return success (Step 7).
+- **FAIL:** Append a bullet to the fix section: `- **Verify** cycle <M> (<duration>s) → FAIL → \`verifications/<NNNN>-verify-<N>-<M>.md\``
+  - If inner cycles remaining: continue inner loop (implementer gets verifier feedback path).
+  - If inner cycles exhausted: break to outer loop.
 
 #### 5c. Inner Loop Exhausted
 
@@ -148,7 +170,7 @@ If inner loop exhausted without PASS: log the last failure feedback for re-plan.
 
 4. **Transition ticket to failed:**
    ```bash
-   node .claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "Fix failed after <N> attempts: <last failure summary>"
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "Fix failed after <N> attempts: <last failure summary>"
    ```
 
 5. **Append to ticket fix section:** All attempt summaries and the final failure reason.
@@ -183,6 +205,10 @@ Note: `commit_hash` is null because Phase 4 does not create commits. Phase 5 set
 
 6. **The `git clean` on revert MUST exclude `.fixme/`** to preserve artifact files (research, plans, verifications).
 
-7. **Record timing for each sub-agent dispatch** (note start time, note end time) and write durations to the ticket fix section as inline notes (e.g., "Research complete (42s). See research/...").
+7. **Record timing for each sub-agent dispatch** (note start time, note end time) and include durations in the fix section bullets (e.g., `- **Research** (42s) → ...`).
 
 8. **Check elapsed time against max_timeout_minutes BEFORE each sub-agent dispatch.** If timeout is exceeded, do not dispatch -- go directly to revert and fail.
+
+9. **Fix section formatting:** Each status bullet MUST be on its own line. Never concatenate multiple updates on one line. Use the exact format: `- **Phase** (<duration>s) → \`artifact-path\``. Attempt headings (`### Attempt N`) must have a blank line after them.
+
+10. **Always use `subagent_type: "general-purpose"` when dispatching sub-agents via Task tool.** Never use Explore or other restricted agent types -- all sub-agents need Write access to produce their output files.

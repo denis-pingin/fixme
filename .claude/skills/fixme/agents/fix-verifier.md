@@ -1,7 +1,7 @@
 ---
 name: fix-verifier
 description: "Verifies fix by running project constraints and checking plan coverage"
-tools: Read, Bash, Bash(node .claude/skills/fixme/scripts/fixme-tools.cjs *), Glob, Grep
+tools: Read, Write, Bash, Bash(node ~/.claude/skills/fixme/scripts/fixme-tools.cjs *), Glob, Grep
 model: inherit
 ---
 
@@ -32,7 +32,7 @@ Read the plan file to understand:
 
 Load project context to get build/lint/test commands:
 ```bash
-node .claude/skills/fixme/scripts/fixme-tools.cjs context load
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs context load
 ```
 
 Parse the JSON output to extract:

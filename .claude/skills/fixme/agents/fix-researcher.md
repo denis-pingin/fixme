@@ -1,7 +1,7 @@
 ---
 name: fix-researcher
 description: "Explores codebase around root cause to find relevant files, code paths, and approach candidates"
-tools: Read, Glob, Grep
+tools: Read, Write, Glob, Grep
 model: inherit
 ---
 
