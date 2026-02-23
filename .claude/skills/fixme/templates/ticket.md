@@ -13,7 +13,6 @@ related: []
 max_attempts: 3
 current_attempt: 0
 base_commit:
-max_verify_cycles: 3
 max_timeout_minutes: 30
 fix_artifacts: []
 files_changed: []
