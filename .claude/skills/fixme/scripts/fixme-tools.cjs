@@ -510,6 +510,18 @@ function buildContent(frontmatter, body, rawFields) {
   return `---\n${yamlStr}\n---${separator}${body}`;
 }
 
+/**
+ * Extract a human-readable title from a ticket's markdown body.
+ * Tries the first heading (# NNNN: Title), falls back to slug-to-title conversion.
+ */
+function extractTitle(body, slug) {
+  const headingMatch = body.match(/^#\s+\d+:\s+(.+)/m);
+  if (headingMatch) {
+    return headingMatch[1].trim();
+  }
+  return slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 // ============================================================================
 // Transition Matrix
 // ============================================================================
@@ -739,11 +751,13 @@ function ticketList(sessionDir, flags) {
   const tickets = entries.map(d => {
     const ticketPath = path.join(sessionDir, d, 'ticket.md');
     const content = fs.readFileSync(ticketPath, 'utf8');
-    const { frontmatter: fm } = parseFrontmatter(content);
+    const { frontmatter: fm, body } = parseFrontmatter(content);
+    const slug = fm.slug || d.replace(/^\d+-/, '');
     return {
       number: fm.number || d.match(/^(\d+)-/)?.[1] || '0000',
-      slug: fm.slug || d.replace(/^\d+-/, ''),
+      slug,
       state: fm.state || 'unknown',
+      title: extractTitle(body, slug),
       path: ticketPath,
       dir: path.join(sessionDir, d),
     };
@@ -774,11 +788,13 @@ function ticketNext(sessionDir) {
   const tickets = entries.map(d => {
     const ticketPath = path.join(sessionDir, d, 'ticket.md');
     const content = fs.readFileSync(ticketPath, 'utf8');
-    const { frontmatter: fm } = parseFrontmatter(content);
+    const { frontmatter: fm, body } = parseFrontmatter(content);
+    const slug = fm.slug || d.replace(/^\d+-/, '');
     return {
       number: fm.number || d.match(/^(\d+)-/)?.[1] || '0000',
-      slug: fm.slug || d.replace(/^\d+-/, ''),
+      slug,
       state: fm.state || 'unknown',
+      title: extractTitle(body, slug),
       path: ticketPath,
       dir: path.join(sessionDir, d),
     };
@@ -790,7 +806,7 @@ function ticketNext(sessionDir) {
   }
 
   const next = queued[0];
-  return output({ path: next.path, dir: next.dir, number: next.number, slug: next.slug });
+  return output({ path: next.path, dir: next.dir, number: next.number, slug: next.slug, title: next.title });
 }
 
 function ticketRename(ticketPath, flags) {
@@ -995,7 +1011,7 @@ function sessionSummary(sessionDir) {
 
   for (const d of ticketDirs) {
     const content = fs.readFileSync(path.join(sessionDir, d, 'ticket.md'), 'utf8');
-    const { frontmatter: tfm } = parseFrontmatter(content);
+    const { frontmatter: tfm, body: ticketBody } = parseFrontmatter(content);
 
     const state = tfm.state || 'unknown';
     stateCounts[state] = (stateCounts[state] || 0) + 1;
@@ -1021,10 +1037,12 @@ function sessionSummary(sessionDir) {
 
     totalSeconds += ticketSeconds;
 
+    const slug = tfm.slug || d.replace(/^\d+-/, '');
     tickets.push({
       number: tfm.number || d.match(/^(\d+)-/)?.[1] || '0000',
-      slug: tfm.slug || d.replace(/^\d+-/, ''),
+      slug,
       state,
+      title: extractTitle(ticketBody, slug),
       total_seconds: ticketSeconds,
     });
   }
