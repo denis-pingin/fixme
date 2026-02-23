@@ -111,5 +111,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-23
-Stopped at: Completed 05-01-PLAN.md
-Resume file: .planning/phases/05-verification-close-loop/05-01-SUMMARY.md
+Stopped at: Phase 6 context gathered
+Resume file: .planning/phases/06-fix-agent-state-boundary-alignment/06-CONTEXT.md
