@@ -91,11 +91,11 @@ Plans:
   2. After successful browser verification, exactly one git commit exists with the ticket reference in the commit message and only the relevant file changes
   3. If verification fails, the agent reverts the changed files before retrying or moving to the next bug -- no broken code left behind
   4. At session end, a summary shows: number of bugs fixed, number failed, total time, and per-bug breakdown (title, status, duration)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- Browser verifier agent, SKILL.md dispatch loop (verify + commit + retry), fix-agent re-entry
+- [ ] 05-02-PLAN.md -- Title field in fixme-tools.cjs CLI output, formatted session summary display
 
 ## Progress
 
