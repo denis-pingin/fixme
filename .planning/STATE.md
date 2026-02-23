@@ -12,12 +12,12 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 **Current Phase:** 6
 **Current Phase Name:** Fix Agent State Boundary Alignment
 **Total Phases:** 6
-**Current Plan:** 2
+**Current Plan:** 3
 **Total Plans in Phase:** 3
-**Status:** In progress
+**Status:** Phase complete — ready for verification
 **Last Activity:** 2026-02-23
 
-**Progress:** [███-------] 33%
+**Progress:** [██████████] 100%
 
 ## Performance Metrics
 
@@ -47,6 +47,8 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 2 tasks | 2 files |
 | Phase 06 P01 | 3min | 2 tasks | 2 files |
+| Phase 06 P03 | 4min | 2 tasks | 3 files |
+| Phase 06 P02 | 3min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -101,6 +103,11 @@ Recent decisions affecting current work:
 - [Phase 06-01]: prior_seconds field tracks cumulative time when state is re-entered (hadPriorEntry check, not value > 0)
 - [Phase 06-01]: Retry path is verifying->planning (not verifying->investigating) -- researcher runs once per bug
 - [Phase 06-01]: 9-state lifecycle: queued -> investigating -> researching -> planning -> implementing -> verifying -> done
+- [Phase 06]: SKILL.md dispatch loop reduced from 6 to 5 steps -- agents own their state transitions, orchestrator owns only terminals
+- [Phase 06]: State-machine.md ownership table documents all 11 transitions with their exact owners for unambiguous reference
+- [Phase 06]: fix-agent owns zero state transitions -- all transitions delegated to sub-agents via Phase 0
+- [Phase 06]: Inner loop removed -- each attempt is plan->implement->verify, SKILL.md handles revert and terminal transitions
+- [Phase 06]: Sub-agents write inline summaries (artifact path + result) to ticket fix section after completing work
 
 ### Pending Todos
 
