@@ -334,7 +334,10 @@ test('dir: ticket dir subcommand is rejected as unknown', () => {
   assert(!result.ok, 'ticket dir should fail (removed subcommand)');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('Unknown ticket subcommand'), `Error should mention unknown subcommand: ${result.data.error}`);
-  assert(!result.data.error.includes('dir'), 'Error valid-list should not mention dir');
+  // The valid subcommand list (after "Valid:") should not include "dir"
+  const validListMatch = result.data.error.match(/Valid:\s*(.*)/);
+  assert(validListMatch, 'Error should list valid subcommands');
+  assert(!validListMatch[1].includes('dir'), `Valid-list should not mention dir: ${validListMatch[1]}`);
 });
 
 // ============================================================================

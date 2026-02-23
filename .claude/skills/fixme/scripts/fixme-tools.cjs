@@ -527,13 +527,15 @@ function extractTitle(body, slug) {
 // ============================================================================
 
 const TRANSITIONS = {
-  'queued':        ['investigating', 'skipped', 'failed'],
-  'investigating': ['fixing', 'skipped', 'failed'],
-  'fixing':        ['verifying', 'failed'],
-  'verifying':     ['done', 'investigating', 'failed'],
-  'done':          [],
-  'failed':        [],
-  'skipped':       [],
+  'queued':         ['investigating', 'skipped', 'failed'],
+  'investigating':  ['researching', 'skipped', 'failed'],
+  'researching':    ['planning', 'failed'],
+  'planning':       ['implementing', 'failed'],
+  'implementing':   ['verifying', 'failed'],
+  'verifying':      ['done', 'planning', 'failed'],
+  'done':           [],
+  'failed':         [],
+  'skipped':        [],
 };
 
 /**
@@ -542,7 +544,7 @@ const TRANSITIONS = {
 function requiresReason(fromState, toState) {
   if (toState === 'failed') return true;
   if (toState === 'skipped') return true;
-  if (fromState === 'verifying' && toState === 'investigating') return true;
+  if (fromState === 'verifying' && toState === 'planning') return true;
   return false;
 }
 
@@ -706,7 +708,15 @@ function ticketTransition(ticketPath, newState, flags) {
     durations[currentState].exited = now;
     durations[currentState].seconds = Math.round((new Date(now) - entered) / 1000);
   }
+
+  // Preserve cumulative seconds for states visited multiple times (e.g., planning on retry)
+  const hadPriorEntry = durations[newState] && durations[newState].entered;
+  const priorSeconds = (durations[newState] && typeof durations[newState].seconds === 'number') ? durations[newState].seconds : 0;
+  const priorAccumulated = (durations[newState] && typeof durations[newState].prior_seconds === 'number') ? durations[newState].prior_seconds : 0;
   durations[newState] = { entered: now };
+  if (hadPriorEntry) {
+    durations[newState].prior_seconds = priorSeconds + priorAccumulated;
+  }
 
   // Update frontmatter fields
   fm.state = newState;
@@ -719,8 +729,8 @@ function ticketTransition(ticketPath, newState, flags) {
     fm.failure_reason = reason;
   }
 
-  // Increment attempt on retry (verifying -> investigating)
-  if (currentState === 'verifying' && newState === 'investigating') {
+  // Increment attempt on retry (verifying -> planning)
+  if (currentState === 'verifying' && newState === 'planning') {
     fm.current_attempt = (fm.current_attempt || 0) + 1;
   }
 
@@ -885,13 +895,6 @@ function ticketRename(ticketPath, flags) {
     number,
     title
   });
-}
-
-function ticketDir(ticketPath) {
-  if (!fs.existsSync(ticketPath)) {
-    return error(`Ticket file not found: ${ticketPath}`);
-  }
-  return output({ dir: path.dirname(ticketPath) });
 }
 
 // ============================================================================
@@ -1400,10 +1403,8 @@ function main() {
             return ticketNext(args[0]);
           case 'rename':
             return ticketRename(args[0], flags);
-          case 'dir':
-            return ticketDir(args[0]);
           default:
-            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename, dir`);
+            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename`);
         }
 
       case 'session':
