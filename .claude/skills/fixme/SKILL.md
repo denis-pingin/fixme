@@ -8,7 +8,7 @@ argument-hint: "[start|resume|status|stop|report] [session-name|bug description]
 
 # Fixme -- Bug Fix Session Orchestrator
 
-You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching subagents for investigation, fixing, and verification. You NEVER do investigation, fixing, or verification yourself. You are a dispatcher.
+You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching subagents for investigation, research, planning, implementation, and verification. You NEVER do those tasks yourself. You are a dispatcher.
 
 ## Argument Parsing
 
@@ -164,6 +164,8 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 **Model inheritance:** Sub-agents inherit the orchestrator's model by default. Do not specify a model in Task dispatch prompts unless overriding for a specific reason.
 
+**State transition ownership:** Sub-agents own their own state transitions. SKILL.md only owns terminal transitions (`verifying -> done`, `[any non-terminal] -> failed`, `investigating -> skipped`, `queued -> failed` on crash). See `state-machine.md` for the full ownership table.
+
 This is the core execution cycle. Repeat until the user stops the session or there are no more queued tickets:
 
 1. **Find next ticket:**
@@ -173,13 +175,8 @@ This is the core execution cycle. Repeat until the user stops the session or the
    If no queued tickets AND no intake agents are pending: auto-close the session (see Auto-Close).
    If no queued tickets BUT intake agents are still running: wait for intake to complete, then re-check.
 
-2. **Transition ticket to investigating:**
-   ```bash
-   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
-   ```
-
-3. **Dispatch investigation agent via Task tool:**
-   The ticket folder (including `assets/`) is created by `ticket create`. Pass the ticket folder's assets path to the agent:
+2. **Dispatch investigation agent via Task tool:**
+   The ticket folder (including `assets/`) is created by `ticket create`. The investigation-agent owns the `queued -> investigating` transition (Phase 0 in its instructions). Do NOT transition the ticket here.
    ```
    First, read ~/.claude/skills/fixme/agents/investigation-agent.md for your role instructions.
 
@@ -191,67 +188,83 @@ This is the core execution cycle. Repeat until the user stops the session or the
    ```
    Where `<ticket-folder>` is the directory containing ticket.md (derived from `ticket next` output's `dir` field).
 
-4. **After investigation agent returns:**
+3. **After investigation agent returns:**
    ALWAYS read ticket state from disk. Never trust in-memory state or what the subagent reported:
    ```bash
    node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
    ```
    Also read the agent's summary response.
 
-5. **Handle investigation result:**
+   **Crash detection:** If the ticket state is still `queued`, the investigation agent crashed before claiming state. Transition to failed:
+   ```bash
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Investigation agent crashed without claiming state"
+   ```
+   Report to user and continue to next ticket (go to step 5).
+
+4. **Handle investigation result:**
    - If agent returned "Investigated #NNNN: ..." (success or partial with CONFIRMED/PARTIAL verdict):
      Report findings to user with the agent's summary.
-     Proceed to fixing:
+     Proceed to fix dispatch:
 
-     a. **Transition ticket to fixing:**
-        ```bash
-        node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> fixing
-        ```
-
-     b. **Dispatch fixer agent via Task tool:**
+     a. **Dispatch fix-agent via Task tool:**
+        The ticket is in `investigating` state. The fix-researcher (first sub-agent) will transition it to `researching`. Do NOT transition the ticket here.
         ```
         First, read ~/.claude/skills/fixme/agents/fix-agent.md for your role instructions.
 
-        You are the fix COORDINATOR. You dispatch sub-agents via Task tool — you do NOT write code, run builds, or investigate yourself.
+        You are the fix COORDINATOR. You dispatch sub-agents via Task tool -- you do NOT write code, run builds, or investigate yourself.
 
         Fix this bug:
         - Ticket folder: <ticket-folder-dir>
         - Project context: .fixme/project-context.yaml
         ```
 
-     c. **After fixer agent returns:**
+     b. **After fix-agent returns:**
         ALWAYS read ticket state from disk:
         ```bash
         node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
         ```
         Read the fixer's return summary.
 
-     d. **Handle fixer result:**
+     c. **Handle fixer result:**
         - If fixer returned success (status: "fixed"):
-          The fix-agent has already verified the fix through build/lint/test AND browser verification internally.
+          The ticket is now in `verifying` state (the fix-verifier transitioned `implementing -> verifying`).
           Proceed to commit and close:
 
-          a. **Transition to verifying** (marks the ticket as verified):
-             ```bash
-             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> verifying
-             ```
-          b. **Read ticket state** to get `files_changed` and `title`:
+          1. **Read ticket state** to get `files_changed` and `title`:
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
              ```
              Read the ticket's `title` from `ticket list` output.
-          c. **Stage only the fix files:** `git add <file1> <file2> ...` from `files_changed`.
-          d. **Create commit:** `git commit -m "fix: <title in lowercase>"` (e.g., `fix: login button broken`). No ticket number, no body -- one-liner only.
-          e. **Capture commit hash:** `git rev-parse HEAD`. Use Edit to set `commit_hash:` in ticket frontmatter.
-          f. **Transition to done:**
+          2. **Stage only the fix files:** `git add <file1> <file2> ...` from `files_changed`.
+          3. **Create commit:** `git commit -m "fix: <title in lowercase>"` (e.g., `fix: login button broken`). No ticket number, no body -- one-liner only.
+          4. **Capture commit hash:** `git rev-parse HEAD`. Use Edit to set `commit_hash:` in ticket frontmatter.
+          5. **Transition to done:**
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> done
              ```
-          g. Report to user: "Fixed and committed #NNNN: <summary>"
+          6. Report to user: "Fixed and committed #NNNN: <summary>"
 
         - If fixer returned failure (status: "failed"):
-          Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
-          The ticket is already in `failed` state (the fixer handles the transition and revert).
+          The ticket is in some non-terminal state (could be `researching`, `planning`, `implementing`, or `verifying` depending on where it failed). SKILL.md handles cleanup:
+
+          1. **Read current ticket state from disk:**
+             ```bash
+             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
+             ```
+          2. **Get changed files:**
+             ```bash
+             git diff --name-only <base_commit from ticket> HEAD
+             ```
+          3. **If there are changed files, revert:**
+             ```bash
+             git checkout <base_commit> -- .
+             git clean -fd --exclude=.fixme/
+             ```
+          4. **Transition to failed** (from whatever the current state is):
+             ```bash
+             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "<failure reason from fixer result>"
+             ```
+          5. Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
 
    - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
      Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip: transition to skipped with reason. If more details: keep ticket in investigating and wait for user's follow-up message.
@@ -261,7 +274,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
      If recovery succeeds, re-dispatch the investigation agent.
      If recovery fails, use AskUserQuestion: "Browser recovery failed." with options "Retry" / "Skip this ticket" / "End session".
 
-6. **Loop:** Go back to step 1 to check for next queued ticket.
+5. **Loop:** Go back to step 1 to check for next queued ticket.
 
 ### Browser Recovery
 
@@ -416,7 +429,7 @@ X fixed, Y failed[, Z skipped][, W other]
 - Title: use the `title` field from the summary's `tickets` array (already human-readable)
 - Duration per ticket: format `total_seconds` as `Xm Ys` (e.g., `3m 5s`). For 0 seconds: `0m 0s`
 - Total duration: format `duration_seconds` from the summary. Use `Xh Ym Zs` format if over 1 hour, `Xm Ys` if under
-- Status: use raw state names (done, failed, skipped, queued, investigating, fixing, verifying)
+- Status: use raw state names (done, failed, skipped, queued, investigating, researching, planning, implementing, verifying)
 - Summary line: show counts for done ("fixed"), failed, and any other states present. Omit zero counts except for "fixed" (always show it even if 0)
 - For early stop (graceful stop with non-terminal tickets): non-terminal states appear as-is in the table and count in the summary line as their state name (e.g., "2 queued")
 
@@ -444,7 +457,7 @@ When the user asks for status or types `status`:
 
 These rules are non-negotiable. Violating them causes bugs that are extremely hard to diagnose.
 
-1. **NEVER investigate bugs yourself.** You are a dispatcher. All investigation, fixing, and verification happens in subagents spawned via the Task tool.
+1. **NEVER investigate bugs yourself.** You are a dispatcher. All investigation, research, planning, implementation, and verification happens in subagents spawned via the Task tool.
 
 2. **NEVER read ticket bodies.** Only read frontmatter status via `fixme-tools.cjs` commands. Reading ticket bodies consumes your context with information that belongs to the subagent.
 
