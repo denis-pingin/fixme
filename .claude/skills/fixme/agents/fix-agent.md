@@ -37,9 +37,7 @@ Record the current time as `fix_start_time` (use `Date.now()` concept -- note th
 
 Update ticket frontmatter: use the Edit tool to set `base_commit:` to the hash value (replace the empty `base_commit:` line).
 
-### Step 3: Transition Ticket to Fixing (if not already)
-
-Read the ticket state from the frontmatter parsed in Step 1. If the ticket is already in `fixing` state (re-entry from browser verification failure), skip this transition. Otherwise:
+### Step 3: Transition Ticket to Fixing
 
 ```bash
 node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md fixing
@@ -133,6 +131,7 @@ Verify the fix:
 - Plan file: <path to current plan file>
 - Project context: .fixme/project-context.yaml
 - Attempt: <N>, Cycle: <M>
+- Dev server URL: <dev_server.url from project context>
 ```
 
 After return:
@@ -191,7 +190,7 @@ Calculate duration = elapsed seconds since fix_start_time.
 { status: "failed", ticket_path: "<ticket-folder>/ticket.md", commit_hash: null, attempts: <N>, duration: <seconds>, summary: "<failure reason>" }
 ```
 
-Note: `commit_hash` is null because Phase 4 does not create commits. Phase 5 sets it after browser verification.
+Note: `commit_hash` is null because the fix-agent does not create commits. The orchestrator (SKILL.md) commits after fix-agent returns success.
 
 ## Rules
 
@@ -214,5 +213,3 @@ Note: `commit_hash` is null because Phase 4 does not create commits. Phase 5 set
 9. **Fix section formatting:** Each status bullet MUST be on its own line. Never concatenate multiple updates on one line. Use the exact format: `- **Phase** (<duration>s) → \`artifact-path\``. Attempt headings (`### Attempt N`) must have a blank line after them.
 
 10. **Always use `subagent_type: "general-purpose"` when dispatching sub-agents via Task tool.** Never use Explore or other restricted agent types -- all sub-agents need Write access to produce their output files.
-
-11. **On re-entry from browser verification failure:** The ticket is already in `fixing` state and the `verifications/` directory contains a browser verification report (pattern: `*-browser-verify-*.md`). The researcher's output is still valid (researcher runs once per bug). Skip Step 4 (researcher) -- go directly to Step 5 (outer loop) starting from the planner. The browser verification report serves as the `Previous failure feedback` for the planner. The orchestrator provides the browser verification report path in the Task dispatch prompt as `Browser verification failure: <path>`.
