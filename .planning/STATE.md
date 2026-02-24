@@ -111,6 +111,8 @@ Recent decisions affecting current work:
 - [Phase 06]: Inner loop removed -- each attempt is plan->implement->verify, SKILL.md handles revert and terminal transitions
 - [Phase 06]: Sub-agents write inline summaries (artifact path + result) to ticket fix section after completing work
 - [Phase 07]: Guard skips steps 3-4 (git diff + checkout) and proceeds directly to failed transition -- no partial revert attempted when base_commit is null
+- [Phase 07]: fix-agent is sole writer of Fix section structured bullets -- sub-agents produce artifact files only
+- [Phase 07]: Implementer receives verification report path and failure summary on retry for targeted re-implementation
 
 ### Pending Todos
 
