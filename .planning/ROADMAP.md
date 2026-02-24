@@ -19,6 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Verification & Close Loop** - Browser-verified fixes, atomic commits, revert on failure, session summary (completed 2026-02-23)
 - [x] **Phase 6: Fix Agent State Boundary Alignment** - Close audit gaps: double fixing transition, retry state divergence, E2E flow fix (completed 2026-02-23)
 - [ ] **Phase 7: Integration Hardening** - Close audit gaps INT-06 through INT-10: retry enforcement, crash safety, ticket hygiene
+- [ ] **Phase 8: CLI & Dispatch Completeness** - Close INT-11 (files_changed in ticketList), add subagent_type to dispatches, persist intake tracking
 
 ## Phase Details
 
@@ -133,10 +134,27 @@ Plans:
 - [ ] 07-02-PLAN.md -- Agent MD fixes: implementer retry feedback, remove duplicate writes, fix assets path (INT-07, INT-09, INT-10)
 - [ ] 07-03-PLAN.md -- SKILL.md null-guard on base_commit in failure handler (INT-08)
 
+### Phase 8: CLI & Dispatch Completeness
+
+**Goal**: Close all remaining audit gaps — expose files_changed via CLI for the commit step, specify subagent_type on Task dispatches, and persist intake agent tracking to disk for compaction safety
+**Depends on**: Phase 7
+**Requirements**: FIXR-01, STAT-03, FIXR-03, SYST-04
+**Gap Closure:** Closes INT-11, Task dispatch subagent_type, intake tracking compaction safety from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. `ticket list` CLI output includes `files_changed` array for each ticket, sourced from frontmatter
+  2. SKILL.md commit step retrieves `files_changed` from `ticket list` output and passes it to `git add` — no ticket body reading required
+  3. SKILL.md Task dispatches for investigation-agent and fix-agent specify `subagent_type: "general-purpose"` explicitly
+  4. Active intake agent tracking is persisted to the session file (not just in-memory), surviving context compaction
+**Plans**: 1 plan
+
+Plans:
+
+- [ ] 08-01-PLAN.md -- TDD: files_changed in ticketList + SKILL.md commit wiring + subagent_type + intake persistence
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -147,7 +165,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 5. Verification & Close Loop | 0/2 | Complete    | 2026-02-23 |
 | 6. Fix Agent State Boundary Alignment | 0/3 | Complete    | 2026-02-23 |
 | 7. Integration Hardening | 0/3 | Not started | - |
+| 8. CLI & Dispatch Completeness | 0/1 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-24 (Phase 7 added — audit gap closure for INT-06 through INT-10)*
+*Last updated: 2026-02-24 (Phase 8 added — audit gap closure for INT-11, subagent_type, intake persistence)*
