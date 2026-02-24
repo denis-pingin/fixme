@@ -72,6 +72,7 @@ failure_reason:
 related: []
 max_attempts: 3
 current_attempt: 0
+files_changed: []
 transitions: []
 durations: {}
 ---
@@ -751,6 +752,58 @@ test('max_attempts: defaults to max_attempts=3 when field missing', () => {
   const result = run(`ticket transition "${ticketPath}" planning --reason "Defaults test"`);
   assert(!result.ok, 'Should reject when defaulting to max_attempts=3 with current_attempt=2');
   assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
+});
+
+// ============================================================================
+// Test Suite: ticket list: files_changed field
+// ============================================================================
+
+console.log('\n=== ticket list: files_changed field ===\n');
+
+test('list: includes files_changed from frontmatter', () => {
+  const sessionDir = createTmpDir();
+  fs.writeFileSync(path.join(sessionDir, 'session.md'), '---\nname: test\n---\n');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'fc-test', 'queued');
+
+  // Edit ticket.md to set files_changed in frontmatter
+  let content = fs.readFileSync(ticketPath, 'utf8');
+  content = content.replace('files_changed: []', 'files_changed: ["src/app.tsx", "src/utils.ts"]');
+  fs.writeFileSync(ticketPath, content);
+
+  const result = run(`ticket list "${sessionDir}"`);
+  assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
+  assert(Array.isArray(result.data[0].files_changed), 'files_changed should be an array');
+  assert(result.data[0].files_changed.length === 2, `Should have 2 files, got ${result.data[0].files_changed.length}`);
+  assert(result.data[0].files_changed[0] === 'src/app.tsx', `First file should be src/app.tsx, got ${result.data[0].files_changed[0]}`);
+  assert(result.data[0].files_changed[1] === 'src/utils.ts', `Second file should be src/utils.ts, got ${result.data[0].files_changed[1]}`);
+});
+
+test('list: files_changed defaults to empty array when not in frontmatter', () => {
+  const sessionDir = createTmpDir();
+  fs.writeFileSync(path.join(sessionDir, 'session.md'), '---\nname: test\n---\n');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'fc-missing', 'queued');
+
+  // Remove files_changed line entirely from frontmatter
+  let content = fs.readFileSync(ticketPath, 'utf8');
+  content = content.replace(/files_changed: \[\]\n/, '');
+  fs.writeFileSync(ticketPath, content);
+
+  const result = run(`ticket list "${sessionDir}"`);
+  assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
+  assert(Array.isArray(result.data[0].files_changed), 'files_changed should be an array');
+  assert(result.data[0].files_changed.length === 0, `Should be empty array, got ${result.data[0].files_changed.length}`);
+});
+
+test('list: files_changed with empty array returns empty array', () => {
+  const sessionDir = createTmpDir();
+  fs.writeFileSync(path.join(sessionDir, 'session.md'), '---\nname: test\n---\n');
+  // Default template has files_changed: [] -- just use createTicketFolder as-is
+  createTicketFolder(sessionDir, '0001', 'fc-empty', 'queued');
+
+  const result = run(`ticket list "${sessionDir}"`);
+  assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
+  assert(Array.isArray(result.data[0].files_changed), 'files_changed should be an array');
+  assert(result.data[0].files_changed.length === 0, `Should be empty array, got ${result.data[0].files_changed.length}`);
 });
 
 // ============================================================================
