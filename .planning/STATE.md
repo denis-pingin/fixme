@@ -12,9 +12,9 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 **Current Phase:** 7
 **Current Phase Name:** Integration Hardening
 **Total Phases:** 7
-**Current Plan:** 2 of 3
+**Current Plan:** 3
 **Total Plans in Phase:** 3
-**Status:** In progress
+**Status:** Ready to execute
 **Last Activity:** 2026-02-24
 
 **Progress:** [██████████] 100%
@@ -52,6 +52,7 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 07 P03 | 1min | 1 tasks | 1 files |
 | Phase 07 P02 | 2min | 2 tasks | 5 files |
 | Phase 07 P01 | 2min | 2 tasks | 2 files |
+| Phase 08 P01 | 2min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Implementer receives verification report path and failure summary on retry for targeted re-implementation
 - [Phase 07]: Guard uses pre-increment check: current_attempt >= max_attempts - 1 rejects before increment happens
 - [Phase 07]: Defaults to max_attempts=3 when field missing from frontmatter for backward compatibility
+- [Phase 08]: files_changed falls back to empty array when missing or non-array in frontmatter
+- [Phase 08]: Intake tracking uses session.md frontmatter active_intakes field for compaction safety
+- [Phase 08]: Session resume reconciles active_intakes against actual ticket states via ticket list
 
 ### Pending Todos
 
@@ -130,5 +134,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 07-01-PLAN.md
-Resume file: .planning/phases/07-integration-hardening/07-02-PLAN.md
+Stopped at: Completed 08-01-PLAN.md
+Resume file: .planning/phases/08-cli-dispatch-completeness/08-01-PLAN.md
