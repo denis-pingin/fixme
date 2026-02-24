@@ -175,7 +175,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    If no queued tickets AND no intake agents are pending: auto-close the session (see Auto-Close).
    If no queued tickets BUT intake agents are still running: wait for intake to complete, then re-check.
 
-2. **Dispatch investigation agent via Task tool:**
+2. **Dispatch investigation agent via Task tool (use `subagent_type: "general-purpose"`):**
    The ticket folder (including `assets/`) is created by `ticket create`. The investigation-agent owns the `queued -> investigating` transition (Phase 0 in its instructions). Do NOT transition the ticket here.
    ```
    First, read ~/.claude/skills/fixme/agents/investigation-agent.md for your role instructions.
@@ -206,7 +206,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
      Report findings to user with the agent's summary.
      Proceed to fix dispatch:
 
-     a. **Dispatch fix-agent via Task tool:**
+     a. **Dispatch fix-agent via Task tool (use `subagent_type: "general-purpose"`):**
         The ticket is in `investigating` state. The fix-researcher (first sub-agent) will transition it to `researching`. Do NOT transition the ticket here.
         ```
         First, read ~/.claude/skills/fixme/agents/fix-agent.md for your role instructions.
@@ -360,7 +360,7 @@ This procedure is used by both `/fixme:report` and inline bug detection:
    Intake dispatched for bug report (#NNNN)...
    ```
 
-3. **Dispatch intake agent via Task tool:**
+3. **Dispatch intake agent via Task tool (use `subagent_type: "general-purpose"`):**
    ```
    First, read ~/.claude/skills/fixme/agents/intake-agent.md for your role instructions.
 
