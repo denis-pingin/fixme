@@ -780,6 +780,7 @@ function ticketList(sessionDir, flags) {
       slug,
       state: fm.state || 'unknown',
       title: extractTitle(body, slug),
+      files_changed: Array.isArray(fm.files_changed) ? fm.files_changed : [],
       path: ticketPath,
       dir: path.join(sessionDir, d),
     };
