@@ -106,6 +106,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Gap closure (Phase 6):** Integration gaps INT-01 and INT-02 affect STAT-01, STAT-02, FIXR-01, FIXR-05. These requirements are individually satisfied but have cross-phase integration defects addressed by Phase 6.
 
+**Gap closure (Phase 7):** Integration gaps INT-06 through INT-10 affect FIXR-05, STAT-01, STAT-03, FIXR-04, BROW-02. All requirements are individually satisfied but have cross-phase wiring defects: retry enforcement (INT-06, INT-07), crash safety (INT-08), ticket hygiene (INT-09, INT-10).
+
 **Coverage:**
 - v1 requirements: 22 total
 - Mapped to phases: 22

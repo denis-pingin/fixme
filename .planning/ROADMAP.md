@@ -18,6 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 4: Fix & Commit** - Implement fixes, orchestrator dispatch loop, fix-verify retry loop
 - [x] **Phase 5: Verification & Close Loop** - Browser-verified fixes, atomic commits, revert on failure, session summary (completed 2026-02-23)
 - [x] **Phase 6: Fix Agent State Boundary Alignment** - Close audit gaps: double fixing transition, retry state divergence, E2E flow fix (completed 2026-02-23)
+- [ ] **Phase 7: Integration Hardening** - Close audit gaps INT-06 through INT-10: retry enforcement, crash safety, ticket hygiene
 
 ## Phase Details
 
@@ -114,10 +115,23 @@ Plans:
 - [ ] 06-02-PLAN.md -- Agent files: Phase 0 transitions for 5 sub-agents, fix-agent.md stateless rewrite, ticket template cleanup
 - [ ] 06-03-PLAN.md -- SKILL.md dispatch boundary rewrite, state-machine.md rewrite, 05-01-SUMMARY.md correction
 
+### Phase 7: Integration Hardening
+**Goal**: Close all remaining cross-phase integration gaps from the v1.0 audit — enforce retry limits at the tool level, add crash safety guards, and clean up ticket write duplication
+**Depends on**: Phase 6
+**Requirements**: FIXR-05, STAT-01, STAT-03, FIXR-04, BROW-02
+**Gap Closure:** Closes INT-06, INT-07, INT-08, INT-09, INT-10 from v1.0 audit
+**Success Criteria** (what must be TRUE):
+  1. `fixme-tools.cjs` rejects `verifying -> planning` transition when `current_attempt >= max_attempts` (tool-level enforcement, not prose-only)
+  2. fix-agent.md implementer dispatch on retry (attempt 2+) passes the verification report path so the implementer knows what failed
+  3. SKILL.md failure handler checks for null `base_commit` before running git revert — graceful fallback if fix-agent crashed early
+  4. Only one writer (either sub-agents OR fix-agent) writes bullets to the ticket's Fix section — no duplicate entries
+  5. investigation-agent.md example paths match the actual flat `assets/` directory structure
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -127,7 +141,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 4. Fix & Commit | 0/3 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Complete    | 2026-02-23 |
 | 6. Fix Agent State Boundary Alignment | 0/3 | Complete    | 2026-02-23 |
+| 7. Integration Hardening | 0/TBD | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
-*Last updated: 2026-02-23 (Phase 6 added — audit gap closure)*
+*Last updated: 2026-02-24 (Phase 7 added — audit gap closure for INT-06 through INT-10)*
