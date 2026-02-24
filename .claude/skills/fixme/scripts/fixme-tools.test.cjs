@@ -628,6 +628,132 @@ test('cumulative: planning duration preserved across retry', () => {
 });
 
 // ============================================================================
+// Test Suite: max_attempts enforcement on verifying -> planning
+// ============================================================================
+
+console.log('\n=== max_attempts enforcement ===\n');
+
+/**
+ * Helper: create a ticket and walk it to verifying state.
+ * Optionally set current_attempt and max_attempts in frontmatter before the walk.
+ */
+function walkToVerifying(sessionDir, slug, overrides) {
+  const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
+
+  // Apply frontmatter overrides before walking
+  if (overrides) {
+    let content = fs.readFileSync(ticketPath, 'utf8');
+    if (overrides.max_attempts !== undefined) {
+      content = content.replace(/max_attempts: 3/, `max_attempts: ${overrides.max_attempts}`);
+    }
+    if (overrides.current_attempt !== undefined) {
+      content = content.replace(/current_attempt: 0/, `current_attempt: ${overrides.current_attempt}`);
+    }
+    fs.writeFileSync(ticketPath, content);
+  }
+
+  // Walk to verifying
+  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
+  for (const s of walkStates) {
+    const r = run(`ticket transition "${ticketPath}" ${s}`);
+    assert(r.ok, `Walk to ${s} should succeed for ${slug}`);
+  }
+
+  return ticketPath;
+}
+
+test('max_attempts: allows retry when current_attempt=0, max_attempts=3', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-0of3', {});
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed"`);
+  assert(result.ok, `Should allow retry at attempt 0/3, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+});
+
+test('max_attempts: allows retry when current_attempt=1, max_attempts=3', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-1of3', { current_attempt: 1 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed again"`);
+  assert(result.ok, `Should allow retry at attempt 1/3, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+});
+
+test('max_attempts: rejects retry when current_attempt=2, max_attempts=3', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-2of3', { current_attempt: 2 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed yet again"`);
+  assert(!result.ok, 'Should reject retry at attempt 2/3');
+  assert(result.data && result.data.error, 'Should have error message');
+  assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
+});
+
+test('max_attempts: rejects retry when current_attempt=0, max_attempts=1', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-0of1', { max_attempts: 1 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Only one attempt allowed"`);
+  assert(!result.ok, 'Should reject retry at attempt 0/1');
+  assert(result.data && result.data.error, 'Should have error message');
+  assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
+});
+
+test('max_attempts: allows retry when current_attempt=0, max_attempts=2', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-0of2', { max_attempts: 2 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Second chance"`);
+  assert(result.ok, `Should allow retry at attempt 0/2, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+});
+
+test('max_attempts: rejects retry when current_attempt=1, max_attempts=2', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-1of2', { max_attempts: 2 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "No more retries"`);
+  assert(!result.ok, 'Should reject retry at attempt 1/2');
+  assert(result.data && result.data.error, 'Should have error message');
+  assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
+});
+
+test('max_attempts: error message contains attempt count and max', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = walkToVerifying(sessionDir, 'error-msg-check', { current_attempt: 2, max_attempts: 3 });
+
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Check message"`);
+  assert(!result.ok, 'Should reject retry');
+  assert(result.data.error.includes('3 of 3'), `Error should contain attempt counts: ${result.data.error}`);
+  assert(result.data.error.includes('verifying -> planning denied'), `Error should mention denied transition: ${result.data.error}`);
+});
+
+test('max_attempts: defaults to max_attempts=3 when field missing', () => {
+  const sessionDir = createTmpDir();
+  // Create ticket without max_attempts in frontmatter
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'no-max-field', 'queued');
+
+  // Remove max_attempts line from frontmatter entirely
+  let content = fs.readFileSync(ticketPath, 'utf8');
+  content = content.replace(/max_attempts: 3\n/, '');
+  content = content.replace(/current_attempt: 0/, 'current_attempt: 2');
+  fs.writeFileSync(ticketPath, content);
+
+  // Walk to verifying
+  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
+  for (const s of walkStates) {
+    const r = run(`ticket transition "${ticketPath}" ${s}`);
+    assert(r.ok, `Walk to ${s} should succeed`);
+  }
+
+  // Should reject -- current_attempt=2 >= max_attempts(3) - 1
+  const result = run(`ticket transition "${ticketPath}" planning --reason "Defaults test"`);
+  assert(!result.ok, 'Should reject when defaulting to max_attempts=3 with current_attempt=2');
+  assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 
