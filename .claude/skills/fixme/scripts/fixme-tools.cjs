@@ -682,6 +682,18 @@ function ticketTransition(ticketPath, newState, flags) {
     );
   }
 
+  // Enforce max_attempts on retry transition
+  if (currentState === 'verifying' && newState === 'planning') {
+    const currentAttempt = fm.current_attempt || 0;
+    const maxAttempts = fm.max_attempts || 3;
+    if (currentAttempt >= maxAttempts - 1) {
+      return error(
+        `Retry limit reached: attempt ${currentAttempt + 1} of ${maxAttempts} (max_attempts). ` +
+        `Transition verifying -> planning denied.`
+      );
+    }
+  }
+
   // Check reason requirement
   const reason = flags.reason || null;
   if (requiresReason(currentState, newState) && !reason) {

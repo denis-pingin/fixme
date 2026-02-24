@@ -711,7 +711,7 @@ test('max_attempts: allows retry when current_attempt=0, max_attempts=2', () => 
 
 test('max_attempts: rejects retry when current_attempt=1, max_attempts=2', () => {
   const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-1of2', { max_attempts: 2 });
+  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-1of2', { current_attempt: 1, max_attempts: 2 });
 
   const result = run(`ticket transition "${ticketPath}" planning --reason "No more retries"`);
   assert(!result.ok, 'Should reject retry at attempt 1/2');
