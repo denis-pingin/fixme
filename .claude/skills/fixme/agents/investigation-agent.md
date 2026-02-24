@@ -132,7 +132,7 @@ Use the Edit tool to append to the ticket's `<!-- section: investigation -->` se
 ...
 
 #### Reproduction Evidence
-- Screenshot: `assets/<ticket-number>/repro-<description>.png`
+- Screenshot: `assets/repro-<description>.png`
 - Console errors: <error messages with file:line references>
 - Network: <failed requests with status codes>
 
