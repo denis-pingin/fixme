@@ -35,7 +35,6 @@ durations: {}
 - **Expected Behavior:**
 - **Actual Behavior:**
 - **Error Messages:**
-- **Reproduction Steps:**
 
 <!-- section: clarifications -->
 ## Clarifications
@@ -50,8 +49,3 @@ durations: {}
 ## Fix
 
 <!-- Status updates added by fix-agent below -->
-
-<!-- section: verification -->
-## Verification
-
-<!-- Browser verification evidence added by Phase 5 verification agent -->

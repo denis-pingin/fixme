@@ -98,12 +98,16 @@ Write the structured research file to `<ticket-folder>/research/<NNNN>-research.
 
 Write the file as the LAST step -- do not write progressively.
 
-### Phase 6: Return Summary
+### Phase 6: Return Work Summary
 
-Return ONLY a one-liner:
-```
-"Researched #NNNN: <N> files analyzed, <M> approach candidates identified"
-```
+Return a work summary (free-form text, ~3-8 lines). This summary will appear directly in the ticket under the Research bullet — it should give enough context to understand the research findings without opening the full report.
+
+Include:
+- Which files and code paths were analyzed, what the root cause trace revealed
+- Which approach candidates were identified and why you ranked them as you did
+- Key insights the planner needs to make a good decision
+- Dead ends you hit during exploration, so the planner doesn't repeat them
+- Risks, dependencies, or gotchas discovered
 
 ## Rules
 

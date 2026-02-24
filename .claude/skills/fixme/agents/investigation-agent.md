@@ -33,7 +33,7 @@ If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <e
 ### Phase 1: Understand the Report
 
 - Read the ticket file using the Read tool
-- Extract from structured fields: affected URL, reproduction steps (if any), expected vs actual behavior, error messages
+- Extract from structured fields: affected URL, expected vs actual behavior, error messages
 - Read `.fixme/project-context.yaml` for framework info and dev server URL
 - Note any user-submitted screenshots in the Original Report section
 - Read the ticket's `max_attempts` frontmatter field (default 3) -- this controls your reproduction retry limit

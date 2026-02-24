@@ -52,7 +52,6 @@ Use the Edit tool to fill in each field in the `<!-- section: structured-fields 
 - **Expected Behavior:** Extracted from report if stated, otherwise infer from context
 - **Actual Behavior:** Extracted from report
 - **Error Messages:** Any error text or stack traces from report, or "None reported"
-- **Reproduction Steps:** Only if clearly stated in the report. If not obvious, write "(To be determined during investigation)"
 
 ### Step 5: Generate a descriptive slug
 
@@ -113,8 +112,6 @@ Example: `Queued #0003: Login Button Unresponsive`
 - Expected Behavior: Login button responds to clicks on mobile Safari
 - Actual Behavior: Login button does not respond to clicks on mobile Safari
 - Error Messages: None reported
-- Reproduction Steps: 1. Open homepage on mobile Safari 2. Tap login button 3. Nothing happens 4. Refresh page and retry -- still unresponsive
-
 **Slug:** `login-button-unresponsive`
 
 **Rename command:** `node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket rename .fixme/sessions/.../0003-intake-tmp-a7b3/ticket.md --slug login-button-unresponsive`

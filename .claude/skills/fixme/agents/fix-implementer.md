@@ -66,12 +66,15 @@ playwright-cli screenshot --filename=<ticket-folder>/assets/fix-check-<attempt>-
 
 This is a quick sanity check, not full verification. The verifier handles comprehensive checks.
 
-### Phase 5: Return Summary
+### Phase 5: Return Work Summary
 
-Return ONLY a one-liner:
-```
-"Implemented #NNNN attempt <N>: <summary of changes>"
-```
+Return a work summary (free-form text, ~3-8 lines). This summary will appear directly in the ticket under the Implement bullet — it should give enough context to understand what was done without reading the diff.
+
+Include:
+- What files were changed, which lines, what was added/modified/removed
+- Key decisions made during implementation and reasoning
+- Any deviations from the plan and why
+- Unexpected issues encountered (type mismatches, test mock adjustments, etc.) — these are valuable context for the verifier and for retry iterations
 
 ## Rules
 

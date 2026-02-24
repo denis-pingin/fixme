@@ -50,17 +50,18 @@ Research the bug for fixing:
 After return:
 
 1. **HARD GATE -- verify research file exists:** Use Glob to check `<ticket-folder>/research/*-research.md`. If NO file exists, the researcher failed silently. Do NOT proceed to Step 4. Log the failure in the fix section and re-dispatch the researcher ONE more time. If the second attempt also produces no file, return failure with reason `"Researcher failed to produce output after 2 attempts"`.
-2. Read the researcher's return summary
+2. Capture the researcher's return text (this is the work summary)
 3. Record researcher duration
-4. Use Edit to append to the fix section (after the `<!-- Status updates added by fix-agent below -->` comment). Write the attempt heading AND the research bullet together:
+4. Use Edit to append to the fix section (after the `<!-- Status updates added by fix-agent below -->` comment). Write the attempt heading, research bullet, AND the work summary together:
 
   ```markdown
   ### Attempt 1
 
   - **Research** (<duration>s) -> `research/<NNNN>-research.md`
+    <researcher's return text, each line indented with 4 spaces>
   ```
 
-  Each line must be on its own line. The blank line after the heading is required for markdown rendering.
+  The work summary is the researcher's return text — include it verbatim, indented 4 spaces under the bullet so it renders as a continuation. A blank line separates this block from the next phase's bullet.
 
 Note: The researcher owns the `investigating -> researching` transition.
 
@@ -98,10 +99,15 @@ The transition reason text is critical -- the planner needs it for the `verifyin
 After return:
 
 1. **HARD GATE -- verify plan file exists:** Use Glob to check `<ticket-folder>/plans/*-plan-*.md`. If NO file exists, the planner failed silently. Return failure with reason `"Planner failed to produce plan file"`.
-2. Record planner duration
-3. Use Edit to append a new bullet to the current attempt section in the fix section:
-   `- **Plan** (<duration>s) -> \`plans/<NNNN>-plan-<N>.md\``
-4. If this is attempt 2+, first write a new `### Attempt <N>` heading (with blank line after) before the plan bullet.
+2. Capture the planner's return text (work summary)
+3. Record planner duration
+4. If this is attempt 2+, first write a new `### Attempt <N>` heading (with blank line after).
+5. Use Edit to append the plan bullet and work summary to the current attempt section:
+
+   ```markdown
+   - **Plan** (<duration>s) -> `plans/<NNNN>-plan-<N>.md`
+     <planner's return text, each line indented 4 spaces>
+   ```
 
 Note: The planner owns the `researching -> planning` (first attempt) or `verifying -> planning` (retry) transition.
 
@@ -138,10 +144,16 @@ The verification report path is available from step 4c of the previous iteration
 
 After return:
 
-- Record implementer duration
-- Use Edit to append a new bullet to the current attempt section in the fix section:
-  `- **Implement** (<duration>s)`
-- **Capture files_changed:** Run `git diff --name-only <base_commit> HEAD` to get changed files. Update the ticket frontmatter `files_changed` field with this list (use Edit tool to write the YAML array).
+1. Capture the implementer's return text (work summary)
+2. Record implementer duration
+3. Use Edit to append the implement bullet and work summary to the current attempt section:
+
+   ```markdown
+   - **Implement** (<duration>s)
+     <implementer's return text, each line indented 4 spaces>
+   ```
+
+4. **Capture files_changed:** Run `git diff --name-only <base_commit> HEAD` to get changed files. Update the ticket frontmatter `files_changed` field with this list (use Edit tool to write the YAML array).
 
 Note: The implementer owns the `planning -> implementing` transition.
 
@@ -170,8 +182,22 @@ Note: The verifier owns the `implementing -> verifying` transition.
 
 #### 4d. Check Verdict
 
-- **PASS:** Append a bullet to the fix section: `- **Verify** (<duration>s) -> PASS -> \`verifications/<NNNN>-verify-<N>.md\`` Then go to Step 5 (return success).
-- **FAIL:** Append a bullet to the fix section: `- **Verify** (<duration>s) -> FAIL -> \`verifications/<NNNN>-verify-<N>.md\``
+Capture the verifier's return text (work summary).
+
+- **PASS:** Append bullet + summary to the fix section, then go to Step 5 (return success):
+
+  ```markdown
+  - **Verify** (<duration>s) -> PASS -> `verifications/<NNNN>-verify-<N>.md`
+    <verifier's return text, each line indented 4 spaces>
+  ```
+
+- **FAIL:** Append bullet + summary to the fix section:
+
+  ```markdown
+  - **Verify** (<duration>s) -> FAIL -> `verifications/<NNNN>-verify-<N>.md`
+    <verifier's return text, each line indented 4 spaces>
+  ```
+
   - Extract failure summary from verification report (1-2 sentences of what failed and why). This becomes the transition reason for the planner on the next attempt.
   - If attempts remaining: continue loop (next iteration dispatches planner with retry feedback including the transition reason).
   - If attempts exhausted: go to Step 5 (return failure).
@@ -211,7 +237,7 @@ Note: fix-agent does NOT revert, does NOT transition to failed, does NOT commit.
 
 6. **Check elapsed time against max_timeout_minutes BEFORE each sub-agent dispatch.** If timeout is exceeded, do not dispatch -- return failure immediately.
 
-7. **Fix section formatting:** Each status bullet MUST be on its own line. Never concatenate multiple updates on one line. Use the exact format: `- **Phase** (<duration>s) -> \`artifact-path\``. Attempt headings (`### Attempt N`) must have a blank line after them.
+7. **Fix section formatting:** Each status bullet MUST be followed by the sub-agent's work summary, indented 4 spaces under the bullet. The summary is the sub-agent's return text -- include it verbatim. A blank line separates each phase's bullet+summary block from the next. Attempt headings (`### Attempt N`) must have a blank line after them.
 
 8. **Always use `subagent_type: "general-purpose"` when dispatching sub-agents via Task tool.** Never use Explore or other restricted agent types -- all sub-agents need Write access to produce their output files.
 

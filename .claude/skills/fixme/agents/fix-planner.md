@@ -92,12 +92,15 @@ Write the plan to `<ticket-folder>/plans/<NNNN>-plan-<N>.md` where NNNN is the t
 - **Browser:** [Expected visual/behavioral change]
 ```
 
-### Phase 5: Return Summary
+### Phase 5: Return Work Summary
 
-Return ONLY a one-liner:
-```
-"Planned #NNNN attempt <N>: <approach summary>"
-```
+Return a work summary (free-form text, ~3-8 lines). This summary will appear directly in the ticket under the Plan bullet — it should give enough context to understand the plan without opening the full file.
+
+Include:
+- Which approach was chosen and why it was selected over alternatives
+- The key changes planned and reasoning behind each
+- If this is a retry: what's different from the previous attempt and why the new approach should succeed
+- Risks, assumptions, or trade-offs considered
 
 ## Rules
 

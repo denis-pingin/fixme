@@ -124,21 +124,21 @@ For each reproduction step from the investigation section:
    playwright-cli network
    ```
 
-#### 5c. Determine Browser Verdict
+#### 5c. Determine Browser Verdict and Capture Evidence
 
 - **PASS:** The reported bug symptom is gone AND the expected behavior is present. Both conditions must be met. "No error" alone is NOT sufficient -- the correct positive behavior must be observed.
 - **FAIL:** The bug symptom is still present OR the expected behavior is not achieved.
 
 Write a clear one-paragraph explanation of what was observed.
 
-#### 5d. Write Browser Evidence
+Capture a verification screenshot:
 
 1. Create asset directory if needed:
    ```bash
    mkdir -p <ticket-folder>/assets/
    ```
 
-2. Take verification screenshot:
+2. Take screenshot:
    ```bash
    playwright-cli screenshot --filename=<ticket-folder>/assets/verify-<descriptive-name>.png
    ```
@@ -147,15 +147,6 @@ Write a clear one-paragraph explanation of what was observed.
 3. Create verification report directory if needed:
    ```bash
    mkdir -p <ticket-folder>/verifications/
-   ```
-
-4. Append to ticket's `<!-- section: verification -->` using the Edit tool:
-   ```markdown
-   ### Browser Verification (Attempt <N>)
-
-   - **Verdict:** PASS/FAIL
-   - **Observations:** <what was observed>
-   - **Screenshot:** `assets/verify-<descriptive-name>.png`
    ```
 
 If browser verification FAILS, the overall verdict is FAIL regardless of build/lint/test passing. The verification report (Phase 6) includes both the passing constraint checks and the failing browser verification.
@@ -195,20 +186,20 @@ Write to `<ticket-folder>/verifications/<NNNN>-verify-<attempt>.md`:
 **Summary:** [One-liner: why it passed or what the blocking issue is]
 ```
 
-### Phase 7: Return Summary
+### Phase 7: Return Work Summary
 
-Return ONLY a one-liner with the verdict. Include which phase failed if not PASS:
-- `"Verified #NNNN attempt <N>: PASS"`
-- `"Verified #NNNN attempt <N>: FAIL -- Build: <reason>"`
-- `"Verified #NNNN attempt <N>: FAIL -- Lint: <reason>"`
-- `"Verified #NNNN attempt <N>: FAIL -- Tests: <reason>"`
-- `"Verified #NNNN attempt <N>: FAIL -- Browser: <what's still wrong>"`
+Return a work summary (free-form text, ~3-8 lines). This summary will appear directly in the ticket under the Verify bullet — it should give enough context to understand the verification outcome without opening the full report.
 
-The failure category prefix (Build/Lint/Tests/Browser) helps the implementer understand what kind of fix is needed.
+Include:
+- Build/lint/test results (pass counts, specific failures)
+- Plan coverage findings
+- Browser verification observations (what was tested, what was seen)
+- Final verdict (PASS or FAIL)
+- On FAIL: exactly what failed, why, and actionable insight for the next attempt — what should change and what approach to try
 
 ## Rules
 
-1. **NEVER modify source code.** You are read-only for source files. Report problems for the implementer to fix. You may write to the ticket's verification section, `assets/`, and `verifications/` directories.
+1. **NEVER modify source code.** You are read-only for source files. Report problems for the implementer to fix. You may write to `assets/` and `verifications/` directories.
 
 2. **Use commands from project context.** Never hardcode `yarn build`, `yarn lint`, or `yarn test`. The project context provides the correct commands for each project.
 
