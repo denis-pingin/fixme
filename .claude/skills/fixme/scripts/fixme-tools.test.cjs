@@ -383,6 +383,30 @@ test('transition: queued -> failed without reason errors', () => {
   assert(result.data.error.includes('--reason'), `Error should mention --reason: ${result.data.error}`);
 });
 
+test('transition: directory path auto-resolves to ticket.md', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'dir-test', 'queued');
+  const ticketDir = path.dirname(ticketPath);
+
+  const result = run(`ticket transition "${ticketDir}" investigating`);
+  assert(result.ok, `Expected success with dir path, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'queued', `from should be queued, got ${result.data.from}`);
+  assert(result.data.to === 'investigating', `to should be investigating, got ${result.data.to}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('state: investigating'), 'State should be investigating');
+});
+
+test('rename: directory path auto-resolves to ticket.md', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'rename-dir-test', 'queued');
+  const ticketDir = path.dirname(ticketPath);
+
+  const result = run(`ticket rename "${ticketDir}" --slug "dir-rename-result"`);
+  assert(result.ok, `Expected success with dir path, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.newSlug === 'dir-rename-result', `newSlug should be dir-rename-result, got ${result.data.newSlug}`);
+});
+
 // ============================================================================
 // Test Suite: session create (no tickets/ or assets/)
 // ============================================================================

@@ -26,7 +26,7 @@ You receive four things via your Task prompt:
 
 Transition the ticket to investigating:
 ```bash
-node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> investigating
+node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md investigating
 ```
 If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <error>"
 

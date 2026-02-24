@@ -653,7 +653,15 @@ function ticketCreate(sessionDir, flags) {
   return output({ path: ticketPath, dir: ticketDir, number: paddedNumber, slug, state: 'queued' });
 }
 
+function resolveTicketPath(inputPath) {
+  if (fs.existsSync(inputPath) && fs.statSync(inputPath).isDirectory()) {
+    return path.join(inputPath, 'ticket.md');
+  }
+  return inputPath;
+}
+
 function ticketTransition(ticketPath, newState, flags) {
+  ticketPath = resolveTicketPath(ticketPath);
   if (!fs.existsSync(ticketPath)) {
     return error(`Ticket file not found: ${ticketPath}`);
   }
@@ -833,6 +841,7 @@ function ticketNext(sessionDir) {
 }
 
 function ticketRename(ticketPath, flags) {
+  ticketPath = resolveTicketPath(ticketPath);
   const newSlug = flags.slug;
   if (!newSlug || typeof newSlug !== 'string') {
     return error('--slug is required for ticket rename');

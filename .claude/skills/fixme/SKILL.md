@@ -181,7 +181,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    First, read ~/.claude/skills/fixme/agents/investigation-agent.md for your role instructions.
 
    Then investigate this bug:
-   - Ticket file: <ticket-path>
+   - Ticket file: <ticket-folder>/ticket.md
    - Project context: .fixme/project-context.yaml
    - Asset directory: <ticket-folder>/assets/
    - Dev server URL: <dev_server.url from project context>
@@ -197,7 +197,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
    **Crash detection:** If the ticket state is still `queued`, the investigation agent crashed before claiming state. Transition to failed:
    ```bash
-   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Investigation agent crashed without claiming state"
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "Investigation agent crashed without claiming state"
    ```
    Report to user and continue to next ticket (go to step 5).
 
@@ -240,7 +240,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
           4. **Capture commit hash:** `git rev-parse HEAD`. Use Edit to set `commit_hash:` in ticket frontmatter.
           5. **Transition to done:**
              ```bash
-             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> done
+             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md done
              ```
           6. Report to user: "Fixed and committed #NNNN: <summary>"
 
@@ -266,14 +266,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
              ```
           5. **Transition to failed** (from whatever the current state is):
              ```bash
-             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "<failure reason from fixer result>"
+             node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "<failure reason from fixer result>"
              ```
           6. Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
 
    - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
      Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip:
      ```bash
-     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Investigation inconclusive: <brief reason>"
+     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md skipped --reason "Investigation inconclusive: <brief reason>"
      ```
      If more details: keep ticket in investigating and wait for user's follow-up message.
 
@@ -282,7 +282,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
      If recovery succeeds, re-dispatch the investigation agent.
      If recovery fails, use AskUserQuestion: "Browser recovery failed." with options "Retry" / "Skip this ticket" / "End session". If skip:
      ```bash
-     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Browser recovery failed: <blocker details>"
+     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md skipped --reason "Browser recovery failed: <blocker details>"
      ```
 
 5. **Loop:** Go back to step 1 to check for next queued ticket.
@@ -309,14 +309,14 @@ When the investigation agent reports a BLOCKER (browser crash, server down, auth
 4. **Auth expired recovery:**
    Use AskUserQuestion: "Authentication has expired. Please log in again in the browser window." with options "I'm logged in" and "Skip". On "I'm logged in", take a snapshot to verify authenticated content, then re-dispatch the investigation agent. If skip:
    ```bash
-   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Auth expired, user chose to skip"
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md skipped --reason "Auth expired, user chose to skip"
    ```
 
 5. **Unrecoverable:**
    If recovery fails after one attempt, use AskUserQuestion: "Recovery failed after one attempt." with options "Retry" / "Skip this ticket" / "End session".
    Do NOT automatically fail the ticket from a blocker -- the user decides. If skip:
    ```bash
-   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Unrecoverable blocker: <details>"
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md skipped --reason "Unrecoverable blocker: <details>"
    ```
 
 ## Bug Intake (In-Session)
@@ -375,7 +375,7 @@ This procedure is used by both `/fixme:report` and inline bug detection:
    - If agent returned a summary (starts with "Queued #"): relay it to the user verbatim.
    - If agent returned an error or no summary: transition ticket to failed:
      ```bash
-     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Intake agent failed: <error summary>"
+     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "Intake agent failed: <error summary>"
      ```
      Inform user: "Intake failed for bug report (#NNNN). The report is preserved -- you can resubmit."
 
@@ -419,7 +419,7 @@ When the dispatch loop finds no queued tickets AND no intake agents are pending:
 
 1. Transition the current ticket to failed:
    ```bash
-   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "Session aborted by user"
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md failed --reason "Session aborted by user"
    ```
 2. Run session summary:
    ```bash
