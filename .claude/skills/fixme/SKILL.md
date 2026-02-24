@@ -251,20 +251,24 @@ This is the core execution cycle. Repeat until the user stops the session or the
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket list <session-dir>
              ```
-          2. **Get changed files:**
+          2. **Check base_commit from ticket frontmatter.** Read the ticket file and extract `base_commit`. If `base_commit` is null or empty (fix-agent crashed before recording it):
+             - Skip steps 3 and 4 (no safe way to identify or revert changes)
+             - Log warning to user: "Warning: base_commit not recorded -- cannot identify changed files. Manual cleanup may be needed."
+             - Proceed directly to step 5 (transition to failed)
+          3. **Get changed files** (only if base_commit is present):
              ```bash
-             git diff --name-only <base_commit from ticket> HEAD
+             git diff --name-only <base_commit> HEAD
              ```
-          3. **If there are changed files, revert them** (use the specific files from step 2, not the entire tree):
+          4. **If there are changed files, revert them** (use the specific files from step 3, not the entire tree):
              ```bash
-             git checkout <base_commit> -- <files from step 2>
+             git checkout <base_commit> -- <files from step 3>
              git clean -fd --exclude=.fixme/
              ```
-          4. **Transition to failed** (from whatever the current state is):
+          5. **Transition to failed** (from whatever the current state is):
              ```bash
              node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> failed --reason "<failure reason from fixer result>"
              ```
-          5. Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
+          6. Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
 
    - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
      Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip:
