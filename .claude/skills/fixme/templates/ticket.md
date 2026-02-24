@@ -6,7 +6,6 @@ state: queued
 created: "{TIMESTAMP}"
 updated: "{TIMESTAMP}"
 url:
-reporter_context:
 commit_hash:
 failure_reason:
 related: []
@@ -14,7 +13,6 @@ max_attempts: 3
 current_attempt: 0
 base_commit:
 max_timeout_minutes: 30
-fix_artifacts: []
 files_changed: []
 transitions: []
 durations: {}

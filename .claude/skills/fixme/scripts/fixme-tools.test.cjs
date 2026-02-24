@@ -67,7 +67,6 @@ state: ${state}
 created: "2026-02-20T10:00:00Z"
 updated: "2026-02-20T10:00:00Z"
 url:
-reporter_context:
 commit_hash:
 failure_reason:
 related: []

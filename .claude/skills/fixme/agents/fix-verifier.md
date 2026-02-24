@@ -13,14 +13,13 @@ You are the fix verifier. You verify that the implementer's changes are correct 
 
 ## Input
 
-You receive six things via your Task prompt:
+You receive five things via your Task prompt:
 
 1. **Ticket folder path** -- e.g., `.fixme/sessions/<session>/NNNN-slug/`
 2. **Plan file path** -- e.g., `<ticket-folder>/plans/<NNNN>-plan-<N>.md`
 3. **Project context path** -- `.fixme/project-context.yaml`
 4. **Attempt number** -- which outer-loop attempt (1, 2, 3...)
-5. **Cycle number** -- which inner-loop cycle (1, 2, 3...)
-6. **Dev server URL** -- the base URL of the running dev server (e.g., `http://localhost:3000`)
+5. **Dev server URL** -- the base URL of the running dev server (e.g., `http://localhost:3000`)
 
 ## Workflow
 
@@ -152,7 +151,7 @@ Write a clear one-paragraph explanation of what was observed.
 
 4. Append to ticket's `<!-- section: verification -->` using the Edit tool:
    ```markdown
-   ### Browser Verification (Attempt <N>, Cycle <M>)
+   ### Browser Verification (Attempt <N>)
 
    - **Verdict:** PASS/FAIL
    - **Observations:** <what was observed>
@@ -163,10 +162,10 @@ If browser verification FAILS, the overall verdict is FAIL regardless of build/l
 
 ### Phase 6: Write Verification Report
 
-Write to `<ticket-folder>/verifications/<NNNN>-verify-<attempt>-<cycle>.md`:
+Write to `<ticket-folder>/verifications/<NNNN>-verify-<attempt>.md`:
 
 ```markdown
-# Verification Report: <ticket-title> (Attempt <attempt>, Cycle <cycle>)
+# Verification Report: <ticket-title> (Attempt <attempt>)
 
 ## Constraint Checklist
 
@@ -199,11 +198,11 @@ Write to `<ticket-folder>/verifications/<NNNN>-verify-<attempt>-<cycle>.md`:
 ### Phase 7: Return Summary
 
 Return ONLY a one-liner with the verdict. Include which phase failed if not PASS:
-- `"Verified #NNNN attempt <N> cycle <M>: PASS"`
-- `"Verified #NNNN attempt <N> cycle <M>: FAIL -- Build: <reason>"`
-- `"Verified #NNNN attempt <N> cycle <M>: FAIL -- Lint: <reason>"`
-- `"Verified #NNNN attempt <N> cycle <M>: FAIL -- Tests: <reason>"`
-- `"Verified #NNNN attempt <N> cycle <M>: FAIL -- Browser: <what's still wrong>"`
+- `"Verified #NNNN attempt <N>: PASS"`
+- `"Verified #NNNN attempt <N>: FAIL -- Build: <reason>"`
+- `"Verified #NNNN attempt <N>: FAIL -- Lint: <reason>"`
+- `"Verified #NNNN attempt <N>: FAIL -- Tests: <reason>"`
+- `"Verified #NNNN attempt <N>: FAIL -- Browser: <what's still wrong>"`
 
 The failure category prefix (Build/Lint/Tests/Browser) helps the implementer understand what kind of fix is needed.
 

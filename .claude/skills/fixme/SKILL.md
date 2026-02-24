@@ -255,9 +255,9 @@ This is the core execution cycle. Repeat until the user stops the session or the
              ```bash
              git diff --name-only <base_commit from ticket> HEAD
              ```
-          3. **If there are changed files, revert:**
+          3. **If there are changed files, revert them** (use the specific files from step 2, not the entire tree):
              ```bash
-             git checkout <base_commit> -- .
+             git checkout <base_commit> -- <files from step 2>
              git clean -fd --exclude=.fixme/
              ```
           4. **Transition to failed** (from whatever the current state is):
@@ -267,12 +267,19 @@ This is the core execution cycle. Repeat until the user stops the session or the
           5. Report to user: "Failed to fix #NNNN: <reason>. Moving to next ticket."
 
    - If agent returned "Investigated #NNNN: ..." with NOT_CONFIRMED/FAILED reproduction:
-     Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip: transition to skipped with reason. If more details: keep ticket in investigating and wait for user's follow-up message.
+     Report findings to user. The investigation was inconclusive. Use AskUserQuestion with options: "Skip this ticket" and "I'll provide more details". If skip:
+     ```bash
+     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Investigation inconclusive: <brief reason>"
+     ```
+     If more details: keep ticket in investigating and wait for user's follow-up message.
 
    - If agent returned "BLOCKER #NNNN: ..." (environment blocker):
      Report the blocker to the user. Attempt recovery (see Browser Recovery below).
      If recovery succeeds, re-dispatch the investigation agent.
-     If recovery fails, use AskUserQuestion: "Browser recovery failed." with options "Retry" / "Skip this ticket" / "End session".
+     If recovery fails, use AskUserQuestion: "Browser recovery failed." with options "Retry" / "Skip this ticket" / "End session". If skip:
+     ```bash
+     node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Browser recovery failed: <blocker details>"
+     ```
 
 5. **Loop:** Go back to step 1 to check for next queued ticket.
 
@@ -296,11 +303,17 @@ When the investigation agent reports a BLOCKER (browser crash, server down, auth
    Wait for readiness, then re-dispatch.
 
 4. **Auth expired recovery:**
-   Use AskUserQuestion: "Authentication has expired. Please log in again in the browser window." with options "I'm logged in" and "Skip". On confirmation, take a snapshot to verify authenticated content, then re-dispatch the investigation agent.
+   Use AskUserQuestion: "Authentication has expired. Please log in again in the browser window." with options "I'm logged in" and "Skip". On "I'm logged in", take a snapshot to verify authenticated content, then re-dispatch the investigation agent. If skip:
+   ```bash
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Auth expired, user chose to skip"
+   ```
 
 5. **Unrecoverable:**
    If recovery fails after one attempt, use AskUserQuestion: "Recovery failed after one attempt." with options "Retry" / "Skip this ticket" / "End session".
-   Do NOT automatically fail the ticket from a blocker -- the user decides.
+   Do NOT automatically fail the ticket from a blocker -- the user decides. If skip:
+   ```bash
+   node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket transition <ticket-path> skipped --reason "Unrecoverable blocker: <details>"
+   ```
 
 ## Bug Intake (In-Session)
 
