@@ -126,7 +126,12 @@ Plans:
   3. SKILL.md failure handler checks for null `base_commit` before running git revert — graceful fallback if fix-agent crashed early
   4. Only one writer (either sub-agents OR fix-agent) writes bullets to the ticket's Fix section — no duplicate entries
   5. investigation-agent.md example paths match the actual flat `assets/` directory structure
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 07-01-PLAN.md -- TDD: fixme-tools.cjs max_attempts enforcement in ticketTransition (INT-06)
+- [ ] 07-02-PLAN.md -- Agent MD fixes: implementer retry feedback, remove duplicate writes, fix assets path (INT-07, INT-09, INT-10)
+- [ ] 07-03-PLAN.md -- SKILL.md null-guard on base_commit in failure handler (INT-08)
 
 ## Progress
 
@@ -141,7 +146,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 | 4. Fix & Commit | 0/3 | Not started | - |
 | 5. Verification & Close Loop | 0/2 | Complete    | 2026-02-23 |
 | 6. Fix Agent State Boundary Alignment | 0/3 | Complete    | 2026-02-23 |
-| 7. Integration Hardening | 0/TBD | Not started | - |
+| 7. Integration Hardening | 0/3 | Not started | - |
 
 ---
 *Roadmap created: 2026-02-18*
