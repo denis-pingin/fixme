@@ -172,8 +172,8 @@ This is the core execution cycle. Repeat until the user stops the session or the
    ```bash
    node ~/.claude/skills/fixme/scripts/fixme-tools.cjs ticket next <session-dir>
    ```
-   If no queued tickets AND no intake agents are pending: auto-close the session (see Auto-Close).
-   If no queued tickets BUT intake agents are still running: wait for intake to complete, then re-check.
+   If no queued tickets AND `active_intakes` in session.md frontmatter is empty: auto-close the session (see Auto-Close).
+   If no queued tickets BUT `active_intakes` in session.md is non-empty: wait for intake to complete, then re-check.
 
 2. **Dispatch investigation agent via Task tool (use `subagent_type: "general-purpose"`):**
    The ticket folder (including `assets/`) is created by `ticket create`. The investigation-agent owns the `queued -> investigating` transition (Phase 0 in its instructions). Do NOT transition the ticket here.
@@ -383,11 +383,12 @@ This procedure is used by both `/fixme:report` and inline bug detection:
 
 ### Intake Agent Tracking
 
-Maintain a mental list of dispatched intake agents and their ticket paths. This is NOT a persistent data structure -- it's the orchestrator's in-memory awareness of what's running.
+Track dispatched intake agents in the session file's `active_intakes` frontmatter field. This persists across context compaction.
 
-- On intake dispatch: note the ticket path
-- On intake return (success or failure): remove from tracking
-- Before auto-closing session: verify no intake agents are pending
+- **On intake dispatch** (after step 1 of Intake Dispatch Procedure): Add the ticket path to the session file's `active_intakes` array. Use the Edit tool to append the path to the YAML array in session.md frontmatter.
+- **On intake return** (step 4 of Intake Dispatch Procedure, success or failure): Remove the ticket path from `active_intakes` in session.md frontmatter using the Edit tool.
+- **Before auto-closing session:** Read session.md frontmatter. If `active_intakes` is non-empty, intake agents are still pending -- wait for them before closing.
+- **On session resume:** Read `active_intakes` from session.md. For each ticket path listed, check if the ticket is still in `queued` state (via `ticket list`). If a ticket has moved past `queued`, its intake completed during a previous context -- remove it from `active_intakes`. If still `queued`, the intake may still be running or may have crashed -- treat as pending.
 
 ### One Bug Per Message (v1)
 
