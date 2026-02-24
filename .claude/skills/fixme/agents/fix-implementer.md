@@ -66,11 +66,6 @@ playwright-cli screenshot --filename=<ticket-folder>/assets/fix-check-<attempt>-
 
 This is a quick sanity check, not full verification. The verifier handles comprehensive checks.
 
-### Final Step: Record Summary in Ticket
-
-Use Edit to append a bullet to the ticket's `## Fix` section:
-- `- **Implementation (attempt N):** <list of changed files> — <1-2 sentence summary of what was changed>`
-
 ### Phase 5: Return Summary
 
 Return ONLY a one-liner:

@@ -109,6 +109,8 @@ Note: The planner owns the `researching -> planning` (first attempt) or `verifyi
 
 Dispatch via Task tool (use `subagent_type: "general-purpose"`):
 
+**First attempt:**
+
 ```
 First, read ~/.claude/skills/fixme/agents/fix-implementer.md for your role instructions.
 
@@ -116,8 +118,23 @@ Implement the fix:
 - Ticket folder: <ticket-folder>
 - Plan file: <path to current plan file>
 - Project context: .fixme/project-context.yaml
-- Verifier feedback: "first attempt"
+- Verifier feedback: "first attempt -- no prior verification"
 ```
+
+**Retry (attempt 2+):**
+
+```
+First, read ~/.claude/skills/fixme/agents/fix-implementer.md for your role instructions.
+
+Implement the fix:
+- Ticket folder: <ticket-folder>
+- Plan file: <path to current plan file>
+- Project context: .fixme/project-context.yaml
+- Verifier feedback: <path to last verification report from verifications/ directory>
+- Previous failure: "<1-2 sentence summary from verifier findings>"
+```
+
+The verification report path is available from step 4c of the previous iteration, where fix-agent reads the report to extract the verdict. Store the last verification report path across loop iterations for use here.
 
 After return:
 

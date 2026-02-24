@@ -92,11 +92,6 @@ Write the plan to `<ticket-folder>/plans/<NNNN>-plan-<N>.md` where NNNN is the t
 - **Browser:** [Expected visual/behavioral change]
 ```
 
-### Final Step: Record Summary in Ticket
-
-Use Edit to append a bullet to the ticket's `## Fix` section:
-- `- **Plan (attempt N):** <path-to-plan-artifact> — <1-2 sentence summary of approach>`
-
 ### Phase 5: Return Summary
 
 Return ONLY a one-liner:

@@ -98,11 +98,6 @@ Write the structured research file to `<ticket-folder>/research/<NNNN>-research.
 
 Write the file as the LAST step -- do not write progressively.
 
-### Final Step: Record Summary in Ticket
-
-Use Edit to append a bullet to the ticket's `## Fix` section:
-- `- **Research:** <path-to-research-artifact> — <1-2 sentence summary of key findings>`
-
 ### Phase 6: Return Summary
 
 Return ONLY a one-liner:
