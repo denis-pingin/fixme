@@ -5,19 +5,19 @@
 See: .planning/PROJECT.md (updated 2026-02-18)
 
 **Core value:** Bugs flow in continuously and get fixed reliably with browser-verified results
-**Current focus:** Phase 6: Fix Agent State Boundary Alignment
+**Current focus:** Phase 7: Integration Hardening
 
 ## Current Position
 
-**Current Phase:** 6
-**Current Phase Name:** Fix Agent State Boundary Alignment
-**Total Phases:** 6
-**Current Plan:** Not started
+**Current Phase:** 7
+**Current Phase Name:** Integration Hardening
+**Total Phases:** 7
+**Current Plan:** 3 of 3
 **Total Plans in Phase:** 3
-**Status:** Milestone complete
-**Last Activity:** 2026-02-23
+**Status:** Phase complete — ready for verification
+**Last Activity:** 2026-02-24
 
-**Progress:** [██████████] 100%
+**Progress:** [█████████░] 94%
 
 ## Performance Metrics
 
@@ -49,6 +49,8 @@ See: .planning/PROJECT.md (updated 2026-02-18)
 | Phase 06 P01 | 3min | 2 tasks | 2 files |
 | Phase 06 P03 | 4min | 2 tasks | 3 files |
 | Phase 06 P02 | 3min | 2 tasks | 7 files |
+| Phase 07 P03 | 1min | 1 tasks | 1 files |
+| Phase 07 P02 | 2min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -108,6 +110,7 @@ Recent decisions affecting current work:
 - [Phase 06]: fix-agent owns zero state transitions -- all transitions delegated to sub-agents via Phase 0
 - [Phase 06]: Inner loop removed -- each attempt is plan->implement->verify, SKILL.md handles revert and terminal transitions
 - [Phase 06]: Sub-agents write inline summaries (artifact path + result) to ticket fix section after completing work
+- [Phase 07]: Guard skips steps 3-4 (git diff + checkout) and proceeds directly to failed transition -- no partial revert attempted when base_commit is null
 
 ### Pending Todos
 
@@ -121,6 +124,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-23
-Stopped at: Completed 06-01-PLAN.md
-Resume file: .planning/phases/06-fix-agent-state-boundary-alignment/06-02-PLAN.md
+Last session: 2026-02-24
+Stopped at: Completed 07-03-PLAN.md
+Resume file: .planning/phases/07-integration-hardening/07-01-PLAN.md
