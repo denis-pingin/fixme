@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SRC="$(cd "$(dirname "$0")" && pwd)/.claude/skills/fixme"
-DEST="$HOME/.claude/skills/fixme"
+SKILLS_SRC="$(cd "$(dirname "$0")" && pwd)/.claude/skills"
+SKILLS_DEST="$HOME/.claude/skills"
 
-if [ ! -d "$SRC" ]; then
-  echo "Error: source not found at $SRC" >&2
+if [ ! -d "$SKILLS_SRC" ]; then
+  echo "Error: source not found at $SKILLS_SRC" >&2
   exit 1
 fi
 
-rm -rf "$DEST"
-mkdir -p "$(dirname "$DEST")"
-cp -R "$SRC" "$DEST"
+mkdir -p "$SKILLS_DEST"
 
-echo "Installed fixme to $DEST"
+for dir in "$SKILLS_SRC"/fixme*; do
+  name="$(basename "$dir")"
+  rm -rf "$SKILLS_DEST/$name"
+  cp -R "$dir" "$SKILLS_DEST/$name"
+  echo "Installed $name"
+done
