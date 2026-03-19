@@ -139,3 +139,15 @@ Report:
 4. **Verification results**: paste the clean output
 5. **Pre-existing issues**: if any were proven, list them with evidence
 6. **Notes**: anything the user should know that isn't captured above
+
+## Output Format
+
+When running as part of the fixme-task pipeline (dispatched by the orchestrator), end your report with:
+
+```
+---
+EXECUTOR_STATUS: COMPLETE
+NEXT_PIPELINE_STEP: fixme-review-code
+```
+
+This signals the orchestrator to continue the pipeline. Do NOT output a "Run Summary" or any language suggesting the overall task is done - you are one step in a larger pipeline. The orchestrator owns the final summary.

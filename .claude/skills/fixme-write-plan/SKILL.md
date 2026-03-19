@@ -7,12 +7,36 @@ description: Write implementation plans that are unambiguous, complete, correct,
 
 Write implementation plans that leave nothing to interpretation. The plan is the only output - no source code modifications allowed.
 
+## Why This Matters
+
+The plan is the foundation of a pipeline where each downstream step has less context and fewer decision-making capabilities than the one before it. A reviewer can only verify - it can't redesign. An executor can only follow instructions - it can't make architectural choices. A code reviewer can only catch bugs in what was built - it can't fix design flaws.
+
+Every gap, ambiguity, or wrong assumption in the plan cascades downstream and costs exponentially more to fix. A missed dependency in the plan becomes a blocking failure in execution. A vague step becomes a wrong implementation becomes a code review finding becomes a revision cycle.
+
+**The goal is one-shot success.** The plan must be so thorough, so precise, and so correct that it flows through review, execution, and code review without generating a single finding. This is the standard. Achieving it requires reading more code than feels necessary, resolving more ambiguity than seems important, and writing more detail than appears needed.
+
 ## Hard Constraints
 
 - **NO source code modifications.** Only create/edit the plan document itself. If tempted to "quickly fix" something in the codebase, stop. That's the executor's job.
 - **NO assumptions.** If anything is unclear about the task, the codebase, or the approach - surface it in the Questions section or ask the user directly. Never guess.
 - **NO thought process in the plan.** No "we could do X or Y" discussions, no tradeoff analysis, no "I considered...". The plan states what to do, not what was considered. Decisions are made before they enter the plan.
 - **NO ambiguity.** Every step must be actionable by an engineer who has never seen this codebase. If a step could be interpreted two ways, it's wrong.
+- **NO delegation of design to the executor.** If a step requires the executor to decide *what* to write (not just *how* to type it), the step is incomplete. The plan makes all design decisions. The executor makes zero. See the Delegation Test below.
+
+## Delegation Test
+
+Before writing any step that creates or modifies a file, apply this test:
+
+> Could an executor with zero codebase knowledge execute this step by reading it alone, without opening any other file for design guidance?
+
+If the answer is no, the step is incomplete. Common failures:
+
+- **"Write X based on Y, adapted for Z"** - The executor must open Y, understand it, then make adaptation decisions. Instead: resolve the adaptation yourself and write the final content.
+- **"Key adaptations include..."** - This describes what to think about, not what to write. Instead: show the result of those adaptations as concrete content.
+- **"Similar to the pattern in Z"** - The executor must find Z, study it, then apply the pattern. Instead: include the pattern inline.
+- **"Add appropriate error handling"** - The executor must decide what's appropriate. Instead: specify each error case and its handling.
+
+For new files: include the complete file content in a fenced code block. For large files (>100 lines), include the full structural skeleton with exact section headings, all field values, and key behavioral rules spelled out - leaving only prose body text for the executor to fill from the structural spec.
 
 ## Input Resolution
 
@@ -32,7 +56,7 @@ Triggered when the orchestrator provides: previous plan path + plan review FIX i
 Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan being revised
-- **FIX items**: classified findings from fixme-handle-plan-review (markdown - same format as handler output)
+- **FIX items**: classified findings from the plan review handler (markdown)
 - **Decision log path**: `.fixme/decisions.md` (may not exist on first iteration)
 
 ### Code Revision Mode
@@ -41,8 +65,8 @@ Triggered when the orchestrator provides: previous plan path + code review FIX i
 Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan that was executed
-- **FIX items**: classified findings from fixme-handle-code-review (markdown - same format as handler output)
-- **Execution results**: summary from fixme-execute-plan completion report (markdown)
+- **FIX items**: classified findings from the code review handler (markdown)
+- **Execution results**: summary from the executor's completion report (markdown)
 - **Decision log path**: `.fixme/decisions.md`
 
 ## Before Writing
@@ -57,6 +81,7 @@ Required inputs (provided by orchestrator as arguments):
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
 4. In **code revision only**: re-read all files that were modified during execution (listed in execution results). The codebase has changed - file-level context is stale.
 5. Skip full codebase exploration. Only do targeted re-reads as described above.
+6. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
 
 ### Understand the Codebase
 
@@ -64,9 +89,11 @@ Read extensively before writing a single line of plan:
 - Directory structure and conventions
 - Existing patterns for the type of work being planned (how similar things were done before)
 - Relevant source files that will be touched or depended on
-- Test patterns and infrastructure
-- Build/lint/test commands and CI expectations
-- Dependencies and their versions (don't assume API shapes - verify)
+- Test patterns and infrastructure (framework, file naming, helper utilities, mock patterns)
+- Build/lint/test commands and CI expectations (exact commands from project docs, not guesses)
+- Dependencies and their versions (don't assume API shapes - verify by reading source or types)
+
+**Record everything you discover.** Every file you read, every API shape you verify, every pattern you observe goes into the Stable Context section. This is not busywork - it is the foundation that makes one-shot success possible. An incomplete Stable Context means the plan is built on unverified assumptions, and unverified assumptions are where plans fail.
 
 ### Understand the Task
 
@@ -112,7 +139,7 @@ In revision mode, overwrite the existing plan file at the same path. Do not crea
 - [Architecture patterns and conventions discovered during codebase exploration]
 - [Dependency versions and API shapes that influenced decisions]
 - [Project structure and naming conventions]
-- [Build/test/lint commands and CI expectations]
+- [Build/test/lint commands and CI expectations - exact commands]
 - [Key constraints and design decisions with rationale]
 - [File-level context: summaries of key files read, their roles, relevant line ranges]
 
@@ -139,6 +166,12 @@ In revision mode, overwrite the existing plan file at the same path. Do not crea
 - Create: `exact/path/to/file.ts`
 - Test: `exact/path/to/file.test.ts`
 
+**Expected Outcome:**
+- **Build:** [passes / N/A]
+- **Lint:** [passes / N/A]
+- **Tests:** [which tests pass, new test names]
+- **Behavior:** [observable state change, verifiable condition]
+
 - [ ] Step 1: [action]
 - [ ] Step 2: [action]
 ...
@@ -163,6 +196,97 @@ Before defining tasks, map every file that will be created or modified. This loc
 - Include exact paths, always
 - Include line ranges for modifications when possible (after reading the file)
 
+## TDD-First Task Structure
+
+**TDD is the primary organizing principle for every task that changes behavior.** This is not a style preference - it is the strongest guarantee of correctness available. A test written before implementation proves the test is meaningful (it fails without the code). A test written after implementation might pass for the wrong reason and catch nothing.
+
+### Behavioral Tasks (code that changes observable behavior)
+
+Every behavioral task MUST use this step pattern:
+
+```markdown
+### Task N: [Feature/Fix Name]
+
+**Files:**
+- Test: `exact/path/to/file.test.ts`
+- Create/Modify: `exact/path/to/file.ts`
+
+**Expected Outcome:**
+- **Build:** passes with zero errors
+- **Lint:** passes with zero warnings
+- **Tests:** `test_name_here` passes; full suite passes
+- **Behavior:** [specific observable change]
+
+- [ ] Step 1: Write failing test for [specific behavior]
+
+  In `exact/path/to/file.test.ts`, add:
+  ```lang
+  [exact test code]
+  ```
+
+- [ ] Step 2: Run test, verify it fails
+
+  ```bash
+  [exact test command]
+  ```
+  Expected: [exact failure message or pattern, e.g., "FAIL - expected 200, received 404"]
+
+- [ ] Step 3: Implement [specific change]
+
+  In `exact/path/to/file.ts:L42-L68`, [exact description of change with code if non-obvious]
+
+- [ ] Step 4: Run test, verify it passes
+
+  ```bash
+  [exact test command]
+  ```
+  Expected: all tests pass
+
+- [ ] Step 5: Run full verification
+
+  ```bash
+  [build command] && [lint command] && [test command]
+  ```
+  Expected: zero errors, zero warnings, all tests pass
+
+- [ ] Step 6: Commit
+
+  ```bash
+  git add [specific files]
+  git commit -m "[message]"
+  ```
+```
+
+**The test code in Step 1 must be complete and correct.** Not "write a test that checks X" - the actual test code. The planner has the deepest codebase context of anyone in the pipeline. The executor has the least. If the planner doesn't write the test, the executor will write a worse one.
+
+**The expected failure in Step 2 must be specific.** Not "test fails" but the actual error message or pattern. This serves as a checkpoint - if the executor sees a different failure, they know something is wrong before wasting time on implementation.
+
+### Non-Behavioral Tasks (config, docs, refactors with existing coverage, file moves)
+
+Non-behavioral tasks skip the test-first steps but MUST still include verification:
+
+```markdown
+- [ ] Step 1: [the change]
+- [ ] Step 2: Run full verification
+  ```bash
+  [build command] && [lint command] && [test command]
+  ```
+  Expected: zero errors, zero warnings, all existing tests still pass
+- [ ] Step 3: Commit
+```
+
+### Classifying Tasks
+
+| Task Type | TDD Required? | Examples |
+|-----------|--------------|----------|
+| New feature | Yes | Adding an endpoint, component, function |
+| Bug fix | Yes | The test reproduces the bug first |
+| Behavior change | Yes | Changing how existing code works |
+| Refactor (same behavior) | No, but verify | Renaming, restructuring, extracting |
+| Config/docs | No, but verify | `.json`, `.md`, env vars, CI config |
+| File moves/deletes | No, but verify | Moving files, updating imports |
+| New file (no behavior) | No, but verify | Templates, schemas, reference docs |
+
 ## Task Granularity
 
 Each step is one action, small enough to verify immediately:
@@ -177,9 +301,11 @@ Each step is one action, small enough to verify immediately:
 ### What Goes in a Step
 
 - **Exact file paths** - never "the config file", always `src/config/auth.ts`
-- **Exact commands** with expected output - never "run tests", always `bun run test:mobile -- --testPathPattern auth` with what success/failure looks like
-- **Code when it helps clarity** - include code snippets when the implementation isn't obvious from the description. Code is welcome but not mandatory for every step. The bar is: could an engineer with zero context execute this step without stopping to think about what's meant?
+- **Exact commands** with expected output - never "run tests", always the project's actual test command with the specific test filter and what success/failure looks like
+- **Concrete content for new files** - include the full content in a fenced code block, or a detailed structural specification where every section heading, field value, and behavioral rule is spelled out. The executor should be able to type/paste without making design choices.
+- **Code when it helps clarity** - include code snippets when the implementation isn't obvious from the description. The bar is: could an engineer with zero context execute this step without stopping to think about what's meant?
 - **Line references** for modifications - "In `src/auth.ts:L45-L52`, replace the token check with..."
+- **Expected output for verification steps** - what success looks like ("Expected: 14 tests pass, 0 failures") and what failure looks like for test-first steps ("Expected: FAIL - TypeError: X is not a function")
 
 ### What Never Goes in a Step
 
@@ -187,33 +313,66 @@ Each step is one action, small enough to verify immediately:
 - Reasoning or justification ("because this pattern is better")
 - Vague actions ("add appropriate error handling")
 - Multiple unrelated changes in one step
+- Delegation phrases: "based on X", "adapted from Y", "similar to Z", "key adaptations include..." - these shift design work to the executor. Resolve the adaptation yourself and write the final result into the step.
+
+## Task Sizing
+
+Each task should be completable in a single focused session. Signs a task is too large:
+
+- More than ~12 steps (including TDD verification steps)
+- Touches more than 4-5 files
+- Contains multiple independent logical changes
+- The "Expected Outcome" requires more than 2 sentences per category
+
+Split oversized tasks. Each task should have one clear purpose and a verifiable outcome. Two 6-step tasks are better than one 12-step task because:
+- The executor can verify and commit between them
+- A failure in the second task doesn't invalidate the first
+- Issues can be pinpointed to a smaller scope
+
+## Expected Outcomes
+
+Every task MUST have a structured **Expected Outcome** block immediately after the Files block:
+
+- **Build:** "passes with zero errors" or "N/A" for non-code tasks
+- **Lint:** "passes with zero warnings" or "N/A"
+- **Tests:** specific test names that pass + "full suite passes"
+- **Behavior:** observable state change, verifiable condition
+
+Examples:
+- **For bug fixes:** Build: passes. Tests: `test_auth_redirect_after_login` passes (was failing). Behavior: Login page redirects to `/dashboard` instead of 404.
+- **For new features:** Build: passes. Tests: `test_create_ticket`, `test_list_tickets` pass. Behavior: `POST /tickets` returns 201 with ticket object.
+- **For refactors:** Build: passes. Tests: all 47 existing tests still pass. Behavior: `grep -r 'OldName' src/` returns zero results.
+- **For file operations:** Build: passes. Tests: all pass. Behavior: File exists at new path, `grep -r 'old/path' .` returns zero results.
 
 ## Scope Check
 
 If the task covers multiple independent subsystems, suggest breaking into separate plans - one per subsystem. Each plan should produce working, testable software on its own.
 
-## TDD Structure
-
-Every behavioral change follows this cycle in the plan:
-
-1. Write the failing test (include test code or clear specification)
-2. Verify it fails (include command and expected failure)
-3. Implement the change
-4. Verify it passes (include command)
-5. Verify full suite still passes (include command)
-
-Non-behavioral changes (config, docs, refactors with existing coverage) can skip the test-first steps but must still verify the full suite passes.
-
 ## Commit Points
 
 Include explicit commit steps. Each commit should leave the codebase in a working state (builds, passes lint, passes tests). A commit message is included in the step.
 
-## Final Check Before Saving
+For TDD tasks, the natural commit point is after the full Red-Green-Refactor cycle completes and verification passes. Never commit between "write test" and "make test pass" - that leaves a deliberately failing test in the commit.
+
+## Self-Consistency Check
+
+After writing the complete plan, read it end-to-end as if you were the executor. Check:
+
+- **Forward references.** Does step N depend on something created in step M where M > N? Reorder.
+- **File Map vs Tasks.** Does every file in the File Map appear in at least one task? Does every file touched in a task appear in the File Map?
+- **Expected Outcomes vs Steps.** Can every Expected Outcome be verified by the steps in the task? If an outcome mentions a test name, does a step create that test?
+- **Verified claims.** Did you actually read every file path you reference? Did you actually verify every API shape you assume? If you're not sure, go read it now - before saving.
+- **Implied steps.** Does creating a new module require updating a barrel export? Does moving a file require updating imports? Does adding a dependency require an install command? These are the steps most often missed.
+- **TDD completeness.** Does every behavioral task have the full cycle: write test, verify fails, implement, verify passes?
+- **Command accuracy.** Are all commands the project's actual commands from its docs/config, not generic guesses?
+- **Delegation violations.** Apply the Delegation Test to every create/modify step. Any "based on", "adapted from", "similar to"?
+
+## Final Checklist
 
 Before saving the plan, verify:
 - [ ] Every step is unambiguous - one interpretation only
 - [ ] Every file path is exact and verified to exist (for modifications) or has a clear parent directory (for creation)
-- [ ] Every command is exact and runnable
+- [ ] Every command is exact and runnable (verified against project's actual tooling)
 - [ ] No source code was modified during planning
 - [ ] No assumptions were made that should be questions
 - [ ] The plan can be executed top-to-bottom without backtracking
@@ -222,3 +381,11 @@ Before saving the plan, verify:
 - [ ] Context section is populated with all significant discoveries from codebase exploration
 - [ ] Locked Decisions section carries forward all decisions from previous iterations (revision mode)
 - [ ] No FIX item was silently ignored - each is addressed in the revised plan or flagged as a conflict
+- [ ] Every task has a structured Expected Outcome (Build/Lint/Tests/Behavior)
+- [ ] No step delegates design decisions to the executor - apply the Delegation Test to every create/modify step
+- [ ] New file steps include full content or detailed structural specification
+- [ ] Every referenced path, API, type, and function was verified against the codebase during exploration
+- [ ] Every behavioral task follows TDD structure (test first, verify fail, implement, verify pass)
+- [ ] Every verification step includes the exact command and expected output
+- [ ] No commit step falls between "write test" and "make test pass"
+- [ ] Revision mode: the approach is fundamentally different from any previously failed approach

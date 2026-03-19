@@ -87,3 +87,19 @@ Break the question into these sections (skip any that don't apply):
 - If a finding is ambiguous or context is lacking, classify as ASK-USER rather than guessing. A wrong FIX wastes implementation time. A wrong NO-FIX hides a real issue. ASK-USER costs only a question.
 - If two findings would be resolved by the same change, group them and note it.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is NO-FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK-USER with new evidence.
+
+## Routing Directive
+
+End your output with a structured routing block that tells the orchestrator exactly what to do next. This is mandatory.
+
+```
+---
+HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
+FIX_COUNT: <number>
+ASK_USER_COUNT: <number>
+NEXT_ACTION: PLAN_LOOP_EXIT | PLAN_REVISION | ASK_USER_BATCH
+```
+
+- `CLEAN` (0 FIX, 0 ASK-USER): orchestrator exits the plan loop and proceeds to fixme-execute-plan
+- `HAS_FIX` (1+ FIX, 0 ASK-USER): orchestrator dispatches fixme-write-plan in plan revision mode with the FIX items
+- `HAS_ASK_USER` (1+ ASK-USER): orchestrator batches questions to user before routing FIX items

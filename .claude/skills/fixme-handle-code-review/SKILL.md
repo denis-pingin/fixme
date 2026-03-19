@@ -121,3 +121,19 @@ Break the question into these sections (skip any that don't apply):
 - When in doubt between FIX and NO-FIX, classify ASK-USER. A wrong FIX wastes implementation time and can introduce bugs. A wrong NO-FIX hides a real issue. ASK-USER costs only a question.
 - The NO-FIX rationale summary is mandatory. If you can't articulate why findings were rejected, you didn't analyze them carefully enough.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is NO-FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK-USER with new evidence.
+
+## Routing Directive
+
+End your output with a structured routing block that tells the orchestrator exactly what to do next. This is mandatory.
+
+```
+---
+HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
+FIX_COUNT: <number>
+ASK_USER_COUNT: <number>
+NEXT_ACTION: DONE | OUTER_LOOP | ASK_USER_BATCH
+```
+
+- `CLEAN` (0 FIX, 0 ASK-USER): orchestrator outputs Run Summary, pipeline ends
+- `HAS_FIX` (1+ FIX, 0 ASK-USER): orchestrator dispatches fixme-write-plan in code revision mode with the FIX items, entering the next outer loop iteration. The orchestrator MUST NOT apply fixes itself.
+- `HAS_ASK_USER` (1+ ASK-USER): orchestrator batches questions to user before routing FIX items

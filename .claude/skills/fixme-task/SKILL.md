@@ -10,9 +10,11 @@ Chain all fixme skills into a single automated pipeline. Dispatch each sub-skill
 ## Hard Constraints
 
 - **This skill is a dispatcher.** It never writes plans, reviews code, or classifies findings itself. It dispatches sub-skills as agents and routes their outputs.
+- **Never read source code.** The orchestrator reads ONLY plan files, decision logs, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
 - **Never lose context.** Every piece of information (task, plans, findings, decisions, execution results) accumulates across iterations. Nothing is dropped.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
+- **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after fixme-execute-plan. Execution is followed by fixme-review-code and fixme-handle-code-review. The Run Summary is ONLY output after the code review handler returns Clean (no FIX, no ASK-USER) or after the outer loop guard triggers. If you feel like outputting a completion report after execution, STOP - you are about to skip code review.
 
 ## Input Resolution
 
@@ -39,6 +41,42 @@ Detect where to enter the pipeline based on what already exists. Check sources i
 - **Nothing exists**: start from **fixme-write-plan** (default).
 
 When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `.fixme/decisions.md`.
+
+### Investigation Tasks
+
+If the task asks "why", "what causes", "debug", or describes unexpected behavior:
+- This is an investigation. The temptation to explore the codebase will be strongest here.
+- Pass the user's EXACT description to fixme-write-plan. Add nothing from your own exploration.
+- The plan agent has "Understand the Codebase" and "Understand the Task" phases designed for this. That's where investigation happens. Not here.
+- Do NOT read source files "to understand the task better." The task description IS the input.
+
+## Dispatch Gate (NON-NEGOTIABLE)
+
+You have resolved the task and entry point. STOP HERE.
+
+Do NOT:
+- Read source code files
+- Explore the codebase
+- Investigate the problem
+- Form a mental model of the root cause
+- "Just check" how something works
+- Read files to "provide better context" to the agent
+
+All codebase understanding happens INSIDE dispatched agents. They have full tool access and will explore thoroughly.
+
+Dispatch the first agent NOW with the resolved task description and entry point.
+
+If you find yourself understanding the root cause before dispatching, you have already violated this gate. The deeper your understanding, the stronger the temptation to bypass the pipeline - and the more certain you should be that you need the pipeline's review loops to catch what your confidence blinds you to.
+
+## Orchestrator Tool Allowlist
+
+The orchestrator may ONLY use these tools:
+- **Agent** - to dispatch sub-skills
+- **Read** - ONLY on `.fixme/plans/*.md`, `.fixme/decisions.md`, or plan files referenced in conversation
+- **Write** - ONLY on `.fixme/decisions.md`
+- **Bash** - ONLY `mkdir -p .fixme/plans` or `mkdir -p .fixme`
+
+Any other tool use (Read on source code, Grep, Glob, Edit on source code) is a pipeline violation. If you need information from the codebase, dispatch an agent to get it.
 
 ## Flow
 
@@ -106,7 +144,7 @@ User provides task (+ optional existing plan/findings/execution results)
 
 ## Sub-Skill Dispatch
 
-Dispatch each sub-skill as an isolated agent via the Agent tool. Pass all required inputs as prompt content.
+Dispatch each sub-skill as an isolated agent via the Agent tool. Pass all required inputs as prompt content. The agent does the work. You route the output. That's the entire job.
 
 ### fixme-write-plan
 
@@ -150,6 +188,72 @@ Dispatch each sub-skill as an isolated agent via the Agent tool. Pass all requir
 - Review findings (full output from fixme-review-code)
 - Path to plan
 - Path to decision log (if it exists)
+
+## Step-by-Step Transition Procedures
+
+Follow these EXACTLY after each agent returns. Do not improvise transitions.
+
+### After fixme-write-plan returns:
+
+1. The agent saved a plan file. Note its path (from agent output).
+2. Dispatch fixme-review-plan with: the plan path.
+3. Do NOT read the plan yourself. Do NOT evaluate it. Just route it.
+
+### After fixme-review-plan returns:
+
+1. Read the agent's full output (findings).
+2. Dispatch fixme-handle-plan-review with:
+   - Review findings: the full agent output (paste as markdown in prompt)
+   - Plan path: the path from earlier
+   - Decision log path: `.fixme/decisions.md` (if exists)
+3. Do NOT classify findings yourself. Do NOT skip this dispatch.
+
+### After fixme-handle-plan-review returns:
+
+1. Read the HANDLER_RESULT routing directive at the end of the output.
+2. If `CLEAN` -> dispatch fixme-execute-plan with: the plan path.
+3. If `HAS_ASK_USER` -> batch questions to user (see ASK-USER Batching). After user answers, write to decision log, re-dispatch fixme-handle-plan-review with updated decisions.
+4. If `HAS_FIX` -> increment plan loop counter. If counter > 3, escalate to user. Else dispatch fixme-write-plan in plan revision mode with: task + plan path + full handler output + decision log path.
+5. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
+
+### After fixme-execute-plan returns:
+
+**CRITICAL: This is NOT the end of the pipeline.**
+
+1. Capture the full completion report from the agent output.
+2. Dispatch fixme-review-code with: plan path + git diff info (base branch).
+3. Do NOT output any summary, completion message, or status to the user.
+4. Do NOT stop to ask if the user wants to continue.
+5. The execution report is INPUT to the code review step, not OUTPUT to the user.
+
+### After fixme-review-code returns:
+
+1. Read the agent's full output (findings).
+2. Dispatch fixme-handle-code-review with:
+   - Review findings: full agent output (paste as markdown in prompt)
+   - Plan path
+   - Decision log path: `.fixme/decisions.md` (if exists)
+3. Do NOT classify findings yourself.
+
+### After fixme-handle-code-review returns:
+
+1. Read the HANDLER_RESULT routing directive at the end of the output.
+2. If `CLEAN` -> output Run Summary -> DONE. This is the ONLY normal exit point.
+3. If `HAS_ASK_USER` -> batch questions to user. After answers, re-dispatch fixme-handle-code-review.
+4. If `HAS_FIX` -> increment outer loop counter. If counter > 2, escalate to user. Else dispatch fixme-write-plan in code revision mode with: task + plan path + execution results + full handler output + decision log path. Then re-enter plan loop.
+5. Do NOT apply fixes yourself.
+
+### Pipeline Exit Points (ONLY these)
+
+- fixme-handle-code-review returns CLEAN -> output Run Summary -> DONE
+- Outer loop guard triggers (max 2 iterations) -> escalate to user
+- A sub-skill agent fails unexpectedly -> report error to user
+
+## Never Apply Fixes Directly
+
+When fixme-handle-code-review returns FIX items, **always route through the full outer loop** - dispatch fixme-write-plan in code revision mode, then the plan loop, then execute, then review again.
+
+**Never apply FIX items inline in the orchestrator**, no matter how small or obvious they seem. "It's just a 2-line fix" is exactly when bugs slip through - a guard clause that accidentally exits render and violates Rules of Hooks, an init value that creates a hidden coupling to another module's internal ordering. The review loop exists to catch what you can't predict. Skipping it because you're confident is the definition of the problem the pipeline solves.
 
 ## Decision Log
 
@@ -209,6 +313,8 @@ When a handler produces ASK-USER items:
 - **Execute-plan pre-existing failure proof**: include in execution results passed to code revision fixme-write-plan.
 
 ## Run Summary
+
+**ONLY output this after fixme-handle-code-review returns Clean or the outer loop guard triggers. NEVER after fixme-execute-plan alone.**
 
 At completion, output:
 
