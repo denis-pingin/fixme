@@ -1,6 +1,6 @@
 ---
 name: fixme-write-plan
-description: Write implementation plans that are unambiguous, complete, correct, and efficient. Plans are written for an engineer with zero codebase context. Guards against any source code modifications - only the plan document is produced. Reads the codebase thoroughly before writing. Supports three modes - fresh (full exploration), plan revision (incorporate plan review FIX items), and code revision (incorporate code review FIX items after execution).
+description: Write implementation plans that are unambiguous, complete, correct, and efficient. Plans are written for an engineer with zero codebase context. Guards against any source code modifications - only the plan document is produced. Reads the codebase thoroughly before writing. Runs a mandatory Input Audit gate before any planning work to surface ambiguities and locked decision conflicts. Supports four modes - fresh (full exploration), plan revision (incorporate plan review FIX items), code revision (incorporate code review FIX items after execution), and rewrite (improve existing plan without structured FIX items).
 ---
 
 # Write Plan
@@ -69,9 +69,116 @@ Required inputs (provided by orchestrator as arguments):
 - **Execution results**: summary from the executor's completion report (markdown)
 - **Decision log path**: `.fixme/decisions.md`
 
+### Rewrite Mode
+
+Triggered when a prior plan exists but there are no structured FIX items from a review handler. The user wants the plan improved or rewritten.
+
+Inputs:
+- **Original task**: the unchanged task description (may be implicit - "improve this plan")
+- **Previous plan path**: the plan to improve
+- **Decision log path**: `.fixme/decisions.md` (may not exist)
+
+Key rules for rewrite mode:
+- **Locked decisions from the prior plan are constraints, not suggestions.** They were settled by the user or a prior iteration. To change one, flag it during the Input Audit - never silently override.
+- **Stable Context from the prior plan is a starting point.** Re-verify against the codebase where needed, but do not discard and re-derive from scratch.
+- **The Goal line must remain identical** unless the user explicitly changes it.
+- **Quality improvements are always in scope**: more precise steps, complete file content, fixed delegation violations, better task ordering, missing verification steps, tighter Expected Outcomes.
+- **Architectural changes require user approval**: different design decisions, reversed locked decisions, different scope, different decomposition. These are surfaced as questions during the Input Audit, not made autonomously.
+
+## Input Audit
+
+**This gate runs before ANY codebase exploration or plan writing. It is non-negotiable in ALL modes.**
+
+Before reading source files, understanding the task in depth, or writing a single line of plan - audit all available inputs to surface ambiguities that require user resolution. The purpose of this gate is to prevent the planner from forming opinions (through codebase exploration) before confirming that the task, constraints, and prior decisions are clearly understood. Confidence formed during exploration makes it less likely to ask questions and more likely to silently override prior decisions.
+
+### Step 1: Inventory Inputs
+
+List everything provided or discoverable:
+
+- **Task description**: what the user wants done (from argument, conversation, or IDE context)
+- **Existing plan**: if a prior plan is provided or referenced - note its path and identify its Goal, Locked Decisions, and Stable Context sections
+- **Locked decisions**: from existing plan's Context section and/or `.fixme/decisions.md`
+- **FIX items**: from review handler output (if plan or code revision)
+- **Execution results**: from executor (if code revision)
+- **User constraints**: explicit instructions, preferences, or scope limits mentioned anywhere in the conversation
+
+### Step 2: Verify Mode
+
+The Input Resolution section (above) detected the mode. Verify it is correct:
+
+- Do the available inputs match the detected mode's required inputs?
+- Could the inputs fit a different mode that would change the plan's approach?
+- If the inputs don't cleanly match any mode: add "Mode is ambiguous" to the questions list. Explain the ambiguity and present the mode options with their implications.
+
+**Do not default to the most permissive mode when uncertain.** Fresh mode gives the planner maximum freedom (no locked decisions, no prior context to respect). Choosing fresh mode when rewrite or revision mode applies means silently discarding prior decisions. This is the highest-risk mode selection error.
+
+### Step 3: Check Locked Decisions
+
+If ANY prior plan or decision log exists, extract every locked decision. For each one, evaluate:
+
+1. Does it conflict with the current task description?
+2. Does it conflict with any FIX item provided?
+3. Would you change it based on your own judgment or codebase understanding?
+
+If (1) or (2): add to questions list. State the conflict, why it matters, and present resolution options.
+
+If (3): **this is the most dangerous case.** Your judgment may be correct, but confidence without user confirmation is exactly the failure mode this gate prevents. Add it to the questions list with your reasoning and recommendation. Let the user decide.
+
+If no prior plan or decision log exists: this step produces no questions. Proceed.
+
+### Step 4: Identify Ambiguities
+
+Scan the task description and all inputs for:
+
+- **Underspecified goals**: "make it better", "improve this", "fix the issues" - better/improved/fixed HOW? Along which dimensions?
+- **Architectural decisions not yet made**: choices that fundamentally change the plan's structure or approach
+- **Scope boundaries not defined**: what's in scope, what's explicitly out?
+- **Contradictions between inputs**: task says X, prior plan says Y, FIX item says Z
+- **Multiple valid interpretations**: anything that could reasonably be read two different ways
+
+### Step 5: Question Resolution Loop
+
+Collect all questions from steps 2-4 into a single numbered list. Every question MUST include a recommendation. Format each question as:
+
+- **Q[N]**: [the specific question]
+- **Why it matters**: [what concretely changes in the plan based on the answer]
+- **Options**: [the choices, if applicable]
+- **Recommended**: [your suggested answer with brief reasoning]
+
+**If the questions list is empty:** the gate passes. Proceed to Before Writing.
+
+**If the questions list is non-empty:** enter the resolution loop:
+
+1. **Output** the full numbered question list as formatted text (markdown renders in text output).
+2. **Ask** the user via AskUserQuestion: "I have [N] questions to resolve before planning. See above. You can answer specific questions by number, or accept all recommendations." with the option "Proceed with recommendations".
+3. **Process the response:**
+   - If "Proceed with recommendations": lock ALL questions to their recommended answers, marked as **assumed** (see below).
+   - If the user answers some questions explicitly: lock those to the user's answers, marked as **confirmed**. For any question the user did NOT answer, lock to the recommendation, marked as **assumed**.
+4. **Record** every locked decision in the plan's `### Locked Decisions` section with its confidence level. Each entry uses the format:
+
+   ```
+   N. **[confirmed|assumed]** <decision statement>. (<origin: which question, or "carried forward from prior plan">)
+   ```
+
+   Two confidence levels:
+
+   - **[confirmed]**: User explicitly chose this (answered the question directly, or carried forward from a prior plan where it was confirmed). To override, you MUST ask the user again with the new evidence. Never silently override.
+   - **[assumed]**: Recommendation accepted by default (user did not explicitly answer this question). If codebase exploration reveals concrete evidence that contradicts this decision, you MAY re-evaluate: present the evidence and the conflicting decision to the user as a new question. The bar is "concrete evidence from the codebase," not "I thought about it more and changed my mind."
+
+5. **Consistency check:** review the full set of locked decisions (both confirmed and assumed, including any carried forward from prior plans). Look for contradictions: does decision A imply X while decision B implies not-X? Does a scope decision conflict with an architectural decision? If inconsistencies exist, formulate new questions that surface each inconsistency and go to step 1 with ONLY the new questions.
+6. If no inconsistencies: the gate passes.
+
+**You may not skip this gate because:**
+- You feel confident about the answers
+- The questions seem obvious or trivial
+- Asking would slow things down
+- You already explored the codebase and "know" the right answer
+
+These are exactly the conditions under which silent overrides happen. The gate exists for when you are most confident, not least.
+
 ## Before Writing
 
-### Revision Mode: Context Recovery (skip in fresh mode)
+### Context Recovery (revision and rewrite modes - skip in fresh mode)
 
 1. Read the previous plan's `## Context` section for Stable Context (architecture, patterns, conventions, dependency versions, API shapes).
 2. Read locked decisions from the previous plan's Context section AND from the decision log at `.fixme/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
@@ -82,6 +189,7 @@ Required inputs (provided by orchestrator as arguments):
 4. In **code revision only**: re-read all files that were modified during execution (listed in execution results). The codebase has changed - file-level context is stale.
 5. Skip full codebase exploration. Only do targeted re-reads as described above.
 6. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
+7. **Rewrite mode only**: re-read the entire prior plan to understand its structure, task decomposition, and approach. Identify which aspects are quality issues (precision, completeness, delegation violations) vs. architectural choices (design decisions, scope, decomposition). Quality issues are in scope for improvement. Architectural choices are locked unless the user approved changes during the Input Audit.
 
 ### Understand the Codebase
 
@@ -104,13 +212,15 @@ Read extensively before writing a single line of plan:
 
 In revision mode, the original task is the source of truth for the goal. Do not re-derive or drift. The Goal line in the plan header must remain identical across all revisions.
 
-### Resolve Unknowns
+### Resolve Remaining Unknowns
 
-If anything is unresolved after reading the codebase and spec:
-- Ask the user directly for critical unknowns that block the plan
-- Collect non-blocking unknowns in the Questions section at the end
+The Input Audit resolved structural ambiguities before codebase exploration began. During exploration, new unknowns may emerge - for example, API shapes that suggest different approaches, patterns that conflict with planned changes, or test infrastructure that doesn't support the planned verification approach.
 
-In revision mode, read locked decisions first (from plan Context section and `.fixme/decisions.md`). Never re-ask a question the user already answered. If a locked decision conflicts with a FIX finding, flag the conflict to the user - do not silently override either the decision or the finding.
+For these codebase-level discoveries:
+- **Blocking** (the plan cannot proceed without resolution): ask the user directly. Do not guess.
+- **Non-blocking** (the plan can proceed but the executor may need guidance): collect in the Questions section at the end of the plan.
+
+Do not re-ask questions already resolved by the Input Audit. Do not re-open locked decisions settled during the audit unless you discover concrete codebase evidence that makes a locked decision unimplementable - in which case, flag the specific conflict to the user with the evidence.
 
 ## Plan Save Location
 
@@ -370,6 +480,9 @@ After writing the complete plan, read it end-to-end as if you were the executor.
 ## Final Checklist
 
 Before saving the plan, verify:
+- [ ] Input Audit was performed and all questions were resolved before codebase exploration began
+- [ ] Mode was explicitly verified during audit (not defaulted to most permissive)
+- [ ] Every locked decision from prior plans was either carried forward unchanged or flagged to the user during audit - none were silently overridden
 - [ ] Every step is unambiguous - one interpretation only
 - [ ] Every file path is exact and verified to exist (for modifications) or has a clear parent directory (for creation)
 - [ ] Every command is exact and runnable (verified against project's actual tooling)
