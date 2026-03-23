@@ -89,9 +89,25 @@ This prevents the most common source of false findings: reviewing code without u
 - Import style inconsistencies
 - Error handling approach different from the rest of the codebase
 
+## Two-Pass Review Process
+
+**The review is a two-pass process. Do not emit findings as you discover them.**
+
+### Pass 1: Investigation (internal, not in output)
+
+Read all changed files, the plan, and the spec. Identify candidate issues. For each candidate, run it through the Pre-Finding Gate below. This is your thinking process - none of it appears in the final report.
+
+- If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the report.
+- If gate-checking reveals uncertainty, move it to Questions.
+- If the candidate survives all gates, promote it to a confirmed finding.
+
+### Pass 2: Report (the actual output)
+
+Write ONLY confirmed findings that survived Pass 1. The report should contain zero artifacts of your investigation process - no retracted findings, no findings where Evidence or Confidence is "N/A".
+
 ## Pre-Finding Gate
 
-Before writing ANY finding, pass it through every gate. If it fails any gate, drop it.
+Before promoting ANY candidate to a finding, pass it through every gate. If it fails any gate, drop it silently.
 
 1. **Did I read the full context?** Both the changed file AND the plan step that produced it. A finding based on reading only the diff is likely wrong.
 2. **Is the plan responsible?** If the code follows the plan exactly and the issue is in the plan's design, this is a plan review finding, not a code review finding. Flag only if the implementation made it worse than the plan specified.
@@ -99,6 +115,7 @@ Before writing ANY finding, pass it through every gate. If it fails any gate, dr
 4. **Is this a real convention in this codebase?** Read neighboring files before flagging style issues. The convention might be different from what you'd expect.
 5. **Does fixing this actually improve the outcome?** If the change would make code more complex for marginal benefit, drop it.
 6. **Does this contradict a locked decision?** If the plan includes Locked Decisions in its Context section, those are settled user choices. Do not flag code that implements a locked decision. If the locked decision itself appears to cause a problem in practice, frame it as a question, not a finding.
+7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely.
 
 ## What NOT to Flag
 

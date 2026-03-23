@@ -18,9 +18,25 @@ Resolve the plan to review in this order:
 
 Read the plan fully before proceeding. If a specification or context document is referenced in the plan, read that too.
 
+## Two-Pass Review Process
+
+**The review is a two-pass process. Do not emit findings as you discover them.**
+
+### Pass 1: Investigation (internal, not in output)
+
+Read the plan, read the codebase, identify candidate issues. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
+
+- If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the output. If you talked yourself out of it, it's not a finding.
+- If gate-checking reveals uncertainty, move it to Questions.
+- If the candidate survives all gates, promote it to a confirmed finding.
+
+### Pass 2: Report (the actual output)
+
+Write ONLY confirmed findings that survived Pass 1. The report should contain zero artifacts of your investigation process - no "I initially thought X but then realized Y", no retracted findings, no findings where the Evidence is "N/A" or the Confidence is "N/A".
+
 ## Pre-Review Gate
 
-Before writing ANY finding, pass it through every gate. If it fails any gate, drop it.
+Before promoting ANY candidate to a finding, pass it through every gate. If it fails any gate, drop it silently.
 
 1. **Did I read the relevant source code?** If no, read it first. Plans often reference patterns that exist in the codebase but aren't spelled out.
 2. **Does the spec/context explain this?** The plan may look odd in isolation but make sense given constraints not yet internalized. Re-read the spec.
@@ -28,6 +44,7 @@ Before writing ANY finding, pass it through every gate. If it fails any gate, dr
 4. **Am I sure about the API/framework behavior I'm assuming?** If the finding depends on how a library works, verify against the actual dependency version in the project. Do not rely on general knowledge - APIs change.
 5. **Would fixing this actually improve the outcome?** Technically correct feedback that makes the plan worse (more complex, slower to ship, harder to maintain) is bad feedback.
 6. **Does this contradict a locked decision?** If the plan includes a Locked Decisions section in its Context, those are settled user choices. Do not flag findings that disagree with locked decisions. If a locked decision itself appears problematic (would cause a bug, break something), frame it as a question in the Questions section, not as a finding.
+7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
 
 ## What to Look For
 
@@ -61,10 +78,12 @@ Before writing ANY finding, pass it through every gate. If it fails any gate, dr
 ## What NOT to Flag
 
 - Style preferences or naming opinions
+- **Cosmetic issues** - field ordering in config/frontmatter, whitespace, formatting of generated files, indentation preferences. If it's "functionally correct but looks different", it's not a finding.
 - Alternative approaches that aren't clearly better - only flag if the planned approach has a concrete flaw
 - Missing error handling for scenarios that genuinely can't happen given the codebase
 - "Best practices" that don't apply to the specific context (e.g., suggesting pagination for a list that's bounded to 10 items)
 - Vague concerns ("this might be slow") without evidence - either quantify it or don't mention it
+- Anything where your own analysis concludes "no issue" - if you investigated and found it works correctly, that's Pass 1 doing its job. Don't report it.
 
 ## Output Format
 
