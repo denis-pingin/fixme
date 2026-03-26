@@ -539,12 +539,101 @@ const TRANSITIONS = {
 };
 
 /**
+ * Build a transition map from an ordered list of pipeline phase names.
+ *
+ * Rules:
+ * - queued -> first phase, skipped, failed
+ * - phase[i] -> phase[i+1] (forward one step), any phase[j] where j < i (backward), failed
+ * - phase[last] -> done, any earlier phase (backward), failed
+ * - Terminal states (done, failed, skipped) -> nothing
+ */
+function buildTransitionsFromPhases(phases) {
+  const t = {
+    'queued': [phases[0], 'skipped', 'failed'],
+    'done': [],
+    'failed': [],
+    'skipped': [],
+  };
+
+  for (let i = 0; i < phases.length; i++) {
+    const valid = [];
+    // Forward: next phase (or done if last)
+    if (i < phases.length - 1) {
+      valid.push(phases[i + 1]);
+    } else {
+      valid.push('done');
+    }
+    // Backward: any earlier phase
+    for (let j = 0; j < i; j++) {
+      valid.push(phases[j]);
+    }
+    // Terminal
+    valid.push('failed');
+    t[phases[i]] = valid;
+  }
+  return t;
+}
+
+/**
+ * Load pipeline phase names from config.
+ * Returns array of phase name strings, or null if pipeline not found.
+ */
+function loadPipelinePhases(pipelineName) {
+  // Try .fixme/config.json relative to CWD
+  const configPath = path.join(process.cwd(), '.fixme', 'config.json');
+  if (!fs.existsSync(configPath)) return null;
+
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (!config.pipelines || !config.pipelines[pipelineName]) return null;
+    const pipeline = config.pipelines[pipelineName];
+    if (!Array.isArray(pipeline)) return null;
+    // Filter out disabled phases (enabled defaults to true)
+    return pipeline
+      .filter(phase => phase.enabled !== false)
+      .map(phase => phase.name)
+      .filter(Boolean);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Resolve the transition map for a given ticket.
+ * Priority: --pipeline flag -> ticket frontmatter pipeline -> hardcoded default.
+ */
+function resolveTransitions(fm, flags) {
+  // 1. Check --pipeline flag (also stores it in frontmatter for future use)
+  const pipelineFlag = flags.pipeline || null;
+  // 2. Check ticket frontmatter
+  const pipelineName = pipelineFlag || fm.pipeline || null;
+
+  if (pipelineName) {
+    const phases = loadPipelinePhases(pipelineName);
+    if (phases && phases.length > 0) {
+      return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName };
+    }
+  }
+
+  // 3. Fallback to hardcoded default
+  return { transitions: TRANSITIONS, phases: null, pipelineName: null };
+}
+
+/**
  * Check if a transition requires a reason.
  */
-function requiresReason(fromState, toState) {
+function requiresReason(fromState, toState, phases) {
   if (toState === 'failed') return true;
   if (toState === 'skipped') return true;
-  if (fromState === 'verifying' && toState === 'planning') return true;
+  // Backward transition: target phase index < current phase index
+  if (phases) {
+    const fromIdx = phases.indexOf(fromState);
+    const toIdx = phases.indexOf(toState);
+    if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) return true;
+  } else {
+    // Legacy fallback: hardcoded retry check
+    if (fromState === 'verifying' && toState === 'planning') return true;
+  }
   return false;
 }
 
@@ -674,8 +763,16 @@ function ticketTransition(ticketPath, newState, flags) {
     return error('Ticket has no state field in frontmatter');
   }
 
+  // Resolve transition map
+  const { transitions: transMap, phases, pipelineName } = resolveTransitions(fm, flags);
+
+  // Store pipeline in frontmatter if provided via flag
+  if (flags.pipeline && !fm.pipeline) {
+    fm.pipeline = flags.pipeline;
+  }
+
   // Validate transition
-  const validNext = TRANSITIONS[currentState];
+  const validNext = transMap[currentState];
   if (!validNext || validNext.length === 0) {
     return error(
       `Invalid transition: ${currentState} -> ${newState}. ` +
@@ -690,21 +787,37 @@ function ticketTransition(ticketPath, newState, flags) {
     );
   }
 
-  // Enforce max_attempts on retry transition
-  if (currentState === 'verifying' && newState === 'planning') {
-    const currentAttempt = fm.current_attempt || 0;
-    const maxAttempts = fm.max_attempts || 3;
-    if (currentAttempt >= maxAttempts - 1) {
-      return error(
-        `Retry limit reached: attempt ${currentAttempt + 1} of ${maxAttempts} (max_attempts). ` +
-        `Transition verifying -> planning denied.`
-      );
+  // Enforce max_attempts on backward transitions
+  if (phases) {
+    const fromIdx = phases.indexOf(currentState);
+    const toIdx = phases.indexOf(newState);
+    if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) {
+      const currentAttempt = fm.current_attempt || 0;
+      const maxAttempts = fm.max_attempts || 3;
+      if (currentAttempt >= maxAttempts - 1) {
+        return error(
+          `Retry limit reached: attempt ${currentAttempt + 1} of ${maxAttempts} (max_attempts). ` +
+          `Backward transition ${currentState} -> ${newState} denied.`
+        );
+      }
+    }
+  } else {
+    // Legacy fallback
+    if (currentState === 'verifying' && newState === 'planning') {
+      const currentAttempt = fm.current_attempt || 0;
+      const maxAttempts = fm.max_attempts || 3;
+      if (currentAttempt >= maxAttempts - 1) {
+        return error(
+          `Retry limit reached: attempt ${currentAttempt + 1} of ${maxAttempts} (max_attempts). ` +
+          `Transition verifying -> planning denied.`
+        );
+      }
     }
   }
 
   // Check reason requirement
   const reason = flags.reason || null;
-  if (requiresReason(currentState, newState) && !reason) {
+  if (requiresReason(currentState, newState, phases) && !reason) {
     return error(
       `Transition from '${currentState}' to '${newState}' requires a --reason`
     );
@@ -749,9 +862,18 @@ function ticketTransition(ticketPath, newState, flags) {
     fm.failure_reason = reason;
   }
 
-  // Increment attempt on retry (verifying -> planning)
-  if (currentState === 'verifying' && newState === 'planning') {
-    fm.current_attempt = (fm.current_attempt || 0) + 1;
+  // Increment attempt on backward transition
+  if (phases) {
+    const fromIdx = phases.indexOf(currentState);
+    const toIdx = phases.indexOf(newState);
+    if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) {
+      fm.current_attempt = (fm.current_attempt || 0) + 1;
+    }
+  } else {
+    // Legacy fallback
+    if (currentState === 'verifying' && newState === 'planning') {
+      fm.current_attempt = (fm.current_attempt || 0) + 1;
+    }
   }
 
   // Write back
@@ -1461,4 +1583,10 @@ function main() {
   }
 }
 
-main();
+// Guard main() so require() doesn't execute the CLI
+if (require.main === module) {
+  main();
+}
+
+// Exports for testing
+module.exports = { buildTransitionsFromPhases, parseFrontmatter };

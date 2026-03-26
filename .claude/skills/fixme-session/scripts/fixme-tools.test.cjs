@@ -13,6 +13,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
+const { buildTransitionsFromPhases } = require(TOOLS_PATH);
 
 let passed = 0;
 let failed = 0;
@@ -51,10 +52,54 @@ function run(args) {
   }
 }
 
+function runInDir(args, cwd) {
+  try {
+    const result = execSync(`node "${TOOLS_PATH}" ${args}`, {
+      encoding: 'utf8',
+      timeout: 5000,
+      cwd: cwd,
+    });
+    return { ok: true, data: JSON.parse(result.trim()) };
+  } catch (e) {
+    const stdout = e.stdout ? e.stdout.trim() : '';
+    let data = null;
+    try { data = JSON.parse(stdout); } catch (_) {}
+    return { ok: false, data, stderr: e.stderr || '', exitCode: e.status };
+  }
+}
+
 function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-test-'));
   tmpDirs.push(dir);
   return dir;
+}
+
+function createPipelineConfig(baseDir) {
+  const fixmeDir = path.join(baseDir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    pipelines: {
+      default: [
+        { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+        { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } }
+      ],
+      full: [
+        { name: 'investigate', skills: ['fixme-investigate'] },
+        { name: 'research', skills: ['fixme-research'] },
+        { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+        { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } },
+        { name: 'verify', skills: ['fixme-browser-verify'] }
+      ]
+    }
+  }, null, 2));
+  return fixmeDir;
+}
+
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  return sa.every((v, i) => v === sb[i]);
 }
 
 function makeTicketContent(number, slug, state) {
@@ -828,6 +873,125 @@ test('list: files_changed with empty array returns empty array', () => {
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
   assert(Array.isArray(result.data[0].files_changed), 'files_changed should be an array');
   assert(result.data[0].files_changed.length === 0, `Should be empty array, got ${result.data[0].files_changed.length}`);
+});
+
+// ============================================================================
+// Dynamic State Machine Tests (unit)
+// ============================================================================
+
+console.log('\n=== dynamic state machine: buildTransitionsFromPhases ===\n');
+
+test('buildTransitions: default pipeline [plan, implement]', () => {
+  const phases = ['plan', 'implement'];
+  const t = buildTransitionsFromPhases(phases);
+
+  assert(arraysEqual(t['queued'], ['plan', 'skipped', 'failed']),
+    `queued should -> plan, skipped, failed. Got: ${t['queued']}`);
+  assert(arraysEqual(t['plan'], ['implement', 'failed']),
+    `plan should -> implement, failed. Got: ${t['plan']}`);
+  assert(arraysEqual(t['implement'], ['done', 'plan', 'failed']),
+    `implement (last) should -> done, plan, failed. Got: ${t['implement']}`);
+  assert(arraysEqual(t['done'], []), 'done should be terminal');
+  assert(arraysEqual(t['failed'], []), 'failed should be terminal');
+  assert(arraysEqual(t['skipped'], []), 'skipped should be terminal');
+});
+
+test('buildTransitions: full pipeline [investigate, research, plan, implement, verify]', () => {
+  const phases = ['investigate', 'research', 'plan', 'implement', 'verify'];
+  const t = buildTransitionsFromPhases(phases);
+
+  assert(arraysEqual(t['queued'], ['investigate', 'skipped', 'failed']),
+    `queued should -> investigate. Got: ${t['queued']}`);
+  assert(arraysEqual(t['investigate'], ['research', 'failed']),
+    `investigate (first) has no backward. Got: ${t['investigate']}`);
+  assert(arraysEqual(t['research'], ['plan', 'investigate', 'failed']),
+    `research can go backward. Got: ${t['research']}`);
+  assert(arraysEqual(t['plan'], ['implement', 'investigate', 'research', 'failed']),
+    `plan can go backward. Got: ${t['plan']}`);
+  assert(arraysEqual(t['implement'], ['verify', 'investigate', 'research', 'plan', 'failed']),
+    `implement can go backward. Got: ${t['implement']}`);
+  assert(t['verify'].includes('done'), 'verify (last) can go to done');
+  assert(t['verify'].includes('plan'), 'verify can go backward to plan');
+  assert(t['verify'].includes('failed'), 'verify can go to failed');
+});
+
+// ============================================================================
+// Dynamic State Machine Tests (integration via CLI)
+// ============================================================================
+
+console.log('\n=== dynamic state machine: CLI integration ===\n');
+
+test('pipeline flag: --pipeline stores pipeline name in ticket frontmatter', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name pipe-session`, base);
+  assert(sessionResult.ok, `Session create failed: ${JSON.stringify(sessionResult.data)}`);
+  const sessionDir = sessionResult.data.path;
+
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug pipeline-test`, base);
+  assert(createResult.ok, `Ticket create failed: ${JSON.stringify(createResult.data)}`);
+  const ticketPath = createResult.data.path;
+
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
+  assert(t1.ok, `Transition failed: ${JSON.stringify(t1.data)}`);
+  assert(t1.data.from === 'queued', `from should be queued, got ${t1.data.from}`);
+  assert(t1.data.to === 'plan', `to should be plan, got ${t1.data.to}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('pipeline: default'), 'pipeline should be stored in frontmatter');
+});
+
+test('pipeline flag: rejects invalid forward skip', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name skip-session`, base);
+  const sessionDir = sessionResult.data.path;
+
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug skip-test`, base);
+  const ticketPath = createResult.data.path;
+
+  const t1 = runInDir(`ticket transition "${ticketPath}" investigate --pipeline full`, base);
+  assert(t1.ok, `First transition failed: ${JSON.stringify(t1.data)}`);
+
+  const t2 = runInDir(`ticket transition "${ticketPath}" plan`, base);
+  assert(!t2.ok, 'investigate -> plan should fail (must go through research)');
+  assert(t2.data && t2.data.error, 'Should have error message');
+  assert(t2.data.error.includes('Invalid transition'), `Expected invalid transition error. Got: ${t2.data.error}`);
+});
+
+test('pipeline: backward transition requires reason and increments attempt', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name back-session`, base);
+  const sessionDir = sessionResult.data.path;
+
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug backward-test`, base);
+  const ticketPath = createResult.data.path;
+
+  runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
+  runInDir(`ticket transition "${ticketPath}" implement`, base);
+
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan`, base);
+  assert(!t1.ok, 'backward without reason should fail');
+  assert(t1.data.error.includes('--reason'), `Should require reason. Got: ${t1.data.error}`);
+
+  const t2 = runInDir(`ticket transition "${ticketPath}" plan --reason "Code review found issues"`, base);
+  assert(t2.ok, `Backward with reason should succeed: ${JSON.stringify(t2.data)}`);
+  assert(t2.data.from === 'implement', `from should be implement, got ${t2.data.from}`);
+  assert(t2.data.to === 'plan', `to should be plan, got ${t2.data.to}`);
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  assert(content.includes('current_attempt: 1'), 'current_attempt should be 1 after backward transition');
+});
+
+test('fallback: legacy transitions when no --pipeline and no pipeline in frontmatter', () => {
+  const base = createTmpDir();
+  // No createPipelineConfig -- no config.json exists
+  const ticketPath = createTicketFolder(base, '0001', 'fallback-test', 'queued');
+
+  const result = run(`ticket transition "${ticketPath}" investigating`);
+  assert(result.ok, `Fallback transition should succeed: ${JSON.stringify(result.data)}`);
+  assert(result.data.to === 'investigating', `Should transition to investigating, got ${result.data.to}`);
 });
 
 // ============================================================================
