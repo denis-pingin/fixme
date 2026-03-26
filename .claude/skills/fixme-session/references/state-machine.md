@@ -1,209 +1,140 @@
 # Fixme State Machine Reference
 
-This document is the single source of truth for ticket state transitions. Both the orchestrator (SKILL.md) and agents reference this document. The `fixme-tools.cjs ticket transition` command enforces these rules.
+This document is the single source of truth for ticket state transitions. The `fixme-tools.cjs ticket transition` command enforces these rules.
 
-## States
+## State Model
+
+The state machine is **derived from the pipeline configuration**. There are no hardcoded phase states. States come from two sources:
+
+### Structural States (always exist)
 
 | State | Description | Terminal? |
 |-------|-------------|-----------|
-| `queued` | Ticket created, waiting to be picked up by the dispatch loop | No |
-| `investigating` | Investigation agent is analyzing the bug: reading code, reproducing in browser, forming a root cause hypothesis | No |
-| `researching` | Fix-researcher is exploring the codebase around the root cause: finding relevant files, tracing code paths, identifying approach candidates | No |
-| `planning` | Fix-planner is designing a step-by-step fix plan based on research findings (or re-planning after verification failure) | No |
-| `implementing` | Fix-implementer is executing code changes according to the fix plan | No |
-| `verifying` | Fix-verifier is checking the implementation: running build/lint/test, checking plan coverage, browser-verifying the bug is gone | No |
-| `done` | Fix verified and committed. Ticket complete. | Yes |
-| `failed` | Ticket could not be resolved. Reason recorded in `failure_reason` field. | Yes |
-| `skipped` | Ticket skipped. Reason recorded in `failure_reason` field. | Yes |
+| `queued` | Ticket created, waiting to be picked up | No |
+| `done` | Work completed successfully | Yes |
+| `failed` | Work could not be completed. Reason in `failure_reason`. | Yes |
+| `skipped` | Ticket skipped. Reason in `failure_reason`. | Yes |
 
-## Transition Matrix
+### Phase States (from pipeline config)
 
-### Table Format
+Each enabled phase in the pipeline definition becomes a valid ticket state. Phases with `"enabled": false` are excluded. For example, the `"full"` pipeline defines phases `[investigate, research, plan, implement, verify]`, so valid phase states are `investigate`, `research`, `plan`, `implement`, `verify`.
 
-| From | Valid To States |
-|------|-----------------|
-| `queued` | `investigating`, `skipped`, `failed` |
-| `investigating` | `researching`, `skipped`, `failed` |
-| `researching` | `planning`, `failed` |
-| `planning` | `implementing`, `failed` |
-| `implementing` | `verifying`, `failed` |
-| `verifying` | `done`, `planning` (retry), `failed` |
-| `done` | _(none -- terminal)_ |
-| `failed` | _(none -- terminal)_ |
-| `skipped` | _(none -- terminal)_ |
+Different pipelines have different phase states:
+- `"default"`: `plan`, `implement`
+- `"full"`: `investigate`, `research`, `plan`, `implement`, `verify`
+- `"quick"`: `plan`, `implement`
 
-### Diagram
+## Transition Rules
 
-```
-queued -> investigating -> researching -> planning -> implementing -> verifying -> done
-  |           |                |             |             |              |
-  +-> skip    +-> skip         +-> fail      +-> fail      +-> fail       +-> planning (retry)
-  +-> fail    +-> fail                                                    +-> fail
-```
+Given a pipeline with enabled phases `[P0, P1, P2, ..., PN]` (phases with `enabled: false` are excluded):
 
-### Happy Path
+| From | Valid To States | Notes |
+|------|-----------------|-------|
+| `queued` | `P0`, `skipped`, `failed` | Can only enter at first phase |
+| `Pi` (not last) | `P(i+1)`, any `Pj` where j < i, `failed` | Forward one step, backward any |
+| `PN` (last) | `done`, any `Pj` where j < N, `failed` | Last phase can complete ticket |
+| `done` | _(terminal)_ | |
+| `failed` | _(terminal)_ | |
+| `skipped` | _(terminal)_ | |
 
-The normal successful flow is linear:
+**Key rules:**
+- **No forward skipping.** `queued -> P2` is invalid if P0 and P1 exist. Must go through enabled phases in order.
+- **Backward transitions allowed.** Any phase can return to any earlier phase (for retries). Backward transitions require `--reason` and increment `current_attempt`.
+- **`skipped` only from `queued`.** Mid-work abandonment uses `failed` with a descriptive reason.
+- **Review cycles don't change state.** Plan review loops stay in the current phase. The ticket state doesn't change during internal review iterations.
 
-```
-queued -> investigating -> researching -> planning -> implementing -> verifying -> done
-```
+## Pipeline Resolution
 
-### Retry Path
+When `ticket transition` is called, it resolves the valid transitions in this order:
 
-When verification fails but the ticket has remaining attempts:
+1. **`--pipeline` flag** on the command: loads the named pipeline from `.fixme/config.json`, stores the name in ticket frontmatter
+2. **`pipeline` field in ticket frontmatter**: loads that pipeline from config
+3. **Hardcoded fallback**: uses the legacy transition matrix (backwards compatible with tickets created before this change)
+
+## Example: Default Pipeline
+
+Pipeline: `[plan, implement]`
 
 ```
-verifying -> planning (retry, attempt N+1)
+queued -> plan -> implement -> done
+  |        |        |
+  +-> skip +-> fail +-> plan (backward retry)
+  +-> fail          +-> fail
 ```
 
-The planner starts a new plan informed by the verifier's failure feedback. The ticket's `current_attempt` field is incremented. The cycle then continues: `planning -> implementing -> verifying`.
+## Example: Full Pipeline
 
-The researcher is NOT re-dispatched on retry. Research output is reused across all attempts.
+Pipeline: `[investigate, research, plan, implement, verify]`
+
+```
+queued -> investigate -> research -> plan -> implement -> verify -> done
+  |           |            |          |          |           |
+  +-> skip    +-> fail     +-> fail   +-> fail   +-> fail    +-> plan (retry)
+  +-> fail                 +-> inv.   +-> inv.   +-> inv.    +-> inv. (retry)
+                                      +-> res.   +-> res.    +-> res. (retry)
+                                                 +-> plan    +-> impl. (retry)
+                                                             +-> fail
+```
 
 ## State Transition Ownership
 
-Each agent owns the transition that reflects its own activation. Terminal transitions remain with SKILL.md because they require cleanup actions (git commit, git revert) that span multiple concerns.
-
 | Transition | Owner |
 |------------|-------|
-| `queued -> investigating` | investigation-agent |
-| `investigating -> researching` | fix-researcher |
-| `researching -> planning` | fix-planner (first attempt) |
-| `verifying -> planning` | fix-planner (retry) |
-| `planning -> implementing` | fix-implementer |
-| `implementing -> verifying` | fix-verifier |
-| `verifying -> done` | SKILL.md (after commit) |
-| `[any non-terminal] -> failed` | SKILL.md (cleanup) |
-| `investigating -> skipped` | SKILL.md (user decision) |
-| `queued -> skipped` | SKILL.md (user decision) |
-| `queued -> failed` | SKILL.md (crash cleanup) |
+| `queued -> <first phase>` | fixme-task (at pipeline start) |
+| `<phase> -> <next phase>` | fixme-task (at phase boundary) |
+| `<phase> -> <earlier phase>` | fixme-task (on review retry) |
+| `<last phase> -> done` | fixme-session (after commit) |
+| `[any non-terminal] -> failed` | fixme-session (cleanup) |
+| `queued -> skipped` | fixme-session (user decision) |
+| `queued -> failed` | fixme-session (crash cleanup) |
 
-**Pattern:** Sub-agents transition at the BEGINNING of their execution (first action after reading the ticket). If a sub-agent crashes mid-work, the ticket's state accurately reflects where it got stuck. The orchestrator reads the actual state from disk and transitions from that state to `failed`.
-
-## Terminal States
-
-`done`, `failed`, and `skipped` are terminal. No transitions out of these states are allowed. The tool will throw a hard error if you attempt to transition from a terminal state.
-
-If a "done" ticket regresses later, create a **new ticket** referencing the old one via the `related` field. Do not reopen the original.
+**Pattern:** fixme-task owns all phase transitions (forward and backward) during pipeline execution. fixme-session owns terminal transitions (`done`, `failed`, `skipped`) because they require cleanup (git commit/revert).
 
 ## Reason Requirements
 
-Certain transitions require a `--reason` flag. The tool will throw an error if the reason is missing.
-
-| Transition | Reason Required? | Example Reason |
-|------------|-----------------|----------------|
-| `queued -> investigating` | No | |
-| `investigating -> researching` | No | |
-| `researching -> planning` | No | |
-| `planning -> implementing` | No | |
-| `implementing -> verifying` | No | |
-| `verifying -> done` | No | |
-| `queued -> skipped` | **Yes** | "Duplicate of #0001" |
-| `queued -> failed` | **Yes** | "Intake agent failed" |
-| `investigating -> skipped` | **Yes** | "Cannot reproduce" |
-| `investigating -> failed` | **Yes** | "No source code access to relevant module" |
-| `researching -> failed` | **Yes** | "Root cause in third-party library, no fix possible" |
-| `planning -> failed` | **Yes** | "Fix requires schema migration, beyond scope" |
-| `implementing -> failed` | **Yes** | "Implementation conflicts with critical system invariant" |
-| `verifying -> failed` | **Yes** | "Fix introduced new regression, max attempts reached" |
-| `verifying -> planning` | **Yes** | "Verification failed: button still unresponsive after fix" |
+| Transition Type | Reason Required? |
+|-----------------|-----------------|
+| Forward (next phase) | No |
+| Backward (earlier phase) | **Yes** |
+| To `failed` | **Yes** |
+| To `skipped` | **Yes** |
+| To `done` | No |
 
 ## Retry Semantics
 
-- **Trigger:** `verifying -> planning` transition.
-- **Behavior:** Increments `current_attempt` by 1.
-- **Bound:** `current_attempt` must be less than `max_attempts` (default 3). If `current_attempt >= max_attempts`, the retry transition is invalid -- the ticket must be transitioned to `failed` instead.
-- **Context:** The planner starts a new plan informed by the verifier's failure feedback. The verifier writes detailed findings (what failed, why, what needs to change) to the verification artifact file. The planner reads this feedback to design a different approach.
-- **Reason:** Required. Should describe what failed during verification.
+- **Trigger:** Any backward transition (e.g., `implement -> plan`)
+- **Behavior:** Increments `current_attempt` by 1
+- **Bound:** `current_attempt` must be less than `max_attempts` (default 3). If at limit, backward transition is denied - ticket must be transitioned to `failed`.
+- **Reason:** Required. Should describe what failed (e.g., "Code review found issues: missing error handling")
 
 ## Transition Log Format
 
-Every state change is recorded in the `transitions` array in the ticket's YAML frontmatter:
+Every state change is recorded in the `transitions` array in frontmatter (unchanged from before):
 
 ```yaml
 transitions:
   - from: queued
-    to: investigating
-    timestamp: "2026-02-18T14:35:00Z"
+    to: plan
+    timestamp: "2026-03-19T14:35:00Z"
     reason: null
-  - from: investigating
-    to: researching
-    timestamp: "2026-02-18T14:40:00Z"
-    reason: null
-  - from: researching
-    to: planning
-    timestamp: "2026-02-18T14:42:00Z"
-    reason: null
-  - from: planning
-    to: implementing
-    timestamp: "2026-02-18T14:45:00Z"
-    reason: null
-  - from: implementing
-    to: verifying
-    timestamp: "2026-02-18T14:55:00Z"
-    reason: null
-  - from: verifying
-    to: done
-    timestamp: "2026-02-18T15:00:00Z"
+  - from: plan
+    to: implement
+    timestamp: "2026-03-19T14:45:00Z"
     reason: null
 ```
-
-The transition log is append-only. Entries are never removed or modified.
 
 ## Duration Tracking
 
-The `durations` object in frontmatter tracks time spent in each state:
+Same as before. The `durations` object tracks `entered`, `exited`, `seconds`, and `prior_seconds` (for phases revisited on retry). fixme-tools.cjs handles this automatically.
 
-```yaml
-durations:
-  queued:
-    entered: "2026-02-18T14:30:00Z"
-    exited: "2026-02-18T14:35:00Z"
-    seconds: 300
-  investigating:
-    entered: "2026-02-18T14:35:00Z"
-    exited: "2026-02-18T14:40:00Z"
-    seconds: 300
-  researching:
-    entered: "2026-02-18T14:40:00Z"
-    exited: "2026-02-18T14:42:00Z"
-    seconds: 120
-  planning:
-    entered: "2026-02-18T14:42:00Z"
-    exited: "2026-02-18T14:45:00Z"
-    seconds: 180
-    prior_seconds: 0
-  implementing:
-    entered: "2026-02-18T14:45:00Z"
-```
+## Terminal States
 
-- `entered`: ISO timestamp when the ticket entered this state (most recent entry).
-- `exited`: ISO timestamp when the ticket left this state. Absent if currently in this state.
-- `seconds`: Computed duration for the current/latest visit. Calculated by `fixme-tools.cjs` on exit from the state.
-- `prior_seconds`: Cumulative time from previous visits to this state. Present when a state is re-entered (e.g., `planning` on retry). The total time in a state is `seconds + prior_seconds`.
+`done`, `failed`, and `skipped` are terminal. No transitions out. If a "done" ticket regresses, create a new ticket.
 
-The `planning` state can be visited multiple times on retry (once per attempt). Each re-entry preserves the accumulated time via `prior_seconds`. The `fixme-tools.cjs` tool handles this automatically using a `hadPriorEntry` check -- `prior_seconds: 0` is set even for instant prior transitions.
+## Enforcement
 
-## Enforcement Rules
-
-1. **Hard errors on invalid transitions.** If a transition is not in the matrix, `fixme-tools.cjs` throws an error and makes no changes to the file.
-
-2. **fixme-tools.cjs is the ONLY way to change state.** Agents must never edit ticket frontmatter directly. The tool validates transitions, computes durations, and maintains the transition log atomically.
-
-3. **Reason enforcement.** Transitions to `failed`, `skipped`, or retry (`verifying -> planning`) require a `--reason` flag. Missing reason throws an error.
-
-4. **Max attempts enforcement.** The `verifying -> planning` retry transition is only valid when `current_attempt < max_attempts`. Exceeding max attempts requires transitioning to `failed` instead.
-
-5. **Terminal state enforcement.** No transitions out of `done`, `failed`, or `skipped`. Any attempt throws an error.
-
-## Timeout Model
-
-Timeouts are on **agent steps**, not on ticket states:
-
-- Each subagent has a configurable time limit (settable globally and per-project).
-- If a subagent exceeds its time limit, the orchestrator receives a timeout signal.
-- On timeout: the orchestrator transitions the ticket to `failed` with reason "Agent timeout".
-- The next queued ticket is then dispatched (auto-advance).
-
-Tickets themselves have no timeout. A ticket in `investigating` state stays there until the agent finishes or times out. There is no "stale ticket" cleanup.
+1. Hard errors on invalid transitions
+2. fixme-tools.cjs is the ONLY way to change state
+3. Reason enforcement on backward and terminal transitions
+4. Max attempts enforcement on backward transitions
+5. Terminal state enforcement
