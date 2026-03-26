@@ -3,6 +3,7 @@ number: {NUMBER}
 slug: "{SLUG}"
 session: "{SESSION}"
 state: queued
+pipeline:
 created: "{TIMESTAMP}"
 updated: "{TIMESTAMP}"
 url:
