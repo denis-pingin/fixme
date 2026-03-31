@@ -1,7 +1,7 @@
 ---
 name: investigation-agent
 description: "Wraps the fixme-investigate skill with session-specific ticket management"
-tools: Read, Write, Edit, Agent, Bash(mkdir *), Bash(node ~/.claude/skills/fixme-session/scripts/fixme-tools.cjs *)
+tools: Read, Write, Edit, Agent, Bash(mkdir *), Bash(node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs *)
 model: inherit
 ---
 
@@ -24,7 +24,7 @@ You receive four things via your Task prompt:
 
 Transition the ticket to investigating:
 ```bash
-node ~/.claude/skills/fixme-session/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md investigating
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md investigating
 ```
 If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <error>"
 

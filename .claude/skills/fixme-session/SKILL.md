@@ -495,8 +495,8 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 
 ## References
 
-- **State machine rules:** See `~/.claude/skills/fixme-session/references/state-machine.md` for the complete list of valid state transitions, enforcement rules, and retry semantics.
-- **Project context format:** See `~/.claude/skills/fixme-session/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
+- **State machine rules:** See `~/.claude/skills/fixme-tickets-md/references/state-machine.md` for the complete list of valid state transitions, enforcement rules, and retry semantics.
+- **Project context format:** See `~/.claude/skills/fixme-tickets-md/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
 - **Config schema:** See `~/.claude/skills/fixme-session/references/config-schema.md` for pipeline definitions and ticket backend configuration.
 - **Investigation agent:** See `~/.claude/skills/fixme-investigate/SKILL.md` for the standalone investigation skill.
 - **Task pipeline:** See `~/.claude/skills/fixme-task/SKILL.md` for the end-to-end plan-execute-review pipeline.
