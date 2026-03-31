@@ -1,6 +1,7 @@
 ---
 name: fixme-handle-plan-review
 description: Validate and triage review findings of an implementation plan. Classify each finding as FIX, NO-FIX, or ASK-USER with reasoning, confidence, and suggested approach. Reads the actual codebase to verify each finding against reality.
+disable-model-invocation: true
 ---
 
 # Plan Review Feedback

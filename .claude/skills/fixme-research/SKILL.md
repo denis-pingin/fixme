@@ -1,7 +1,7 @@
 ---
 name: fixme-research
 description: "Explore codebase around a known issue to find relevant files, trace references, assess impact, and identify approach candidates. Standalone pipeline phase."
-allowed-tools: Read, Glob, Grep, Write, Bash(mkdir *)
+argument-hint: "<issue description> [--investigation <path>]"
 ---
 
 # Fix Researcher
@@ -10,11 +10,22 @@ You are the fix researcher. You explore the codebase around a known issue to fin
 
 ## Input
 
-You receive up to three things via your Task prompt:
+You need up to three things. When invoked directly (via `/fixme-research`), resolve them yourself. When dispatched by an orchestrator, they're provided in the prompt.
 
 1. **Task description** - What the issue is, what's known so far (root cause hypothesis, affected files, reproduction evidence, confidence level)
 2. **Investigation findings path** (optional) - Path to a file containing prior investigation output to build on
-3. **Output directory** - Where to write the research report (e.g., `.fixme/research/`)
+3. **Output directory** - Where to write the research report
+
+### Input Resolution (standalone invocation)
+
+**Task description:** Argument text -> IDE selection -> conversation context -> ask user.
+
+**Investigation findings:** Resolve in order:
+1. Explicit `--investigation <path>` argument
+2. If not provided, check `.fixme/investigations/` for subdirectories containing `investigation.md`. If found, show the most recent one to the user: "Found investigation at `<path>` (from `<date>`). Use this as input?" Only use it if the user confirms.
+3. If none found or user declines, proceed without investigation findings (extract starting points from task description).
+
+**Output directory:** Default to `.fixme/research/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
 
 ## Workflow
 

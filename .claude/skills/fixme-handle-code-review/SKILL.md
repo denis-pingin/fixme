@@ -1,6 +1,7 @@
 ---
 name: fixme-handle-code-review
 description: Validate and triage code review findings from a post-execution review. Classify each finding as FIX, NO-FIX, or ASK-USER. Reads the plan, spec, implementation, and tests to distinguish real issues from false positives caused by misunderstood context, intent, or approach. Designed to eliminate harmful, incorrect, or context-blind feedback before it reaches implementation.
+disable-model-invocation: true
 ---
 
 # Code Review Feedback

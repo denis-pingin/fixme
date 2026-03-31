@@ -1,6 +1,7 @@
 ---
 name: fixme-tickets-linear
 description: "Linear ticket backend (v2 stub). Maps ticket operations to Linear MCP tool calls."
+disable-model-invocation: true
 ---
 
 # Fixme Tickets Linear - Linear Backend (v2 Stub)

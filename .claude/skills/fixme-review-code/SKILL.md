@@ -1,7 +1,7 @@
 ---
 name: fixme-review-code
 description: Review code produced by executing an implementation plan. Finds real bugs, gaps, test issues, and inconsistencies by reading the plan, the spec, and every changed file. Designed for high signal - findings are grounded in evidence with minimal false positives. Catches reimplemented business logic in tests, missing coverage, wrong assertions, and deviations from the plan.
-allowed-tools: Read, Glob, Grep, Bash(git *), Bash(ls *), Agent
+argument-hint: "<path to plan file> [base-branch]"
 ---
 
 # Review Code

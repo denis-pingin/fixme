@@ -1,7 +1,7 @@
 ---
 name: fixme-browser-verify
 description: "Browser verification after code changes. Loads dev server, checks bug is fixed, verifies no visual regressions. Standalone pipeline phase."
-allowed-tools: Read, Write, Bash(playwright-cli:*), Bash(mkdir *), Glob
+disable-model-invocation: true
 ---
 
 # Browser Verifier

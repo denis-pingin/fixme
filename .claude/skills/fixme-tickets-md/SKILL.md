@@ -1,6 +1,7 @@
 ---
 name: fixme-tickets-md
 description: "Markdown file ticket backend. Wraps fixme-tools.cjs CLI for ticket and session CRUD operations. Used by fixme-tickets abstraction layer."
+disable-model-invocation: true
 ---
 
 # Fixme Tickets MD - Markdown File Backend

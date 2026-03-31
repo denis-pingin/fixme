@@ -1,6 +1,7 @@
 ---
 name: fixme-write-plan
 description: Write implementation plans that are unambiguous, complete, correct, and efficient. Plans are written for an engineer with zero codebase context. Guards against any source code modifications - only the plan document is produced. Reads the codebase thoroughly before writing. Runs a mandatory Input Audit gate before any planning work to surface ambiguities and locked decision conflicts. Supports four modes - fresh (full exploration), plan revision (incorporate plan review FIX items), code revision (incorporate code review FIX items after execution), and rewrite (improve existing plan without structured FIX items).
+argument-hint: "<task description or path to spec>"
 ---
 
 # Write Plan

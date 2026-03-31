@@ -1,6 +1,7 @@
 ---
 name: fixme-tickets
 description: "Abstract ticket interface. Routes operations to the configured backend (fixme-tickets-md, fixme-tickets-linear, etc). Reads ticketBackend from .fixme/config.json."
+disable-model-invocation: true
 ---
 
 # Fixme Tickets - Abstract Ticket Interface

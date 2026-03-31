@@ -1,7 +1,7 @@
 ---
 name: fixme-review-plan
 description: Review an implementation plan for correctness, completeness, and feasibility. Outputs structured findings with evidence and severity. Reads the actual codebase to verify every claim. Designed to minimize false positives.
-allowed-tools: Read, Glob, Grep, Bash(git *), Bash(ls *), Agent
+argument-hint: "<path to plan file>"
 ---
 
 # Review Plan

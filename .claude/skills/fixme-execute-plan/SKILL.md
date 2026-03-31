@@ -1,6 +1,7 @@
 ---
 name: fixme-execute-plan
 description: Execute an implementation plan with maximum reliability. Follows plan steps exactly, verifies after every task, and enforces a non-negotiable final verification gate where build, lint, and ALL tests must pass before work is considered complete. Pre-existing failure claims require proof.
+argument-hint: "<path to plan file>"
 ---
 
 # Execute Plan
