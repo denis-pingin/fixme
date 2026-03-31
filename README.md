@@ -1,96 +1,137 @@
 # Fixme
 
-A Claude Code skill that runs as a long-lived orchestrator, accepting a **stream of bug reports** during a session. Each report is ingested into a structured ticket, then sequentially dispatched to implementation subagents that investigate, fix, and verify each bug using Playwright browser automation.
+A Claude Code skill suite for automated bug fixing and task execution. Two entry points:
 
-Bugs flow in continuously. Fixes flow out reliably — browser-verified, one atomic commit each.
+- **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background pipelines to investigate, fix, and verify each bug.
+- **`/fixme-task`** - Single-task pipeline executor. Plan, review, execute, review code - with configurable phases and review loops.
 
-## How It Works
+## Quick Start
+
+### Fix a single task
 
 ```text
-You (reporting bugs mid-session)
-  │
-  ▼
-/fixme:start  ──►  Orchestrator (lean main loop)
-                        │
-                        ├─► Intake Agent (background)
-                        │     captures report → numbered ticket MD file
-                        │
-                        ├─► Reproducer Agent
-                        │     Playwright → navigate, interact, confirm bug
-                        │
-                        ├─► Fixer Agent
-                        │     read code, find root cause, implement fix
-                        │
-                        └─► Verifier Agent
-                              re-run repro steps, confirm bug is gone
-                              → atomic git commit
+/fixme-task fix the login button being unresponsive on mobile
 ```
 
-You keep reporting bugs while the system works through the queue. Intake runs in the background so the orchestrator is never interrupted.
+Runs the default pipeline: plan -> review -> execute -> code review. Fully automated with review loops that catch issues before they ship.
 
-## Key Design Decisions
+### Fix a task with a specific pipeline
 
-- **Ticket files are the state.** Each bug gets a numbered MD file with YAML frontmatter. Agents read from and write to ticket files directly — the orchestrator only passes file paths, never content. This survives context compaction and serves as a complete audit trail.
+```text
+/fixme-task full investigate why the checkout flow fails on Safari
+```
 
-- **Lean orchestrator, fresh subagents.** The main loop touches only ticket frontmatter and dispatch logic (~15% context budget). All investigation, fixing, and verification happens in subagents with fresh 200k context windows. This lets the system handle many bugs per session without context blowup.
+Runs the "full" pipeline: investigate -> research -> plan -> execute -> verify. Adds browser reproduction and codebase research before planning.
 
-- **Sequential execution per ticket.** Reproducer → Fixer → Verifier, strictly ordered. No concurrent writes to the same ticket. Architecture supports future parallel dispatch across different tickets.
+### Run a bug fix session
 
-- **Snapshot-driven browser automation.** Playwright (MCP or CLI) accessibility snapshots (text-based) for decisions, screenshots only for evidence capture. No vision model dependency.
+```text
+/fixme-session
+```
 
-- **Project context auto-discovery.** Reads the target project's `CLAUDE.md` and `package.json` for dev server URL, build commands, and HMR support.
+Starts an interactive session. Report bugs conversationally - each gets a ticket, queued for automated fix. The session stays responsive while fixes execute in the background.
+
+### Execute an existing plan
+
+```text
+/fixme-task .fixme/plans/my-plan.md
+```
+
+Skips plan writing, enters at plan review. Useful when you've written or refined a plan yourself.
 
 ## Architecture
 
-Four layers:
+### Two Orchestrators
 
-| Layer              | Location     | Role                                                               |
-| ------------------ | ------------ | ------------------------------------------------------------------ |
-| **Skill Commands** | `commands/`  | Thin entry points (`/fixme:*`). Parse args, reference workflows.   |
-| **Workflows**      | `workflows/` | Orchestration logic. Spawn subagents, route on results.            |
-| **Agent Roles**    | `agents/`    | Role definitions loaded by subagents at spawn.                     |
-| **Ticket State**   | `tickets/`   | File-based state machine. The communication channel between agents.|
+**fixme-session** manages the session lifecycle: intake, queuing, browser setup, and dispatching fixme-task in the background per ticket. It owns terminal transitions (done, failed, skipped) because those require cleanup (git commit/revert).
 
-Ticket lifecycle: `queued → investigating → fixing → verifying → done/failed`
+**fixme-task** executes pipelines. It reads phase definitions from `.fixme/config.json`, dispatches each phase's skills as isolated agents, manages review loops within phases, and optionally updates ticket state at phase boundaries.
 
-Each state transition is timestamped with duration tracking.
+### Config-Driven Pipelines
 
-## Project Structure
+Pipelines are defined in `.fixme/config.json`:
 
-```text
-.claude/skills/fixme/
-├── SKILL.md              # Entry point, sub-command routing
-├── scripts/
-│   └── fixme-tools.cjs   # State management CLI (ticket, session, context)
-├── templates/
-│   ├── ticket.md          # Ticket file template
-│   └── session.md         # Session summary template
-├── references/
-│   ├── state-machine.md   # Valid transitions, duration tracking
-│   └── project-context-schema.md
-└── agents/                # Subagent role definitions (Phase 2+)
+```json
+{
+  "pipelines": {
+    "default": [
+      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+    ],
+    "full": [
+      { "name": "investigate", "skills": ["fixme-investigate"] },
+      { "name": "research", "skills": ["fixme-research"] },
+      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"] } },
+      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"] } },
+      { "name": "verify", "skills": ["fixme-browser-verify"] }
+    ],
+    "quick": [
+      { "name": "plan", "skills": ["fixme-write-plan"] },
+      { "name": "implement", "skills": ["fixme-execute-plan"] }
+    ]
+  }
+}
 ```
 
-## Current Status
+No config file? Falls back to the default pipeline (plan + review + implement + code review).
 
-**Phase 1 (Foundation & Skeleton):** Complete. Skill directory, ticket template, state machine, project context discovery, and tooling are in place.
+### Dynamic State Machine
 
-**Remaining phases:**
+The ticket state machine is derived from the pipeline config. Phase names become ticket states. Given phases `[plan, implement]`:
 
-| Phase                            | What                                                         | Status      |
-| -------------------------------- | ------------------------------------------------------------ | ----------- |
-| 2. Intake Pipeline               | Bug reports → structured tickets via background agent        | Not started |
-| 3. Investigation & Reproduction  | Playwright-based bug reproduction                            | Not started |
-| 4. Fix & Commit                  | Root cause analysis, fix implementation, atomic commits      | Not started |
-| 5. Verification & Close          | Browser-verified fixes, rollback on failure, session summary | Not started |
+```text
+queued -> plan -> implement -> done
+```
 
-## Inspiration
+Backward transitions (any phase to any earlier phase) are allowed with a reason - used for retries when review finds issues. Terminal states: `done`, `failed`, `skipped`.
 
-Architecture modeled after [GSD (Get Shit Done)](https://github.com/get-shit-done/gsd) — a Claude Code skill system for agent orchestration using JS tooling + MD files for agent definitions, templates, and workflows. Fixme is a focused, simpler variant: fewer agent types, simpler state, no research/roadmap phases.
+### Ticket Abstraction
+
+Ticket operations go through `fixme-tickets` which routes to the configured backend:
+
+- **fixme-tickets-md** - Markdown files with YAML frontmatter (default, built-in)
+- **fixme-tickets-linear** - Linear integration (v2 stub)
+
+### Skill Suite
+
+| Skill | Purpose |
+| ----- | ------- |
+| `fixme-session` | Session orchestrator (intake, dispatch, cleanup) |
+| `fixme-task` | Config-driven pipeline executor |
+| `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
+| `fixme-review-plan` | Review plans for correctness and feasibility |
+| `fixme-handle-plan-review` | Triage review findings (FIX/NO-FIX/ASK-USER) |
+| `fixme-execute-plan` | Execute plans with verification gates |
+| `fixme-review-code` | Review executed code against plan |
+| `fixme-handle-code-review` | Triage code review findings |
+| `fixme-investigate` | Browser reproduction + root cause analysis |
+| `fixme-research` | Codebase exploration around a known issue |
+| `fixme-browser-verify` | Browser verification after code changes |
+| `fixme-tickets` | Abstract ticket interface (routes to backend) |
+| `fixme-tickets-md` | Markdown file ticket backend |
+| `fixme-tickets-linear` | Linear ticket backend (v2 stub) |
+
+## Key Design Principles
+
+- **Ticket files are the state.** Each bug gets a numbered markdown file with YAML frontmatter. State transitions go through `fixme-tools.cjs` which validates, computes durations, and maintains the transition log.
+
+- **Lean orchestrators, fresh subagents.** Orchestrators never read source code or do implementation work. All real work happens in subagents spawned with fresh context windows.
+
+- **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
+
+- **Review loops catch what confidence blinds you to.** Every plan is reviewed before execution. Every execution is reviewed after. FIX items loop back through the pipeline - never applied inline.
+
+## Installation
+
+```bash
+./install.sh
+```
+
+Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/`.
 
 ## Requirements
 
-- Claude Code v2.1.3+
-- Playwright MCP (`@playwright/mcp`) or Playwright CLI — at least one registered
+- Claude Code
 - Node.js 18+
+- Playwright CLI (for browser automation skills)
 - No other external dependencies
