@@ -205,6 +205,12 @@ apply:
 When in doubt, classify as `FIX_UNCLEAR`. It is far better to ask an unnecessary question
 than to silently pick the wrong approach.
 
+**Distinguishing FIX_UNCLEAR vs ASK_USER**: Use `FIX_UNCLEAR` when the issue is clearly valid
+(it IS a bug or a real problem) but you need guidance on which fix approach to take. Use
+`ASK_USER` when you cannot determine whether the comment even identifies a real issue - perhaps
+the code behavior is intentional, or the context is insufficient to judge. When in doubt about
+validity, use `ASK_USER`. When in doubt about approach (but not validity), use `FIX_UNCLEAR`.
+
 #### Present categorization to the user
 
 After analyzing all comments, present the results using the format below. This format is
@@ -242,6 +248,7 @@ For each individual item, describe it top-down: what's wrong, what breaks, what 
   BAD: "will fix". GOOD: "replace with `Schema.decodeUnknown(SpecSummarySchema)` wrapped in Effect.try."
 - For `REJECT_ALREADY_FIXED` items: state the commit SHA and one-line summary, nothing more.
 - For `REJECT_FALSE_POSITIVE` / `REJECT_WONT_FIX`: include a one-sentence rationale explaining why.
+- For `ASK_USER` items: state what's unclear and what information would resolve it.
 
 ### 2.5. User Consultation for Ambiguous Fixes
 

@@ -134,8 +134,8 @@ End your output with a structured routing block that tells the orchestrator exac
 ---
 HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
 FIX_COUNT: <number>
-ASK_USER_COUNT: <number>
 FIX_UNCLEAR_COUNT: <number>
+ASK_USER_COUNT: <number>
 NEXT_ACTION: DONE | OUTER_LOOP | ASK_USER_BATCH
 ```
 
