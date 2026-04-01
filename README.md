@@ -39,6 +39,23 @@ Starts an interactive session. Report bugs conversationally - each gets a ticket
 
 Skips plan writing, enters at plan review. Useful when you've written or refined a plan yourself.
 
+### Address PR review comments
+
+```text
+/fixme-pr-comments
+```
+
+Fetches unresolved PR comments (review threads, Claude bot, Greptile), analyzes each one, fixes valid issues through the plan-execute cycle, verifies, and resolves addressed conversations. Comments on non-issues without resolving.
+
+### Rebase a branch
+
+```text
+/fixme-rebase
+/fixme-rebase main
+```
+
+Safely rebases the current branch onto its base branch (auto-detected from PR target or merge-base). Backs up when needed, resolves conflicts with intent awareness, and runs full verification before declaring done.
+
 ## Architecture
 
 ### Two Orchestrators
@@ -100,12 +117,14 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-task` | Config-driven pipeline executor |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
 | `fixme-review-plan` | Review plans for correctness and feasibility |
-| `fixme-handle-plan-review` | Triage review findings (FIX/NO-FIX/ASK-USER) |
+| `fixme-handle-plan-review` | Triage plan review findings (unified taxonomy) |
 | `fixme-execute-plan` | Execute plans with verification gates |
 | `fixme-review-code` | Review executed code against plan |
-| `fixme-handle-code-review` | Triage code review findings |
+| `fixme-handle-code-review` | Triage code review findings (unified taxonomy) |
 | `fixme-investigate` | Browser reproduction + root cause analysis |
 | `fixme-research` | Codebase exploration around a known issue |
+| `fixme-pr-comments` | Fetch, analyze, and address unresolved PR review comments |
+| `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |

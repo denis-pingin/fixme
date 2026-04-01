@@ -70,6 +70,7 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-handle-code-review/ # Triages code review findings (unified taxonomy)
   fixme-investigate/        # Browser reproduction + root cause analysis (standalone)
   fixme-pr-comments/        # Fetch, analyze, and address unresolved PR review comments (standalone)
+  fixme-rebase/             # Safe branch rebasing with conflict resolution and verification
   fixme-research/           # Codebase exploration around a known issue (standalone)
   fixme-browser-verify/     # Browser verification after code changes (standalone)
   fixme-tickets/            # Abstract ticket interface (routes to backend)
