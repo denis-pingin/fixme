@@ -228,6 +228,8 @@ For each individual item, describe it top-down: what's wrong, what breaks, what 
 - **Fix**: {One sentence: what will be done to fix it. For FIX_AMBIGUOUS: "Requires decision - see below."}
 - **Files**: {file.ts:line, file2.ts:line}
 - **Threads**: {N} ({list bot names: copilot, claude, greptile})
+
+{Repeat for every actionable item.}
 ```
 
 **Presentation rules for each item**:
