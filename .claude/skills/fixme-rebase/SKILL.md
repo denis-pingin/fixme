@@ -69,6 +69,14 @@ Before anything else, capture the full current state. This is the recovery basel
 
 Determine what to rebase onto. Priority order:
 
+0. **Check for user-provided argument:**
+   If a base branch argument was provided (e.g., `/fixme-rebase develop`):
+   ```bash
+   git rev-parse --verify origin/<argument> 2>/dev/null
+   ```
+   - If valid: use as `BASE_BRANCH`. Skip to the fetch step (step 5).
+   - If invalid: tell the user "`<argument>` doesn't exist on origin. Falling back to auto-detection." Continue to step 1.
+
 1. **Check for an open PR:**
    ```bash
    gh pr view --json baseRefName,url -q '"\(.baseRefName) \(.url)"' 2>/dev/null
@@ -140,7 +148,7 @@ Understand the scope of what's about to happen.
 
 6. **Check for already-rebased or cherry-picked commits:**
    ```bash
-   git log --oneline --cherry-mark <MERGE_BASE>..HEAD
+   git log --oneline --cherry-mark <MERGE_BASE>...HEAD
    ```
    Commits marked with `=` are already present on the base branch (cherry-picked or equivalent). These will be dropped during rebase. Note them for the user.
 
@@ -202,7 +210,7 @@ Present a clear summary to the user. This is the decision point.
 
 **Ask for confirmation:** "Proceed with rebase?" or "I'd recommend merge instead for the reason above - your call."
 
-If the user wants merge instead: run `git merge origin/<BASE_BRANCH>` and skip to Phase 6 (verification). Adjust the summary accordingly.
+If the user wants merge instead: run `git merge origin/<BASE_BRANCH>` and skip to Phase 7 (Post-Rebase Verification & Cleanup). Adjust the summary accordingly.
 
 **Wait for explicit confirmation before proceeding.**
 
