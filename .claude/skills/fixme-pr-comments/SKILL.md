@@ -185,15 +185,16 @@ For each unresolved review comment:
    - Is the suggested fix correct?
    - Does it apply to the current code state?
 3. **Categorize**:
-   - `FIX_OBVIOUS`: Valid issue with a single clear solution - no ambiguity in how to fix it
-   - `FIX_AMBIGUOUS`: Valid issue but multiple viable approaches exist, or tradeoffs/design choices are involved
-   - `NOT_A_BUG`: Comment is incorrect or doesn't apply
-   - `ALREADY_FIXED`: Issue was already addressed
-   - `WONT_FIX`: Valid concern but intentional/out of scope
+   - `FIX`: Valid issue with a single clear solution - no ambiguity in how to fix it
+   - `FIX_UNCLEAR`: Valid issue but multiple viable approaches exist, or tradeoffs/design choices are involved
+   - `ASK_USER`: Cannot determine whether this is even a valid issue - need human input on validity (not just approach)
+   - `REJECT_FALSE_POSITIVE`: Comment is incorrect or doesn't apply - the code is correct
+   - `REJECT_ALREADY_FIXED`: Issue was already addressed
+   - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
 
-**Distinguishing OBVIOUS vs AMBIGUOUS**: A fix is `FIX_OBVIOUS` when there is exactly one
+**Distinguishing FIX vs FIX_UNCLEAR**: A fix is `FIX` when there is exactly one
 reasonable way to address it (e.g., "add missing null check", "fix typo in variable name",
-"add missing import", "handle uncaught error"). A fix is `FIX_AMBIGUOUS` when ANY of these
+"add missing import", "handle uncaught error"). A fix is `FIX_UNCLEAR` when ANY of these
 apply:
 - Multiple valid implementation strategies exist with different tradeoffs
 - The fix touches architecture or design patterns where a choice must be made
@@ -201,7 +202,7 @@ apply:
 - The reviewer's suggestion conflicts with existing patterns and either direction is defensible
 - Scope is unclear - the fix could be minimal or could warrant a broader refactor
 
-When in doubt, classify as `FIX_AMBIGUOUS`. It is far better to ask an unnecessary question
+When in doubt, classify as `FIX_UNCLEAR`. It is far better to ask an unnecessary question
 than to silently pick the wrong approach.
 
 #### Present categorization to the user
@@ -225,7 +226,7 @@ For each individual item, describe it top-down: what's wrong, what breaks, what 
 **{N}. {Issue title}** [`{category}`]
 - **Problem**: {One sentence: what is concretely wrong, with file:line references.}
 - **Impact**: {One sentence: what breaks, degrades, or is at risk because of this.}
-- **Fix**: {One sentence: what will be done to fix it. For FIX_AMBIGUOUS: "Requires decision - see below."}
+- **Fix**: {One sentence: what will be done to fix it. For FIX_UNCLEAR: "Requires approach decision - see below." For ASK_USER: "Requires validity determination - see below."}
 - **Files**: {file.ts:line, file2.ts:line}
 - **Threads**: {N} ({list bot names: copilot, claude, greptile})
 
@@ -239,14 +240,14 @@ For each individual item, describe it top-down: what's wrong, what breaks, what 
   BAD: "violates CLAUDE.md". GOOD: "malformed KV entries crash with an untyped TypeError instead of a typed StoreError, bypassing retry/DLQ routing."
 - Fix must describe the specific action, not the category.
   BAD: "will fix". GOOD: "replace with `Schema.decodeUnknown(SpecSummarySchema)` wrapped in Effect.try."
-- For `ALREADY_FIXED` items: state the commit SHA and one-line summary, nothing more.
-- For `NOT_A_BUG` / `WONT_FIX`: include a one-sentence rationale explaining why.
+- For `REJECT_ALREADY_FIXED` items: state the commit SHA and one-line summary, nothing more.
+- For `REJECT_FALSE_POSITIVE` / `REJECT_WONT_FIX`: include a one-sentence rationale explaining why.
 
 ### 2.5. User Consultation for Ambiguous Fixes
 
-**Skip this step if there are no `FIX_AMBIGUOUS` items.** Proceed directly to Step 3.
+**Skip this step if there are no `FIX_UNCLEAR` or `ASK_USER` items.** Proceed directly to Step 3.
 
-Gather ALL `FIX_AMBIGUOUS` items and present them to the user in a single structured write-up.
+Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a single structured write-up.
 For each decision point, present:
 
 ```
@@ -298,21 +299,21 @@ After presenting ALL decision points, ask the user a SINGLE question:
 - User said "go with recommendations" or equivalent (use recommended option for all unanswered)
 - User said "up to you" / "your call" / equivalent for specific items (use recommendation for those)
 
-Once all decisions are resolved, merge them into the fix list: each `FIX_AMBIGUOUS` becomes
-a resolved fix item with the chosen approach noted. These join the `FIX_OBVIOUS` items for
+Once all decisions are resolved, merge them into the fix list: each `FIX_UNCLEAR` becomes
+a resolved fix item with the chosen approach noted. Each `ASK_USER` item becomes FIX (with approach), REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, or REJECT_ALREADY_FIXED based on the user's answer. These join the `FIX` items for
 Step 3.
 
 ### 3. Address Valid Issues
 
-For all resolved fix items (`FIX_OBVIOUS` + resolved `FIX_AMBIGUOUS`), dispatch two sequential agents:
+For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), dispatch two sequential agents:
 
 #### Agent 1: Plan (synchronous)
 
 Dispatch a **foreground** Agent with a clean prompt containing:
 1. The full content of `~/.claude/skills/fixme-write-plan/SKILL.md` (read it, paste it verbatim into the agent prompt)
 2. The full list of fix items with file paths, line numbers, and comment text
-3. For `FIX_OBVIOUS` items: the analysis from Step 2
-4. For resolved `FIX_AMBIGUOUS` items: the chosen approach and rationale from Step 2.5
+3. For `FIX` items: the analysis from Step 2
+4. For resolved `FIX_UNCLEAR` items: the chosen approach and rationale from Step 2.5
 5. Instruction: "Write an implementation plan for these PR comment fixes. Save to `.fixme/plans/<date>-pr-comment-fixes.md`."
 
 Wait for Agent 1 to complete and produce a plan file.
@@ -402,7 +403,7 @@ git push
    }'
    ```
 
-**If NOT addressed (NOT_A_BUG, ALREADY_FIXED, WONT_FIX)**:
+**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
 1. Reply with explanation but DO NOT resolve:
    ```bash
    gh api /repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
@@ -420,7 +421,7 @@ git push
    - ..."
    ```
 
-**If NOT addressed (NOT_A_BUG, ALREADY_FIXED, WONT_FIX)**:
+**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
 1. Reply explaining why each finding was not addressed:
    ```bash
    gh api /repos/{owner}/{repo}/issues/{number}/comments \
@@ -439,7 +440,7 @@ git push
    - ..."
    ```
 
-**If NOT addressed (NOT_A_BUG, ALREADY_FIXED, WONT_FIX)**:
+**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
 1. Reply explaining why each finding was not addressed:
    ```bash
    gh api /repos/{owner}/{repo}/issues/{number}/comments \
@@ -451,11 +452,12 @@ git push
 
 | Scenario | Action | Resolve? |
 |----------|--------|----------|
-| Valid bug, obvious fix | Fix autonomously, reply with commit SHA | Yes |
-| Valid bug, ambiguous fix | Consult user (Step 2.5), then fix per chosen approach | Yes |
-| Not a bug (code is correct) | Reply explaining why | No |
-| Already fixed in prior commit | Reply noting it's fixed | Yes |
-| Out of scope / intentional | Reply explaining rationale | No |
+| Valid bug, obvious fix [`FIX`] | Fix autonomously, reply with commit SHA | Yes |
+| Valid bug, ambiguous fix [`FIX_UNCLEAR`] | Consult user (Step 2.5), then fix per chosen approach | Yes |
+| Uncertain validity [`ASK_USER`] | Consult user (Step 2.5) for validity determination | Depends |
+| Not a bug (code is correct) [`REJECT_FALSE_POSITIVE`] | Reply explaining why | No |
+| Already fixed in prior commit [`REJECT_ALREADY_FIXED`] | Reply noting it's fixed | Yes |
+| Out of scope / intentional [`REJECT_WONT_FIX`] | Reply explaining rationale | No |
 | Unable to reproduce | Reply asking for clarification | No |
 | Requires more investigation | Reply noting will investigate | No |
 
@@ -466,7 +468,7 @@ git push
 - **All claude[bot] comments are fetched and read in full** - no pattern-based filtering
 - **Greptile summary comment**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login.
 - **Skip already-replied findings**: If a reply already addresses a Claude bot or Greptile finding (references a commit SHA or says "Fixed"), skip it
-- **Obvious vs ambiguous**: Obvious fixes proceed without user input. Ambiguous fixes pause for user consultation with structured decision write-ups before any code changes are made.
+- **FIX vs FIX_UNCLEAR vs ASK_USER**: FIX items proceed without user input. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid.
 - If no actionable comments exist from any source, report "No unresolved comments to address" and exit
 - Always verify before committing
 - One commit for all fixes (unless logically separate)

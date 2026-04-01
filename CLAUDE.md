@@ -64,10 +64,10 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-task/               # Config-driven pipeline executor
   fixme-write-plan/         # Writes implementation plans
   fixme-review-plan/        # Reviews plans for correctness/completeness/feasibility
-  fixme-handle-plan-review/ # Triages plan review findings (FIX/NO-FIX/ASK-USER)
+  fixme-handle-plan-review/ # Triages plan review findings (unified taxonomy)
   fixme-execute-plan/       # Executes plans step-by-step with verification gates
   fixme-review-code/        # Reviews executed code against plan
-  fixme-handle-code-review/ # Triages code review findings (FIX/NO-FIX/ASK-USER)
+  fixme-handle-code-review/ # Triages code review findings (unified taxonomy)
   fixme-investigate/        # Browser reproduction + root cause analysis (standalone)
   fixme-pr-comments/        # Fetch, analyze, and address unresolved PR review comments (standalone)
   fixme-research/           # Codebase exploration around a known issue (standalone)
@@ -107,7 +107,7 @@ for each phase:
   execute phase skills -> review loop (if configured) -> next phase
 ```
 
-Handlers output routing directives (`HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`) that drive review loop control flow.
+Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER, REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, REJECT_ALREADY_FIXED) and output routing directives (`HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`) that drive review loop control flow.
 
 ### Runtime State Locations
 

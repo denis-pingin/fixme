@@ -149,7 +149,7 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 
 ## Rules
 
-- Fewer high-quality findings over many low-quality ones. Every finding that gets classified NO-FIX is noise that wastes time.
+- Fewer high-quality findings over many low-quality ones. Every finding that gets classified REJECT_* is noise that wastes time.
 - NEVER flag what hasn't been verified against the code AND the plan AND the codebase conventions.
 - If unsure, frame as a question, not a finding.
 - TEST-QUALITY findings about reimplemented business logic are always BLOCKING severity. There are no exceptions. A test that doesn't exercise production code is not a test.

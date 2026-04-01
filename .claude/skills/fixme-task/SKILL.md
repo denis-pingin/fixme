@@ -174,7 +174,8 @@ for each phase in pipeline (starting from entry point):
      b. Read HANDLER_RESULT routing directive from handler output
      c. Route:
         - CLEAN: exit review loop, proceed to next phase
-        - HAS_ASK_USER: batch questions to user, write answers to decision log,
+        - HAS_ASK_USER: batch questions to user (may include both FIX_UNCLEAR approach
+          questions and ASK_USER validity questions), write answers to decision log,
           re-invoke handler with updated decisions
         - HAS_FIX: increment review counter, check against phase.review.maxCycles
           (default 3). If exceeded: escalate to user. Else: re-run phase.skills
@@ -297,7 +298,7 @@ Follow these EXACTLY after each agent returns. Do not improvise transitions.
 2. **If `CLEAN`**:
    - If there are more phases in the pipeline: proceed to the next phase.
    - If this is the last phase: output Run Summary -> DONE.
-3. **If `HAS_ASK_USER`**: batch questions to user (see ASK-USER Batching). After user answers, write to decision log, re-dispatch the same handler with updated decisions.
+3. **If `HAS_ASK_USER`**: batch questions to user (see ASK_USER Batching). After user answers, write to decision log, re-dispatch the same handler with updated decisions.
 4. **If `HAS_FIX`**:
    - If this is an intra-phase review (e.g., plan review in the `plan` phase):
      - Increment the phase's review counter.
@@ -333,7 +334,7 @@ When a review handler returns FIX items, **always route through the proper loop*
 
 ## Decision Log
 
-Persisted at `.fixme/decisions.md` in the project root. Created by the orchestrator on first ASK-USER interaction. Only the orchestrator writes to this file - sub-skills read it.
+Persisted at `.fixme/decisions.md` in the project root. Created by the orchestrator on first ASK_USER or FIX_UNCLEAR interaction. Only the orchestrator writes to this file - sub-skills read it.
 
 Format:
 
@@ -363,18 +364,18 @@ Rules:
 - Accumulates across all iterations. Never remove previous entries.
 - Each entry has a sequential number across the entire log (Decision 1, 2, 3...) for easy reference.
 - The "Locked Decision" line is what downstream skills match against. It must be a clear, actionable statement (e.g., "Use WebSocket for real-time updates, not SSE" not "User prefers WebSocket").
-- When a locked decision is revisited via ASK-USER (because new evidence emerged), append a new entry that references and supersedes the old one: "Supersedes Decision N: [new decision]".
+- When a locked decision is revisited via ASK_USER (because new evidence emerged), append a new entry that references and supersedes the old one: "Supersedes Decision N: [new decision]".
 
-## ASK-USER Batching
+## ASK_USER Batching
 
-When a handler produces ASK-USER items:
+When a handler produces FIX_UNCLEAR or ASK_USER items:
 
-1. Collect all ASK-USER items from the handler output.
-2. Present to user as a numbered list. Each item includes the full Question field from the handler (which follows the ASK-USER Question Guidelines: Problem, Context, Why it matters, Options, Recommendation, The actual question).
+1. Collect all FIX_UNCLEAR and ASK_USER items from the handler output.
+2. Present to user as a numbered list. Each item includes the full Question field from the handler (which follows the Question Guidelines: Problem, Context, Why it matters, Options, Recommendation, The actual question).
 3. User provides all answers in one response.
 4. Write each answer to decision log with a derived Locked Decision.
-5. Re-invoke the SAME handler with updated locked decisions (not restart the loop). The handler re-evaluates remaining findings against the new decisions - some may flip from ASK-USER to FIX or NO-FIX.
-6. If the handler produces MORE ASK-USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate to user).
+5. Re-invoke the SAME handler with updated locked decisions (not restart the loop). The handler re-evaluates remaining findings against the new decisions - FIX_UNCLEAR items with approach answers become FIX items. ASK_USER items may become FIX, REJECT_*, or remain ASK_USER.
+6. If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate to user).
 
 ## Loop Guards
 

@@ -77,7 +77,7 @@ Each phase in a pipeline array has these fields:
 | `name` | string | Yes | - | Phase name. Becomes the ticket state when this phase is active. Must be unique within the pipeline. |
 | `enabled` | boolean | No | `true` | When `false`, the phase is skipped by the executor and excluded from state machine derivation. Allows toggling phases without removing config. |
 | `skills` | string[] | Yes | - | Ordered list of skill names to execute for this phase. Run sequentially. |
-| `review` | object | No | - | Review loop configuration. When present and enabled, the phase has an internal review loop: execute skills, then run review chain, route on handler result (CLEAN/HAS_FIX/HAS_ASK_USER). FIX loops back to re-execute skills. |
+| `review` | object | No | - | Review loop configuration. When present and enabled, the phase has an internal review loop: execute skills, then run review chain, route on handler result (CLEAN/HAS_FIX/HAS_ASK_USER). FIX loops back to re-execute skills. HAS_ASK_USER triggers on both FIX_UNCLEAR (approach questions) and ASK_USER (validity questions). |
 | `review.enabled` | boolean | No | `true` | When `false`, review is skipped even if `review.skills` is configured. |
 | `review.skills` | string[] | Yes (if review) | - | Review skill chain. Run sequentially after phase skills complete. |
 | `review.maxCycles` | number | No | `3` | Max review loop iterations before escalating to user. |

@@ -1,12 +1,12 @@
 ---
 name: fixme-handle-plan-review
-description: Validate and triage review findings of an implementation plan. Classify each finding as FIX, NO-FIX, or ASK-USER with reasoning, confidence, and suggested approach. Reads the actual codebase to verify each finding against reality.
+description: Validate and triage review findings of an implementation plan. Classify each finding using the unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER, REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, REJECT_ALREADY_FIXED). Reads the actual codebase to verify each finding against reality.
 disable-model-invocation: true
 ---
 
 # Plan Review Feedback
 
-Validate review findings against the codebase and classify each as FIX, NO-FIX, or ASK-USER.
+Validate review findings against the codebase and classify each using the unified finding taxonomy.
 
 ## Input Resolution
 
@@ -18,13 +18,16 @@ Resolve inputs in this order:
 
 Read the plan, the findings, and the spec/context document (if referenced) before proceeding.
 
-If a decision log exists at `.fixme/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK-USER questions.
+If a decision log exists at `.fixme/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
 
 ## Classification
 
-- **FIX** - real issue that affects correctness, performance, security, or maintainability
-- **NO-FIX** - false positive, stylistic preference, already handled, or net-negative to change
-- **ASK-USER** - insufficient context to classify confidently. The finding might be valid but depends on intent, constraints, or decisions that aren't captured in the plan, spec, or codebase. Requires human input to resolve
+- **FIX** - real issue that affects correctness, performance, security, or maintainability. A single clear fix approach exists.
+- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist, or design tradeoffs are involved. The issue's validity is not in question - only the approach to resolving it.
+- **ASK_USER** - insufficient context to determine whether the finding is even valid. Depends on intent, constraints, or decisions not captured in the plan, spec, or codebase. Requires human input to determine validity (not just approach).
+- **REJECT_FALSE_POSITIVE** - finding is factually wrong. The plan is correct, the reviewer misunderstood the plan's approach, the codebase state, or the spec constraints.
+- **REJECT_WONT_FIX** - finding is technically valid but intentionally out of scope, contradicts a locked decision (without revealing new concrete problems), or would be net-negative to address.
+- **REJECT_ALREADY_FIXED** - the issue described is already addressed by the plan's current state or a prior revision.
 
 ## Process
 
@@ -34,8 +37,8 @@ For each finding:
 2. Verify the finding's characterization of what the code does - do not trust it blindly
 3. Check whether the plan's context/spec explains the approach
 4. Check finding against locked decisions. If the finding contradicts a locked decision:
-   - If the finding reveals the locked decision causes a concrete problem (bug, security issue, data loss): classify ASK-USER. In the Question, explain what new evidence suggests the previous decision may need revisiting, and recommend a path forward. The user can confirm, override, or modify their original decision.
-   - If the finding merely disagrees with the approach chosen by the locked decision: classify NO-FIX. The user already made this call.
+   - If the finding reveals the locked decision causes a concrete problem (bug, security issue, data loss): classify ASK_USER. In the Question, explain what new evidence suggests the previous decision may need revisiting, and recommend a path forward. The user can confirm, override, or modify their original decision.
+   - If the finding merely disagrees with the approach chosen by the locked decision: classify REJECT_WONT_FIX. The user already made this call.
 5. Assess whether the suggested change would actually improve the outcome
 5. Classify and document
 
@@ -46,19 +49,21 @@ For each finding:
 | Field | Description |
 |-------|-------------|
 | **Finding** | One-line summary of the reviewer's concern |
-| **Classification** | FIX / NO-FIX / ASK-USER |
+| **Classification** | FIX / FIX_UNCLEAR / ASK_USER / REJECT_FALSE_POSITIVE / REJECT_WONT_FIX / REJECT_ALREADY_FIXED |
 | **Confidence** | HIGH / MEDIUM / LOW |
-| **Why** | 1-2 sentences. For FIX: what breaks or degrades. For NO-FIX: why it's wrong, irrelevant, or already covered. For ASK-USER: what's unknown and why it matters |
-| **Question** | (ASK-USER only) A self-contained briefing for the user. See ASK-USER Question Guidelines below |
-| **Approach** | (FIX only) Concrete steps to resolve - name files, functions, patterns. No hand-waving |
+| **Why** | 1-2 sentences. For FIX: what breaks or degrades. For FIX_UNCLEAR: what breaks AND what makes the fix approach ambiguous (name the competing approaches). For REJECT_*: why it's wrong, irrelevant, or already covered. For ASK_USER: what's unknown and why it matters |
+| **Question** | (ASK_USER and FIX_UNCLEAR only) For ASK_USER: a self-contained briefing on whether this is a real issue. For FIX_UNCLEAR: a self-contained briefing presenting the competing fix approaches. See Question Guidelines below |
+| **Approach** | (FIX only) Concrete steps to resolve - name files, functions, patterns. No hand-waving. For FIX_UNCLEAR: omitted (user chooses approach first) |
 | **Risk** | (FIX only) What could go wrong with the fix itself |
 | **Blast radius** | (FIX only) Which files/tests/behaviors are affected |
 
 ### Output Ordering
 
-Group related findings that would be addressed by the same fix. Order: FIX (HIGH confidence first), then ASK-USER, then NO-FIX.
+Group related findings that would be addressed by the same fix. Order: FIX (HIGH confidence first), then FIX_UNCLEAR, then ASK_USER, then REJECT_* items.
 
-## ASK-USER Question Guidelines
+## Question Guidelines (ASK_USER and FIX_UNCLEAR)
+
+These guidelines apply to both ASK_USER and FIX_UNCLEAR questions. For ASK_USER, the question is about validity ('is this a real issue?'). For FIX_UNCLEAR, the question is about approach ('how should we fix this?'). The Options and Recommendation sections are especially important for FIX_UNCLEAR.
 
 The Question field is what the user reads. It must be self-contained - the user should understand the problem and be able to answer without re-reading the finding, the plan, or the code.
 
@@ -78,16 +83,16 @@ Break the question into these sections (skip any that don't apply):
 - **Digestible**: short paragraphs, no walls of text. If it takes more than 30 seconds to read, it's too long.
 - **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
 - **Actionable**: the user should know exactly what decision they're being asked to make.
-- **Neutral**: present the tradeoff honestly. Don't bias toward FIX or NO-FIX in how the question is framed.
+- **Neutral**: present the tradeoff honestly. Don't bias toward FIX or REJECT in how the question is framed.
 - **Clickable**: every file reference is a markdown link with line numbers. No exceptions.
 
 ## Rules
 
 - Read the actual code before classifying. Don't trust the finding's characterization of what the code does.
-- A finding that's technically correct but would make the code worse is NO-FIX. Explain the tradeoff.
-- If a finding is ambiguous or context is lacking, classify as ASK-USER rather than guessing. A wrong FIX wastes implementation time. A wrong NO-FIX hides a real issue. ASK-USER costs only a question.
+- A finding that's technically correct but would make the code worse is REJECT_WONT_FIX. Explain the tradeoff.
+- If a finding is ambiguous or context is lacking, classify as ASK_USER rather than guessing. If the finding is clearly valid but the fix approach is unclear, classify as FIX_UNCLEAR. A wrong FIX wastes implementation time. A wrong REJECT hides a real issue. ASK_USER or FIX_UNCLEAR costs only a question.
 - If two findings would be resolved by the same change, group them and note it.
-- Locked decisions are presumed correct. A finding that contradicts a locked decision is NO-FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK-USER with new evidence.
+- Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
 
 ## Routing Directive
 
@@ -97,10 +102,11 @@ End your output with a structured routing block that tells the orchestrator exac
 ---
 HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
 FIX_COUNT: <number>
+FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
 NEXT_ACTION: PLAN_LOOP_EXIT | PLAN_REVISION | ASK_USER_BATCH
 ```
 
-- `CLEAN` (0 FIX, 0 ASK-USER): orchestrator exits the plan loop and proceeds to fixme-execute-plan
-- `HAS_FIX` (1+ FIX, 0 ASK-USER): orchestrator dispatches fixme-write-plan in plan revision mode with the FIX items
-- `HAS_ASK_USER` (1+ ASK-USER): orchestrator batches questions to user before routing FIX items
+- `CLEAN` (0 FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator exits the plan loop and proceeds to fixme-execute-plan
+- `HAS_FIX` (1+ FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator dispatches fixme-write-plan in plan revision mode with the FIX items
+- `HAS_ASK_USER` (1+ FIX_UNCLEAR or ASK_USER): orchestrator batches questions to user before routing FIX items. FIX_UNCLEAR questions ask about approach. ASK_USER questions ask about validity.

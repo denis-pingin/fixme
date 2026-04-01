@@ -255,7 +255,7 @@ In revision mode, overwrite the existing plan file at the same path. Do not crea
 - [File-level context: summaries of key files read, their roles, relevant line ranges]
 
 ### Locked Decisions
-[User answers from ASK-USER questions. Each entry: the question, the answer, and the resulting decision. Empty on first pass. In revision mode, carry forward from previous plan and decision log.]
+[User answers from ASK_USER and FIX_UNCLEAR questions. Each entry: the question, the answer, and the resulting decision. Empty on first pass. In revision mode, carry forward from previous plan and decision log.]
 
 ---
 

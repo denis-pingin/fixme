@@ -1,12 +1,12 @@
 ---
 name: fixme-handle-code-review
-description: Validate and triage code review findings from a post-execution review. Classify each finding as FIX, NO-FIX, or ASK-USER. Reads the plan, spec, implementation, and tests to distinguish real issues from false positives caused by misunderstood context, intent, or approach. Designed to eliminate harmful, incorrect, or context-blind feedback before it reaches implementation.
+description: Validate and triage code review findings from a post-execution review. Classify each finding using the unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER, REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, REJECT_ALREADY_FIXED). Reads the plan, spec, implementation, and tests to distinguish real issues from false positives caused by misunderstood context, intent, or approach. Designed to eliminate harmful, incorrect, or context-blind feedback before it reaches implementation.
 disable-model-invocation: true
 ---
 
 # Code Review Feedback
 
-Validate code review findings against the plan, the spec, and the actual implementation. Classify each as FIX, NO-FIX, or ASK-USER.
+Validate code review findings against the plan, the spec, and the actual implementation. Classify each using the unified finding taxonomy.
 
 ## Input Resolution
 
@@ -27,25 +27,28 @@ Before classifying anything, read all of these:
 
 ## Classification
 
-- **FIX** - real issue that affects correctness, behavior, security, performance, test quality, or maintainability. Fixing it will improve the implementation without breaking anything or contradicting the plan's intent.
-- **NO-FIX** - false positive. The finding is wrong, irrelevant, already handled, based on misunderstood context, or would make things worse if applied. Applying it would be harmful, break things, or contradict the task/approach.
-- **ASK-USER** - the finding might be valid but the classification depends on intent, priorities, constraints, or design decisions not captured in the plan, spec, or code. A human decision is needed.
+- **FIX** - real issue that affects correctness, behavior, security, performance, test quality, or maintainability. A single clear fix approach exists. Fixing it will improve the implementation without breaking anything or contradicting the plan's intent.
+- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist, tradeoffs are involved, or the fix might require changes the finding doesn't account for (e.g., test updates, upstream changes). The issue's validity is not in question - only the approach.
+- **ASK_USER** - the finding might be valid but classification depends on intent, priorities, constraints, or design decisions not captured in the plan, spec, or code. A human decision is needed to determine validity.
+- **REJECT_FALSE_POSITIVE** - finding is factually wrong. The code is correct, the reviewer misunderstood the implementation, the API behavior, or the codebase conventions.
+- **REJECT_WONT_FIX** - finding is technically valid but implementing it would make things worse, contradicts the plan's approach (which is not demonstrably broken), contradicts a locked decision, or adds regression risk for marginal benefit.
+- **REJECT_ALREADY_FIXED** - the issue described is already addressed in the current implementation or was fixed in a prior iteration.
 
 ## Pre-Classification Gate
 
 For each finding, before classifying:
 
 1. **Read the actual implementation.** Not just the lines the finding cites - the full function, the full file if needed. Context around the cited code often explains why it was written that way.
-2. **Read the plan step that produced it.** If the code follows the plan exactly and the reviewer disagrees with the approach, that's a plan-level concern, not a code fix. Classify NO-FIX and note it's a plan design disagreement.
-3. **Read the spec/task.** The reviewer may not have understood the original intent. A finding that says "this doesn't handle X" when X is explicitly out of scope is NO-FIX.
+2. **Read the plan step that produced it.** If the code follows the plan exactly and the reviewer disagrees with the approach, that's a plan-level concern, not a code fix. Classify REJECT_WONT_FIX and note it's a plan design disagreement.
+3. **Read the spec/task.** The reviewer may not have understood the original intent. A finding that says "this doesn't handle X" when X is explicitly out of scope is REJECT_FALSE_POSITIVE.
 4. **Verify API/framework claims.** If the finding says "this API doesn't work like that" - check the actual dependency version in the project. Reviewers get this wrong frequently.
-5. **Check if the finding would break something.** Trace the suggested change through callers, tests, and dependent code. A finding that's locally correct but breaks something downstream is NO-FIX (or needs a larger approach).
-6. **Check if "improvement" adds risk.** Refactoring suggestions that touch working code to make it "cleaner" add regression risk for aesthetic benefit. Unless there's a concrete flaw, NO-FIX.
-7. **Does this contradict a locked decision?** If yes: does the finding reveal a concrete problem not visible when the decision was made? If so, classify ASK-USER with new evidence. If the finding merely disagrees with the chosen approach, classify NO-FIX. The user already made this call.
+5. **Check if the finding would break something.** Trace the suggested change through callers, tests, and dependent code. A finding that's locally correct but breaks something downstream is REJECT_WONT_FIX (or if the broader approach is unclear, FIX_UNCLEAR).
+6. **Check if "improvement" adds risk.** Refactoring suggestions that touch working code to make it "cleaner" add regression risk for aesthetic benefit. Unless there's a concrete flaw, REJECT_WONT_FIX.
+7. **Does this contradict a locked decision?** If yes: does the finding reveal a concrete problem not visible when the decision was made? If so, classify ASK_USER with new evidence. If the finding merely disagrees with the chosen approach, classify REJECT_WONT_FIX. The user already made this call.
 
 ## Common False Positive Patterns
 
-These frequently produce NO-FIX findings. Be especially skeptical:
+These frequently produce REJECT_FALSE_POSITIVE or REJECT_WONT_FIX findings. Be especially skeptical:
 
 - **"Missing error handling"** for paths that are structurally impossible given the caller or the types
 - **"Should use X instead of Y"** when Y is the established pattern in this codebase
@@ -59,10 +62,10 @@ These frequently produce NO-FIX findings. Be especially skeptical:
 
 Unlike plan review findings, code review findings interact with running software. Additional checks:
 
-- **Would the fix pass the existing tests?** If the fix would break passing tests, it's either wrong or requires test updates too. If the finding doesn't account for this, it's incomplete - classify ASK-USER or NO-FIX.
-- **Does the fix match the plan's architecture?** A finding that pushes toward a different architecture than the plan specified is a plan disagreement, not a code fix.
+- **Would the fix pass the existing tests?** If the fix would break passing tests, it's either wrong or requires test updates too. If the finding doesn't account for this, it's incomplete - classify ASK_USER, FIX_UNCLEAR, or REJECT_WONT_FIX.
+- **Does the fix match the plan's architecture?** A finding that pushes toward a different architecture than the plan specified is a plan disagreement, REJECT_WONT_FIX (plan design disagreement).
 - **Is the test finding about test quality or about production code?** A finding saying "this test reimplements business logic" is about the test. A finding saying "this function has a bug" is about production code. Don't conflate them - they have different fix approaches.
-- **Would reverting to make the reviewer happy reintroduce the bug/gap the plan was fixing?** If yes, NO-FIX.
+- **Would reverting to make the reviewer happy reintroduce the bug/gap the plan was fixing?** If yes, REJECT_WONT_FIX.
 
 ## Output Format
 
@@ -71,26 +74,26 @@ Unlike plan review findings, code review findings interact with running software
 | Field | Description |
 |-------|-------------|
 | **Finding** | One-line summary of the reviewer's concern |
-| **Classification** | FIX / NO-FIX / ASK-USER |
+| **Classification** | FIX / FIX_UNCLEAR / ASK_USER / REJECT_FALSE_POSITIVE / REJECT_WONT_FIX / REJECT_ALREADY_FIXED |
 | **Confidence** | HIGH / MEDIUM / LOW |
-| **Why** | 1-2 sentences. For FIX: what's actually wrong and why fixing it improves things. For NO-FIX: why the finding is wrong, irrelevant, or harmful to apply. For ASK-USER: what's unknown and why it matters |
-| **Question** | (ASK-USER only) A self-contained briefing for the user. See ASK-USER Question Guidelines below |
-| **Approach** | (FIX only) Concrete steps to resolve - name files, functions, what to change. Must not break existing passing tests |
+| **Why** | 1-2 sentences. For FIX: what's actually wrong and why fixing it improves things. For FIX_UNCLEAR: what's wrong AND what makes the fix approach ambiguous (name the competing approaches). For REJECT_*: why the finding is wrong, irrelevant, or harmful to apply. For ASK_USER: what's unknown and why it matters |
+| **Question** | (ASK_USER and FIX_UNCLEAR only) For ASK_USER: a self-contained briefing on whether this is a real issue. For FIX_UNCLEAR: a self-contained briefing presenting the competing fix approaches. See Question Guidelines below |
+| **Approach** | (FIX only) Concrete steps to resolve - name files, functions, what to change. Must not break existing passing tests. For FIX_UNCLEAR: omitted (user chooses approach first) |
 | **Risk** | (FIX only) What could go wrong with the fix itself |
 | **Blast radius** | (FIX only) Which files/tests/behaviors are affected |
 
 ### Output Ordering
 
-Group related findings that would be addressed by the same fix. Order: FIX (HIGH confidence first), then ASK-USER, then NO-FIX.
+Group related findings that would be addressed by the same fix. Order: FIX (HIGH confidence first), then FIX_UNCLEAR, then ASK_USER, then REJECT_* items.
 
 ### Summary
 
 End with a summary section:
-1. **Verdict**: how many FIX / NO-FIX / ASK-USER
+1. **Verdict**: how many FIX / FIX_UNCLEAR / ASK_USER / REJECT_FALSE_POSITIVE / REJECT_WONT_FIX / REJECT_ALREADY_FIXED
 2. **Overall assessment**: is the implementation solid with minor issues, or does it need significant rework?
-3. **NO-FIX rationale summary**: 1-2 sentences explaining the common thread behind rejected findings (helps calibrate future reviews)
+3. **REJECT rationale summary**: 1-2 sentences explaining the common thread behind rejected findings (group by rejection sub-type if the reasons differ)
 
-## ASK-USER Question Guidelines
+## Question Guidelines (ASK_USER and FIX_UNCLEAR)
 
 The Question field is what the user reads. It must be self-contained - the user should understand the problem and be able to answer without re-reading the finding, the plan, or the code.
 
@@ -110,18 +113,18 @@ Break the question into these sections (skip any that don't apply):
 - **Digestible**: short paragraphs, no walls of text. If it takes more than 30 seconds to read, it's too long.
 - **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
 - **Actionable**: the user should know exactly what decision they're being asked to make.
-- **Neutral**: present the tradeoff honestly. Don't bias toward FIX or NO-FIX in how the question is framed.
+- **Neutral**: present the tradeoff honestly. Don't bias toward FIX or REJECT in how the question is framed.
 - **Clickable**: every file reference is a markdown link with line numbers. No exceptions.
 
 ## Rules
 
 - Read the actual code, plan, AND spec before classifying. A finding classified without full context is likely wrong.
-- A finding that's technically correct but would make the code worse is NO-FIX. Explain the tradeoff.
-- A finding that contradicts the plan's explicit approach is NO-FIX unless the plan's approach is demonstrably broken in practice (not just "could be better").
+- A finding that's technically correct but would make the code worse is REJECT_WONT_FIX. Explain the tradeoff.
+- A finding that contradicts the plan's explicit approach is REJECT_WONT_FIX unless the plan's approach is demonstrably broken in practice (not just "could be better").
 - If two findings would be resolved by the same change, group them.
-- When in doubt between FIX and NO-FIX, classify ASK-USER. A wrong FIX wastes implementation time and can introduce bugs. A wrong NO-FIX hides a real issue. ASK-USER costs only a question.
-- The NO-FIX rationale summary is mandatory. If you can't articulate why findings were rejected, you didn't analyze them carefully enough.
-- Locked decisions are presumed correct. A finding that contradicts a locked decision is NO-FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK-USER with new evidence.
+- When in doubt between FIX and REJECT, classify ASK_USER. If the issue is clearly valid but the approach is ambiguous, classify FIX_UNCLEAR. A wrong FIX wastes implementation time and can introduce bugs. A wrong REJECT hides a real issue. ASK_USER or FIX_UNCLEAR costs only a question.
+- The REJECT rationale summary is mandatory. If you can't articulate why findings were rejected, you didn't analyze them carefully enough.
+- Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
 
 ## Routing Directive
 
@@ -132,9 +135,10 @@ End your output with a structured routing block that tells the orchestrator exac
 HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
 FIX_COUNT: <number>
 ASK_USER_COUNT: <number>
+FIX_UNCLEAR_COUNT: <number>
 NEXT_ACTION: DONE | OUTER_LOOP | ASK_USER_BATCH
 ```
 
-- `CLEAN` (0 FIX, 0 ASK-USER): orchestrator outputs Run Summary, pipeline ends
-- `HAS_FIX` (1+ FIX, 0 ASK-USER): orchestrator dispatches fixme-write-plan in code revision mode with the FIX items, entering the next outer loop iteration. The orchestrator MUST NOT apply fixes itself.
-- `HAS_ASK_USER` (1+ ASK-USER): orchestrator batches questions to user before routing FIX items
+- `CLEAN` (0 FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator outputs Run Summary, pipeline ends
+- `HAS_FIX` (1+ FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator dispatches fixme-write-plan in code revision mode with the FIX items, entering the next outer loop iteration. The orchestrator MUST NOT apply fixes itself.
+- `HAS_ASK_USER` (1+ FIX_UNCLEAR or ASK_USER): orchestrator batches questions to user before routing FIX items. FIX_UNCLEAR questions ask about approach. ASK_USER questions ask about validity.
