@@ -208,11 +208,21 @@ Present a clear summary to the user. This is the decision point.
  - Or: "Clean rebase candidate - linear history, no merge commits, minimal conflict surface.">
 ```
 
-**Ask for confirmation:** "Proceed with rebase?" or "I'd recommend merge instead for the reason above - your call."
+**Decide whether to ask or auto-proceed:**
 
-If the user wants merge instead: run `git merge origin/<BASE_BRANCH>` and skip to Phase 7 (Post-Rebase Verification & Cleanup). Adjust the summary accordingly.
+- **Auto-proceed** (no confirmation needed) when ALL of the following are true:
+  - 0 predicted file conflicts
+  - No cherry-picked commits to drop
+  - Assessment is "clean rebase candidate" (not recommending merge)
+  - Base branch was unambiguously detected (PR target or single merge-base match)
+  
+  In this case, print: "Clean rebase - proceeding automatically." and continue to Phase 4.
 
-**Wait for explicit confirmation before proceeding.**
+- **Ask for confirmation** in all other cases: "Proceed with rebase?" or "I'd recommend merge instead for the reason above - your call."
+
+  If the user wants merge instead: run `git merge origin/<BASE_BRANCH>` and skip to Phase 7 (Post-Rebase Verification & Cleanup). Adjust the summary accordingly.
+
+  **Wait for explicit confirmation before proceeding.**
 
 ### Phase 4: Safety Net
 
