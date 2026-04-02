@@ -15,6 +15,7 @@ Rebase the current branch onto its base branch. Safety, clarity, and verificatio
 - **Never lose uncommitted work.** Stash before rebase, unstash after. Verify stash succeeded.
 - **Never proceed through ambiguity.** If the base branch is unclear, the user's intent is unclear, or a conflict resolution is uncertain - stop and ask.
 - **Never skip post-rebase verification.** Build, lint, and tests must run after rebase completes. Regressions introduced by conflict resolution must be caught.
+- **Never commit a merge before verification passes.** When falling back from rebase to merge, the resolved-but-uncommitted state is an opportunity: run the full verification suite BEFORE `git commit`. This is the critical difference between merge and rebase - rebase auto-commits via `git rebase --continue`, but merge lets you verify first. Use that advantage.
 - **Never silently discard commits.** If rebase would drop, squash, or duplicate commits, surface this to the user before proceeding.
 
 ## Process
@@ -316,7 +317,7 @@ Leave the rebase paused. Do NOT abort.
    git rebase --abort
    git merge origin/<BASE_BRANCH>
    ```
-   If merge has conflicts, resolve them using the same intent-based approach above. Then skip to Phase 7.
+   If merge has conflicts, resolve them using the same intent-based approach above. After resolving all conflicts, stage files with `git add` but **DO NOT run `git commit` yet.** The merge stays uncommitted. Proceed to Phase 7 - verification runs first, commit happens only after verification passes.
 
 6. **If user chooses option 3 (abort):**
    ```bash
@@ -337,7 +338,7 @@ If stash was created in Phase 0, unstash: `git stash pop`.
 
 Stop here. Do not retry without user guidance.
 
-### Phase 7: Post-Rebase Verification & Cleanup
+### Phase 7: Verification, Commit & Cleanup
 
 1. **Unstash if applicable:**
    If we stashed in Phase 0:
@@ -356,7 +357,14 @@ Stop here. Do not retry without user guidance.
      - After fixing, re-run full verification.
      - If after 3 fix attempts a regression persists: present it to the user. Offer to abort (restore from backup or `git reset --hard <ORIGINAL_HEAD>`).
 
-3. **Record rebase result** in `$REBASE_DIR/result.md`:
+3. **Commit the merge (merge fallback path only):**
+   If the operation was a merge (Phase 6 option 2), the merge is still uncommitted at this point. Only after verification passes:
+   ```bash
+   git commit --no-edit
+   ```
+   This is intentional - merge allows verifying before committing, unlike rebase where `git rebase --continue` auto-commits. If verification failed and couldn't be fixed, abort with `git merge --abort` instead of committing broken code.
+
+4. **Record result** in `$REBASE_DIR/result.md`:
    - Branch, base branch, commit counts
    - Conflict resolutions (file + one-line description each)
    - Verification baseline vs post-rebase comparison
