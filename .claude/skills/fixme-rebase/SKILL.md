@@ -73,10 +73,14 @@ Determine what to rebase onto. Priority order:
 0. **Check for user-provided argument:**
    If a base branch argument was provided (e.g., `/fixme-rebase develop`):
    ```bash
+   # Check local first
+   git rev-parse --verify <argument> 2>/dev/null
+   # Then remote
    git rev-parse --verify origin/<argument> 2>/dev/null
    ```
-   - If valid: use as `BASE_BRANCH`. Skip to the fetch step (step 5).
-   - If invalid: tell the user "`<argument>` doesn't exist on origin. Falling back to auto-detection." Continue to step 1.
+   - If the branch exists locally: use the local branch name as `BASE_BRANCH`. Skip to the freshness step (step 5).
+   - If only on remote: `git fetch origin <argument> && git branch <argument> origin/<argument>` to create a local tracking branch. Use as `BASE_BRANCH`. Skip to step 5.
+   - If neither: tell the user "`<argument>` doesn't exist locally or on origin. Falling back to auto-detection." Continue to step 1.
 
 1. **Check for an open PR:**
    ```bash
@@ -91,21 +95,62 @@ Determine what to rebase onto. Priority order:
    ```
    This gives the remote's default branch (usually `main` or `master`).
 
-3. **Find merge-base candidates:**
-   For each candidate branch (`main`, `master`, `develop`, and the detected default):
-   ```bash
-   git merge-base HEAD origin/<candidate> 2>/dev/null
-   ```
-   Pick the candidate whose merge-base is closest to HEAD (fewest commits between merge-base and HEAD). This is the most likely branch we forked from.
+3. **Find merge-base among all local branches:**
+   The current branch may have been forked from another feature branch, not just main/master/develop. Scan ALL local branches to find the true parent.
 
-4. **If ambiguous or no clear base:** Present findings to the user. Show which branches were checked, the merge-base for each, and how many commits diverge. Ask which one to use.
-
-5. **Fetch the latest from the chosen base branch:**
    ```bash
-   git fetch origin <base-branch>
+   # All local branches except current
+   git branch --format='%(refname:short)' | grep -v "^$(git branch --show-current)$"
    ```
 
-Record the chosen base branch as `BASE_BRANCH` and `origin/<base-branch>` as the rebase target.
+   For each candidate, compute the merge-base and count how many of OUR commits sit above it:
+   ```bash
+   mb=$(git merge-base HEAD <candidate> 2>/dev/null)
+   git rev-list --count $mb..HEAD
+   ```
+
+   **Ranking:** The branch whose merge-base produces the FEWEST commits on our side (`merge-base..HEAD`) is the most likely parent. This works because:
+   - If we forked from `feat/alp-84`, the merge-base with it is close to HEAD (only our new commits above it).
+   - If we check `master`, the merge-base is much further back (all of `feat/alp-84`'s commits plus ours).
+
+   **Tie-breaking:** If two branches produce the same commit count, prefer the one whose merge-base is also closest to ITS OWN tip (smallest `git rev-list --count $mb..<candidate>`). This distinguishes the direct parent from a sibling branch.
+
+   Record the top 3 candidates with their commit counts for the summary.
+
+4. **If ambiguous or no clear base:** Present the top candidates to the user. Show each branch, its merge-base, and how many commits diverge on each side. Ask which one to use.
+
+5. **Freshen both branches:**
+   Before rebasing, ensure both the base branch and the current branch are up-to-date with their remotes. These checks ONLY apply when a branch has a remote tracking branch - local-only branches are fine as-is.
+
+   **a. Freshen the base branch:**
+   ```bash
+   git rev-parse --abbrev-ref --symbolic-full-name <BASE_BRANCH>@{upstream} 2>/dev/null
+   ```
+   - **No upstream (local-only):** Skip - use the local ref as-is.
+   - **Has upstream:** Fetch and compare:
+     ```bash
+     git fetch origin <BASE_BRANCH>
+     git rev-list <BASE_BRANCH>...origin/<BASE_BRANCH> --count --left-right
+     ```
+     - **Behind only (0 ahead, N behind):** Fast-forward silently: `git branch -f <BASE_BRANCH> origin/<BASE_BRANCH>`.
+     - **Up-to-date (0, 0):** Good, proceed.
+     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Base branch `<BASE_BRANCH>` has diverged from `origin/<BASE_BRANCH>` (N local commits ahead, M remote commits behind). Cannot rebase onto a diverged base. Please reconcile `<BASE_BRANCH>` with its remote first." Do not proceed.
+
+   **b. Freshen the current branch:**
+   ```bash
+   git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null
+   ```
+   - **No upstream (local-only or not yet pushed):** Skip - nothing to check.
+   - **Has upstream:** Fetch and compare:
+     ```bash
+     git fetch origin $(git branch --show-current)
+     git rev-list HEAD...@{upstream} --count --left-right
+     ```
+     - **Behind only (0 ahead, N behind):** **STOP.** Tell the user: "Your branch is behind `origin/<branch>` by N commits. Pull or fast-forward before rebasing to avoid losing remote changes."
+     - **Up-to-date or ahead-only:** Good, proceed.
+     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Your branch has diverged from `origin/<branch>` (N ahead, M behind). This is unusual. Reconcile with your remote before rebasing."
+
+Record the chosen base branch as `BASE_BRANCH`. The rebase target is always the local ref `<BASE_BRANCH>` (guaranteed fresh by step 5).
 
 ### Phase 2: Branch Analysis
 
@@ -113,7 +158,7 @@ Understand the scope of what's about to happen.
 
 1. **Find the common ancestor:**
    ```bash
-   git merge-base HEAD origin/<BASE_BRANCH>
+   git merge-base HEAD <BASE_BRANCH>
    ```
    Record as `MERGE_BASE`.
 
@@ -126,7 +171,7 @@ Understand the scope of what's about to happen.
 
 3. **Their commits (what we're rebasing onto):**
    ```bash
-   git log --oneline <MERGE_BASE>..origin/<BASE_BRANCH> | head -30
+   git log --oneline <MERGE_BASE>..<BASE_BRANCH> | head -30
    ```
    Record commit count and brief summary.
 
@@ -234,7 +279,7 @@ Build the rebase command based on Phase 2 analysis:
 git rebase \
   $(test -n "$HAS_MERGE_COMMITS" && echo "--rebase-merges") \
   $(test -n "$HAS_FIXUP_COMMITS" && echo "--autosquash") \
-  origin/<BASE_BRANCH>
+  <BASE_BRANCH>
 ```
 
 #### If rebase succeeds cleanly:
@@ -251,7 +296,7 @@ Leave the rebase paused. Do NOT abort.
 
 2. **Assess merge alternative** using the ORIGINAL_HEAD recorded in Phase 0 (not current HEAD, which has moved mid-rebase):
    ```bash
-   git merge-tree --write-tree origin/<BASE_BRANCH> <ORIGINAL_HEAD>
+   git merge-tree --write-tree <BASE_BRANCH> <ORIGINAL_HEAD>
    ```
    - Exit 0: merge would be clean
    - Exit 1: merge would also conflict (parse stdout for conflict list)
@@ -286,7 +331,7 @@ Leave the rebase paused. Do NOT abort.
 
    c. Understand THEIR side's intent:
    ```bash
-   git log --oneline -3 origin/<BASE_BRANCH> -- <file>
+   git log --oneline -3 <BASE_BRANCH> -- <file>
    ```
    Read the commits that changed this file on the base branch. What were they trying to do?
 
@@ -315,7 +360,7 @@ Leave the rebase paused. Do NOT abort.
 5. **If user chooses option 2 (merge instead):**
    ```bash
    git rebase --abort
-   git merge origin/<BASE_BRANCH>
+   git merge <BASE_BRANCH>
    ```
    If merge has conflicts, resolve them using the same intent-based approach above. After resolving all conflicts, stage files with `git add` but **DO NOT run `git commit` yet.** The merge stays uncommitted. Proceed to Phase 7 - verification runs first, commit happens only after verification passes.
 
@@ -378,7 +423,7 @@ Present the complete summary:
 ## Rebase Complete
 
 **Branch:** <branch>
-**Rebased onto:** origin/<base-branch>
+**Rebased onto:** <base-branch>
 **Commits rebased:** N (M conflicts resolved, K cherry-picked commits dropped)
 
 ### Conflict Resolution Summary
@@ -414,7 +459,7 @@ If push succeeds and a backup branch was created:
 ## Edge Cases
 
 ### Already up-to-date
-If `git merge-base HEAD origin/<BASE_BRANCH>` equals `origin/<BASE_BRANCH>` HEAD:
+If `git merge-base HEAD <BASE_BRANCH>` equals `<BASE_BRANCH>` HEAD:
 "Branch is already up-to-date with `<base-branch>`. No rebase needed."
 Stop.
 
@@ -422,10 +467,6 @@ Stop.
 If all our commits are marked `=` in cherry-mark output:
 "All commits on this branch are already present on `<base-branch>` (cherry-picked or equivalent). Rebase would result in an empty branch. No action taken."
 Stop.
-
-### Diverged from remote tracking branch
-If local branch has diverged from its remote tracking branch BEFORE we start:
-Warn the user: "Your local branch has diverged from `origin/<branch>` (N ahead, M behind). This is unusual. Want to proceed with rebase anyway, or first reconcile with your remote?"
 
 ### Shallow clone
 If `git rev-parse --is-shallow-repository` returns `true`:
