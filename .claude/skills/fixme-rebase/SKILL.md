@@ -136,25 +136,12 @@ Understand the scope of what's about to happen.
    ```
    Record `REBASE_DIR` - all working files go here.
 
-5. **Predict conflict areas:**
-
-   **a. Branch-vs-base conflicts:**
+5. **Check if branch has been pushed:**
    ```bash
-   # Files we changed
-   git diff --name-only <MERGE_BASE>..HEAD > "$REBASE_DIR/ours.txt"
-   # Files they changed
-   git diff --name-only <MERGE_BASE>..origin/<BASE_BRANCH> > "$REBASE_DIR/theirs.txt"
-   # Overlap = likely conflicts
-   comm -12 <(sort "$REBASE_DIR/ours.txt") <(sort "$REBASE_DIR/theirs.txt")
+   git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null
+   git rev-list HEAD...@{upstream} --count --left-right 2>/dev/null
    ```
-
-   **b. Merge replay conflicts (only when merge commits exist):**
-   When `--rebase-merges` replays a merge commit, git re-performs the merge. If the original merge resolved conflicts by hand, those same conflicts will reappear. For each merge commit found in step 2:
-   ```bash
-   # For each merge commit, check which files had conflict resolutions
-   git diff-tree --cc <merge-commit-hash> --name-only | tail -n +2
-   ```
-   Files listed by `--cc` had content from multiple parents combined - these are likely to conflict again during replay. Record as `MERGE_REPLAY_CONFLICTS`.
+   If the branch tracks a remote and has pushed commits: flag that push after rebase will require `--force-with-lease`.
 
 6. **Check for already-rebased or cherry-picked commits:**
    ```bash
@@ -162,32 +149,23 @@ Understand the scope of what's about to happen.
    ```
    Commits marked with `=` are already present on the base branch (cherry-picked or equivalent). These will be dropped during rebase. Note them for the user.
 
-7. **Check if branch has been pushed:**
-   ```bash
-   git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null
-   git rev-list HEAD...@{upstream} --count --left-right 2>/dev/null
-   ```
-   If the branch tracks a remote and has pushed commits: flag that push after rebase will require `--force-with-lease`.
-
-8. **Check for merge commits in our branch:**
+7. **Check for merge commits in our branch:**
    If merge commits exist in our history since `MERGE_BASE`, note that `--rebase-merges` will be needed to preserve merge topology, OR that merges will be linearized. This affects the rebase strategy.
 
-   **Risk assessment:** If merge commits exist AND step 5b found merge replay conflict files, flag this as HIGH CONFLICT RISK in the assessment. The branch-vs-base prediction (step 5a) may show 0 conflicts while the actual rebase will hit many conflicts from merge replay. Include the merge replay conflict file list in the Phase 3 summary under a separate "Merge replay conflicts" heading.
-
-9. **Check for fixup/squash commits:**
+8. **Check for fixup/squash commits:**
    ```bash
    git log --oneline <MERGE_BASE>..HEAD | grep -E '^[a-f0-9]+ (fixup!|squash!)'
    ```
    If found, note that `--autosquash` should be used.
 
-### Phase 3: State Presentation & User Confirmation
+### Phase 3: Pre-Rebase Summary
 
-Present a clear summary to the user. This is the decision point.
+Present an informational summary before attempting the rebase. This is NOT a confirmation gate - proceed directly to Phase 4 after presenting.
 
-**Format the output as:**
+**Format:**
 
 ```
-## Rebase Analysis
+## Rebasing onto <base-branch>
 
 **Current branch:** <branch> at <short-hash>
 **Base branch:** <base-branch> (from: PR #N / merge-base detection)
@@ -197,9 +175,7 @@ Present a clear summary to the user. This is the decision point.
 - **Our commits:** N commits to rebase
   <list of commit onelines>
 - **Their commits:** M new commits on <base-branch> since divergence
-  <list of commit onelines, truncated at 15 with "...and N more">
-- **Predicted conflicts:** K files changed on both sides
-  <list of overlapping files>
+  <list of commit onelines>
 
 ### Flags
 - [ ] Branch has been pushed - force-push will be required after rebase
@@ -208,34 +184,10 @@ Present a clear summary to the user. This is the decision point.
 - [ ] N cherry-picked commits will be dropped (already on base)
 - [ ] Uncommitted changes were stashed
 
-### Action Plan
-1. <backup step if applicable>
-2. Run: git rebase [flags] origin/<base-branch>
-3. Resolve conflicts if any (N files predicted)
-4. Run full verification (build, lint, tests)
-
-### Assessment
-<If merge might be better, explain why:
- - "This branch has N merge commits from <base> and M conflicts predicted. A merge would preserve history and avoid conflict resolution. Rebase will linearize history but requires resolving each conflict per-commit."
- - Or: "Clean rebase candidate - linear history, no merge commits, minimal conflict surface.">
+Attempting rebase...
 ```
 
-**Decide whether to ask or auto-proceed:**
-
-- **Auto-proceed** (no confirmation needed) when ALL of the following are true:
-  - 0 predicted branch-vs-base file conflicts (step 5a)
-  - 0 merge replay conflict files (step 5b), OR no merge commits at all
-  - No cherry-picked commits to drop
-  - Assessment is "clean rebase candidate" (not recommending merge)
-  - Base branch was unambiguously detected (PR target or single merge-base match)
-  
-  In this case, print: "Clean rebase - proceeding automatically." and continue to Phase 4.
-
-- **Ask for confirmation** in all other cases: "Proceed with rebase?" or "I'd recommend merge instead for the reason above - your call."
-
-  If the user wants merge instead: run `git merge origin/<BASE_BRANCH>` and skip to Phase 7 (Post-Rebase Verification & Cleanup). Adjust the summary accordingly.
-
-  **Wait for explicit confirmation before proceeding.**
+Proceed immediately to Phase 4.
 
 ### Phase 4: Safety Net
 
@@ -289,20 +241,45 @@ Proceed to Phase 7.
 
 #### If rebase hits conflicts:
 
-For each conflicted state:
+Leave the rebase paused. Do NOT abort.
 
 1. **Identify conflicted files:**
    ```bash
    git diff --name-only --diff-filter=U
    ```
 
-2. **For each conflicted file, understand intent before resolving:**
+2. **Assess merge alternative** using the ORIGINAL_HEAD recorded in Phase 0 (not current HEAD, which has moved mid-rebase):
+   ```bash
+   git merge-tree --write-tree origin/<BASE_BRANCH> <ORIGINAL_HEAD>
+   ```
+   - Exit 0: merge would be clean
+   - Exit 1: merge would also conflict (parse stdout for conflict list)
+
+3. **Present options to user:**
+
+   ```
+   Rebase paused - N conflicted files.
+   <list of conflicted files>
+
+   Merge assessment: clean (0 conflicts) / N conflicts (<file list>)
+
+   Options:
+   1. Resolve conflicts and continue rebase
+   2. Abort rebase, merge instead [(clean) / (N conflicts)]
+   3. Abort (do nothing)
+   ```
+
+   **Wait for user choice.**
+
+4. **If user chooses option 1 (resolve and continue):**
+
+   For each conflicted file, understand intent before resolving:
 
    a. Read the conflict markers in the file.
 
    b. Understand OUR side's intent:
    ```bash
-   git log --oneline -3 -- <file>
+   git log --oneline -3 <ORIGINAL_HEAD> -- <file>
    ```
    Read the commits that changed this file on our branch. What were we trying to do?
 
@@ -327,12 +304,26 @@ For each conflicted state:
    git add <file>
    ```
 
-3. **Continue rebase:**
+   g. Continue rebase:
    ```bash
    git rebase --continue
    ```
 
-4. Repeat for each conflicted commit until rebase completes.
+   h. Repeat for each conflicted commit until rebase completes.
+
+5. **If user chooses option 2 (merge instead):**
+   ```bash
+   git rebase --abort
+   git merge origin/<BASE_BRANCH>
+   ```
+   If merge has conflicts, resolve them using the same intent-based approach above. Then skip to Phase 7.
+
+6. **If user chooses option 3 (abort):**
+   ```bash
+   git rebase --abort
+   ```
+   If stash was created in Phase 0, unstash: `git stash pop`.
+   Stop here.
 
 #### If rebase fails catastrophically:
 
