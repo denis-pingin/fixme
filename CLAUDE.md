@@ -15,7 +15,7 @@ Fixme is a suite of Claude Code skills for automated bug fixing and task executi
 ### Running Tests
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.test.cjs
+node .claude/skills/fixme-tickets-md/scripts/fixme-tools.test.cjs
 ```
 
 There is no `package.json` - this is a pure skill repo with no build/lint steps. The only runnable code is `fixme-tools.cjs` (Node.js CLI) and its test file.

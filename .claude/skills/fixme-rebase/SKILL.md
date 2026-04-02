@@ -137,6 +137,8 @@ Understand the scope of what's about to happen.
    Record `REBASE_DIR` - all working files go here.
 
 5. **Predict conflict areas:**
+
+   **a. Branch-vs-base conflicts:**
    ```bash
    # Files we changed
    git diff --name-only <MERGE_BASE>..HEAD > "$REBASE_DIR/ours.txt"
@@ -145,6 +147,14 @@ Understand the scope of what's about to happen.
    # Overlap = likely conflicts
    comm -12 <(sort "$REBASE_DIR/ours.txt") <(sort "$REBASE_DIR/theirs.txt")
    ```
+
+   **b. Merge replay conflicts (only when merge commits exist):**
+   When `--rebase-merges` replays a merge commit, git re-performs the merge. If the original merge resolved conflicts by hand, those same conflicts will reappear. For each merge commit found in step 2:
+   ```bash
+   # For each merge commit, check which files had conflict resolutions
+   git diff-tree --cc <merge-commit-hash> --name-only | tail -n +2
+   ```
+   Files listed by `--cc` had content from multiple parents combined - these are likely to conflict again during replay. Record as `MERGE_REPLAY_CONFLICTS`.
 
 6. **Check for already-rebased or cherry-picked commits:**
    ```bash
@@ -161,6 +171,8 @@ Understand the scope of what's about to happen.
 
 8. **Check for merge commits in our branch:**
    If merge commits exist in our history since `MERGE_BASE`, note that `--rebase-merges` will be needed to preserve merge topology, OR that merges will be linearized. This affects the rebase strategy.
+
+   **Risk assessment:** If merge commits exist AND step 5b found merge replay conflict files, flag this as HIGH CONFLICT RISK in the assessment. The branch-vs-base prediction (step 5a) may show 0 conflicts while the actual rebase will hit many conflicts from merge replay. Include the merge replay conflict file list in the Phase 3 summary under a separate "Merge replay conflicts" heading.
 
 9. **Check for fixup/squash commits:**
    ```bash
@@ -211,7 +223,8 @@ Present a clear summary to the user. This is the decision point.
 **Decide whether to ask or auto-proceed:**
 
 - **Auto-proceed** (no confirmation needed) when ALL of the following are true:
-  - 0 predicted file conflicts
+  - 0 predicted branch-vs-base file conflicts (step 5a)
+  - 0 merge replay conflict files (step 5b), OR no merge commits at all
   - No cherry-picked commits to drop
   - Assessment is "clean rebase candidate" (not recommending merge)
   - Base branch was unambiguously detected (PR target or single merge-base match)
