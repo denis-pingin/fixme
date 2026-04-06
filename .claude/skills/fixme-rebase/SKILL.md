@@ -392,7 +392,21 @@ Stop here. Do not retry without user guidance.
    ```
    If pop fails due to conflicts: `git stash drop` is NOT safe. Tell the user: "Stash couldn't be applied cleanly. Your stashed changes are still in `git stash list`. Apply manually with `git stash apply` after resolving."
 
-2. **Run full verification suite:**
+2. **Reinstall dependencies if lockfile changed:**
+   The rebase may have brought in commits that changed dependency lockfiles. Stale dependencies cause false verification failures that appear "pre-existing" but aren't.
+
+   ```bash
+   git diff --name-only <ORIGINAL_HEAD> HEAD -- \
+     'bun.lockb' 'package-lock.json' 'yarn.lock' 'pnpm-lock.yaml' \
+     'Gemfile.lock' 'Cargo.lock' 'go.sum' 'poetry.lock' 'composer.lock'
+   ```
+
+   If any lockfile changed:
+   - Check `.fixme/project-context.yaml` for `install.command`. If present, use it.
+   - Otherwise detect from lockfile: `bun.lockb` → `bun install`, `package-lock.json` → `npm install`, `yarn.lock` → `yarn install`, `pnpm-lock.yaml` → `pnpm install`, etc.
+   - Run the install command and confirm it succeeds before proceeding.
+
+3. **Run full verification suite:**
    Same commands as Phase 5. Compare results with baseline.
 
    - If results match baseline (same passes, same pre-existing failures): verification passes.
@@ -402,14 +416,14 @@ Stop here. Do not retry without user guidance.
      - After fixing, re-run full verification.
      - If after 3 fix attempts a regression persists: present it to the user. Offer to abort (restore from backup or `git reset --hard <ORIGINAL_HEAD>`).
 
-3. **Commit the merge (merge fallback path only):**
+4. **Commit the merge (merge fallback path only):**
    If the operation was a merge (Phase 6 option 2), the merge is still uncommitted at this point. Only after verification passes:
    ```bash
    git commit --no-edit
    ```
    This is intentional - merge allows verifying before committing, unlike rebase where `git rebase --continue` auto-commits. If verification failed and couldn't be fixed, abort with `git merge --abort` instead of committing broken code.
 
-4. **Record result** in `$REBASE_DIR/result.md`:
+5. **Record result** in `$REBASE_DIR/result.md`:
    - Branch, base branch, commit counts
    - Conflict resolutions (file + one-line description each)
    - Verification baseline vs post-rebase comparison

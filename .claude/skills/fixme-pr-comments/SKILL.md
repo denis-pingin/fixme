@@ -1,6 +1,6 @@
 ---
 name: fixme-pr-comments
-description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze each one, fix valid issues via fixme-write-plan and fixme-execute-plan, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
+description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze each one, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
 argument-hint: "[--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
@@ -312,29 +312,22 @@ Step 3.
 
 ### 3. Address Valid Issues
 
-For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), dispatch two sequential agents:
+For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), dispatch a single fixme-task agent to handle the full plan-execute-review pipeline.
 
-#### Agent 1: Plan (synchronous)
-
-Dispatch a **foreground** Agent with a clean prompt containing:
-1. The full content of `~/.claude/skills/fixme-write-plan/SKILL.md` (read it, paste it verbatim into the agent prompt)
-2. The full list of fix items with file paths, line numbers, and comment text
-3. For `FIX` items: the analysis from Step 2
-4. For resolved `FIX_UNCLEAR` items: the chosen approach and rationale from Step 2.5
-5. Instruction: "Write an implementation plan for these PR comment fixes. Save to `.fixme/plans/<date>-pr-comment-fixes.md`."
-
-Wait for Agent 1 to complete and produce a plan file.
-
-#### Agent 2: Execute (synchronous)
+#### Dispatch fixme-task (synchronous)
 
 Dispatch a **foreground** Agent with a clean prompt containing:
-1. The full content of `~/.claude/skills/fixme-execute-plan/SKILL.md` (read it, paste it verbatim into the agent prompt)
-2. The path to the plan file produced by Agent 1
-3. Instruction: "Execute this implementation plan."
+1. The full content of `~/.claude/skills/fixme-task/SKILL.md` (read it, paste it verbatim into the agent prompt)
+2. A task description that includes:
+   - The full list of fix items with file paths, line numbers, and comment text
+   - For `FIX` items: the analysis from Step 2
+   - For resolved `FIX_UNCLEAR` items: the chosen approach and rationale from Step 2.5
+   - Instruction: "Fix these PR comment issues. This is a PR comment fix task."
+3. The project root path
 
-Wait for Agent 2 to complete.
+Wait for the fixme-task agent to complete. fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally.
 
-**CRITICAL**: Each agent runs with a clean prompt - do NOT leak your current conversation context into the agent prompt. Provide only the structured data listed above. Follow the fixme dispatch contract: always include the full SKILL.md content verbatim, never paraphrase skill instructions.
+**CRITICAL**: The agent runs with a clean prompt - do NOT leak your current conversation context into the agent prompt. Provide only the structured data listed above. Follow the fixme dispatch contract: always include the full SKILL.md content verbatim, never paraphrase skill instructions.
 
 ### 4. Verify All Changes
 
