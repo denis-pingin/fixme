@@ -416,14 +416,26 @@ Stop here. Do not retry without user guidance.
      - After fixing, re-run full verification.
      - If after 3 fix attempts a regression persists: present it to the user. Offer to abort (restore from backup or `git reset --hard <ORIGINAL_HEAD>`).
 
-4. **Commit the merge (merge fallback path only):**
+4. **Commit post-rebase fixes if any:**
+   After verification passes, check for uncommitted changes left by regression fixes:
+   ```bash
+   git status --porcelain
+   ```
+   If there are staged or unstaged changes (from fixing verification regressions, resolving unused imports, updating type signatures, etc.):
+   - Stage all modified tracked files: `git add -u`
+   - Commit with a message following the project's commit conventions (check CLAUDE.md, recent git log, or `.fixme/project-context.yaml` for the expected format).
+   - Do NOT leave uncommitted changes for the user to discover later.
+
+   This step is a no-op if verification passed without needing fixes.
+
+5. **Commit the merge (merge fallback path only):**
    If the operation was a merge (Phase 6 option 2), the merge is still uncommitted at this point. Only after verification passes:
    ```bash
    git commit --no-edit
    ```
    This is intentional - merge allows verifying before committing, unlike rebase where `git rebase --continue` auto-commits. If verification failed and couldn't be fixed, abort with `git merge --abort` instead of committing broken code.
 
-5. **Record result** in `$REBASE_DIR/result.md`:
+6. **Record result** in `$REBASE_DIR/result.md`:
    - Branch, base branch, commit counts
    - Conflict resolutions (file + one-line description each)
    - Verification baseline vs post-rebase comparison
