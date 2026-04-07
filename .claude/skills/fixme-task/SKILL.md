@@ -233,6 +233,45 @@ The agent's role and operational procedures are already loaded by its agent defi
 
 Tool access for each sub-skill is enforced by its agent definition in `~/.claude/agents/`. Read-only agents (reviewers, handlers) have no Edit or Write tools. Write-access agents (plan writer, executor, investigator, researcher, browser verifier) have full tool access. See the agent definition files for specifics.
 
+### Model Resolution
+
+Resolve the model for each sub-agent before dispatching. Read `.fixme/config.json` and check for a `models` section.
+
+**Resolution order:**
+1. `models.overrides[agent-name]` (per-agent override)
+2. `models.profile` table lookup (profile-based)
+3. Default: `opus` (no config = quality profile)
+
+**Profile table:**
+
+| Agent | quality | balanced | budget |
+|-------|---------|----------|--------|
+| fixme-write-plan | opus | opus | sonnet |
+| fixme-review-plan | opus | opus | sonnet |
+| fixme-review-code | opus | opus | sonnet |
+| fixme-investigate | opus | opus | sonnet |
+| fixme-research | opus | opus | sonnet |
+| fixme-handle-plan-review | opus | opus | sonnet |
+| fixme-handle-code-review | opus | opus | sonnet |
+| fixme-execute-plan | opus | sonnet | sonnet |
+| fixme-task | opus | sonnet | haiku |
+| fixme-browser-verify | opus | sonnet | haiku |
+
+**Config example:**
+
+```json
+{
+  "models": {
+    "profile": "balanced",
+    "overrides": {
+      "fixme-execute-plan": "opus"
+    }
+  }
+}
+```
+
+Valid model values: `opus`, `sonnet`, `haiku`, `inherit`.
+
 ### Ticket transition dispatch
 
 Ticket transitions are dispatched through the `fixme-tickets` abstraction skill, not directly to any backend.
