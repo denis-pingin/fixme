@@ -346,7 +346,7 @@ yarn test
 
 **IMPORTANT**: Do NOT proceed if any verification step fails. Fix issues first.
 
-**NOTE**: The fixme-execute-plan agent already runs verification as its final gate. This step is a safety net - if execute-plan completed successfully, verification should already pass. If it doesn't, something went wrong during execution that needs investigation.
+**NOTE**: The fixme-task pipeline already runs verification as its final gate (via fixme-execute-plan). This step is a safety net - if the pipeline completed successfully, verification should already pass. If it doesn't, something went wrong during execution that needs investigation.
 
 ### 5. Commit and Push
 
@@ -475,4 +475,4 @@ git push
 - Be specific in replies - reference exact lines/commits
 - Don't resolve review thread conversations you can't fully address
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
-- **Sub-skill dispatch follows the fixme dispatch contract**: always read the full SKILL.md from `~/.claude/skills/<skill-name>/SKILL.md` and include it verbatim in the agent prompt. Never paraphrase skill instructions.
+- **fixme-task dispatch follows the fixme dispatch contract**: always read the full SKILL.md from `~/.claude/skills/fixme-task/SKILL.md` and include it verbatim in the agent prompt. Never paraphrase skill instructions. fixme-task handles the full plan-execute-review pipeline internally.
