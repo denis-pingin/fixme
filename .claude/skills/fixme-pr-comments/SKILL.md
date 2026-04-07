@@ -1,7 +1,7 @@
 ---
 name: fixme-pr-comments
 description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze each one, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
-argument-hint: "[--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
+argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
 # Address PR Comments
@@ -14,6 +14,7 @@ Parse arguments from skill invocation. All flags default to OFF (all phases run)
 
 | Flag | Effect |
 |------|--------|
+| `--pause` | Pause for user confirmation after analysis, before execution |
 | `--skip-push` | Skip `git push` after commit |
 | `--skip-commit` | Skip both commit and push (implies `--skip-push`) |
 | `--skip-resolve` | Skip resolving review threads and posting fix comments |
@@ -216,8 +217,13 @@ validity, use `ASK_USER`. When in doubt about approach (but not validity), use `
 After analyzing all comments, present the results using the format below. This format is
 mandatory - follow it exactly regardless of any other presentation guidelines.
 
+**All file references in the report MUST be clickable markdown links with absolute file paths
+and line numbers**, e.g. `[config.ts:42-58](/absolute/path/to/config.ts#L42-L58)`. This applies
+to every file mentioned anywhere in the report - problem descriptions, fix descriptions, file
+lists, decision context, options, everything. No plain-text file paths.
+
 **Structure**: Group items by status, lead with what's already resolved, then what remains.
-For each individual item, describe it top-down: what's wrong, what breaks, what will be done.
+For each individual item, describe it top-down: context, what's wrong, what breaks, what will be done.
 
 ```
 ### Already Fixed (resolve immediately)
@@ -225,30 +231,85 @@ For each individual item, describe it top-down: what's wrong, what breaks, what 
 - **{concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
   {One sentence: what was wrong and how it was fixed.}
 
+### Not Actionable
+{List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
+- **{issue name}** [`{category}`] - {one-sentence rationale explaining why this is not a real issue
+  or is intentional/out of scope. Be specific - name the code construct and why it's correct.}
+
 ### Actionable Items ({N} distinct issues)
 
 {For each deduplicated issue, present ALL of these fields:}
 
 **{N}. {Issue title}** [`{category}`]
-- **Problem**: {One sentence: what is concretely wrong, with file:line references.}
-- **Impact**: {One sentence: what breaks, degrades, or is at risk because of this.}
-- **Fix**: {One sentence: what will be done to fix it. For FIX_UNCLEAR: "Requires approach decision - see below." For ASK_USER: "Requires validity determination - see below."}
-- **Files**: {file.ts:line, file2.ts:line}
+- **Context**: {What area of the codebase this touches and what it does. The reader must
+  understand the domain before evaluating the problem. Name the feature, subsystem, or flow
+  this code belongs to, and what role the affected file/function plays in it.}
+- **Problem**: {What is concretely wrong, with file:line references.}
+- **Impact**: {What breaks, degrades, or is at risk because of this.}
+- **Fix**: {What will be done to fix it. For FIX_UNCLEAR: "Requires approach decision -
+  see below." For ASK_USER: "Requires validity determination - see below."}
+- **Files**: {[file.ts:line](/absolute/path/file.ts#Lline), [file2.ts:line](/absolute/path/file2.ts#Lline)}
 - **Threads**: {N} ({list bot names: copilot, claude, greptile})
 
 {Repeat for every actionable item.}
 ```
 
-**Presentation rules for each item**:
-- Problem must name the specific code construct that's wrong, not a category of wrongness.
-  BAD: "unsafe cast at system boundary". GOOD: "`JSON.parse(raw) as SpecSummary` in spec-store.ts:90 bypasses schema validation at the KV boundary."
-- Impact must describe the concrete consequence, not restate the problem.
-  BAD: "violates CLAUDE.md". GOOD: "malformed KV entries crash with an untyped TypeError instead of a typed StoreError, bypassing retry/DLQ routing."
-- Fix must describe the specific action, not the category.
-  BAD: "will fix". GOOD: "replace with `Schema.decodeUnknown(SpecSummarySchema)` wrapped in Effect.try."
-- For `REJECT_ALREADY_FIXED` items: state the commit SHA and one-line summary, nothing more.
-- For `REJECT_FALSE_POSITIVE` / `REJECT_WONT_FIX`: include a one-sentence rationale explaining why.
-- For `ASK_USER` items: state what's unclear and what information would resolve it.
+##### Presentation Rules (NON-NEGOTIABLE)
+
+These rules govern how every finding in the report is written. The reader is a developer
+reviewing PR feedback - they need to quickly understand each issue, judge its validity, and
+evaluate whether the planned fix is correct. Every item must be independently comprehensible
+without referring to any other part of the report or the codebase.
+
+**1. Establish context before the issue.**
+Every finding starts by explaining WHERE we are in the codebase and WHAT this code does. The
+reader must build a mental model of the domain before encountering the problem.
+
+- BAD: "Unsafe cast at system boundary in `processData`."
+- GOOD: "`processData` in spec-store.ts:90 handles incoming webhook payloads - it parses raw
+  JSON from external providers and transforms it into typed domain objects for the processing
+  pipeline. The cast happens at the boundary between the untyped KV store read and the typed
+  internal API."
+
+**2. Never reference code symbols without explaining what they represent.**
+Every variable, function, class, or technical term must be introduced with what it IS and what
+it DOES before being used in the explanation. Assume the reader last looked at this file weeks ago.
+
+- BAD: "The `svc` return type changed."
+- GOOD: "The `svc` variable (the singleton instance of the configuration service - the central
+  registry for feature flags and rate limits) had its `getLimit()` method changed to return
+  `Result<Limit>` instead of a raw `Limit`, meaning every caller now needs to unwrap the result."
+
+**3. Describe problems and fixes as behavior, not code mechanics.**
+Frame issues in terms of what changes for the user or the system, not what lines of code are wrong.
+
+- BAD: "Missing null check on line 42."
+- GOOD: "When a webhook arrives with a missing `event_type` field (which happens with legacy
+  integrations), the handler throws an untyped TypeError instead of returning a 400 response.
+  The caller gets a 500 and no actionable error message."
+
+**4. Make planned fixes self-evident, not assertive.**
+Describe the resulting behavior so the reader can independently judge whether the fix is correct.
+
+- BAD: "Will add validation."
+- GOOD: "Will add a Zod schema check at the handler entry point that rejects payloads missing
+  `event_type` with a 400 response including the field name. Existing valid payloads are
+  unaffected - the schema matches the current TypeScript type exactly."
+
+**5. Ground impact in behavior, not just locations.**
+When describing what breaks, explain the user-visible or system-visible consequence.
+
+- BAD: "Affects the API response."
+- GOOD: "API consumers receive a 500 with a stack trace instead of a structured 400 error,
+  making it impossible to programmatically distinguish bad input from server failures."
+
+**6. One idea per bullet. No compound explanations.**
+Each point conveys exactly one thing. If a sentence has "and also" or packs two issues, split them.
+
+**7. No hedging without specifics.**
+Don't write "there might be implications" or "this could affect other areas." Either you
+checked and found specific impacts (list them), or you checked and found nothing (say what
+you searched for and that it came back clean).
 
 ### 2.5. User Consultation for Ambiguous Fixes
 
@@ -309,6 +370,28 @@ After presenting ALL decision points, ask the user a SINGLE question:
 Once all decisions are resolved, merge them into the fix list: each `FIX_UNCLEAR` becomes
 a resolved fix item with the chosen approach noted. Each `ASK_USER` item becomes FIX (with approach), REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, or REJECT_ALREADY_FIXED based on the user's answer. These join the `FIX` items for
 Step 3.
+
+### 2.7. Pre-Execution Confirmation (when `--pause` is set)
+
+**Skip this gate if `--pause` is NOT set.** Proceed directly to Step 3.
+
+After all analysis is complete and all decisions are resolved, present a final execution plan
+and wait for explicit user confirmation before proceeding.
+
+```
+## Ready to Execute ({N} fixes)
+
+{For each fix item, one line:}
+{N}. **{Issue title}** - {the planned fix action} -> [{files affected}]
+
+Proceed with fixing these issues? (yes / no / modify)
+```
+
+**User responses:**
+- **yes** / **go** / **proceed**: Continue to Step 3.
+- **no** / **stop** / **cancel**: Stop the workflow. Do not execute any fixes. Report which items were categorized and exit.
+- **modify** (with specifics, e.g., "skip item 3", "change approach for item 1 to X"): Adjust the fix list per the user's instructions. Re-present the updated execution plan and ask again.
+- **Any specific instructions** (e.g., "only fix items 1 and 3"): Adjust accordingly, re-present, and confirm.
 
 ### 3. Address Valid Issues
 
@@ -469,6 +552,7 @@ git push
 - **Greptile summary comment**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login.
 - **Skip already-replied findings**: If a reply already addresses a Claude bot or Greptile finding (references a commit SHA or says "Fixed"), skip it
 - **FIX vs FIX_UNCLEAR vs ASK_USER**: FIX items proceed without user input. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid.
+- **`--pause` flag**: When set, the workflow pauses after analysis (Step 2/2.5) and presents a final execution plan before dispatching fixme-task. The user can approve, cancel, or modify the fix list. Without `--pause`, execution proceeds automatically after analysis.
 - If no actionable comments exist from any source, report "No unresolved comments to address" and exit
 - Always verify before committing
 - One commit for all fixes (unless logically separate)

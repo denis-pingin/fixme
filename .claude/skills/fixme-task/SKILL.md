@@ -274,6 +274,29 @@ For custom skills not listed above: pass the task description and all accumulate
 
 Follow these EXACTLY after each agent returns. Do not improvise transitions.
 
+### Directive Validation (NON-NEGOTIABLE)
+
+Every agent dispatch has an expected routing directive in its output. Before routing, you MUST validate that the directive is present:
+
+| Agent type | Expected directive | Example |
+|---|---|---|
+| Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
+| Review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-*-review output |
+
+**If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
+
+**Recovery procedure:**
+
+1. **Do NOT take over the agent's work.** Do not run tests, commit code, verify output, or do anything the agent was supposed to do. You are a dispatcher.
+2. **Do NOT proceed to the next pipeline phase or output a Run Summary.** The current phase is incomplete.
+3. **Re-dispatch the agent automatically (once).** Construct a resume prompt:
+   - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step. Include the same SKILL.md content as the original dispatch.
+   - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
+   - For **other phase skills**: re-dispatch with the original inputs plus a summary of what was already produced.
+4. **If the re-dispatched agent also returns without the expected directive**: escalate to user. Report which agent was dispatched twice, what it produced each time, and what remains incomplete. Offer to re-dispatch again with a narrower scope or to proceed with manual guidance.
+
+**The temptation**: When an executor returns without its directive but the output looks "mostly done" (tests seem to pass, code looks committed), it feels natural to just run verification yourself, confirm it's good, and move on. This is the exact failure mode this rule prevents. "Mostly done" without the directive means the agent's own verification gate did not run to completion. Your manual check is NOT equivalent - you lack the agent's accumulated context about what was changed and why, and you will skip the review phase that exists to catch what manual checks miss.
+
 ### After a phase skill returns:
 
 1. Capture the agent's full output (this is phase output, part of accumulated context).
@@ -294,7 +317,7 @@ Follow these EXACTLY after each agent returns. Do not improvise transitions.
 
 ### After a review handler returns:
 
-1. Read the HANDLER_RESULT routing directive at the end of the output.
+1. **Validate the routing directive first.** Check that the output contains `HANDLER_RESULT:` followed by one of `CLEAN`, `HAS_FIX`, or `HAS_ASK_USER`. If missing, follow the Directive Validation recovery procedure above - do NOT proceed.
 2. **If `CLEAN`**:
    - If there are more phases in the pipeline: proceed to the next phase.
    - If this is the last phase: output Run Summary -> DONE.
@@ -314,11 +337,12 @@ Follow these EXACTLY after each agent returns. Do not improvise transitions.
 
 **This is NOT the end of the pipeline if the `implement` phase has a review loop.**
 
-1. Capture the full completion report from the agent output.
-2. If the phase has a review loop: dispatch the first review skill with plan path + git diff info.
-3. Do NOT output any summary, completion message, or status to the user.
-4. Do NOT stop to ask if the user wants to continue.
-5. The execution report is INPUT to the code review step, not OUTPUT to the user.
+1. **Validate the routing directive first.** Check that the output ends with `EXECUTOR_STATUS: COMPLETE` and `NEXT_PIPELINE_STEP: fixme-review-code`. If missing, follow the Directive Validation recovery procedure above - do NOT proceed.
+2. Capture the full completion report from the agent output.
+3. If the phase has a review loop: dispatch the first review skill with plan path + git diff info.
+4. Do NOT output any summary, completion message, or status to the user.
+5. Do NOT stop to ask if the user wants to continue.
+6. The execution report is INPUT to the code review step, not OUTPUT to the user.
 
 ### Pipeline Exit Points (ONLY these)
 
@@ -384,7 +408,7 @@ When a handler produces FIX_UNCLEAR or ASK_USER items:
 
 ## Error Handling
 
-- **Sub-skill agent fails unexpectedly**: stop, report to user with full context of what succeeded and what failed, offer to resume from last successful step. If ticket path provided, include it in the error report (but do NOT transition to `failed` - the session owns that).
+- **Sub-skill agent fails unexpectedly or returns without expected routing directive**: follow the Directive Validation recovery procedure (auto-retry once, then escalate). If ticket path provided, include it in any escalation report (but do NOT transition to `failed` - the session owns that).
 - **Loop guard triggers**: present accumulated FIX items with context and options (see Loop Guards).
 - **Execute-plan surfaces a plan concern during execution**: route back through plan loop as a plan revision (not handled ad-hoc by executor).
 - **Execute-plan pre-existing failure proof**: include in execution results passed to code revision fixme-write-plan.
