@@ -203,30 +203,35 @@ Dispatch each sub-skill as an isolated agent via the Agent tool. Pass all requir
 
 ### Dispatch contract (NON-NEGOTIABLE)
 
-Every sub-skill agent MUST read its own SKILL.md as its first action. **Never paste SKILL.md content into the agent prompt** - long skill files get truncated by the dispatching agent, causing the sub-agent to receive partial instructions and default to general-purpose behavior (e.g., editing files directly instead of following the pipeline).
+Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-skill has an agent definition in `~/.claude/agents/` that binds its role constraints (identity, boundaries, tool restrictions) at the system level and preloads its SKILL.md via `skills` frontmatter.
 
-**Never paraphrase a skill's instructions in your own words.** The SKILL.md IS the contract - it defines output format, routing directives, classification rules, and behavioral boundaries.
+**Never paste SKILL.md content into the agent prompt.** Never tell agents to "read your SKILL.md first." The agent definition handles both role binding and SKILL.md preloading.
+
+Resolve the model for each agent from `.fixme/config.json` (see Model Resolution below). Default: opus for all agents.
 
 The dispatch prompt structure for every sub-skill:
+
 ```
-First, read ~/.claude/skills/{skill-name}/SKILL.md for your role instructions.
+Agent(
+  subagent_type="{skill-name}",
+  model="{resolved-model}",
+  prompt="
+    <task>
+    [operation description with specific inputs]
+    </task>
 
-Then [operation description]:
-- [specific inputs for this invocation]
-- Project root: [path]
+    <project>
+    Project root: [path]
+    </project>
+  "
+)
 ```
 
-The agent's first action MUST be reading the SKILL.md. If it starts doing anything else (reading source code, exploring the codebase, editing files), the dispatch failed.
+The agent's role and operational procedures are already loaded by its agent definition. The dispatch prompt only contains task-specific inputs.
 
-### Read-only vs read-write agents
+### Tool restrictions
 
-Sub-skills that **classify, review, or analyze** must be told they are read-only. Add this line to their dispatch prompts:
-
-> "You are a READ-ONLY agent. You MUST NOT use Edit, Write, or Bash commands that modify files. Your job is to analyze and produce a structured report. Do not fix, patch, or change any code."
-
-This applies to: `fixme-review-plan`, `fixme-review-code`, `fixme-handle-plan-review`, `fixme-handle-code-review`, and any custom review skills in the pipeline config.
-
-Sub-skills that **write plans, execute code, investigate, or verify** need write access: `fixme-write-plan`, `fixme-execute-plan`, `fixme-investigate`, `fixme-research`, `fixme-browser-verify`, and any custom action skills in the pipeline config.
+Tool access for each sub-skill is enforced by its agent definition in `~/.claude/agents/`. Read-only agents (reviewers, handlers) have no Edit or Write tools. Write-access agents (plan writer, executor, investigator, researcher, browser verifier) have full tool access. See the agent definition files for specifics.
 
 ### Ticket transition dispatch
 
