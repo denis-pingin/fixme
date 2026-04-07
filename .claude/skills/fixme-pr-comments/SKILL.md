@@ -8,6 +8,13 @@ argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip
 
 Automatically fetch, analyze, and address **unresolved** PR review comments, actionable Claude bot issue comments, AND Greptile summary findings.
 
+## Hard Constraints
+
+- **This skill is an analyzer and dispatcher.** It fetches comments, categorizes them, consults the user on ambiguous items, and dispatches fixme-task for fixes. It NEVER fixes code itself.
+- **Never read source code except during analysis (Step 2).** Step 2 reads referenced code to determine if comments are valid. After categorization is complete, no more source code reads. All implementation happens inside fixme-task.
+- **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
+- **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
+
 ## Configuration
 
 Parse arguments from skill invocation. All flags default to OFF (all phases run).
