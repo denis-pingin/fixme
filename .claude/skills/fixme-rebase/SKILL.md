@@ -220,6 +220,246 @@ Understand the scope of what's about to happen.
    ```
    If found, note that `--autosquash` should be used.
 
+### Phase 2.5: Squash-Merged Ancestor Detection
+
+When a parent feature branch has been squash-merged to the target branch, the current branch retains the parent's individual commits. A normal `git rebase <target>` tries to replay ALL those commits (including the parent's) onto the target, causing massive conflicts because the target already contains those changes in squashed form. The fix is `git rebase --onto <target> <fork-point>` which replays only the current branch's own commits.
+
+This phase runs a cascade of increasingly expensive detection steps, short-circuiting when a definitive answer is found. If a squash-merged ancestor is detected, the rebase switches to `--onto` mode. The user always confirms before execution.
+
+**When to skip:** If the commit count from Phase 2 step 2 is small (5 or fewer commits in `MERGE_BASE..HEAD`) AND the cherry-mark analysis from Phase 2 step 6 shows no `=`-marked commits, skip this phase - the scenario is unlikely and detection cost isn't justified. Proceed directly to Phase 3.
+
+#### Step 1: Local Branch Check
+
+Check if any local or remote-tracking branch shares a more recent merge-base with the current branch than the target branch does. This detects the parent branch when it still exists locally (even if deleted on the remote).
+
+```bash
+# Get the merge-base with target (already computed in Phase 2 as MERGE_BASE)
+# For each non-target local branch, compute merge-base with HEAD
+git branch --format='%(refname:short)' | grep -v "^$(git branch --show-current)$" | grep -v "^${BASE_BRANCH}$"
+```
+
+For each candidate branch:
+```bash
+candidate_mb=$(git merge-base HEAD <candidate> 2>/dev/null)
+# Is this merge-base NEWER (descendant of) the target merge-base?
+git merge-base --is-ancestor $MERGE_BASE $candidate_mb 2>/dev/null
+```
+
+If `candidate_mb` is a descendant of `MERGE_BASE`, it means the current branch and `<candidate>` diverged at a point AFTER the target merge-base. This candidate is likely the parent branch (or a sibling that shares the parent).
+
+**Note:** Do NOT verify whether the candidate's tip is an ancestor of BASE_BRANCH. After a squash merge, the original branch's commits are unreachable from the target (the squash commit is a new single-parent commit). An `--is-ancestor` check would reject all valid squash-merge candidates - the exact scenario this phase exists to detect. The merge-base proximity check above is sufficient signal for a candidate to proceed to user confirmation. Step 2 (GitHub PR metadata) provides independent verification.
+
+**If a match is found** (a local branch whose merge-base with HEAD is a strict descendant of MERGE_BASE):
+- Record `FORK_POINT` = `candidate_mb` (where current branch diverged from the parent)
+- Record `SQUASH_PARENT` = `<candidate>` (the parent branch name)
+- Record `DETECTION_METHOD` = "local branch check"
+- Record confidence: **MEDIUM** (topology-only evidence without independent squash-merge verification)
+- Short-circuit: skip to the Findings Presentation section below
+
+**If no match found:** Continue to Step 2.
+
+**Note on deleted branches:** The common case after squash-merge is that the parent branch was deleted. In that case, no local branch will match and this step produces no result. That's expected - Steps 2-4 handle this case.
+
+#### Step 2: GitHub PR Metadata
+
+Query GitHub for recently merged PRs whose squash-merge commit is on the target branch and whose source branch shares history with the current branch. This is the highest-value detection step because squash merges almost always happen through PRs, and the PR metadata directly gives us the original branch name and the squash commit SHA.
+
+```bash
+# Find merged PRs targeting BASE_BRANCH, most recent first
+gh api "repos/{owner}/{repo}/pulls?state=closed&base=${BASE_BRANCH}&sort=updated&direction=desc&per_page=30" \
+  --jq '.[] | select(.merged_at != null and .merge_commit_sha != null) | "\(.number) \(.head.ref) \(.merge_commit_sha) \(.title)"'
+```
+
+For each merged PR:
+1. Check if the PR was squash-merged (the merge commit has exactly one parent):
+   ```bash
+   git cat-file -p <merge_commit_sha> | grep -c "^parent"
+   ```
+   If parent count is 1: squash merge. If parent count is 2: regular merge. Skip regular merges.
+
+2. Check if the current branch shares history with the PR's source branch. The PR's source branch may be deleted, but its commits are reachable through the squash commit's ancestry. Check if any commit in `MERGE_BASE..HEAD` is reachable from the PR's pre-squash history:
+   ```bash
+   # The squash commit on target replaces all commits from the PR branch.
+   # If our branch forked from the PR branch, our merge-base with target
+   # should be at or before the point where the PR branch diverged from target.
+   # More directly: check if any of our commits' parent trees match.
+   
+   # Get the tree of each commit in our branch and see if the squash commit's
+   # tree is a progression of our older commits' trees.
+   # Simpler approach: check the commit message or PR branch name.
+   
+   # If we can find the original branch ref:
+   git rev-parse --verify "refs/remotes/origin/${pr_head_ref}" 2>/dev/null
+   ```
+   
+   If the PR's source branch ref still exists on the remote:
+   ```bash
+   pr_branch_mb=$(git merge-base HEAD "origin/${pr_head_ref}" 2>/dev/null)
+   git merge-base --is-ancestor $MERGE_BASE $pr_branch_mb 2>/dev/null
+   ```
+   If true: the current branch shares a more recent ancestor with the PR's source branch than with the target. This PR's source branch is likely our parent.
+
+   If the PR's source branch ref is deleted (common): fall back to content comparison. The squash commit's diff against its parent should closely match the combined diff of commits between MERGE_BASE and the fork point. This is expensive, so instead record the PR as a **candidate** and let Step 4 (content walk) confirm the fork point.
+
+3. **If a definitive match is found** (PR source branch still exists and merge-base confirms ancestry):
+   - Record `FORK_POINT` = `pr_branch_mb`
+   - Record `SQUASH_PARENT` = PR #N (`<pr_head_ref>`, squash-merged in `<merge_commit_sha>`)
+   - Record `DETECTION_METHOD` = "GitHub PR metadata"
+   - Record confidence: **HIGH**
+   - Short-circuit: skip to Findings Presentation
+
+4. **If candidates found but not definitive** (branch deleted, can't confirm via merge-base):
+   - Record each candidate PR with its number, branch name, squash commit SHA, and title
+   - Record `DETECTION_METHOD` = "GitHub PR metadata (candidate)"
+   - Record confidence: **MEDIUM** - need Step 3/4 to confirm
+   - Continue to Step 3
+
+**If no candidates found:** Continue to Step 3.
+
+#### Step 3: Heuristic Signals
+
+Compare commit count divergence vs actual diff size. This step confirms whether the squash-merge scenario is likely happening but does NOT locate the fork point. It gates whether to run the more expensive Step 4.
+
+These values are already available from Phase 2:
+- Commit count: number of commits in `MERGE_BASE..HEAD` (Phase 2 step 2)
+- Cherry-mark data: commits marked `=` in symmetric diff (Phase 2 step 6)
+
+Compute the additional signal:
+```bash
+# Actual diff size in lines changed
+git diff --stat <BASE_BRANCH> HEAD | tail -1
+```
+
+This gives "N files changed, M insertions(+), K deletions(-)". Extract total lines changed (M + K).
+
+Also compute:
+```bash
+# Total lines changed across all individual commits
+git log --oneline --stat <MERGE_BASE>..HEAD | grep -E "files? changed" | awk '{s += $4 + $6} END {print s}'
+```
+
+**Heuristic evaluation:**
+
+The squash-merge signal is the ratio between the actual diff against target (`git diff --stat <BASE_BRANCH> HEAD`) and the sum of individual commit diffs. In a normal branch, these are roughly similar. In a squash-merge scenario:
+- The individual commits include all the parent's commits (large cumulative diff)
+- The actual diff against target is small (parent's changes already on target via squash)
+- So the ratio (actual_diff / cumulative_commit_diff) is much less than 1
+
+**Scoring:**
+- If actual diff is less than 20% of cumulative commit diffs: **STRONG signal** - most commits are already on target via squash. Record `HEURISTIC_SIGNAL` = "strong".
+- If actual diff is 20-50% of cumulative commit diffs: **MODERATE signal** - some commits may be inherited. Record `HEURISTIC_SIGNAL` = "moderate".
+- If actual diff is more than 50% of cumulative commit diffs: **WEAK/NO signal** - commits appear to be genuine new work. Record `HEURISTIC_SIGNAL` = "weak". Skip Step 4 unless PR candidates exist from Step 2.
+
+Also check:
+- If more than 50% of commits are marked `=` in cherry-mark: additional confirmation
+- If the number of `=`-marked commits is 0 but the heuristic is strong: the squash changed content enough that cherry-mark can't match (common with squash merges that rewrite commit messages)
+
+**If HEURISTIC_SIGNAL is "strong" or "moderate":** Continue to Step 4.
+**If HEURISTIC_SIGNAL is "weak" AND no PR candidates from Step 2:** The squash-merge scenario is unlikely. Record findings and skip to Findings Presentation with `SQUASH_DETECTED` = false.
+
+#### Step 4: Content-Based Diff-Size Walk
+
+For each commit in `MERGE_BASE..HEAD` (oldest to newest), compute the total change size of `git diff --stat <BASE_BRANCH> <commit>`. Track how this size changes across the commit sequence.
+
+**The insight:** Inherited commits (from the squash-merged parent) produce diffs against the target that SHRINK as we walk forward in time. This is because each inherited commit brings the branch closer to the state that was squash-merged. At the fork point (where the current branch's own commits begin), the diff starts GROWING because new work is diverging from the target.
+
+```bash
+# List commits oldest to newest
+git rev-list --reverse <MERGE_BASE>..HEAD
+```
+
+For each commit in that list:
+```bash
+# Get total lines changed (insertions + deletions)
+git diff --stat <BASE_BRANCH> <commit> | tail -1
+```
+
+Parse the "N files changed, M insertions(+), K deletions(-)" line. Record total_changes = M + K for each commit.
+
+**Finding the inflection point:**
+
+Walk the sequence and look for the point where the diff size transitions from shrinking (or roughly stable) to growing:
+
+1. Compute the diff sizes for all commits: `sizes[0], sizes[1], ..., sizes[N-1]`
+2. For each position `i` from 1 to N-1, compute:
+   - `left_trend` = average change in size for commits 0..i (is the diff shrinking?)
+   - `right_trend` = average change in size for commits i..N-1 (is the diff growing?)
+3. The optimal inflection point is the position `i` where `left_trend` is most negative (shrinking) and `right_trend` is most positive (growing). More precisely, maximize: `right_trend - left_trend`.
+4. The commit at position `i` is the first own commit (the inflection point). The FORK_POINT is the commit at position `i-1` (the last inherited commit, i.e., the parent of the inflection). This is because `git rebase --onto <target> <FORK_POINT>` replays `FORK_POINT..HEAD`, which excludes FORK_POINT itself. Recording `i-1` ensures the first own commit at position `i` is included in the replay range.
+5. **Edge case: `i == 0`.** If the inflection is at the very first commit in the range, there are no inherited commits detected by the content walk. Record `SQUASH_DETECTED` = "uncertain" and note that the walk couldn't distinguish inherited from own commits. Do not record a FORK_POINT from this step - fall through to Findings Presentation with the uncertain result.
+
+**Validation:**
+- The fork point (commit at `i-1`) should produce a significantly smaller diff against target than either the first or last commit in the range. If not, the inflection is weak and the result is uncertain.
+- If PR candidates exist from Step 2, check whether the fork point aligns with the PR's squash commit (the fork point commit should be on or near the PR branch's history).
+
+**Record results (only when `i > 0`):**
+- `FORK_POINT` = the commit hash at position `i-1` (the last inherited commit, parent of the inflection point)
+- `DETECTION_METHOD` = "content-based diff walk"
+- Record confidence:
+  - **HIGH** if the inflection is sharp (diff at fork point is <30% of diff at first commit, and subsequent commits grow steadily)
+  - **MEDIUM** if the inflection exists but is gradual
+  - **LOW** if the inflection is ambiguous (multiple possible fork points, or the trend isn't clear)
+- If a PR candidate from Step 2 exists and aligns with the fork point: upgrade confidence by one level
+
+**If no clear inflection is found:** Record `SQUASH_DETECTED` = "uncertain", include all collected data in findings.
+
+#### Findings Presentation
+
+**This is a mandatory user confirmation gate. Never proceed to rebase without explicit user approval.**
+
+Present ALL findings from the detection steps, regardless of which step produced the definitive answer:
+
+```
+## Squash-Merged Ancestor Detection
+
+**Detection result:** <DETECTED / UNCERTAIN / NOT DETECTED>
+**Detection method:** <which step(s) produced evidence>
+**Confidence:** <HIGH / MEDIUM / LOW>
+
+### Evidence
+
+<For each detection step that ran, show what was found:>
+
+**Step 1 - Local Branch Check:** <result - found parent branch X / no matching branches>
+**Step 2 - GitHub PR Metadata:** <result - PR #N squash-merged branch X / no matching PRs / candidates found>
+**Step 3 - Heuristic Signals:** <result - actual diff is N% of cumulative (signal strength)>
+**Step 4 - Content Walk:** <result - inflection at commit <hash> with diff shrinking from N to M lines, then growing to K>
+
+### Recommended Action
+
+**Fork point:** `<FORK_POINT>` (<short description - e.g., "where current branch diverged from feat/parent-feature">)
+**Commits to replay:** N (commits from fork point to HEAD - the current branch's own work)
+**Commits to skip:** M (inherited commits between MERGE_BASE and fork point)
+
+**Rebase command:** `git rebase --onto <BASE_BRANCH> <FORK_POINT> <current-branch>`
+
+This will:
+1. Take commits from `<FORK_POINT>..HEAD` (your N own commits)
+2. Replay them onto `<BASE_BRANCH>` (the target)
+3. Skip the M inherited commits (already on target via squash merge)
+```
+
+**Ask the user:** "Proceed with `--onto` rebase using the detected fork point? You can also specify a different fork point if the detection is off."
+
+**If user confirms:** Record `REBASE_MODE` = "onto", `FORK_POINT` = confirmed fork point. Proceed to Phase 3.
+**If user specifies a different fork point:** Use that instead. Record `REBASE_MODE` = "onto", `FORK_POINT` = user-specified.
+**If user says no / wants normal rebase:** Record `REBASE_MODE` = "normal". Proceed to Phase 3 with standard rebase flow.
+**If detection result is NOT DETECTED:** Skip the confirmation entirely, proceed to Phase 3 with `REBASE_MODE` = "normal".
+
+#### Deep Hierarchy Handling
+
+The branch hierarchy can be deep: `master -> feat-1 -> feat-2 -> current`. If both `feat-1` and `feat-2` were squash-merged to master, the detection needs to find where the current branch's own commits begin - which is the fork point from `feat-2` (the most recent parent).
+
+The detection steps naturally handle this:
+- **Step 1** finds the closest parent branch by checking merge-base proximity
+- **Step 2** finds the most recently merged PR whose branch shares history
+- **Step 3** heuristic signals are the same regardless of depth
+- **Step 4** content walk finds the inflection point regardless of how many ancestors were squashed - inherited commits still shrink the diff, own commits still grow it
+
+The fork point from any detection step is the point where the CURRENT branch's own commits begin, which is correct for `--onto` regardless of hierarchy depth. We don't need to identify or enumerate intermediate ancestors.
+
+If Step 2 finds multiple PR candidates that could be ancestors in a chain, note all of them in the findings for user context, but the recommended fork point is still the one closest to HEAD (most recent ancestor's divergence point).
+
 ### Phase 3: Pre-Rebase Summary
 
 Present an informational summary before attempting the rebase. This is NOT a confirmation gate - proceed directly to Phase 4 after presenting.
@@ -232,6 +472,7 @@ Present an informational summary before attempting the rebase. This is NOT a con
 **Current branch:** <branch> at <short-hash>
 **Base branch:** <base-branch> (from: PR #N / merge-base detection)
 **Common ancestor:** <merge-base-short-hash> (<how far back>)
+**Rebase mode:** <normal / --onto (squash-merge detected)>
 
 ### Scope
 - **Our commits:** N commits to rebase
@@ -239,12 +480,20 @@ Present an informational summary before attempting the rebase. This is NOT a con
 - **Their commits:** M new commits on <base-branch> since divergence
   <list of commit onelines>
 
+<If REBASE_MODE is "onto":>
+### Squash-Merge Adjustment
+- **Fork point:** <FORK_POINT short hash> (detected via: <DETECTION_METHOD>)
+- **Commits to replay:** N (own commits from fork point to HEAD)
+- **Commits to skip:** M (inherited from squash-merged parent)
+- **Command:** git rebase --onto <BASE_BRANCH> <FORK_POINT> <current-branch>
+
 ### Flags
 - [ ] Branch has been pushed - force-push will be required after rebase
 - [ ] Merge commits detected - will use --rebase-merges
 - [ ] fixup!/squash! commits detected - will use --autosquash
 - [ ] N cherry-picked commits will be dropped (already on base)
 - [ ] Uncommitted changes were stashed
+- [ ] Squash-merged ancestor detected - using --onto rebase mode
 
 Attempting rebase...
 ```
@@ -289,14 +538,24 @@ Run the project's full verification suite BEFORE the rebase. This establishes wh
 
 ### Phase 6: Rebase Execution
 
-Build the rebase command based on Phase 2 analysis:
+Build the rebase command based on Phase 2 analysis and squash-merge detection:
 
+**Normal mode** (`REBASE_MODE` = "normal"):
 ```bash
 git rebase \
   $(test -n "$HAS_MERGE_COMMITS" && echo "--rebase-merges") \
   $(test -n "$HAS_FIXUP_COMMITS" && echo "--autosquash") \
   <BASE_BRANCH>
 ```
+
+**Onto mode** (`REBASE_MODE` = "onto"):
+```bash
+git rebase --onto <BASE_BRANCH> <FORK_POINT> \
+  $(test -n "$HAS_MERGE_COMMITS" && echo "--rebase-merges") \
+  $(test -n "$HAS_FIXUP_COMMITS" && echo "--autosquash")
+```
+
+The `--onto` form replays only commits from `FORK_POINT..HEAD` onto `BASE_BRANCH`, skipping inherited commits that are already on the target via squash merge. The `FORK_POINT` was confirmed by the user in Phase 2.5.
 
 #### If rebase succeeds cleanly:
 Proceed to Phase 7.
@@ -481,7 +740,11 @@ Present the complete summary. **All file references in the report MUST be clicka
 
 **Branch:** <branch>
 **Rebased onto:** <base-branch>
+**Rebase mode:** <normal / --onto (squash-merged ancestor: <SQUASH_PARENT>)>
 **Commits rebased:** N (M conflicts resolved, K cherry-picked commits dropped)
+<If onto mode:>
+**Inherited commits skipped:** M (from squash-merged parent, already on target)
+**Fork point:** <FORK_POINT> (detected via: <DETECTION_METHOD>)
 ```
 
 #### Part 2: Conflict Resolution Report
@@ -675,6 +938,19 @@ The fix is `git fetch --unshallow origin`, which downloads the full history. Thi
 Tell the user: "This is a shallow clone. The merge-base needed for rebase may be beyond the shallow boundary. Running `git fetch --unshallow origin` is required, but may be a large download depending on repo size. Proceed?"
 
 **Wait for user confirmation before deepening.**
+
+### Squash-merged ancestor with no evidence
+
+If Phase 2.5 detects `SQUASH_DETECTED` = "uncertain" or "not detected", but the user suspects a squash-merge scenario based on the volume of conflicts encountered during Phase 6:
+
+1. Abort the rebase: `git rebase --abort`
+2. Tell the user: "The high conflict count may indicate a squash-merged ancestor that wasn't detected. You can re-run with a manually specified fork point."
+3. Help the user identify the fork point interactively:
+   - Ask what the parent branch was called
+   - Search `git log --oneline --all` for the branch name
+   - If found, use that commit as the fork point
+   - If not found, offer to run the content-based diff walk (Phase 2.5 Step 4) with relaxed thresholds
+4. Re-run with `REBASE_MODE` = "onto" and the user-specified fork point
 
 ## Error Recovery
 
