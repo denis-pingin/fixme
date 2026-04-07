@@ -406,24 +406,30 @@ For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items cl
 
 #### Dispatch fixme-task (synchronous)
 
-Dispatch a **foreground** Agent with a clean prompt that tells it to read its own SKILL.md first:
+Dispatch a **foreground** Agent using the fixme-task agent type:
 
-```
-First, read ~/.claude/skills/fixme-task/SKILL.md for your role instructions.
+    Agent(
+      subagent_type="fixme-task",
+      model="sonnet",
+      prompt="
+        <task>
+        Fix these PR comment issues. This is a PR comment fix task.
 
-Then fix these PR comment issues. This is a PR comment fix task.
+        Fix items:
+        - [full list of fix items with file paths, line numbers, and comment text]
+        - [for FIX items: the analysis from Step 2]
+        - [for resolved FIX_UNCLEAR items: the chosen approach and rationale from Step 2.5]
+        </task>
 
-Fix items:
-- [full list of fix items with file paths, line numbers, and comment text]
-- [for FIX items: the analysis from Step 2]
-- [for resolved FIX_UNCLEAR items: the chosen approach and rationale from Step 2.5]
-
-Project root: [path]
-```
+        <project>
+        Project root: [path]
+        </project>
+      "
+    )
 
 Wait for the fixme-task agent to complete. fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally.
 
-**CRITICAL**: The agent runs with a clean prompt - do NOT leak your current conversation context into the agent prompt. Provide only the structured data listed above. **Never paste SKILL.md content into the prompt** - long skill files get truncated, causing the agent to default to general-purpose behavior instead of following the pipeline. The agent reads its own SKILL.md as its first action.
+**CRITICAL**: The agent runs with a clean prompt - do NOT leak your current conversation context into the agent prompt. Provide only the task-specific data listed above. The agent definition handles role binding and SKILL.md preloading via `skills` frontmatter.
 
 ### 4. Verify All Changes
 
@@ -572,4 +578,4 @@ git push
 - Be specific in replies - reference exact lines/commits
 - Don't resolve review thread conversations you can't fully address
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
-- **fixme-task dispatch**: the agent prompt tells fixme-task to read its own SKILL.md as its first action. Never paste SKILL.md content into the prompt - long files get truncated. fixme-task handles the full plan-execute-review pipeline internally.
+- **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
