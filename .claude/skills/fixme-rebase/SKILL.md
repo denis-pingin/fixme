@@ -345,17 +345,28 @@ Leave the rebase paused. Do NOT abort.
    - If changes conflict on the same logic: determine which intent should win. Usually OUR changes are the "feature" and THEIR changes are the "foundation" - our feature should be adapted to work on their updated foundation.
    - If the resolution is unclear: **stop and present the conflict to the user.** Show both sides, explain the intent of each, and ask how to resolve.
 
-   f. After resolving, stage the file:
+   f. **Record conflict details for the final report.** For every conflict resolved (whether by you or by the user), record all of the following. This data feeds Phase 8's Conflict Resolution Report and must not be summarized or discarded:
+
+   - **File and location** - exact file path (absolute) and the function/class/block where the conflict occurred, with line numbers.
+   - **Code-path context** - what this area of code is responsible for. What feature, flow, or subsystem does it belong to? A reader with no codebase knowledge must understand the domain before reading the conflict details.
+   - **Our branch's intent** - what we were trying to accomplish with our change, citing specific commits.
+   - **Base branch's intent** - what the base branch changed and why, citing specific commits.
+   - **Nature of the overlap** - why these changes conflicted. Were they editing the same lines, restructuring the same function, renaming the same symbol, changing the same config, etc.?
+   - **Resolution chosen** - exactly what the resolved code now does. Which parts came from which branch, what was adapted, what was dropped.
+   - **Rationale** - why this resolution is correct. What makes it faithful to both intents, or why one intent takes precedence.
+   - **Ripple-risk assessment** - are there OTHER call sites, importers, tests, configs, or consumers of the code touched by this conflict that may need updating as a consequence of the resolution? Search concretely for references (grep for function names, imports, usages). List every affected location with file path and line number. If you checked and found none, say so explicitly with what you searched for. This is the most critical part - silent breakage at distant call sites is the #1 risk of conflict resolution.
+
+   g. After resolving, stage the file:
    ```bash
    git add <file>
    ```
 
-   g. Continue rebase:
+   h. Continue rebase:
    ```bash
    git rebase --continue
    ```
 
-   h. Repeat for each conflicted commit until rebase completes.
+   i. Repeat for each conflicted commit until rebase completes.
 
 5. **If user chooses option 2 (merge instead):**
    ```bash
@@ -437,13 +448,17 @@ Stop here. Do not retry without user guidance.
 
 6. **Record result** in `$REBASE_DIR/result.md`:
    - Branch, base branch, commit counts
-   - Conflict resolutions (file + one-line description each)
+   - Full conflict resolution details as recorded in Phase 6 step f (all fields, unabridged)
+   - Ripple-risk assessment per conflict with concrete file/line references
+   - Overall confidence rating and remaining risks
    - Verification baseline vs post-rebase comparison
    - Any regressions found and how they were resolved
 
 ### Phase 8: Summary & Push Offer
 
-Present the complete summary:
+Present the complete summary. **All file references in the report MUST be clickable markdown links with absolute file paths and line numbers**, e.g. `[config.ts:42-58](/absolute/path/to/config.ts#L42-L58)`. This applies to every file mentioned anywhere in the report - conflict locations, ripple-risk references, verification failures, everything.
+
+#### Part 1: Overview
 
 ```
 ## Rebase Complete
@@ -451,20 +466,158 @@ Present the complete summary:
 **Branch:** <branch>
 **Rebased onto:** <base-branch>
 **Commits rebased:** N (M conflicts resolved, K cherry-picked commits dropped)
+```
 
-### Conflict Resolution Summary
-<For each conflict:>
-- **<file>**: <one-line description of what conflicted and how it was resolved>
+#### Part 2: Conflict Resolution Report
 
+If there were no conflicts, state "No conflicts encountered" and skip to Part 3.
+
+If conflicts were resolved, present the full report using the data collected in Phase 6 step f. This is the most important section of the summary - the reader needs to evaluate whether the rebase was done correctly and whether any gaps remain.
+
+##### Presentation Rules (NON-NEGOTIABLE)
+
+These rules govern how every word in the conflict report is written. The reader is a developer who works on this codebase but cannot hold it all in their head at once. They are reading this report to decide whether the rebase was done correctly. Every conflict entry must be independently comprehensible without referring to any other part of the report or the codebase.
+
+**1. Establish context before referencing anything.**
+Every conflict entry starts by explaining WHERE we are in the codebase and WHAT this code does, in plain language. The reader must build a mental model of the domain before encountering any specifics about the conflict.
+
+- BAD: "Conflict in `handleThreshold` - our branch changed the comparison operator."
+  (What is a threshold? What does this function do? What is it part of? Comparison of what?)
+- GOOD: "This file implements the usage alerting system. When a customer's API usage approaches their plan limit, `handleThreshold` checks the current usage percentage against configured warning levels (80%, 90%, 100%) and triggers email notifications. The conflict is in the comparison logic that decides which alert tier to fire."
+
+**2. Never reference code symbols without explaining what they represent.**
+Every variable, function, class, config key, or technical term must be introduced with what it IS and what it DOES before it's used in the explanation. Assume the reader last looked at this file weeks ago.
+
+- BAD: "Base branch renamed `svc` to `configService` and changed the return type."
+  (What is svc? What service? What does it return? Why does the return type matter?)
+- GOOD: "The base branch renamed the `svc` variable (which holds the singleton instance of the configuration service - the central registry for feature flags, plan limits, and rate-limit settings) to `configService`, and changed its `getLimit()` method to return a `Result<Limit>` instead of a raw `Limit` value. This means every caller now needs to unwrap the result and handle the error case."
+
+**3. Explain intent as user-visible behavior, not code mechanics.**
+When describing what each branch was trying to do, frame it in terms of what changes for the user or the system, not what lines of code were edited.
+
+- BAD: "Our branch added a new parameter to the constructor and updated the call in line 45."
+  (What does the parameter do? Why was it added? What behavior does it enable?)
+- GOOD: "Our branch added support for custom alert thresholds per customer (previously all customers used the same 80/90/100% levels). This required passing the customer's configured thresholds into the alerting constructor, so each customer's alerts fire at their chosen percentages."
+
+**4. Make resolutions self-evident, not assertive.**
+Don't just state "took ours" or "merged both." Describe the resulting behavior so the reader can independently judge whether it's correct.
+
+- BAD: "Resolution: merged both changes, keeping our validation with their new service name."
+  (What does the code actually do now? Can I tell if this is correct?)
+- GOOD: "The resolved code now: (1) uses the renamed `configService` from the base branch, (2) unwraps the new `Result<Limit>` return type with an error log on failure, and (3) passes customer-specific thresholds from our branch into the comparison. The net effect: custom thresholds work correctly on top of the refactored config service. If `getLimit()` fails, the alert is skipped for that cycle and a warning is logged with the customer ID."
+
+**5. Ground ripple-risk in behavior, not just locations.**
+When listing other files that might be affected, explain WHY they might need changes - what assumption they make that might now be violated.
+
+- BAD: "Ripple risk: `billing.ts:120` also calls `getLimit()`."
+  (So what? Does it need to change? Why or why not?)
+- GOOD: "Ripple risk: [`billing.ts:120`](/abs/path/billing.ts#L120) also calls `configService.getLimit()` - this call was added by the base branch and already handles the `Result<Limit>` unwrapping, so no change needed. Verified by reading the call site."
+
+**6. One idea per paragraph. No compound explanations.**
+Each point should convey exactly one thing. If a sentence has "and also" or "additionally" or packs two concepts, split it.
+
+**7. No hedging without specifics.**
+Don't write "there might be implications" or "this could affect other areas." Either you checked and found specific impacts (list them), or you checked and found nothing (say what you searched for and that it came back clean). Vague warnings are noise.
+
+##### Report Structure
+
+Top-down, abstract to concrete. Start with the big picture, then drill into each conflict.
+
+```
+### Conflict Resolution Report
+
+**N conflicts across M files.** <One-sentence overall characterization: were these
+mostly mechanical (renames, imports) or substantive (logic changes, API changes)?>
+
+---
+
+#### Conflict 1: <short descriptive title that describes the domain, not the git mechanics>
+
+**Where:** [<file>:<lines>](<absolute-path>#L<start>-L<end>) - `<function/class/block name>`
+
+**What this code does:** <Establish the domain. What feature or system does this
+file/function belong to? What is its job? What would break if it disappeared?
+Write this for someone who hasn't opened this file in weeks. Define every
+concept and symbol before using it in subsequent sections. This is the
+foundation - everything below builds on the mental model created here.>
+
+**Our branch** (`<branch-name>`, <commit-hash>):
+<What user-visible behavior or system behavior we were adding/fixing/modifying.
+Frame as intent and outcome, not as "changed line X.">
+
+**Base branch** (`<base-branch>`, <commit-hash>):
+<Same - what they were trying to accomplish, framed as behavior, not line edits.
+If they refactored/renamed things, explain WHY (was it a broader migration?
+a prerequisite for another feature?) so the reader understands the motivation.>
+
+**Why it conflicted:** <Concrete, specific explanation. Don't just say "both
+edited the same lines" - say what each side was doing to those lines and
+why the two changes are incompatible.>
+
+**Resolution - what the code does now:** <Describe the RESULTING behavior, not
+the merge mechanics. The reader should be able to judge correctness from this
+description alone, without looking at the code. Be specific: what happens on
+success, what happens on failure, what inputs produce what outputs.>
+
+**Why this resolution is correct:** <Connect back to both branches' intents.
+Explain how the resolution preserves what both sides were trying to achieve,
+or why one side's intent takes precedence. If this was a judgment call,
+say so explicitly and explain the reasoning.>
+
+**Impact on the rest of the codebase:**
+<For each symbol, API, type, config key, or behavior that changed in this
+conflict, report what you found when searching for other consumers:>
+- [<file>:<line>](<absolute-path>#L<line>) - `<symbol>` uses `<thing that changed>`:
+  <needs update / verified OK / already updated> - <why: what does this call site
+  do with the result, and is it still correct?>
+- ...
+<If nothing found: "Searched for callers of `X` and importers of `Y` -
+no other consumers found outside this file.">
+
+---
+```
+
+Repeat for each conflict. After all individual conflicts:
+
+```
+### Overall Assessment
+
+**Confidence:** <HIGH / MEDIUM / LOW> - <one-sentence justification grounded in
+what was found, not a vague feeling>
+
+**Items requiring attention:**
+<Only list items where the reader may need to act or verify something.
+For each item, explain what it is and why it matters - no bare file references.>
+- <Description of what might be wrong, where, and what to check>
+- ...
+
+<If confidence is HIGH and nothing requires attention: "All conflicts were
+mechanical or had unambiguous intent on both sides. Verification passed.
+No manual review needed.">
+
+<If confidence is MEDIUM or LOW: Explain specifically what makes you
+uncertain and what the reader should check to gain confidence.>
+```
+
+#### Part 3: Verification
+
+```
 ### Verification
 - Build: PASS / FAIL (was: PASS / FAIL)
 - Lint: PASS / FAIL (was: PASS / FAIL)
 - Tests: PASS (N passing) / FAIL (was: PASS / FAIL)
 <If pre-existing failures: "N pre-existing test failures unchanged">
+<If regressions were found and fixed: list each regression and its fix>
+```
 
+#### Part 4: History
+
+```
 ### Before / After
 <git log --oneline --graph -10, showing the new linear history>
 ```
+
+#### Part 5: Push Offer
 
 **If the branch was previously pushed:**
 "This branch was previously pushed to `origin/<branch>`. Updating the remote requires force-push. I'll use `--force-with-lease` which is safe against overwriting someone else's changes."
