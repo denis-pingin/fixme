@@ -119,7 +119,10 @@ Determine what to rebase onto. Priority order:
 
 4. **If ambiguous or no clear base:** Present the top candidates to the user. Show each branch, its merge-base, and how many commits diverge on each side. Ask which one to use.
 
-5. **Freshen both branches:**
+5. **Freshen both branches (MUST happen before any early-exit checks):**
+
+   **CRITICAL: Do NOT evaluate edge cases (already up-to-date, empty rebase, etc.) until AFTER this step completes.** The local base branch may be stale or diverged from its remote. Any comparison against a stale local ref is meaningless. Step 6 performs those checks after freshening.
+
    Before rebasing, ensure both the base branch and the current branch are up-to-date with their remotes. These checks ONLY apply when a branch has a remote tracking branch - local-only branches are fine as-is.
 
    **a. Freshen the base branch:**
@@ -151,6 +154,19 @@ Determine what to rebase onto. Priority order:
      - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Your branch has diverged from `origin/<branch>` (N ahead, M behind). This is unusual. Reconcile with your remote before rebasing."
 
 Record the chosen base branch as `BASE_BRANCH`. The rebase target is always the local ref `<BASE_BRANCH>` (guaranteed fresh by step 5).
+
+6. **Check for early-exit conditions (ONLY after freshening):**
+
+   Now that the base branch is guaranteed fresh, check whether a rebase is actually needed:
+
+   ```bash
+   git merge-base HEAD <BASE_BRANCH>
+   git rev-parse <BASE_BRANCH>
+   ```
+
+   - **Already up-to-date:** If `merge-base HEAD <BASE_BRANCH>` equals `<BASE_BRANCH>` HEAD, the branch already contains everything on the base. Tell user: "Branch is already up-to-date with `<BASE_BRANCH>`. No rebase needed." Stop.
+   - **Empty rebase:** If all our commits are marked `=` in cherry-mark output (checked in Phase 2 step 6), all commits are already on the base. Tell user and stop. (This is a preliminary check - full cherry-mark analysis happens in Phase 2.)
+   - Otherwise: proceed to Phase 2.
 
 ### Phase 2: Branch Analysis
 
@@ -638,6 +654,8 @@ If push succeeds and a backup branch was created:
 ## Edge Cases
 
 ### Already up-to-date
+**This check is performed in Phase 1 step 6, AFTER freshening the base branch in step 5.** Never evaluate this before the base branch has been freshened - a stale local ref makes this check meaningless.
+
 If `git merge-base HEAD <BASE_BRANCH>` equals `<BASE_BRANCH>` HEAD:
 "Branch is already up-to-date with `<base-branch>`. No rebase needed."
 Stop.
