@@ -53,12 +53,14 @@ Determine the output directory. Use the ticket's asset directory parent as the o
 Dispatch fixme-investigate via the Agent tool:
 
 ```text
-First, read ~/.claude/skills/fixme-investigate/SKILL.md for your role instructions.
+Dispatch fixme-investigate via the Agent tool (subagent_type: "fixme-investigate"):
 
-Then investigate this bug:
+<task>
+Investigate this bug:
 - Task description: <composed task description from Phase 1>
 - Dev server URL: <dev-server-url>
 - Output directory: <ticket-folder>/investigation/
+</task>
 ```
 
 Wait for the agent to return. Capture its summary response (the `INVESTIGATION_RESULT: ...` line).

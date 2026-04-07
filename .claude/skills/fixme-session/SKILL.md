@@ -198,13 +198,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
    If the pipeline has an `investigate` phase AND the session has a browser environment, dispatch the investigation agent synchronously (it needs the live browser):
 
    ```
-   Task tool dispatch (subagent_type: "general-purpose"):
-     First, read ~/.claude/skills/fixme-investigate/SKILL.md for your role instructions.
+   Task tool dispatch (subagent_type: "fixme-investigate"):
 
-     Then investigate this bug:
+     <task>
+     Investigate this bug:
      - Task description: <title and description from ticket>
      - Dev server URL: <dev_server.url from project context>
      - Output directory: <ticket-folder>/research/
+     </task>
    ```
 
    After the investigation agent returns:
@@ -226,9 +227,9 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Task tool dispatch:
      description: "Execute pipeline for ticket #NNNN"
      run_in_background: true
+     subagent_type: "fixme-task"
      prompt: |
-       First, read ~/.claude/skills/fixme-task/SKILL.md for your role instructions.
-
+       <task>
        Execute this task:
        - Task: <task description from ticket title + investigation findings summary>
        - Pipeline: <pipeline name from step 4>
@@ -240,6 +241,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
        - files_changed: [list of files]
        - summary: <one-line description of what was done>
        - failure_reason: <if failed, why>
+       </task>
    ```
 
 7. **Return to conversation loop:**
