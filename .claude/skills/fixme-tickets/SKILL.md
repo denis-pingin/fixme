@@ -51,12 +51,18 @@ All operations are dispatched to the backend skill via the Agent tool. Pass the 
 For each operation:
 
 1. Resolve the backend skill name (see Backend Resolution above)
-2. Read the backend skill's SKILL.md from `~/.claude/skills/{backend}/SKILL.md`
-3. Dispatch via Agent tool with:
-   - The full SKILL.md content of the backend skill
-   - The operation name and all arguments
-   - The project root path
-4. Return the backend's output verbatim
+2. Dispatch via Agent tool with a prompt that tells the agent to read its own SKILL.md first:
+   ```
+   First, read ~/.claude/skills/{backend}/SKILL.md for your role instructions.
+
+   Then execute this operation:
+   - Operation: {operation name}
+   - Arguments: {all arguments}
+   - Project root: {path}
+   ```
+3. Return the backend's output verbatim
+
+**Never paste SKILL.md content into the prompt** - long skill files get truncated, causing the agent to default to general-purpose behavior. The agent reads its own SKILL.md as its first action.
 
 ## Example
 
@@ -64,7 +70,12 @@ For each operation:
 User invokes: fixme-tickets create /path/to/session --slug login-bug
 
 1. Read .fixme/config.json -> ticketBackend: "fixme-tickets-md"
-2. Read ~/.claude/skills/fixme-tickets-md/SKILL.md
-3. Agent dispatch: "Execute operation: create /path/to/session --slug login-bug"
-4. Return result
+2. Agent dispatch:
+   "First, read ~/.claude/skills/fixme-tickets-md/SKILL.md for your role instructions.
+
+   Then execute this operation:
+   - Operation: create
+   - Arguments: /path/to/session --slug login-bug
+   - Project root: /path/to/project"
+3. Return result
 ```

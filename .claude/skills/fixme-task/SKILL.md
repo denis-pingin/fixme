@@ -203,14 +203,20 @@ Dispatch each sub-skill as an isolated agent via the Agent tool. Pass all requir
 
 ### Dispatch contract (NON-NEGOTIABLE)
 
-When dispatching a sub-skill agent, you MUST include the sub-skill's full SKILL.md content in the agent prompt. Read the SKILL.md file at `~/.claude/skills/{skill-name}/SKILL.md` and paste it into the prompt.
+Every sub-skill agent MUST read its own SKILL.md as its first action. **Never paste SKILL.md content into the agent prompt** - long skill files get truncated by the dispatching agent, causing the sub-agent to receive partial instructions and default to general-purpose behavior (e.g., editing files directly instead of following the pipeline).
 
-**Never paraphrase a skill's instructions in your own words.** The SKILL.md IS the contract - it defines output format, routing directives, classification rules, and behavioral boundaries. An agent that receives your summary instead of the actual skill instructions will default to general-purpose behavior (e.g., applying fixes instead of classifying them, skipping routing directives, producing unstructured output).
+**Never paraphrase a skill's instructions in your own words.** The SKILL.md IS the contract - it defines output format, routing directives, classification rules, and behavioral boundaries.
 
 The dispatch prompt structure for every sub-skill:
-1. The full SKILL.md content (read from file, pasted verbatim)
-2. The specific inputs for this invocation (findings, plan path, decision log path, etc.)
-3. The project root path
+```
+First, read ~/.claude/skills/{skill-name}/SKILL.md for your role instructions.
+
+Then [operation description]:
+- [specific inputs for this invocation]
+- Project root: [path]
+```
+
+The agent's first action MUST be reading the SKILL.md. If it starts doing anything else (reading source code, exploring the codebase, editing files), the dispatch failed.
 
 ### Read-only vs read-write agents
 
@@ -226,9 +232,16 @@ Sub-skills that **write plans, execute code, investigate, or verify** need write
 
 Ticket transitions are dispatched through the `fixme-tickets` abstraction skill, not directly to any backend.
 
-1. Read `~/.claude/skills/fixme-tickets/SKILL.md`
-2. Dispatch via Agent with the SKILL.md content and the operation details
-3. The fixme-tickets skill resolves the backend from `.fixme/config.json` and handles the rest
+1. Dispatch via Agent with a prompt that tells the agent to read its own SKILL.md first:
+   ```
+   First, read ~/.claude/skills/fixme-tickets/SKILL.md for your role instructions.
+
+   Then execute this operation:
+   - Operation: [transition/create/list/etc.]
+   - Arguments: [all arguments]
+   - Project root: [path]
+   ```
+2. The fixme-tickets skill resolves the backend from `.fixme/config.json` and handles the rest
 
 ### Phase-specific dispatch contracts
 
