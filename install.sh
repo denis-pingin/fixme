@@ -17,3 +17,16 @@ for dir in "$SKILLS_SRC"/fixme*; do
   cp -R "$dir" "$SKILLS_DEST/$name"
   echo "Installed $name"
 done
+
+AGENTS_SRC="$(cd "$(dirname "$0")" && pwd)/.claude/agents"
+AGENTS_DEST="$HOME/.claude/agents"
+
+if [ -d "$AGENTS_SRC" ]; then
+  mkdir -p "$AGENTS_DEST"
+  for file in "$AGENTS_SRC"/fixme-*.md; do
+    [ -f "$file" ] || continue
+    name="$(basename "$file")"
+    cp "$file" "$AGENTS_DEST/$name"
+    echo "Installed agent $name"
+  done
+fi
