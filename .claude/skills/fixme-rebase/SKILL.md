@@ -230,7 +230,7 @@ This phase runs a cascade of increasingly expensive detection steps, short-circu
 
 #### Step 1: Local Branch Check
 
-Check if any local or remote-tracking branch shares a more recent merge-base with the current branch than the target branch does. This detects the parent branch when it still exists locally (even if deleted on the remote).
+Check if any local branch shares a more recent merge-base with the current branch than the target branch does. This detects the parent branch when it still exists locally (even if deleted on the remote).
 
 ```bash
 # Get the merge-base with target (already computed in Phase 2 as MERGE_BASE)
