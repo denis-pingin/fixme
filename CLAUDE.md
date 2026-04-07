@@ -89,6 +89,27 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
 - **Dynamic state machine.** The state machine is derived from pipeline config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the pipeline definition.
 - **Background dispatch.** fixme-session dispatches fixme-task in the background per ticket, staying responsive for new intake and status queries.
 
+### Agent Definitions
+
+Skills dispatched as sub-agents have corresponding agent definitions in `.claude/agents/`. The agent definition binds role constraints (identity, boundaries, tool restrictions) at the system level via `subagent_type`, and preloads operational procedures via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
+
+| Agent | Role | Key Constraint | Default Model |
+| ----- | ---- | -------------- | ------------- |
+| fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | sonnet |
+| fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus |
+| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | sonnet |
+| fixme-review-plan | Plan reviewer | Read-only, structured findings | opus |
+| fixme-review-code | Code reviewer | Read-only, structured findings | opus |
+| fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus |
+| fixme-handle-code-review | Finding classifier | Read-only, outputs routing directives | opus |
+| fixme-investigate | Bug investigator | Writes reports, never fixes code | opus |
+| fixme-research | Codebase explorer | Writes research output, never fixes code | opus |
+| fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | sonnet |
+
+Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
+
+Model selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget profiles. Default (no config): opus for all agents.
+
 ### Ticket State Machine
 
 The state machine is derived from the pipeline configuration in `.fixme/config.json`. Given a pipeline with phases `[A, B, C]`:
