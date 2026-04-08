@@ -451,12 +451,35 @@ Rules:
 
 When a handler produces FIX_UNCLEAR or ASK_USER items:
 
-1. Collect all FIX_UNCLEAR and ASK_USER items from the handler output.
-2. Present to user as a numbered list. Each item includes the full Question field from the handler (which follows the Question Guidelines: Problem, Context, Why it matters, Options, Recommendation, The actual question).
-3. User provides all answers in one response.
-4. Write each answer to decision log with a derived Locked Decision.
-5. Re-invoke the SAME handler with updated locked decisions (not restart the loop). The handler re-evaluates remaining findings against the new decisions - FIX_UNCLEAR items with approach answers become FIX items. ASK_USER items may become FIX, REJECT_*, or remain ASK_USER.
-6. If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate to user).
+### 1. Collect
+
+Gather all FIX_UNCLEAR and ASK_USER items from the handler output.
+
+### 2. Present as structured decisions
+
+Present each item using the handler's full Question field (which follows the Decision Presentation Guidelines and is already formatted as a structured decision block with Context, The question, Options, and Recommendation).
+
+After presenting ALL decision points, ask the user a SINGLE consolidated question:
+
+> Please provide your decisions for the above. You can answer by number (e.g., "1: A, 2: B") or describe your preferred approach. Reply "go with recommendations" to accept all recommended options.
+
+### 3. Process answers
+
+Parse the user's response. Map each answer to its decision point.
+
+- If remaining questions exist (user didn't address all), re-present ONLY those and ask again.
+- Repeat until all decisions are resolved.
+
+**Exit conditions** (any one ends the loop):
+- User answered all decision points explicitly
+- User said "go with recommendations" or equivalent (use recommended option for all unanswered)
+- User said "up to you" / "your call" / equivalent for specific items (use recommendation for those)
+
+### 4. Record and re-invoke
+
+Write each answer to the decision log with a derived Locked Decision. Re-invoke the SAME handler with updated locked decisions (not restart the loop). The handler re-evaluates remaining findings against the new decisions - FIX_UNCLEAR items with approach answers become FIX items. ASK_USER items may become FIX, REJECT_*, or remain ASK_USER.
+
+If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate to user).
 
 ## Loop Guards
 

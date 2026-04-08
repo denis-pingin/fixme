@@ -93,27 +93,65 @@ End with a summary section:
 2. **Overall assessment**: is the implementation solid with minor issues, or does it need significant rework?
 3. **REJECT rationale summary**: 1-2 sentences explaining the common thread behind rejected findings (group by rejection sub-type if the reasons differ)
 
-## Question Guidelines (ASK_USER and FIX_UNCLEAR)
+## Decision Presentation Guidelines (ASK_USER and FIX_UNCLEAR)
 
-The Question field is what the user reads. It must be self-contained - the user should understand the problem and be able to answer without re-reading the finding, the plan, or the code.
+The Question field is what the user reads to make a decision. It must be self-contained - the user should understand the situation and be able to decide without re-reading the finding, the plan, or the code. Follow top-down progressive disclosure: lead with context, state what needs deciding, then provide the details needed to decide well.
 
 ### Structure
 
-Break the question into these sections (skip any that don't apply):
+Format the Question field as a structured decision block:
 
-1. **Problem**: what the reviewer flagged and why it might matter. 1-2 sentences, plain language, right level of abstraction - don't over-explain what the user already knows, don't under-explain what they'd need to look up.
-2. **Context**: where this happens and why. Include clickable file references with line numbers (e.g., `[auth.ts:42](src/auth.ts#L42)`) for every file/line mentioned. Never use plain text file paths.
-3. **Why it matters**: the concrete impact if the finding is valid - what breaks, degrades, or becomes harder to maintain.
-4. **Options** (if applicable): the possible directions, each in one line. Not a debate - just the choices and their tradeoffs.
-5. **Recommendation**: do research first (read code, check docs, trace call paths) and provide the best recommendation with reasoning. The user should be able to just say "yes" if they agree. Never ask without a recommendation.
-6. **The actual question**: a single, direct question the user can answer in one sentence.
+```
+## Decision: {short descriptive title}
+
+**Context**: {Establish WHERE in the system this happens - the feature, component, or
+module involved. Build just enough mental model for the reader to understand the question.
+Define any non-obvious concepts before referencing them. Include clickable file references
+with line numbers (e.g., `[auth.ts:42](src/auth.ts#L42)`) for every file/line mentioned.}
+
+**The question**: {One clear statement of what specifically needs to be decided. Not a
+paragraph - one or two sentences max.}
+
+**Options**:
+
+1. **{Option A name}**
+   - Approach: {what this looks like concretely - files, patterns, APIs involved}
+   - Pros: {specific advantages grounded in this codebase, not generic platitudes}
+   - Cons: {specific disadvantages grounded in this codebase}
+   - Impact: {effects on performance, UX, maintainability, security - only dimensions
+     that actually differ between options}
+   - Effort: {relative cost to implement - "trivial", "small", "moderate", "significant"}
+
+2. **{Option B name}**
+   - Approach: {same structure - cross-reference option 1 where the contrast matters}
+   - Pros: ...
+   - Cons: ...
+   - Impact: ...
+   - Effort: ...
+
+{...more options if genuinely distinct - not variations of the same thing}
+
+**Recommendation**: Option {X} - {concrete reasoning tied to THIS specific situation.
+Reference actual code, API behavior, data volumes, or user-facing impact. Explain WHY
+this option wins given the tradeoffs above, not just that you prefer it. The user should
+be able to just say "yes" if they agree.}
+```
+
+### Rules
+
+- **Options are mandatory** for FIX_UNCLEAR. For ASK_USER, include options when there are genuinely different directions (fix vs. defer vs. ignore). When the question is purely "is this a real issue?", you can omit Options and instead present the evidence for and against under Context.
+- **Recommendation is mandatory**. Always. Do research first (read code, check docs, trace call paths). Never ask without a recommendation.
+- **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
+- **Cross-reference between options**. When Option B's main advantage is that it avoids Option A's biggest con, say so explicitly. Don't make the reader connect the dots.
 
 ### Quality bar
 
-- **Digestible**: short paragraphs, no walls of text. If it takes more than 30 seconds to read, it's too long.
+- **Self-contained**: the reader understands the full situation from this block alone, without scrolling back or re-reading code.
+- **Top-down**: context and mental model first, then the question, then the details. Never reference a concept before establishing it.
+- **Concrete**: actual file names, function names, line numbers, data volumes, error messages. "There's a size-related issue" is not acceptable - "the API returns 502 when payload exceeds 1MB" is.
 - **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
-- **Actionable**: the user should know exactly what decision they're being asked to make.
-- **Neutral**: present the tradeoff honestly. Don't bias toward FIX or REJECT in how the question is framed.
+- **Neutral**: present the tradeoffs honestly. Don't bias toward FIX or REJECT in how the question is framed.
+- **Scannable**: use the structured format above. Dense paragraphs are a last resort.
 - **Clickable**: every file reference is a markdown link with line numbers. No exceptions.
 
 ## Rules
