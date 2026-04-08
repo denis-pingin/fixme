@@ -36,9 +36,15 @@ For each finding:
 1. Read the actual code referenced by the finding
 2. Verify the finding's characterization of what the code does - do not trust it blindly
 3. Check whether the plan's context/spec explains the approach
-4. Check finding against locked decisions. If the finding contradicts a locked decision:
-   - If the finding reveals the locked decision causes a concrete problem (bug, security issue, data loss): classify ASK_USER. In the Question, explain what new evidence suggests the previous decision may need revisiting, and recommend a path forward. The user can confirm, override, or modify their original decision.
-   - If the finding merely disagrees with the approach chosen by the locked decision: classify REJECT_WONT_FIX. The user already made this call.
+4. Check finding against locked decisions. Distinguish between `[confirmed]` decisions (user explicitly chose) and `[assumed]` decisions (user accepted recommendation by default or never explicitly answered):
+   - **Finding contradicts a `[confirmed]` decision:**
+     - If the finding reveals a concrete problem (bug, security issue, data loss): classify ASK_USER. Explain what new evidence suggests the previous decision may need revisiting, and recommend a path forward.
+     - If the finding merely disagrees with the approach: classify REJECT_WONT_FIX. The user explicitly made this call.
+   - **Finding contradicts an `[assumed]` decision:**
+     - If the finding reveals a concrete problem: classify ASK_USER. The user never explicitly confirmed this decision, and new evidence suggests it's wrong.
+     - If the finding offers a materially better alternative: classify ASK_USER. The user accepted this by default - they deserve to see the better option. Present both the assumed approach and the proposed alternative.
+     - If the finding is a minor stylistic disagreement: classify REJECT_WONT_FIX.
+   - **Finding identifies an `[assumed]` decision that should have been confirmed** (the reviewer flagged it as an Assumption Validity issue): classify ASK_USER. Present the decision and its alternatives to the user for explicit confirmation.
 5. Assess whether the suggested change would actually improve the outcome
 5. Classify and document
 

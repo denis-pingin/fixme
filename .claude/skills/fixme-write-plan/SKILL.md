@@ -164,7 +164,9 @@ Collect all questions from steps 2-4 into a single numbered list. Every question
    Two confidence levels:
 
    - **[confirmed]**: User explicitly chose this (answered the question directly, or carried forward from a prior plan where it was confirmed). To override, you MUST ask the user again with the new evidence. Never silently override.
-   - **[assumed]**: Recommendation accepted by default (user did not explicitly answer this question). If codebase exploration reveals concrete evidence that contradicts this decision, you MAY re-evaluate: present the evidence and the conflicting decision to the user as a new question. The bar is "concrete evidence from the codebase," not "I thought about it more and changed my mind."
+   - **[assumed]**: Recommendation accepted by default (user did not explicitly answer this question during the Input Audit or Design Decision Checkpoint). If codebase exploration reveals concrete evidence that contradicts this decision, you MAY re-evaluate: present the evidence and the conflicting decision to the user as a new question. The bar is "concrete evidence from the codebase," not "I thought about it more and changed my mind."
+
+   **The `[assumed]` tag may ONLY be applied to decisions that went through a Question Resolution Loop (Input Audit or Design Decision Checkpoint).** A design decision discovered during codebase exploration that was never presented to the user is NOT assumed - it is unconfirmed. Unconfirmed decisions must go through the Design Decision Checkpoint (below) before entering the plan. Marking exploration-phase decisions as `[assumed]` to bypass user confirmation is the single most common planning failure mode.
 
 5. **Consistency check:** review the full set of locked decisions (both confirmed and assumed, including any carried forward from prior plans). Look for contradictions: does decision A imply X while decision B implies not-X? Does a scope decision conflict with an architectural decision? If inconsistencies exist, formulate new questions that surface each inconsistency and go to step 1 with ONLY the new questions.
 6. If no inconsistencies: the gate passes.
@@ -217,11 +219,41 @@ In revision mode, the original task is the source of truth for the goal. Do not 
 
 The Input Audit resolved structural ambiguities before codebase exploration began. During exploration, new unknowns may emerge - for example, API shapes that suggest different approaches, patterns that conflict with planned changes, or test infrastructure that doesn't support the planned verification approach.
 
-For these codebase-level discoveries:
-- **Blocking** (the plan cannot proceed without resolution): ask the user directly. Do not guess.
-- **Non-blocking** (the plan can proceed but the executor may need guidance): collect in the Questions section at the end of the plan.
+Classify each discovery:
+
+- **Design decisions** (multiple viable approaches exist, the plan's structure or architecture changes depending on which is chosen): these are NOT unknowns to defer - they are decisions the user must make. Collect them for the Design Decision Checkpoint below.
+- **Blocking unknowns** (a single factual question where the plan cannot proceed without the answer - e.g., "does this API support pagination?"): ask the user directly via AskUserQuestion. Do not guess.
+- **Informational context** (the plan is correct regardless, but the executor benefits from knowing - e.g., "the API response is double-nested"): collect in the Questions section at the end of the plan.
+- **Known flaws** (you discovered that a planned approach won't work - e.g., a route conflict, a spacing bug): these are NOT questions. Fix them in the plan before writing. If you can't fix it without a design decision, it's a design decision - collect it for the checkpoint.
 
 Do not re-ask questions already resolved by the Input Audit. Do not re-open locked decisions settled during the audit unless you discover concrete codebase evidence that makes a locked decision unimplementable - in which case, flag the specific conflict to the user with the evidence.
+
+### Design Decision Checkpoint
+
+**This gate runs after codebase exploration and before writing the plan. It is mandatory whenever design decisions were collected during exploration.**
+
+During exploration, you formed opinions about how to build this. Some of those opinions are mechanical (following an obvious existing pattern with no realistic alternative). Others are genuine design choices where multiple approaches exist and the user's preference matters.
+
+For each design decision collected above, apply this test:
+
+> Does a realistic alternative exist that would materially change the plan's structure, component boundaries, data flow, or user-facing behavior?
+
+- **Yes**: the decision MUST be presented to the user. Add it to the question list below.
+- **No** (truly mechanical - only one reasonable approach given the codebase): document it in the plan's Stable Context section as an observation, not a Locked Decision. Example: "The existing hooks all use `withAuthRetry` wrapping `Effect.runPromise`" is an observation. "We'll create a new `agentsFetchPaginated` helper instead of modifying the shared one" is a design decision.
+
+Collect all questions and present them to the user using the same format as the Input Audit's Question Resolution Loop (Step 5). Process answers identically: explicit answers become `[confirmed]`, accepted recommendations become `[assumed]`. The `[assumed]` tag is valid here because the user was asked.
+
+**If no design decisions were collected:** the checkpoint passes silently. Proceed to writing.
+
+**If all design decisions are truly mechanical (no alternatives):** the checkpoint passes silently. Document each in Stable Context.
+
+**You may not skip this checkpoint because:**
+- You already explored the codebase and "know" the right approach
+- The design decisions seem obvious
+- Asking would slow things down
+- You can always mark them `[assumed]` later
+
+The Input Audit prevents premature confidence before exploration. This checkpoint prevents post-exploration confidence from bypassing user confirmation. Together they ensure every design decision in the plan was either confirmed by the user or explicitly accepted as a recommendation.
 
 ## Plan Save Location
 
@@ -294,7 +326,15 @@ In revision mode, overwrite the existing plan file at the same path. Do not crea
 
 ## Questions
 
-[Non-blocking unknowns that the executor or user should resolve before or during execution. If none, omit this section.]
+[Informational context for the executor - things that are true regardless of the plan's approach but useful to know during implementation. If none, omit this section.
+
+This section is NOT a place to defer:
+- **Correctness concerns** ("this might not work because...") - fix the plan or ask the user
+- **Feasibility risks** ("if routing issues arise...") - resolve before writing the plan
+- **Design decisions** ("we could do X or Y") - decide via the Design Decision Checkpoint
+- **Known flaws** ("the executor may need to override this") - that means the plan is incomplete
+
+If an item starts with "if", "might", "may need to", or "the executor should decide" - it does not belong here. Either resolve it or escalate it.]
 ```
 
 ## File Map
@@ -489,6 +529,8 @@ Before saving the plan, verify:
 - [ ] Every command is exact and runnable (verified against project's actual tooling)
 - [ ] No source code was modified during planning
 - [ ] No assumptions were made that should be questions
+- [ ] Design Decision Checkpoint was performed after codebase exploration - all design decisions with realistic alternatives were presented to the user
+- [ ] Questions section contains only informational context - no correctness concerns, feasibility risks, design decisions, or known flaws were deferred there
 - [ ] The plan can be executed top-to-bottom without backtracking
 - [ ] Dependencies between tasks are explicit and ordered correctly
 - [ ] The File Map matches the actual steps (nothing missing, nothing extra)

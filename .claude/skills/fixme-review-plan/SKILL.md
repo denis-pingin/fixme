@@ -75,6 +75,16 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 - Parallelizable work that's sequenced unnecessarily (observation, not a problem)
 - Missing verification checkpoints between risky phases
 
+### Assumption Validity
+- Check every `[assumed]` Locked Decision. For each: does a realistic alternative exist that would materially change the plan? If yes, this should have been confirmed by the user - flag it as a finding (category: COMPLETENESS, severity: IMPORTANT). The plan writer should have surfaced this during the Design Decision Checkpoint.
+- Check whether any `[assumed]` decision contradicts patterns observed in the codebase. An assumption that fights the codebase is higher risk than one that follows it.
+- Do NOT flag `[confirmed]` decisions - those were explicitly chosen by the user.
+
+### Questions Section Audit
+- Read the plan's Questions section (if present). Each item should be purely informational context for the executor.
+- Promote to a finding any item that is actually: a correctness concern (the plan might not work), a feasibility risk (something might break), an unresolved design decision (multiple approaches exist), or a known flaw being deferred to the executor. These are plan incompleteness, not questions.
+- Items that start with "if", "might", "may need to", or "the executor should decide" are red flags - they suggest the plan writer deferred real work.
+
 ## What NOT to Flag
 
 - Style preferences or naming opinions
