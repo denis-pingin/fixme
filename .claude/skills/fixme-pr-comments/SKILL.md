@@ -598,11 +598,22 @@ git push
    ```
 
 **If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
-1. Reply with explanation but DO NOT resolve:
+1. Reply with explanation:
    ```bash
    gh api /repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
      -X POST -f body="{explanation why not fixing}"
    ```
+2. **If the comment author is an AI** (login ends with `[bot]`, e.g. `claude[bot]`,
+   `greptile-apps[bot]`), resolve the thread — there is no human reviewer to defer to:
+   ```bash
+   gh api graphql -f query='
+   mutation {
+     resolveReviewThread(input: {threadId: "{thread_id}"}) {
+       thread { isResolved }
+     }
+   }'
+   ```
+   **If the author is human**, do NOT resolve — the reviewer should have the final say.
 
 #### For Claude bot issue comments (Source B):
 
@@ -649,9 +660,9 @@ git push
 | Valid bug, obvious fix [`FIX`] | Fix autonomously, reply with commit SHA | Yes |
 | Valid bug, ambiguous fix [`FIX_UNCLEAR`] | Consult user (Step 2.5), then fix per chosen approach | Yes |
 | Uncertain validity [`ASK_USER`] | Consult user (Step 2.5) for validity determination | Depends |
-| Not a bug (code is correct) [`REJECT_FALSE_POSITIVE`] | Reply explaining why | No |
+| Not a bug (code is correct) [`REJECT_FALSE_POSITIVE`] | Reply explaining why | Bot: Yes, Human: No |
 | Already fixed in prior commit [`REJECT_ALREADY_FIXED`] | Reply noting it's fixed | Yes |
-| Out of scope / intentional [`REJECT_WONT_FIX`] | Reply explaining rationale | No |
+| Out of scope / intentional [`REJECT_WONT_FIX`] | Reply explaining rationale | Bot: Yes, Human: No |
 | Unable to reproduce | Reply asking for clarification | No |
 | Requires more investigation | Reply noting will investigate | No |
 
@@ -668,7 +679,8 @@ git push
 - Always verify before committing
 - One commit for all fixes (unless logically separate)
 - Be specific in replies - reference exact lines/commits
-- Don't resolve review thread conversations you can't fully address
+- Don't resolve review thread conversations you can't fully address (unless the author is an AI - see below)
+- **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`, `github-actions[bot]`). AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
 - **Pagination is mandatory for all API calls.** REST endpoints (issue comments) must use `--paginate` to fetch all pages. GraphQL endpoints (review threads) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
 - **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
