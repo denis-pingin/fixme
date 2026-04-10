@@ -28,6 +28,8 @@ There is no `package.json` - this is a pure skill repo with no build/lint steps.
 
 Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/`.
 
+**CRITICAL: Always edit source files in `.claude/skills/`, NEVER edit `~/.claude/skills/` directly.** The installed copies at `~/.claude/skills/` are overwritten by `install.sh`. Edits made there will be lost on next install and won't be tracked in git. Workflow: edit in `.claude/skills/` -> run `./install.sh` to deploy.
+
 ### fixme-tools.cjs CLI
 
 The state management tool used by ticket backends. Key commands:

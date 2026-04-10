@@ -41,12 +41,18 @@ Get PR info and only unresolved review threads using GraphQL:
 # Get PR number and repo info
 gh pr view --json number,headRefName,headRepository
 
-# Get ONLY unresolved review threads with full context
+# Get ONLY unresolved review threads with full context.
+# IMPORTANT: This query uses cursor-based pagination. The GitHub GraphQL API
+# returns at most 100 nodes per request. You MUST loop until hasNextPage is false.
+# On each iteration, pass the endCursor from the previous response as $after.
+
+# First request (no cursor):
 gh api graphql -f query='
 query {
   repository(owner: "{owner}", name: "{repo}") {
     pullRequest(number: {number}) {
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
@@ -65,8 +71,43 @@ query {
       }
     }
   }
-}' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)'
+}' --jq '.data.repository.pullRequest.reviewThreads'
+
+# If pageInfo.hasNextPage is true, fetch the next page:
+gh api graphql -f query='
+query {
+  repository(owner: "{owner}", name: "{repo}") {
+    pullRequest(number: {number}) {
+      reviewThreads(first: 100, after: "{endCursor}") {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          path
+          line
+          comments(first: 10) {
+            nodes {
+              id
+              databaseId
+              author { login }
+              body
+              diffHunk
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+# Repeat until hasNextPage is false. Collect all nodes across pages,
+# then filter: select only nodes where isResolved == false.
 ```
+
+**Pagination is mandatory.** PRs with many review comments will span multiple pages.
+If you only fetch the first page, you will silently miss comments on later pages.
+Always check `pageInfo.hasNextPage` and loop with `after: "{endCursor}"` until all
+pages are consumed.
 
 #### Source B: Claude bot issue comments (regular PR comments)
 
@@ -76,7 +117,9 @@ instead of inline review threads. These must also be checked for actionable issu
 ```bash
 # Fetch ALL issue comments from claude[bot] - no content filtering at fetch time.
 # Claude bot reviews use varied formats so any pattern-based filter WILL miss comments.
-gh api repos/{owner}/{repo}/issues/{number}/comments \
+# IMPORTANT: Use --paginate to fetch ALL pages. Without it, only the first page
+# (default 30 items) is returned, silently missing comments on later pages.
+gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
   --jq '[.[] | select(.user.login == "claude[bot]") | {id, body}]'
 ```
 
@@ -106,8 +149,9 @@ Greptile posts a single summary comment per PR that gets updated on each review.
 contains actionable findings in two sections that must be extracted.
 
 ```bash
-# Fetch the greptile-apps[bot] issue comment
-gh api repos/{owner}/{repo}/issues/{number}/comments \
+# Fetch the greptile-apps[bot] issue comment.
+# IMPORTANT: Use --paginate to fetch ALL pages of issue comments.
+gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]") | {id, body}]'
 ```
 
@@ -484,17 +528,21 @@ git push
    ```
 2. Get thread ID and resolve:
    ```bash
-   # Get thread ID
+   # Get thread ID - use the thread IDs saved from the initial fetch in Step 1.
+   # If thread IDs were not saved, re-fetch with pagination (same cursor-based
+   # approach as Step 1 - loop with first:100/after until hasNextPage is false):
    gh api graphql -f query='
    query {
      repository(owner: "{owner}", name: "{repo}") {
        pullRequest(number: {number}) {
-         reviewThreads(first: 50) {
+         reviewThreads(first: 100) {
+           pageInfo { hasNextPage endCursor }
            nodes { id isResolved comments(first: 1) { nodes { databaseId } } }
          }
        }
      }
    }'
+   # Paginate with after: "{endCursor}" if hasNextPage is true, same as Step 1.
 
    # Resolve thread
    gh api graphql -f query='
@@ -578,4 +626,5 @@ git push
 - Be specific in replies - reference exact lines/commits
 - Don't resolve review thread conversations you can't fully address
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
+- **Pagination is mandatory for all API calls.** REST endpoints (issue comments) must use `--paginate` to fetch all pages. GraphQL endpoints (review threads) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
 - **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
