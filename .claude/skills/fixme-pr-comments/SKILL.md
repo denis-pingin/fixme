@@ -277,30 +277,55 @@ lists, decision context, options, everything. No plain-text file paths.
 For each individual item, describe it top-down: context, what's wrong, what breaks, what will be done.
 
 ```
+## PR Comment Analysis
+
+{1-2 sentences: how many comments were found across which sources, headline result
+summary (N already fixed, N not actionable, N to fix). Gives the reader the full
+picture before any details.}
+
+---
+
 ### Already Fixed (resolve immediately)
 {List items confirmed fixed in the current code. For each:}
 - **{concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
   {One sentence: what was wrong and how it was fixed.}
 
-### Not Actionable
+### Not Actionable ({N} items)
 {List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
-- **{issue name}** [`{category}`] - {one-sentence rationale explaining why this is not a real issue
-  or is intentional/out of scope. Be specific - name the code construct and why it's correct.}
+
+**{issue name}** [`{category}`]
+- **What was reported**: {What the reviewer flagged and why they think it's a problem.
+  Establish what code area this is about - the reader needs domain context to evaluate
+  the dismissal.}
+- **Why this is not an issue**: {For FALSE_POSITIVE: what the code actually does and why
+  the reviewer's concern doesn't apply. For WONT_FIX: what the actual risk is, why it's
+  acceptable now, and when/where it should be addressed (if ever). Be specific - name the
+  code construct and explain the behavior.}
 
 ### Actionable Items ({N} distinct issues)
 
 {For each deduplicated issue, present ALL of these fields:}
 
 **{N}. {Issue title}** [`{category}`]
+- **What was reported**: {What the reviewer flagged - their exact concern, which file/line
+  they pointed at, what they suggested. The reader needs to know the input before evaluating
+  the analysis.}
 - **Context**: {What area of the codebase this touches and what it does. The reader must
   understand the domain before evaluating the problem. Name the feature, subsystem, or flow
   this code belongs to, and what role the affected file/function plays in it.}
-- **Problem**: {What is concretely wrong, with file:line references.}
-- **Impact**: {What breaks, degrades, or is at risk because of this.}
-- **Fix**: {What will be done to fix it. For FIX_UNCLEAR: "Requires approach decision -
-  see below." For ASK_USER: "Requires validity determination - see below."}
+- **What's actually happening**: {Your independent analysis of the code. What the code does,
+  why it's wrong, how you verified. May confirm the reviewer's concern, refine it, or identify
+  a different root cause. Describe as behavior, not code mechanics.}
+- **Impact if not fixed**: {What breaks, degrades, or is at risk. User-visible or system-visible
+  consequences. Include severity signal: is this causing failures now, or is it a latent risk
+  under specific conditions?}
+- **Recommended fix**: {Describe the resulting behavior so the reader can independently judge
+  whether the fix is correct. For non-trivial fixes, explain why this approach over alternatives.
+  For FIX_UNCLEAR: "Requires approach decision - see below."
+  For ASK_USER: "Requires validity determination - see below."}
+- **Effort**: {low | medium | high}
 - **Files**: {[file.ts:line](/absolute/path/file.ts#Lline), [file2.ts:line](/absolute/path/file2.ts#Lline)}
-- **Threads**: {N} ({list bot names: copilot, claude, greptile})
+- **Threads**: {N} ({list source names: reviewer-login, claude, greptile})
 
 {Repeat for every actionable item.}
 ```
@@ -361,6 +386,25 @@ Each point conveys exactly one thing. If a sentence has "and also" or packs two 
 Don't write "there might be implications" or "this could affect other areas." Either you
 checked and found specific impacts (list them), or you checked and found nothing (say what
 you searched for and that it came back clean).
+
+**8. Separate what was reported from what you found.**
+The "What was reported" field presents the reviewer's claim. "What's actually happening" (or
+"Why this is not an issue") presents your independent analysis. Never blend the two - the reader
+needs to see both to judge whether your analysis actually addresses the reviewer's concern.
+
+- BAD (blended): "The reviewer noted that JSON.parse is unsafe, and indeed the schema should
+  handle deserialization."
+- GOOD (separated): What was reported: "Reviewer flagged raw JSON.parse at the R2 boundary,
+  noting this PR replaced 9 other occurrences with schema-based parsing." What's actually
+  happening: "When R2 returns malformed JSON, the handler throws a raw SyntaxError. The
+  schema-based alternative would produce a typed validation error with the field path that
+  failed, making error monitoring actionable."
+
+**9. Ground effort estimates in scope, not gut feel.**
+The "Effort" field (low/medium/high) must reflect the actual scope of the change. Low: single
+file, mechanical change, no design decisions. Medium: multiple files or a design choice involved.
+High: cross-cutting change, new abstractions, or significant refactoring. If you can't determine
+effort without deeper investigation, say "medium (needs investigation)" rather than guessing.
 
 ### 2.5. User Consultation for Ambiguous Fixes
 
