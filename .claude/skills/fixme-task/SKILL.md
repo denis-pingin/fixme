@@ -148,54 +148,105 @@ The orchestrator may ONLY use these tools:
 - **Read** - ONLY on `.fixme/config.json`, `.fixme/plans/*.md`, `.fixme/decisions.md`, `.fixme/project-context.yaml`, or plan files referenced in conversation
 - **Write** - ONLY on `.fixme/decisions.md`
 - **Bash** - ONLY `mkdir -p .fixme/plans` or `mkdir -p .fixme`
+- **TodoWrite** - to create and track the dispatch manifest steps
 
 Any other tool use (Read on source code, Grep, Glob, Edit on source code) is a pipeline violation. If you need information from the codebase, dispatch an agent to get it.
 
-## Phase Execution Loop
+## Dispatch Manifest (NON-NEGOTIABLE)
+
+Before dispatching ANY agent, expand the full pipeline into a flat, numbered dispatch manifest using TodoWrite. Every step - including review and handler steps - becomes an explicit entry. This eliminates conditional branching ("does this phase have a review?") and makes skipping review phases structurally impossible.
+
+### Building the Manifest
+
+Always build the manifest for ALL phases in the pipeline, regardless of entry point. For each phase, add entries in this order:
+
+1. One dispatch entry per skill in `phase.skills`
+2. If `phase.review` exists and `review.enabled !== false`:
+   a. One dispatch entry per skill in `phase.review.skills` (reviewer first, then handler)
+   b. One routing entry with explicit jump targets
+
+After the last phase: add a "Run Summary" entry.
+
+Tag each entry with its phase name and step type: `[phase-name]` for execute steps, `[phase-name/review]` for review steps, `[phase-name/route]` for routing steps.
+
+**Entry point marking:** After building the full manifest, apply the entry point. Mark all steps before the entry point as `completed`. Set the entry point step to `in_progress`. All subsequent steps remain `pending`. This ensures the full manifest exists for cross-phase backward jumps, while execution starts from the correct point.
+
+### Example: Default Pipeline Manifest
+
+For the hardcoded default pipeline (no ticket):
 
 ```
-Load pipeline config -> filter disabled phases -> resolve entry point
-
-for each phase in pipeline (starting from entry point):
-
-  1. TICKET TRANSITION (if ticket path provided):
-     Dispatch fixme-tickets: transition <ticket-path> <phase.name>
-       First phase: include --pipeline <pipeline-name>
-       Backward re-entry: include --reason <reason>
-
-  2. PHASE SKILLS:
-     Dispatch each skill in phase.skills sequentially via Agent tool.
-     Pass accumulated context from prior phases.
-
-  3. REVIEW LOOP (if phase.review exists and phase.review.enabled !== false):
-     a. Run phase.review.skills chain sequentially
-        - First skill produces findings (reviewer)
-        - Second skill triages findings (handler)
-     b. Read HANDLER_RESULT routing directive from handler output
-     c. Route:
-        - CLEAN: exit review loop, proceed to next phase
-        - HAS_ASK_USER: batch questions to user (may include both FIX_UNCLEAR approach
-          questions and ASK_USER validity questions), write answers to decision log,
-          re-invoke handler with updated decisions
-        - HAS_FIX: increment review counter, check against phase.review.maxCycles
-          (default 3). If exceeded: escalate to user. Else: re-run phase.skills
-          then review chain again.
-
-  4. CONTEXT ACCUMULATION:
-     Capture phase outputs (plans, findings, execution results) for next phase.
+Step 1  [plan]              Dispatch fixme-write-plan
+Step 2  [plan/review]       Dispatch fixme-review-plan
+Step 3  [plan/review]       Dispatch fixme-handle-plan-review
+Step 4  [plan/route]        Route: CLEAN->5, HAS_FIX->1 (max 3), HAS_ASK_USER->ask then re-run 3
+Step 5  [implement]         Dispatch fixme-execute-plan
+Step 6  [implement/review]  Dispatch fixme-review-code
+Step 7  [implement/review]  Dispatch fixme-handle-code-review
+Step 8  [implement/route]   Route: CLEAN->9, HAS_FIX->1 (outer, max 2), HAS_ASK_USER->ask then re-run 7
+Step 9  [done]              Run Summary
 ```
 
-### Backward Transitions (Outer Loop)
+The manifest always contains ALL steps. When entering mid-pipeline (e.g., plan already exists), pre-entry steps are marked `completed` so backward jumps have valid targets. Example: entering at implement phase marks steps 1-4 as `completed` and step 5 as `in_progress`.
 
-When a review handler in a later phase (e.g., `implement`) produces FIX items that require re-entering an earlier phase (e.g., `plan`):
+### Routing Rules
 
-1. Increment the outer loop counter
-2. Check the outer loop guard (max 2 iterations). If exceeded: escalate to user.
-3. If ticket path: dispatch ticket backward transition (`implement -> plan`) with `--reason` describing what the review found
-4. Re-enter the pipeline at the earlier phase
-5. Resume forward execution from there
+Each routing entry specifies explicit jump targets:
 
-This generalizes the current "code review FIX -> re-plan -> re-execute -> re-review" outer loop. The review handler's FIX output determines which earlier phase to re-enter. For the `implement` phase handler, re-entry is always at the `plan` phase (or whatever phase contains `fixme-write-plan`).
+- **CLEAN**: advance to the next numbered step
+- **HAS_FIX (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
+- **HAS_FIX (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. If counter > 2: escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
+- **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN or HAS_FIX.
+
+### Creating the Manifest with TodoWrite
+
+After building the manifest, create it using TodoWrite. One todo per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry:
+
+**Fresh start (no prior state):**
+```
+TodoWrite([
+  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
+  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
+  { content: "Step 9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
+])
+```
+
+**Mid-pipeline entry (plan exists, entering at plan review):**
+```
+TodoWrite([
+  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "completed", activeForm: "Dispatching fixme-write-plan" },
+  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "in_progress", activeForm: "Dispatching fixme-review-plan" },
+  ...remaining steps as pending...
+])
+```
+
+### Following the Manifest
+
+Execute steps in order. After each dispatch:
+
+1. Process the output (see Step Processing below)
+2. Mark the current step `completed` via TodoWrite
+3. Set the next step to `in_progress`
+4. Dispatch the next agent - or jump per routing rules
+
+**Never skip steps. Never combine steps. Never "optimize" the sequence. The manifest is the law.**
+
+**Never treat any step as pipeline completion unless it is the Run Summary step.** If uncompleted steps remain in the manifest, the pipeline is not done. If you feel like outputting a completion message and there are pending steps, STOP - you are about to skip remaining phases.
+
+### Ticket Transitions
+
+If ticket path is provided, dispatch ticket transitions before each phase's first execute step:
+
+- First phase: include `--pipeline <pipeline-name>`
+- Backward re-entry (HAS_FIX cross-phase jump): include `--reason <reason>`
+
+Ticket transitions are dispatched inline before the execute step - they are not separate manifest entries. They do not produce output that affects routing.
 
 ## Sub-Skill Dispatch
 
@@ -327,13 +378,13 @@ For phases using the standard skills, these are the input contracts:
 
 For custom skills not listed above: pass the task description and all accumulated context from prior phases.
 
-## Step-by-Step Transition Procedures
+## Step Processing
 
-Follow these EXACTLY after each agent returns. Do not improvise transitions.
+Follow these procedures after each agent dispatch returns. The manifest determines WHICH step comes next. These procedures determine HOW to process each step type.
 
 ### Directive Validation (NON-NEGOTIABLE)
 
-Every agent dispatch has an expected routing directive in its output. Before routing, you MUST validate that the directive is present:
+Every agent dispatch has an expected routing directive in its output. Before processing, you MUST validate that the directive is present:
 
 | Agent type | Expected directive | Example |
 |---|---|---|
@@ -345,67 +396,49 @@ Every agent dispatch has an expected routing directive in its output. Before rou
 **Recovery procedure:**
 
 1. **Do NOT take over the agent's work.** Do not run tests, commit code, verify output, or do anything the agent was supposed to do. You are a dispatcher.
-2. **Do NOT proceed to the next pipeline phase or output a Run Summary.** The current phase is incomplete.
+2. **Do NOT advance to the next manifest step.** The current step is incomplete.
 3. **Re-dispatch the agent automatically (once).** Construct a resume prompt:
-   - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step. Include the same SKILL.md content as the original dispatch.
+   - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step.
    - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
    - For **other phase skills**: re-dispatch with the original inputs plus a summary of what was already produced.
-4. **If the re-dispatched agent also returns without the expected directive**: escalate to user. Report which agent was dispatched twice, what it produced each time, and what remains incomplete. Offer to re-dispatch again with a narrower scope or to proceed with manual guidance.
+4. **If the re-dispatched agent also returns without the expected directive**: escalate to user. Report which agent was dispatched twice, what it produced each time, and what remains incomplete. Do NOT advance the manifest.
 
 **The temptation**: When an executor returns without its directive but the output looks "mostly done" (tests seem to pass, code looks committed), it feels natural to just run verification yourself, confirm it's good, and move on. This is the exact failure mode this rule prevents. "Mostly done" without the directive means the agent's own verification gate did not run to completion. Your manual check is NOT equivalent - you lack the agent's accumulated context about what was changed and why, and you will skip the review phase that exists to catch what manual checks miss.
 
-### After a phase skill returns:
+### Processing by Step Type
 
-1. Capture the agent's full output (this is phase output, part of accumulated context).
-2. If this phase has a review loop (`phase.review` exists and `review.enabled !== false`):
-   - Dispatch the first review skill with appropriate inputs.
-3. If this phase has NO review loop:
-   - If there are more phases: proceed to the next phase.
-   - If this is the last phase: output Run Summary -> DONE.
+**Execute steps** (`[phase]` entries - phase skills like fixme-write-plan, fixme-execute-plan):
 
-### After a review skill (reviewer) returns:
+1. Validate the directive if one is expected (executors produce `EXECUTOR_STATUS: COMPLETE`)
+2. Capture the agent's full output as accumulated context for subsequent steps
+3. Mark step `completed`, set next step to `in_progress`, dispatch next agent
 
-1. Read the agent's full output (findings).
-2. Dispatch the next skill in the review chain (the handler) with:
-   - Review findings: the full agent output (paste as markdown in prompt)
-   - Plan path (if applicable)
-   - Decision log path: `.fixme/decisions.md` (if exists)
-3. Do NOT classify findings yourself. Do NOT skip this dispatch.
+**Review steps** (`[phase/review]` entries - reviewers like fixme-review-plan, fixme-review-code):
 
-### After a review handler returns:
+1. Capture the agent's full output (these are findings)
+2. Mark step `completed`, set next step to `in_progress`
+3. Pass the findings as input to the handler dispatch (the next manifest step)
 
-1. **Validate the routing directive first.** Check that the output contains `HANDLER_RESULT:` followed by one of `CLEAN`, `HAS_FIX`, or `HAS_ASK_USER`. If missing, follow the Directive Validation recovery procedure above - do NOT proceed.
-2. **If `CLEAN`**:
-   - If there are more phases in the pipeline: proceed to the next phase.
-   - If this is the last phase: output Run Summary -> DONE.
-3. **If `HAS_ASK_USER`**: batch questions to user (see ASK_USER Batching). After user answers, write to decision log, re-dispatch the same handler with updated decisions.
-4. **If `HAS_FIX`**:
-   - If this is an intra-phase review (e.g., plan review in the `plan` phase):
-     - Increment the phase's review counter.
-     - If counter > `phase.review.maxCycles` (default 3): escalate to user.
-     - Else: re-run the phase's skills (e.g., fixme-write-plan in revision mode), then re-run the review chain.
-   - If this is a cross-phase review (e.g., code review in `implement` phase that requires replanning):
-     - Increment the outer loop counter.
-     - If counter > 2: escalate to user.
-     - Else: re-enter the pipeline at the earlier phase (see Backward Transitions).
-5. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
+**Handler steps** (`[phase/review]` entries - handlers like fixme-handle-plan-review, fixme-handle-code-review):
 
-### After fixme-execute-plan returns (CRITICAL):
+1. Validate the routing directive: `HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`
+2. Capture the handler's full output
+3. Mark step `completed`, set next step to `in_progress` (the routing step)
 
-**This is NOT the end of the pipeline if the `implement` phase has a review loop.**
+**Routing steps** (`[phase/route]` entries):
 
-1. **Validate the routing directive first.** Check that the output ends with `EXECUTOR_STATUS: COMPLETE` and `NEXT_PIPELINE_STEP: fixme-review-code`. If missing, follow the Directive Validation recovery procedure above - do NOT proceed.
-2. Capture the full completion report from the agent output.
-3. If the phase has a review loop: dispatch the first review skill with plan path + git diff info.
-4. Do NOT output any summary, completion message, or status to the user.
-5. Do NOT stop to ask if the user wants to continue.
-6. The execution report is INPUT to the code review step, not OUTPUT to the user.
+1. Read the HANDLER_RESULT from the previous handler's output
+2. Follow the routing rules specified in the manifest entry:
+   - **CLEAN**: mark step `completed`, advance to the next numbered step
+   - **HAS_FIX**: mark step `completed`, jump back to the target step specified in the manifest. Check loop guards before jumping (see Loop Guards). When jumping back, reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`. This ensures the full loop (including review steps) runs again - resetting only the target would leave intermediate steps as `completed` and they'd be skipped.
+   - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN or HAS_FIX.
+3. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
 
-### Pipeline Exit Points (ONLY these)
+**Run Summary step** (`[done]` entry):
 
-- Last phase completes with no review, or last phase's review handler returns CLEAN -> output Run Summary -> DONE
-- Outer loop guard triggers (max 2 iterations) -> escalate to user
-- A sub-skill agent fails unexpectedly -> report error to user (include ticket path if applicable)
+1. Mark step `in_progress`
+2. Output the Run Summary (see format below)
+3. Mark step `completed`. Pipeline is DONE.
 
 ## Never Apply Fixes Directly
 
