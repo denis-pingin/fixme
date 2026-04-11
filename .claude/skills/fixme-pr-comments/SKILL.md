@@ -412,6 +412,46 @@ file, mechanical change, no design decisions. Medium: multiple files or a design
 High: cross-cutting change, new abstractions, or significant refactoring. If you can't determine
 effort without deeper investigation, say "medium (needs investigation)" rather than guessing.
 
+**10. Absolute precision in all quantification (NON-NEGOTIABLE).**
+Never use vague quantifiers: "most", "many", "some", "several", "likely", "probably",
+"generally", "appears to", "seems like", or approximate counts ("~65", "around 12").
+Every comment must have an explicit, definitive status. Use exact counts. Every number
+in the report must be verifiable by counting the items listed.
+
+- BAD: "Most comments were addressed or out of scope."
+- GOOD: "12 comments total: 8 fixed (commits abc123, def456), 3 false positives, 1 out of scope."
+
+- BAD: "~65 bot threads - no individual replies needed, most addressed by subsequent commits."
+- GOOD: "65 bot threads: 41 fixed (commit abc123 addressed items A1-A30, commit def456
+  addressed items A31-A41), 18 false positives (each listed below with reasoning), 6 out
+  of scope (each listed below with reasoning)."
+
+- BAD: "The remaining issues are likely already fixed."
+- GOOD: "3 remaining issues: A4 confirmed fixed in commit def456 (verified: function
+  now returns Result<T>), B7 confirmed fixed in commit ghi789 (verified: null check
+  added at line 42), C2 not fixed (still returns raw string at line 88)."
+
+If you cannot determine a definitive status for a comment, the status is "undetermined -
+needs investigation". Never hedge with "probably" or "likely" as a substitute for checking.
+
+**11. Every comment gets individual analysis. No batch dismissals.**
+Regardless of source, author, or volume - every single comment receives its own verdict
+with its own reasoning. These are explicitly forbidden:
+
+- Dismissing a group of comments with a shared rationale ("bot-generated, no replies needed")
+- Summarizing N comments as a batch ("65 Copilot threads - mostly style suggestions")
+- Skipping analysis because the author is a bot
+- Using source or author as a proxy for validity
+
+Being from a bot does not make a comment invalid. Being in a resolved thread does not mean
+it was addressed. Being one of many does not exempt it from analysis.
+
+When there are many comments (>20), you MUST still analyze each one individually, but you
+MAY group them by verdict in the output. For example: list all 41 that are FIX with their
+individual one-line descriptions, then all 18 that are REJECT_FALSE_POSITIVE with their
+individual reasons. But the analysis and verdict must be per-comment, and the grouping must
+show every item - not "and 15 more similar".
+
 ### 2.5. User Consultation for Ambiguous Fixes
 
 **Skip this step if there are no `FIX_UNCLEAR` or `ASK_USER` items.** Proceed directly to Step 3.
