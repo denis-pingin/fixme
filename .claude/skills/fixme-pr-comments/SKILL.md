@@ -1,6 +1,6 @@
 ---
 name: fixme-pr-comments
-description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze each one, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
+description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze EVERY comment individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
 argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
