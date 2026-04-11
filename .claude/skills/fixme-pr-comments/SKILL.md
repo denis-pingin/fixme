@@ -285,9 +285,12 @@ For each individual item, describe it top-down: context, what's wrong, what brea
 ```
 ## PR Comment Analysis
 
-{1-2 sentences: how many comments were found across which sources, headline result
-summary (N already fixed, N not actionable, N to fix). Gives the reader the full
-picture before any details.}
+{EXACT counts with full accounting. Format:
+"N comments from M sources (N review threads, N Claude bot findings,
+N Greptile findings). Verdict: N to fix, N already fixed, N not actionable
+(N false positive, N won't fix), N need user input."
+Every comment must be accounted for - the numbers MUST sum to the total. If they
+don't, you miscounted - recount before presenting. No vague quantifiers.}
 
 ---
 
