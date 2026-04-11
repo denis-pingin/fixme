@@ -603,8 +603,8 @@ git push
    gh api /repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
      -X POST -f body="{explanation why not fixing}"
    ```
-2. **If the comment author is an AI** (login ends with `[bot]`, e.g. `claude[bot]`,
-   `greptile-apps[bot]`), resolve the thread — there is no human reviewer to defer to:
+2. **If the comment author is an AI** (see AI author detection in Notes), resolve
+   the thread — there is no human reviewer to defer to:
    ```bash
    gh api graphql -f query='
    mutation {
@@ -680,7 +680,7 @@ git push
 - One commit for all fixes (unless logically separate)
 - Be specific in replies - reference exact lines/commits
 - Don't resolve review thread conversations you can't fully address (unless the author is an AI - see below)
-- **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`, `github-actions[bot]`). AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
+- **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`) OR matches a known AI reviewer login (e.g. `copilot-pull-request-reviewer`). When in doubt, check the author's `type` field from the GitHub API - bots have `type: "Bot"`. AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
 - **Pagination is mandatory for all API calls.** REST endpoints (issue comments) must use `--paginate` to fetch all pages. GraphQL endpoints (review threads) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
 - **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
