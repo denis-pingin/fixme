@@ -206,20 +206,26 @@ that specifically references the finding by file path or description.
 
 #### Display all comments
 
-Display both sources in format:
-```
-## Unresolved Comments ({count} total)
+Assign each comment a **source-prefixed ID** at fetch time: A1, A2, ... for review threads;
+B1, B2, ... for Claude bot findings; C1, C2, ... for Greptile findings. These IDs are permanent -
+they follow the item through analysis and into the final report regardless of verdict.
 
-### Review Threads
-- @author file.ts#line (thread_id: {id}):
+Display all sources in format:
+```
+## PR Comments ({count} total)
+
+### Review Threads ({count})
+- **A1.** @author file.ts#line (thread_id: {id}):
+  > comment text
+- **A2.** @author file.ts#line (thread_id: {id}):
   > comment text
 
-### Claude Bot Review Comments
-- [comment_id: {id}] file.ts#line:
+### Claude Bot Review Comments ({count})
+- **B1.** [comment_id: {id}] file.ts#line:
   > issue description
 
-### Greptile Summary Findings
-- [comment_id: {id}] file.ts#line (source: outside-diff|confidence):
+### Greptile Summary Findings ({count})
+- **C1.** [comment_id: {id}] file.ts#line (source: outside-diff|confidence):
   > issue description
 ```
 
@@ -287,13 +293,13 @@ picture before any details.}
 
 ### Already Fixed (resolve immediately)
 {List items confirmed fixed in the current code. For each:}
-- **{concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
+- **{ID}. {concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
   {One sentence: what was wrong and how it was fixed.}
 
 ### Not Actionable ({N} items)
 {List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
 
-**{issue name}** [`{category}`]
+**{ID}. {issue name}** [`{category}`]
 - **What was reported**: {What the reviewer flagged and why they think it's a problem.
   Establish what code area this is about - the reader needs domain context to evaluate
   the dismissal.}
@@ -306,7 +312,7 @@ picture before any details.}
 
 {For each deduplicated issue, present ALL of these fields:}
 
-**{N}. {Issue title}** [`{category}`]
+**{ID}. {Issue title}** [`{category}`]
 - **What was reported**: {What the reviewer flagged - their exact concern, which file/line
   they pointed at, what they suggested. The reader needs to know the input before evaluating
   the analysis.}
