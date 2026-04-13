@@ -377,46 +377,54 @@ For each merged PR:
 
 **If no candidates found:** Continue to Step 3.
 
-#### Step 3: Heuristic Signals
+#### Step 3: Commit-Message Match
 
-Compare commit count divergence vs actual diff size. This step confirms whether the squash-merge scenario is likely happening but does NOT locate the fork point. It gates whether to run the more expensive Step 4.
+Compare our branch's commits against the base side's commits using an identity key derived from the commit message and author metadata. This catches the upstream-rewrite scenario because a rewrite that changes SHAs (`git rebase <upstream>`, `git rebase -i`, `git commit --amend`, force-push) preserves commit messages verbatim unless the developer explicitly used `reword` or `squash`. Patch-IDs can fail when conflict resolution during upstream rebase altered patches, but messages stay identical. Comparing message+author identity between both sides directly reveals which of our commits were inherited from a pre-rewrite base.
 
-These values are already available from Phase 2:
-- Commit count: number of commits in `MERGE_BASE..HEAD` (Phase 2 step 2)
-- Cherry-mark data: commits marked `=` in symmetric diff (Phase 2 step 6)
+This step strictly dominates patch-ID matching and is the primary detector for the upstream-rewrite scenario.
 
-Compute the additional signal:
+**Identity key:** subject + `\t` + author_email + `\t` + authored_date (as Unix timestamp). The tab separator avoids subject collisions when two commits share a subject line but have different authors or dates, and is safe because git log format placeholders never emit a literal tab in `%s`, `%ae`, or `%at`.
+
+**Algorithm (single Bash invocation with internal shell loop):**
+
 ```bash
-# Actual diff size in lines changed
-git diff --stat <BASE_BRANCH> HEAD | tail -1
+MERGE_BASE=$(git merge-base HEAD <BASE_BRANCH>)
+
+# Collect identity keys on the base side (unique). Tab-separated.
+git log --format='%s%x09%ae%x09%at' $MERGE_BASE..<BASE_BRANCH> | sort -u > /tmp/fixme_base_keys
+
+# Label each of our commits INHERITED or OWN, in topological order.
+git log --reverse --format='%H%x09%s%x09%ae%x09%at' $MERGE_BASE..HEAD \
+  | while IFS=$'\t' read -r sha subject email authored_date; do
+      key=$(printf '%s\t%s\t%s' "$subject" "$email" "$authored_date")
+      if grep -Fxq "$key" /tmp/fixme_base_keys; then
+        echo "INHERITED $sha $subject"
+      else
+        echo "OWN $sha $subject"
+      fi
+    done > /tmp/fixme_labels
+
+cat /tmp/fixme_labels
 ```
 
-This gives "N files changed, M insertions(+), K deletions(-)". Extract total lines changed (M + K).
+The output is a labeled sequence showing every commit in `MERGE_BASE..HEAD` as INHERITED or OWN, preserving topological order.
 
-Also compute:
-```bash
-# Total lines changed across all individual commits
-git log --oneline --stat <MERGE_BASE>..HEAD | grep -E "files? changed" | awk '{s += $4 + $6} END {print s}'
-```
+**Fork-point determination:** The candidate fork point is the SHA of the LAST INHERITED commit in topological order (equivalently, the commit just before the first OWN commit in the labeled sequence).
 
-**Heuristic evaluation:**
+**Partition analysis:**
 
-The squash-merge signal is the ratio between the actual diff against target (`git diff --stat <BASE_BRANCH> HEAD`) and the sum of individual commit diffs. In a normal branch, these are roughly similar. In a squash-merge scenario:
-- The individual commits include all the parent's commits (large cumulative diff)
-- The actual diff against target is small (parent's changes already on target via squash)
-- So the ratio (actual_diff / cumulative_commit_diff) is much less than 1
+- **Clean partition** - the sequence is `[INHERITED...][OWN...]` with no OWN commit preceding any INHERITED commit.
+- **Interleaved** - at least one OWN commit is followed later by an INHERITED commit. Count the interleavings.
 
-**Scoring:**
-- If actual diff is less than 20% of cumulative commit diffs: **STRONG signal** - most commits are already on target via squash. Record `HEURISTIC_SIGNAL` = "strong".
-- If actual diff is 20-50% of cumulative commit diffs: **MODERATE signal** - some commits may be inherited. Record `HEURISTIC_SIGNAL` = "moderate".
-- If actual diff is more than 50% of cumulative commit diffs: **WEAK/NO signal** - commits appear to be genuine new work. Record `HEURISTIC_SIGNAL` = "weak". Skip Step 4 unless PR candidates exist from Step 2.
+**Confidence assignment:**
 
-Also check:
-- If more than 50% of commits are marked `=` in cherry-mark: additional confirmation
-- If the number of `=`-marked commits is 0 but the heuristic is strong: the squash changed content enough that cherry-mark can't match (common with squash merges that rewrite commit messages)
+- **HIGH** - clean partition AND INHERITED count >= 5. Record `FORK_POINT` = last INHERITED SHA; `DETECTION_METHOD` = "commit-message match"; `SQUASH_DETECTED` = true. Downgrade to MEDIUM if `SHALLOW_CLONE=true`.
+- **MEDIUM** - mostly clean (1-2 interleavings, typically from `--reword` or `--fixup` noise during the upstream rewrite) AND INHERITED count >= 5. Candidate fork point is the SHA immediately before the FIRST commit of the trailing uninterrupted OWN run. Record the candidate and continue to Step 4.
+- **No result** - INHERITED count < 5 OR severe interleaving (>= 3 interleavings). Record nothing. Proceed to Step 4.
 
-**If HEURISTIC_SIGNAL is "strong" or "moderate":** Continue to Step 4.
-**If HEURISTIC_SIGNAL is "weak" AND no PR candidates from Step 2:** The squash-merge scenario is unlikely. Record findings and skip to Findings Presentation with `SQUASH_DETECTED` = false.
+**Short-circuit on HIGH confidence:** Skip Steps 4 and 5 entirely. Go directly to Findings Presentation.
+
+**What Step 3 does NOT do:** it does not look at commit-message prefixes, naming conventions, ticket IDs, or any other formatting patterns. It only does exact identity matching on actual message content between both sides. Patch-ID matching is not part of the cascade - message match strictly dominates it.
 
 #### Step 4: Content-Based Diff-Size Walk
 
