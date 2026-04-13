@@ -568,7 +568,7 @@ Apply 5-commit window smoothing to the diff-size sequence before computing the t
    - `right_trend` = slope of `smoothed[i..N-1]`
 3. The inflection is the position `i` that maximizes `right_trend - left_trend`.
 4. Record the commit at position `i-1` (the last inherited commit) as the candidate fork point. `git rebase --onto <target> <FORK_POINT>` replays `FORK_POINT..HEAD`, excluding `FORK_POINT` itself.
-5. **Edge case `i == 0`:** No inherited commits detected. Record `SQUASH_DETECTED=uncertain`. Do not record a FORK_POINT.
+5. **Edge case - no clear inflection:** If the best position is `i == 1` AND `right_trend - left_trend <= 0`, no inherited commits detected by the content walk (all commits appear to grow the diff from the start). Record `SQUASH_DETECTED = "uncertain"` and note that the walk couldn't distinguish inherited from own commits. Do not record a FORK_POINT from this step - fall through to Findings Presentation with the uncertain result.
 
 **Confidence assignment:**
 
@@ -578,7 +578,7 @@ Apply 5-commit window smoothing to the diff-size sequence before computing the t
 
 **No-corroboration cap:** If the content walk produces an inflection that NO prior signal corroborates (no Step 1 local branch match, no Step 2 PR, no Step 3 message match, and `BASE_WAS_REWRITTEN=false`), cap confidence at **LOW** regardless of how sharp the inflection looks. Set the Findings Presentation warning: "No independent signal confirms this fork point. Normal rebase is the safer default unless you can verify."
 
-**Record results (only when `i > 0`):**
+**Record results (only when a valid inflection with `right_trend - left_trend > 0` was found):**
 - `FORK_POINT` = commit hash at position `i-1`
 - `DETECTION_METHOD` = "content-based diff walk"
 - `SQUASH_DETECTED` = true
