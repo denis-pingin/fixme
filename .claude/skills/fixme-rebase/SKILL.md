@@ -649,8 +649,9 @@ The branch hierarchy can be deep: `master -> feat-1 -> feat-2 -> current`. If bo
 The detection steps naturally handle this:
 - **Step 1** finds the closest parent branch by checking merge-base proximity
 - **Step 2** finds the most recently merged PR whose branch shares history
-- **Step 3** heuristic signals are the same regardless of depth
-- **Step 4** content walk finds the inflection point regardless of how many ancestors were squashed - inherited commits still shrink the diff, own commits still grow it
+- **Step 3** message matching identifies inherited commits regardless of hierarchy depth - inherited commits carry the same messages as the pre-rewrite or pre-squash base
+- **Step 4** heuristic signals are the same regardless of depth (pure gate)
+- **Step 5** content walk finds the inflection point regardless of how many ancestors were squashed or rewritten - inherited commits still shrink the diff, own commits still grow it
 
 The fork point from any detection step is the point where the CURRENT branch's own commits begin, which is correct for `--onto` regardless of hierarchy depth. We don't need to identify or enumerate intermediate ancestors.
 
@@ -1140,7 +1141,7 @@ If Phase 2.5 detects `SQUASH_DETECTED` = "uncertain" or "not detected", but the 
    - Ask what the parent branch was called
    - Search `git log --oneline --all` for the branch name
    - If found, use that commit as the fork point
-   - If not found, offer to run the content-based diff walk (Phase 2.5 Step 4) with relaxed thresholds
+   - If not found, offer to run the content-based diff walk (Phase 2.5 Step 5) with relaxed thresholds
 4. Re-run with `REBASE_MODE` = "onto" and the user-specified fork point
 
 ## Error Recovery
