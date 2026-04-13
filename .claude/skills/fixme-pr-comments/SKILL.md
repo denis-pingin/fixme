@@ -460,39 +460,24 @@ show every item - not "and 15 more similar".
 **Skip this step if there are no `FIX_UNCLEAR` or `ASK_USER` items.** Proceed directly to Step 3.
 
 Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a single structured write-up.
-For each decision point, present:
 
-```
-## Decision {N}: {short title}
+**Follow the Decision Presentation Guidelines from the `fixme-decision-presentation` skill** (read it at `~/.claude/skills/fixme-decision-presentation/SKILL.md`). Each decision point uses the full structured decision block format:
 
-**Context**: {what code is involved, what the reviewer asked for, why this came up}
-
-**The issue**: {concise description of what needs to be decided}
-
-**Options**:
-
-1. **{Option A name}**
-   - Approach: {what this would look like concretely}
-   - Pros: {advantages}
-   - Cons: {disadvantages}
-
-2. **{Option B name}**
-   - Approach: {what this would look like concretely}
-   - Pros: {advantages}
-   - Cons: {disadvantages}
-
-{...more options if applicable}
-
-**Recommendation**: Option {X} - {why this is the best choice in this specific situation,
-referencing the concrete tradeoffs above}
-```
+- `## Decision {N}: {short title}` heading
+- `**Context**:` establishing WHERE in the codebase and WHAT the code does, with clickable file references
+- `**The question**:` one clear statement of what needs deciding
+- `**Options**:` each with all 5 sub-fields: Approach, Pros, Cons, Impact, Effort
+- `**Recommendation**:` with research evidence - what was investigated, why this option wins, cross-referencing the tradeoffs from Options
 
 **Presentation rules**:
+
 - Be specific and concrete - reference actual file names, function names, line numbers
+- All file references must be clickable markdown links with absolute paths and line numbers
 - Options must be genuinely distinct approaches, not variations of the same thing
 - Pros/cons must be grounded in the actual codebase context, not generic platitudes
-- The recommendation must explain WHY for this specific situation, not just state a preference
+- The recommendation must show what was researched and explain WHY for this specific situation
 - Keep each decision point self-contained - the user should understand it without scrolling back
+- Blank line between every section - decisions separated by `---` horizontal rules
 
 After presenting ALL decision points, ask the user a SINGLE question:
 
@@ -501,12 +486,14 @@ After presenting ALL decision points, ask the user a SINGLE question:
 > recommended options.
 
 **Consultation loop**:
+
 1. Parse the user's response. Map each answer to its decision point.
 2. For any decision point NOT addressed in the response, collect them as "remaining questions".
 3. If remaining questions exist, re-present ONLY those (same format as above) and ask again.
 4. Repeat until ALL decisions are resolved.
 
 **Exit conditions** (any one ends the loop):
+
 - User answered all decision points explicitly
 - User said "go with recommendations" or equivalent (use recommended option for all unanswered)
 - User said "up to you" / "your call" / equivalent for specific items (use recommendation for those)

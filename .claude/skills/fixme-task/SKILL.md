@@ -401,7 +401,29 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step.
    - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
    - For **other phase skills**: re-dispatch with the original inputs plus a summary of what was already produced.
-4. **If the re-dispatched agent also returns without the expected directive**: escalate to user. Report which agent was dispatched twice, what it produced each time, and what remains incomplete. Do NOT advance the manifest.
+4. **If the re-dispatched agent also returns without the expected directive**: escalate to user with structured context. Do NOT advance the manifest.
+
+   Present the escalation using this format:
+
+   ```markdown
+   ## Agent Escalation: {agent name} failed twice
+
+   **What was dispatched**: {agent name} for the {phase name} phase, handling {brief task description}.
+
+   **First attempt**: {2-3 sentences - what the agent produced before truncation/failure.
+   Name specific outputs: files created, tests written, findings classified.}
+
+   **Second attempt**: {2-3 sentences - same structure.}
+
+   **What remains incomplete**: {specific items the agent didn't finish - e.g., "verification
+   gate did not run", "3 of 7 findings not yet classified", "HANDLER_RESULT directive missing"}
+
+   ### How to proceed
+
+   1. **Retry with guidance** - I'll re-dispatch with specific instructions you provide.
+   2. **Skip this step** - Advance to the next manifest step. Risk: {what gets skipped}.
+   3. **Abort** - Stop the pipeline.
+   ```
 
 **The temptation**: When an executor returns without its directive but the output looks "mostly done" (tests seem to pass, code looks committed), it feels natural to just run verification yourself, confirm it's good, and move on. This is the exact failure mode this rule prevents. "Mostly done" without the directive means the agent's own verification gate did not run to completion. Your manual check is NOT equivalent - you lack the agent's accumulated context about what was changed and why, and you will skip the review phase that exists to catch what manual checks miss.
 
@@ -486,15 +508,116 @@ When a handler produces FIX_UNCLEAR or ASK_USER items:
 
 ### 1. Collect
 
-Gather all FIX_UNCLEAR and ASK_USER items from the handler output.
+Gather all items from the handler output:
 
-### 2. Present as structured decisions
+- All FIX_UNCLEAR and ASK_USER items (need user input)
+- All FIX items (will be applied automatically)
+- All REJECT_* items (dismissed)
 
-Present each item using the handler's full Question field (which follows the Decision Presentation Guidelines and is already formatted as a structured decision block with Context, The question, Options, and Recommendation).
+### 2. Present to user
 
-After presenting ALL decision points, ask the user a SINGLE consolidated question:
+**The user reads this output directly. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
 
-> Please provide your decisions for the above. You can answer by number (e.g., "1: A, 2: B") or describe your preferred approach. Reply "go with recommendations" to accept all recommended options.
+#### Formatting Rules (NON-NEGOTIABLE)
+
+All user-facing output from the orchestrator must be visually scannable:
+
+- **Blank line between every section, heading, and paragraph.** No two content blocks should be adjacent without a separator. Dense walls of text are never acceptable.
+- **Use headings** (`##`, `###`) to separate major sections (summary, confirmed fixes, decisions, closing prompt). The user must be able to skim headings to find what they need.
+- **Use bullet lists** for multiple items within a section. Never pack multiple items into a single paragraph.
+- **Use horizontal rules** (`---`) between independent decision blocks when presenting multiple decisions. Each decision is visually distinct.
+- **Bold key labels** (`**Context**:`, `**The question**:`, etc.) and start each on its own line.
+- **One idea per line/bullet.** Never combine two pieces of information into one bullet.
+- **Clickable file references everywhere.** Every file path is a markdown link with line numbers: `[schema.test.ts:132-143](/absolute/path/schema.test.ts#L132-L143)`. No plain-text paths.
+
+#### Routing Metadata Prohibition
+
+**Never expose internal pipeline state to the user.** These terms are internal routing language and must NEVER appear in user-facing output:
+
+- `HAS_FIX`, `HAS_ASK_USER`, `HANDLER_RESULT`, `CLEAN`
+- `FIX_COUNT`, `FIX_UNCLEAR_COUNT`, `ASK_USER_COUNT`
+- `NEXT_ACTION`, `OUTER_LOOP`, `ASK_USER_BATCH`
+- `EXECUTOR_STATUS`, `NEXT_PIPELINE_STEP`
+
+Use human language instead. "The code review found 3 issues" not "Handler returned HAS_ASK_USER + HAS_FIX."
+
+#### Output Structure
+
+Present the output in this exact order, with proper spacing between all sections:
+
+**1. Summary line** - One sentence in plain language. Exact counts, no routing metadata.
+
+```
+The {plan/code} review found {N} issues: {X} confirmed fix(es) that will be applied
+automatically, {Y} need(s) your input{, Z dismissed}.
+```
+
+**2. Confirmed fixes** (only when FIX items coexist with questions) - Brief list so the user knows what will be applied automatically after their decisions. Keep each item to one sentence.
+
+```markdown
+### Confirmed Fixes (will be applied after your decisions)
+
+1. **{short title}** - {one sentence: what's wrong and what the fix will do.}
+   Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
+
+2. **{short title}** - {one sentence.}
+   Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
+```
+
+**3. Decision points** - Present each ASK_USER and FIX_UNCLEAR item using the handler's **full Question field verbatim**. The handler's Question field follows the Decision Presentation Guidelines (from the `fixme-decision-presentation` shared skill) and is already formatted as a structured decision block.
+
+**Do NOT summarize, rephrase, or compress the handler's Question field.** The handler invested significant effort in making the question self-contained, properly structured, and concrete. Summarizing it destroys the context, clickable file references, option structure (Pros/Cons/Impact/Effort), and cross-references that make the decision possible.
+
+**Do NOT replace the handler's structured format with flat paragraphs.** If the handler produced:
+
+```
+## Decision: {title}
+
+**Context**: {established context with clickable file references}
+
+**The question**: {clear statement}
+
+**Options**:
+
+1. **{Option A}**
+   - Approach: ...
+   - Pros: ...
+   - Cons: ...
+   - Impact: ...
+   - Effort: ...
+
+2. **{Option B}**
+   - Approach: ...
+   - Pros: ...
+   - Cons: ...
+   - Impact: ...
+   - Effort: ...
+
+**Recommendation**: Option {X} - {reasoning}
+```
+
+...then that EXACT structure, with all its spacing and sub-fields, is what the user sees. Not a compressed paragraph. Not a flat list. The full structured block with blank lines between sections.
+
+When presenting multiple decisions, separate them with `---` horizontal rules.
+
+**4. Closing prompt** - After ALL decision points, one consolidated question:
+
+```
+Please provide your decisions for the above. You can answer by number (e.g., "1: A, 2: B")
+or describe your preferred approach. Reply "go with recommendations" to accept all
+recommended options.
+```
+
+#### Quality Verification
+
+Before sending the output to the user, verify:
+
+- [ ] No routing metadata terms appear anywhere in the text
+- [ ] Every file reference is a clickable markdown link with line numbers
+- [ ] Every section is separated by a blank line
+- [ ] Each decision block has the full structured format (Context, The question, Options with sub-fields, Recommendation)
+- [ ] Options have Pros, Cons, Impact, and Effort sub-fields (not just a flat sentence)
+- [ ] Context explains WHAT the affected code does and WHERE it lives before stating the problem
 
 ### 3. Process answers
 
@@ -504,6 +627,7 @@ Parse the user's response. Map each answer to its decision point.
 - Repeat until all decisions are resolved.
 
 **Exit conditions** (any one ends the loop):
+
 - User answered all decision points explicitly
 - User said "go with recommendations" or equivalent (use recommended option for all unanswered)
 - User said "up to you" / "your call" / equivalent for specific items (use recommendation for those)
@@ -516,8 +640,40 @@ If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: 
 
 ## Loop Guards
 
-- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). If FIX items remain after max cycles, present them to user with context: "These issues persist after N revision attempts in the [phase] phase: [list]. Options: (a) proceed to next phase anyway, (b) provide guidance on how to resolve, (c) abort."
-- **Outer loop**: max 2 iterations. If FIX items remain after 2 full cycles, present them to user: "These review issues persist after 2 full cycles: [list]. Options: (a) accept current state, (b) provide guidance, (c) abort."
+- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). If FIX items remain after max cycles, escalate to user using the format below.
+- **Outer loop**: max 2 iterations. If FIX items remain after 2 full cycles, escalate to user using the format below.
+
+### Loop Guard Escalation Format
+
+When escalating persistent issues to the user, follow top-down progressive disclosure. No routing metadata. The user needs enough context to make an informed decision.
+
+```markdown
+## Pipeline Escalation: {phase name} review
+
+The {phase name} review has run {N} cycles. {M} issues were fixed across iterations,
+but {K} remain unresolved.
+
+### Unresolved Issues
+
+{For each remaining FIX item:}
+
+**{N}. {short title}**
+
+- **What**: {one sentence - what's wrong, with clickable file/line references}
+- **Why it persists**: {one sentence - why prior iterations didn't resolve it
+  (e.g., fix introduced a new issue, fix broke tests, competing constraints)}
+- **Impact if shipped as-is**: {one sentence - what breaks or degrades}
+
+### How to proceed
+
+1. **Proceed to next phase** - Ship with these known issues.
+   Risk: {concrete statement of what will happen, e.g., "Users will see X when Y"}
+
+2. **Provide guidance** - Tell me how to approach these differently.
+   I'll revise and re-enter the review loop.
+
+3. **Abort** - Stop the pipeline. No further changes.
+```
 
 ## Error Handling
 

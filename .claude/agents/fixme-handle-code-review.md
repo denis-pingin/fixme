@@ -4,6 +4,7 @@ description: Triages code review findings using the unified taxonomy (FIX, FIX_U
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-code-review
+  - fixme-decision-presentation
 ---
 
 <role>

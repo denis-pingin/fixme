@@ -95,64 +95,15 @@ End with a summary section:
 
 ## Decision Presentation Guidelines (ASK_USER and FIX_UNCLEAR)
 
-The Question field is what the user reads to make a decision. It must be self-contained - the user should understand the situation and be able to decide without re-reading the finding, the plan, or the code. Follow top-down progressive disclosure: lead with context, state what needs deciding, then provide the details needed to decide well.
+**The full guidelines are preloaded from the `fixme-decision-presentation` skill.** Follow them exactly for all ASK_USER and FIX_UNCLEAR Question fields.
 
-### Structure
+Key requirements (see preloaded skill for complete spec):
 
-Format the Question field as a structured decision block:
-
-```
-## Decision: {short descriptive title}
-
-**Context**: {Establish WHERE in the system this happens - the feature, component, or
-module involved. Build just enough mental model for the reader to understand the question.
-Define any non-obvious concepts before referencing them. Include clickable file references
-with line numbers (e.g., `[auth.ts:42](src/auth.ts#L42)`) for every file/line mentioned.}
-
-**The question**: {One clear statement of what specifically needs to be decided. Not a
-paragraph - one or two sentences max.}
-
-**Options**:
-
-1. **{Option A name}**
-   - Approach: {what this looks like concretely - files, patterns, APIs involved}
-   - Pros: {specific advantages grounded in this codebase, not generic platitudes}
-   - Cons: {specific disadvantages grounded in this codebase}
-   - Impact: {effects on performance, UX, maintainability, security - only dimensions
-     that actually differ between options}
-   - Effort: {relative cost to implement - "trivial", "small", "moderate", "significant"}
-
-2. **{Option B name}**
-   - Approach: {same structure - cross-reference option 1 where the contrast matters}
-   - Pros: ...
-   - Cons: ...
-   - Impact: ...
-   - Effort: ...
-
-{...more options if genuinely distinct - not variations of the same thing}
-
-**Recommendation**: Option {X} - {concrete reasoning tied to THIS specific situation.
-Reference actual code, API behavior, data volumes, or user-facing impact. Explain WHY
-this option wins given the tradeoffs above, not just that you prefer it. The user should
-be able to just say "yes" if they agree.}
-```
-
-### Rules
-
-- **Options are mandatory** for FIX_UNCLEAR. For ASK_USER, include options when there are genuinely different directions (fix vs. defer vs. ignore). When the question is purely "is this a real issue?", you can omit Options and instead present the evidence for and against under Context.
-- **Recommendation is mandatory**. Always. Do research first (read code, check docs, trace call paths). Never ask without a recommendation.
-- **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
-- **Cross-reference between options**. When Option B's main advantage is that it avoids Option A's biggest con, say so explicitly. Don't make the reader connect the dots.
-
-### Quality bar
-
-- **Self-contained**: the reader understands the full situation from this block alone, without scrolling back or re-reading code.
-- **Top-down**: context and mental model first, then the question, then the details. Never reference a concept before establishing it.
-- **Concrete**: actual file names, function names, line numbers, data volumes, error messages. "There's a size-related issue" is not acceptable - "the API returns 502 when payload exceeds 1MB" is.
-- **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
-- **Neutral**: present the tradeoffs honestly. Don't bias toward FIX or REJECT in how the question is framed.
-- **Scannable**: use the structured format above. Dense paragraphs are a last resort.
-- **Clickable**: every file reference is a markdown link with line numbers. No exceptions.
+- The Question field must be the FULL structured decision block - `## Decision:` heading, `**Context**:`, `**The question**:`, `**Options**:` with all 5 sub-fields (Approach, Pros, Cons, Impact, Effort), and `**Recommendation**:` with research evidence
+- Never compress the Question field into a flat paragraph or omit sub-fields
+- Every file reference must be a clickable markdown link with absolute path and line numbers
+- Blank line between every section - no dense walls of text
+- Recommendation must show what was investigated and cross-reference the Options section's tradeoffs
 
 ## Rules
 
