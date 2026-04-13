@@ -27,8 +27,8 @@ Before classifying anything, read all of these:
 
 ## Classification
 
-- **FIX** - real issue that affects correctness, behavior, security, performance, test quality, or maintainability. A single clear fix approach exists. Fixing it will improve the implementation without breaking anything or contradicting the plan's intent.
-- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist, tradeoffs are involved, or the fix might require changes the finding doesn't account for (e.g., test updates, upstream changes). The issue's validity is not in question - only the approach.
+- **FIX** - real issue that affects correctness, behavior, security, performance, test quality, or maintainability. Either a single clear fix approach exists, OR one approach clearly dominates all alternatives on merit (grounded in concrete tradeoffs, not editorial labels like "simpler"). Fixing it will improve the implementation without breaking anything or contradicting the plan's intent. If the reviewer presented multiple options, you MUST independently evaluate each before classifying as FIX - see Multi-Option Discipline.
+- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist with genuine tradeoffs, the fix might require changes the finding doesn't account for (e.g. test updates, upstream changes), or no option clearly dominates the others. This is the default classification whenever the reviewer offered 2+ options and your own independent evaluation does not produce a clear winner. The issue's validity is not in question - only the approach.
 - **ASK_USER** - the finding might be valid but classification depends on intent, priorities, constraints, or design decisions not captured in the plan, spec, or code. A human decision is needed to determine validity.
 - **REJECT_FALSE_POSITIVE** - finding is factually wrong. The code is correct, the reviewer misunderstood the implementation, the API behavior, or the codebase conventions.
 - **REJECT_WONT_FIX** - finding is technically valid but implementing it would make things worse, contradicts the plan's approach (which is not demonstrably broken), contradicts a locked decision, or adds regression risk for marginal benefit.
@@ -45,6 +45,7 @@ For each finding, before classifying:
 5. **Check if the finding would break something.** Trace the suggested change through callers, tests, and dependent code. A finding that's locally correct but breaks something downstream is REJECT_WONT_FIX (or if the broader approach is unclear, FIX_UNCLEAR).
 6. **Check if "improvement" adds risk.** Refactoring suggestions that touch working code to make it "cleaner" add regression risk for aesthetic benefit. Unless there's a concrete flaw, REJECT_WONT_FIX.
 7. **Does this contradict a locked decision?** If yes: does the finding reveal a concrete problem not visible when the decision was made? If so, classify ASK_USER with new evidence. If the finding merely disagrees with the chosen approach, classify REJECT_WONT_FIX. The user already made this call.
+8. **Multi-option evaluation.** If the finding's Suggestion presents 2+ plausible fix approaches, you MUST independently evaluate each on concrete tradeoffs (correctness, performance on common vs. rare paths, maintainability, test quality, effort, risk) before classifying. Never anchor on editorial shortcuts ("simpler", "easier", "cleaner", "lighter touch", "just X") - an option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters. See Multi-Option Discipline below for the full decision tree.
 
 ## Common False Positive Patterns
 
@@ -66,6 +67,23 @@ Unlike plan review findings, code review findings interact with running software
 - **Does the fix match the plan's architecture?** A finding that pushes toward a different architecture than the plan specified is a plan disagreement, REJECT_WONT_FIX (plan design disagreement).
 - **Is the test finding about test quality or about production code?** A finding saying "this test reimplements business logic" is about the test. A finding saying "this function has a bug" is about production code. Don't conflate them - they have different fix approaches.
 - **Would reverting to make the reviewer happy reintroduce the bug/gap the plan was fixing?** If yes, REJECT_WONT_FIX.
+
+## Multi-Option Discipline
+
+When a finding's Suggestion presents 2+ plausible fix approaches (including "drop the fix" or "add a comment" as options), apply this discipline before classifying. This section exists because the default failure mode is to anchor on whichever option the reviewer labeled "simpler" and collapse the decision without evaluation.
+
+1. **Independently evaluate every option.** For each, assess concrete tradeoffs: correctness, performance on common vs. rare code paths, maintainability, user-visible behavior, security, test quality, effort, risk. Read the referenced code yourself. Do not outsource this evaluation to the reviewer - the reviewer's preference is a hypothesis, not the answer.
+
+2. **Strike editorial shortcuts from your reasoning.** Words like "simpler", "easier", "cleaner", "lighter touch", "just X" are anchors, not arguments. A "simpler" option that makes every request pay an extra I/O round-trip is not simpler in the dimension that matters. If your justification for picking an option reduces to "the reviewer called it simpler", you have not done the evaluation.
+
+3. **Classify based on the evaluation outcome:**
+   - **One option clearly dominates** on the dimensions that matter, with no material downside → **FIX**. The Approach field records that option and cites WHY it wins on the concrete tradeoff, not on editorial language.
+   - **Multiple options are viable** with genuine tradeoffs, or no option clearly dominates → **FIX_UNCLEAR**. The Question field presents every option with full Approach/Pros/Cons/Impact/Effort and a researched Recommendation (per the fixme-decision-presentation format). Let the user choose. This is the default when your evaluation does not produce a clear winner.
+   - **Every option is strictly worse than the status quo** (including "drop the fix" as an option) → **REJECT_WONT_FIX**, with per-option disqualifying flaws listed. "Simpler to not do it" is not a disqualifying flaw.
+
+4. **"Drop the fix" or "just add a comment" is not a free answer.** These resolutions require either proving the original concern was invalid (→ REJECT_FALSE_POSITIVE with evidence) OR proving every alternative is strictly worse than leaving the code alone (→ REJECT_WONT_FIX with a per-option evaluation). Collapsing a multi-option finding into "drop it" because one option was labeled "simpler" is the exact failure mode this section exists to prevent.
+
+5. **Default to FIX_UNCLEAR when uncertain.** If you have evaluated every option and cannot confidently name a winner, that is FIX_UNCLEAR. The handler's job is to protect the user's ability to choose the best option, not to save them the decision by picking the path of least resistance.
 
 ## Output Format
 
@@ -114,6 +132,7 @@ Key requirements (see preloaded skill for complete spec):
 - When in doubt between FIX and REJECT, classify ASK_USER. If the issue is clearly valid but the approach is ambiguous, classify FIX_UNCLEAR. A wrong FIX wastes implementation time and can introduce bugs. A wrong REJECT hides a real issue. ASK_USER or FIX_UNCLEAR costs only a question.
 - The REJECT rationale summary is mandatory. If you can't articulate why findings were rejected, you didn't analyze them carefully enough.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
+- Multi-option findings default to FIX_UNCLEAR. Collapsing multiple alternatives into a single "simpler" FIX approach - or into REJECT_WONT_FIX or "add a comment" - requires an independent evaluation that names concrete tradeoffs, not editorial labels. See Multi-Option Discipline and Pre-Classification Gate 8.
 
 ## Routing Directive
 
