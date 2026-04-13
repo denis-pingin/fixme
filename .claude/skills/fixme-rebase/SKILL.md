@@ -501,19 +501,21 @@ Before running the full walk, measure actual per-commit cost on this repo with a
 ```bash
 MERGE_BASE=$(git merge-base HEAD <BASE_BRANCH>)
 TOTAL_COMMITS=$(git rev-list --count $MERGE_BASE..HEAD)
-FIRST5=$(git rev-list --reverse $MERGE_BASE..HEAD | head -5)
-WARMUP=$(echo "$FIRST5" | head -1)
+FIRST6=$(git rev-list --reverse $MERGE_BASE..HEAD | head -6)
+WARMUP=$(echo "$FIRST6" | head -1)
+SAMPLES=$(echo "$FIRST6" | tail -5)
 
 # Warm-up (discarded, warms git object cache)
 git diff --shortstat <BASE_BRANCH> $WARMUP >/dev/null 2>&1
 
 # 5 measurement samples
-start=$(date +%s%N)
-for c in $FIRST5; do
+now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+start_ms=$(now_ms)
+for c in $SAMPLES; do
   git diff --shortstat <BASE_BRANCH> $c >/dev/null
 done
-elapsed_ns=$(( $(date +%s%N) - start ))
-per_call_ms=$(( elapsed_ns / 5 / 1000000 ))
+elapsed_ms=$(( $(now_ms) - start_ms ))
+per_call_ms=$(( elapsed_ms / 5 ))
 estimated_total_sec=$(( per_call_ms * TOTAL_COMMITS / 1000 ))
 echo "per_call_ms=$per_call_ms total_commits=$TOTAL_COMMITS estimated_total_sec=$estimated_total_sec"
 ```
