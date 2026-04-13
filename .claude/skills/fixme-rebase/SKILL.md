@@ -391,20 +391,20 @@ This step strictly dominates patch-ID matching and is the primary detector for t
 MERGE_BASE=$(git merge-base HEAD <BASE_BRANCH>)
 
 # Collect identity keys on the base side (unique). Tab-separated.
-git log --format='%s%x09%ae%x09%at' $MERGE_BASE..<BASE_BRANCH> | sort -u > /tmp/fixme_base_keys
+git log --format='%s%x09%ae%x09%at' $MERGE_BASE..<BASE_BRANCH> | sort -u > "$REBASE_DIR/base_keys"
 
 # Label each of our commits INHERITED or OWN, in topological order.
 git log --reverse --format='%H%x09%s%x09%ae%x09%at' $MERGE_BASE..HEAD \
   | while IFS=$'\t' read -r sha subject email authored_date; do
       key=$(printf '%s\t%s\t%s' "$subject" "$email" "$authored_date")
-      if grep -Fxq "$key" /tmp/fixme_base_keys; then
+      if grep -Fxq "$key" "$REBASE_DIR/base_keys"; then
         echo "INHERITED $sha $subject"
       else
         echo "OWN $sha $subject"
       fi
-    done > /tmp/fixme_labels
+    done > "$REBASE_DIR/labels"
 
-cat /tmp/fixme_labels
+cat "$REBASE_DIR/labels"
 ```
 
 The output is a labeled sequence showing every commit in `MERGE_BASE..HEAD` as INHERITED or OWN, preserving topological order.
@@ -552,7 +552,7 @@ git rev-list --reverse $MERGE_BASE..HEAD | while read c; do
   size=$(git diff --shortstat <BASE_BRANCH> $c | \
     awk '{ins=0; del=0; for(k=1;k<=NF;k++){if($k~/insertion/)ins=$(k-1); if($k~/deletion/)del=$(k-1)} print ins+del}')
   echo "$c $size"
-done > /tmp/fixme_walk_sizes
+done > "$REBASE_DIR/walk_sizes"
 ```
 
 In windowed mode, replace `git rev-list --reverse $MERGE_BASE..HEAD` with the windowed slice centered on the Step 3 candidate.
