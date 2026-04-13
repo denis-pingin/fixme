@@ -144,18 +144,52 @@ Determine what to rebase onto. Priority order:
    Before rebasing, ensure both the base branch and the current branch are up-to-date with their remotes. These checks ONLY apply when a branch has a remote tracking branch - local-only branches are fine as-is.
 
    **a. Freshen the base branch:**
+
+   Resolve the tracked upstream name dynamically - never hardcode `origin`:
    ```bash
-   git rev-parse --abbrev-ref --symbolic-full-name <BASE_BRANCH>@{upstream} 2>/dev/null
+   UPSTREAM=$(git rev-parse --abbrev-ref <BASE_BRANCH>@{upstream} 2>/dev/null)
    ```
-   - **No upstream (local-only):** Skip - use the local ref as-is.
+   - **No upstream (local-only):** Skip - use the local ref as-is. Set `BASE_WAS_REWRITTEN=false`.
    - **Has upstream:** Fetch and compare:
      ```bash
-     git fetch origin <BASE_BRANCH>
-     git rev-list <BASE_BRANCH>...origin/<BASE_BRANCH> --count --left-right
+     git fetch $(echo "$UPSTREAM" | cut -d/ -f1) $(echo "$UPSTREAM" | cut -d/ -f2-)
+     git rev-list <BASE_BRANCH>...$UPSTREAM --count --left-right
      ```
-     - **Behind only (0 ahead, N behind):** Fast-forward silently: `git branch -f <BASE_BRANCH> origin/<BASE_BRANCH>`.
-     - **Up-to-date (0, 0):** Good, proceed.
-     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Base branch `<BASE_BRANCH>` has diverged from `origin/<BASE_BRANCH>` (N local commits ahead, M remote commits behind). Cannot rebase onto a diverged base. Please reconcile `<BASE_BRANCH>` with its remote first." Do not proceed.
+     - **Behind only (0 ahead, N behind):** Fast-forward silently: `git branch -f <BASE_BRANCH> $UPSTREAM`. Set `BASE_WAS_REWRITTEN=false`.
+     - **Up-to-date (0, 0):** Set `BASE_WAS_REWRITTEN=false`. Proceed.
+     - **Diverged (N ahead, M behind):** Run the ancestry check BEFORE stopping. The local base may simply be stale relative to an upstream that was rewritten (rebase, amend, force-push), in which case every "local-ahead" commit is actually an ancestor of HEAD and the local ref is safe to reset.
+
+       **Ancestry check (single Bash invocation with an internal shell loop):**
+       ```bash
+       diverged=$(git rev-list $UPSTREAM..<BASE_BRANCH>)
+       all_ancestors=true
+       missing=false
+       for c in $diverged; do
+         if ! git cat-file -e "$c^{commit}" 2>/dev/null; then
+           missing=true
+           break
+         fi
+         if ! git merge-base --is-ancestor "$c" HEAD 2>/dev/null; then
+           all_ancestors=false
+           break
+         fi
+       done
+       echo "all_ancestors=$all_ancestors missing=$missing"
+       ```
+
+       **Decision:**
+
+       - **`missing=true`** (shallow clone with commits beyond the boundary - `SHALLOW_CLONE=true` triggers this path): abort the auto-reset. Fall through to the diverged STOP below. Do not guess.
+       - **`all_ancestors=true`** (every local-only commit is reachable from HEAD, i.e., the base branch's "extra" commits are identical-or-older to what we already contain): safe to reset automatically.
+         1. Record the pre-reset SHA: `PRE_RESET_SHA=$(git rev-parse <BASE_BRANCH>)`
+         2. Create a backup branch: `git branch backup/fixme-rebase/<BASE_BRANCH>-$(date -u +%Y%m%dT%H%M%SZ) <BASE_BRANCH>`
+         3. Reset: `git branch -f <BASE_BRANCH> $UPSTREAM`
+         4. Set `BASE_WAS_REWRITTEN=true`
+         5. Announce to the user: "Local `<BASE_BRANCH>` had N commits that are already contained in HEAD. Upstream appears to have been rewritten. Reset local `<BASE_BRANCH>` to `$UPSTREAM` (was at `<PRE_RESET_SHA>`). Backup saved as `backup/fixme-rebase/<BASE_BRANCH>-<timestamp>`."
+         6. Continue to Phase 1 step 6.
+       - **`all_ancestors=false`** (at least one local-only commit is real local work not present in HEAD): fall through to the diverged STOP below - the base branch holds genuine work that must not be discarded.
+
+       **Diverged STOP (only reached when ancestry check says auto-reset is unsafe):** Tell the user: "Base branch `<BASE_BRANCH>` has diverged from its upstream `$UPSTREAM` (N local commits ahead, M remote commits behind) and the local-ahead commits are not all reachable from HEAD. Cannot auto-reset. Please reconcile `<BASE_BRANCH>` with its upstream first." Do not proceed.
 
    **b. Freshen the current branch:**
    ```bash
