@@ -426,6 +426,48 @@ The output is a labeled sequence showing every commit in `MERGE_BASE..HEAD` as I
 
 **What Step 3 does NOT do:** it does not look at commit-message prefixes, naming conventions, ticket IDs, or any other formatting patterns. It only does exact identity matching on actual message content between both sides. Patch-ID matching is not part of the cascade - message match strictly dominates it.
 
+#### Step 4: Heuristic Signals (Gate for Content Walk)
+
+Compare commit count divergence vs actual diff size. This step confirms whether the already-represented scenario is likely but does NOT locate the fork point. It gates whether to run the more expensive Step 5 (content walk).
+
+These values are already available from Phase 2:
+- Commit count: number of commits in `MERGE_BASE..HEAD` (Phase 2 step 2)
+- Cherry-mark data: commits marked `=` in symmetric diff (Phase 2 step 6)
+
+Compute the additional signal as a single Bash invocation:
+```bash
+# Actual diff size in lines changed
+git diff --stat <BASE_BRANCH> HEAD | tail -1
+
+# Total lines changed across all individual commits (single pipeline)
+git log --oneline --stat <MERGE_BASE>..HEAD | grep -E "files? changed" | awk '{s += $4 + $6} END {print s}'
+```
+
+**Heuristic evaluation:**
+
+The already-represented signal is the ratio between the actual diff against target (`git diff --stat <BASE_BRANCH> HEAD`) and the sum of individual commit diffs. In a normal branch these are roughly similar. In a squash-merge or upstream-rewrite scenario:
+- The individual commits include all the parent's or pre-rewrite commits (large cumulative diff)
+- The actual diff against target is small (those changes already on target)
+- So the ratio (actual_diff / cumulative_commit_diff) is much less than 1
+
+**Scoring:**
+- If actual diff is less than 20% of cumulative commit diffs: **STRONG signal**. Record `HEURISTIC_SIGNAL` = "strong".
+- If actual diff is 20-50%: **MODERATE signal**. Record `HEURISTIC_SIGNAL` = "moderate".
+- If actual diff is more than 50%: **WEAK/NO signal**. Record `HEURISTIC_SIGNAL` = "weak".
+
+Also check:
+- If more than 50% of commits are marked `=` in cherry-mark: additional confirmation
+- If `=`-marked count is 0 but the heuristic is strong: the rewrite or squash changed content enough that cherry-mark can't match (common after squash merges or upstream rebases that touched conflict zones)
+
+**Gating decision:**
+- **`HEURISTIC_SIGNAL` strong or moderate:** Continue to Step 5 (content walk).
+- **`HEURISTIC_SIGNAL` weak AND no PR candidates from Step 2 AND no MEDIUM candidate from Step 3 AND `BASE_WAS_REWRITTEN=false`:** The already-represented scenario is unlikely. Record findings and skip to Findings Presentation with `SQUASH_DETECTED` = false.
+- **`HEURISTIC_SIGNAL` weak BUT `BASE_WAS_REWRITTEN=true`:** Do NOT skip Step 5 - the weak heuristic is overridden by the independent rewrite signal. Continue to Step 5 in full walk mode.
+- **`HEURISTIC_SIGNAL` weak BUT Step 3 produced a MEDIUM candidate:** Continue to Step 5 in windowed mode around that candidate.
+
+This step is a gate, not a detector. It never sets `FORK_POINT` directly.
+
+
 #### Step 4: Content-Based Diff-Size Walk
 
 For each commit in `MERGE_BASE..HEAD` (oldest to newest), compute the total change size of `git diff --stat <BASE_BRANCH> <commit>`. Track how this size changes across the commit sequence.
