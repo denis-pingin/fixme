@@ -586,46 +586,61 @@ Apply 5-commit window smoothing to the diff-size sequence before computing the t
 
 #### Findings Presentation
 
-**This is a mandatory user confirmation gate. Never proceed to rebase without explicit user approval.**
+**This is a mandatory, non-negotiable user confirmation gate for any `--onto` recommendation, regardless of detection confidence.**
+
+Before running `git rebase --onto`, the skill MUST present the Findings block and receive an explicit user response. HIGH confidence is not a license to skip confirmation. Proceeding without user confirmation is a skill violation regardless of detection quality. This gate exists to catch detection errors that no algorithm can prevent.
 
 Present ALL findings from the detection steps, regardless of which step produced the definitive answer:
 
 ```
-## Squash-Merged Ancestor Detection
+## Already-Represented Ancestor Detection
 
 **Detection result:** <DETECTED / UNCERTAIN / NOT DETECTED>
 **Detection method:** <which step(s) produced evidence>
 **Confidence:** <HIGH / MEDIUM / LOW>
+**Scenario:** <squash merge / upstream rewrite / both signals present / none>
 
 ### Evidence
 
-<For each detection step that ran, show what was found:>
+**Step 1 - Local Branch Check:** <found parent branch X / no matching branches>
+**Step 2 - GitHub PR Metadata:** <PR #N squash-merged branch X / no matching PRs / empty result expected because BASE_WAS_REWRITTEN=true / candidates found>
+**Step 3 - Commit-Message Match:** <partition clean/interleaved, N inherited, M own, candidate fork point <sha> / no result>
+**Step 4 - Heuristic Signals:** <actual diff is N% of cumulative (strong/moderate/weak); gate decision: ran/skipped Step 5>
+**Step 5 - Content Walk:** <ran in full/windowed mode, inflection at commit <sha>, diff shrinking from N to M lines then growing to K / skipped (reason)>
 
-**Step 1 - Local Branch Check:** <result - found parent branch X / no matching branches>
-**Step 2 - GitHub PR Metadata:** <result - PR #N squash-merged branch X / no matching PRs / candidates found>
-**Step 3 - Heuristic Signals:** <result - actual diff is N% of cumulative (signal strength)>
-**Step 4 - Content Walk:** <result - inflection at commit <hash> with diff shrinking from N to M lines, then growing to K>
+### Warnings
+
+<Only include lines that apply:>
+- [SHALLOW CLONE] Detection ran on a shallow clone. Content walk was skipped. Accuracy reduced.
+- [NO CORROBORATION] No independent signal confirms this fork point. Normal rebase is the safer default unless you can verify.
+- [COST PROMPT] User accepted/declined a content-walk cost prompt above 60s.
+- [UPSTREAM REWRITE] BASE_WAS_REWRITTEN=true. Local base branch was auto-reset in Phase 1 Step 5a. Step 2 empty result treated as expected.
 
 ### Recommended Action
 
-**Fork point:** `<FORK_POINT>` (<short description - e.g., "where current branch diverged from feat/parent-feature">)
-**Commits to replay:** N (commits from fork point to HEAD - the current branch's own work)
-**Commits to skip:** M (inherited commits between MERGE_BASE and fork point)
+**Fork point:** `<FORK_POINT>` - `<subject>` (<description, e.g., "last commit inherited from pre-rewrite base">)
+**Commits to replay (OWN group):** N
+<full list of OWN commits as oneline>
+**Commits to skip (INHERITED group):** M
+<full list of INHERITED commits as oneline>
 
 **Rebase command:** `git rebase --onto <BASE_BRANCH> <FORK_POINT> <current-branch>`
 
 This will:
 1. Take commits from `<FORK_POINT>..HEAD` (your N own commits)
-2. Replay them onto `<BASE_BRANCH>` (the target)
-3. Skip the M inherited commits (already on target via squash merge)
+2. Replay them onto `<BASE_BRANCH>`
+3. Skip the M inherited commits (already on target)
 ```
 
 **Ask the user:** "Proceed with `--onto` rebase using the detected fork point? You can also specify a different fork point if the detection is off."
 
-**If user confirms:** Record `REBASE_MODE` = "onto", `FORK_POINT` = confirmed fork point. Proceed to Phase 3.
-**If user specifies a different fork point:** Use that instead. Record `REBASE_MODE` = "onto", `FORK_POINT` = user-specified.
-**If user says no / wants normal rebase:** Record `REBASE_MODE` = "normal". Proceed to Phase 3 with standard rebase flow.
-**If detection result is NOT DETECTED:** Skip the confirmation entirely, proceed to Phase 3 with `REBASE_MODE` = "normal".
+**Acceptable responses:**
+- Explicit approval: set `REBASE_MODE` = "onto", keep `FORK_POINT`, proceed to Phase 3.
+- User-supplied override: use the user's fork point, set `REBASE_MODE` = "onto", proceed to Phase 3.
+- Rejection ("no", "use normal"): set `REBASE_MODE` = "normal", proceed to Phase 3.
+- Abort ("stop", "cancel"): stop the skill entirely.
+
+**If detection result is NOT DETECTED:** Still present the (empty) findings and warnings as an informational block, then proceed to Phase 3 with `REBASE_MODE` = "normal". User confirmation is not required when there is no `--onto` recommendation to confirm - but the findings block is still printed so the reasoning is visible.
 
 #### Deep Hierarchy Handling
 
