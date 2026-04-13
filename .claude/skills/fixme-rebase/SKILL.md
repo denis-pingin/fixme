@@ -468,51 +468,121 @@ Also check:
 This step is a gate, not a detector. It never sets `FORK_POINT` directly.
 
 
-#### Step 4: Content-Based Diff-Size Walk
+#### Step 5: Content-Based Diff-Size Walk
 
-For each commit in `MERGE_BASE..HEAD` (oldest to newest), compute the total change size of `git diff --stat <BASE_BRANCH> <commit>`. Track how this size changes across the commit sequence.
+Walk commits in `MERGE_BASE..HEAD` and record the diff size of each commit against `<BASE_BRANCH>`. Find the inflection where diff sizes transition from shrinking (inherited) to growing (own work). This catches heavy rewrites, squashes, and anything else Steps 1-4 missed.
 
-**The insight:** Inherited commits (from the squash-merged parent) produce diffs against the target that SHRINK as we walk forward in time. This is because each inherited commit brings the branch closer to the state that was squash-merged. At the fork point (where the current branch's own commits begin), the diff starts GROWING because new work is diverging from the target.
+**Shallow-clone skip (check this FIRST):**
 
 ```bash
-# List commits oldest to newest
-git rev-list --reverse <MERGE_BASE>..HEAD
+if [ "$SHALLOW_CLONE" = "true" ]; then
+  echo "content-walk: skipped (shallow clone)" >&2
+  # Skip to Findings Presentation
+fi
 ```
 
-For each commit in that list:
+If `SHALLOW_CLONE=true`, do not run any of the steps below. Go directly to Findings Presentation. Shallow clones cannot reliably walk historical diffs because objects beyond the shallow boundary are missing.
+
+**Execution model:** The entire walk runs as a single Bash invocation with an internal shell loop. Shell-side aggregation produces one compact table. The LLM does one parse pass on the pre-aggregated output.
+
+**Other reasons the walk is skipped:**
+- Steps 1, 2, or 3 short-circuited with HIGH confidence, OR
+- The calibration-based cost estimate exceeds the user's chosen threshold AND the user declines to run it (see "Cost calibration" below).
+
+**Modes:**
+
+- **Windowed mode** - if a fork-point candidate exists from Step 3 at MEDIUM confidence: walk only `max(10, ceil(0.1 * total_commits))` commits on each side of the candidate. Purpose: verify and upgrade confidence.
+- **Full walk mode** - if no candidate exists from Step 3: walk every commit in `MERGE_BASE..HEAD`.
+
+**Cost calibration (mandatory before full walk):**
+
+Before running the full walk, measure actual per-commit cost on this repo with a warm cache. One warm-up diff call, then 5 measured samples. Single Bash invocation:
+
 ```bash
-# Get total lines changed (insertions + deletions)
-git diff --stat <BASE_BRANCH> <commit> | tail -1
+MERGE_BASE=$(git merge-base HEAD <BASE_BRANCH>)
+TOTAL_COMMITS=$(git rev-list --count $MERGE_BASE..HEAD)
+FIRST5=$(git rev-list --reverse $MERGE_BASE..HEAD | head -5)
+WARMUP=$(echo "$FIRST5" | head -1)
+
+# Warm-up (discarded, warms git object cache)
+git diff --shortstat <BASE_BRANCH> $WARMUP >/dev/null 2>&1
+
+# 5 measurement samples
+start=$(date +%s%N)
+for c in $FIRST5; do
+  git diff --shortstat <BASE_BRANCH> $c >/dev/null
+done
+elapsed_ns=$(( $(date +%s%N) - start ))
+per_call_ms=$(( elapsed_ns / 5 / 1000000 ))
+estimated_total_sec=$(( per_call_ms * TOTAL_COMMITS / 1000 ))
+echo "per_call_ms=$per_call_ms total_commits=$TOTAL_COMMITS estimated_total_sec=$estimated_total_sec"
 ```
 
-Parse the "N files changed, M insertions(+), K deletions(-)" line. Record total_changes = M + K for each commit.
+**Cost threshold decision:**
 
-**Finding the inflection point:**
+- **`estimated_total_sec` <= 60:** Run the walk. Print pre-walk announcement: "Content walk over N commits, estimated ~Xs based on 5-sample calibration."
+- **`estimated_total_sec` > 60:** Do NOT silently skip. Present the estimate and let the user choose:
 
-Walk the sequence and look for the point where the diff size transitions from shrinking (or roughly stable) to growing:
+  ```
+  Content walk estimate: ~<N> seconds (<total_commits> commits x ~<per_call_ms>ms per call on this repo).
+  This is above the 60s comfort threshold.
 
-1. Compute the diff sizes for all commits: `sizes[0], sizes[1], ..., sizes[N-1]`
-2. For each position `i` from 1 to N-1, compute:
-   - `left_trend` = average change in size for commits 0..i (is the diff shrinking?)
-   - `right_trend` = average change in size for commits i..N-1 (is the diff growing?)
-3. The optimal inflection point is the position `i` where `left_trend` is most negative (shrinking) and `right_trend` is most positive (growing). More precisely, maximize: `right_trend - left_trend`.
-4. The commit at position `i` is the first own commit (the inflection point). The FORK_POINT is the commit at position `i-1` (the last inherited commit, i.e., the parent of the inflection). This is because `git rebase --onto <target> <FORK_POINT>` replays `FORK_POINT..HEAD`, which excludes FORK_POINT itself. Recording `i-1` ensures the first own commit at position `i` is included in the replay range.
-5. **Edge case: `i == 0`.** If the inflection is at the very first commit in the range, there are no inherited commits detected by the content walk. Record `SQUASH_DETECTED` = "uncertain" and note that the walk couldn't distinguish inherited from own commits. Do not record a FORK_POINT from this step - fall through to Findings Presentation with the uncertain result.
+  Options:
+  1. Run the walk anyway (wait ~<N> seconds)
+  2. Skip the walk and proceed with manual fork-point selection
+  ```
 
-**Validation:**
-- The fork point (commit at `i-1`) should produce a significantly smaller diff against target than either the first or last commit in the range. If not, the inflection is weak and the result is uncertain.
-- If PR candidates exist from Step 2, check whether the fork point aligns with the PR's squash commit (the fork point commit should be on or near the PR branch's history).
+  Wait for user choice. If skipped, record `CONTENT_WALK_SKIPPED=true` and go to Findings Presentation.
+
+**Absolute hard-stop:** Regardless of user choice, enforce a 10-minute ceiling. If the walk has not completed after 600 seconds, kill it, record a partial result, and go to Findings Presentation with a warning.
+
+**The walk (single Bash invocation with shell loop and shell-side aggregation):**
+
+```bash
+MERGE_BASE=$(git merge-base HEAD <BASE_BRANCH>)
+# Progress printed to stderr every 50 commits so the user sees the walk is alive
+i=0
+git rev-list --reverse $MERGE_BASE..HEAD | while read c; do
+  i=$((i+1))
+  if [ $((i % 50)) -eq 0 ]; then
+    echo "content walk: $i commits processed" >&2
+  fi
+  size=$(git diff --shortstat <BASE_BRANCH> $c | \
+    awk '{ins=0; del=0; for(k=1;k<=NF;k++){if($k~/insertion/)ins=$(k-1); if($k~/deletion/)del=$(k-1)} print ins+del}')
+  echo "$c $size"
+done > /tmp/fixme_walk_sizes
+```
+
+In windowed mode, replace `git rev-list --reverse $MERGE_BASE..HEAD` with the windowed slice centered on the Step 3 candidate.
+
+**Output:** one compact table (one row per commit: `<sha> <diff_size>`). The LLM parses the entire table in one pass.
+
+**Inflection detection:**
+
+Apply 5-commit window smoothing to the diff-size sequence before computing the trend:
+1. For each position `i`, compute `smoothed[i]` = mean of `sizes[max(0,i-2) .. min(N-1,i+2)]`.
+2. For each candidate position `i` from 1 to N-1:
+   - `left_trend` = slope of `smoothed[0..i]`
+   - `right_trend` = slope of `smoothed[i..N-1]`
+3. The inflection is the position `i` that maximizes `right_trend - left_trend`.
+4. Record the commit at position `i-1` (the last inherited commit) as the candidate fork point. `git rebase --onto <target> <FORK_POINT>` replays `FORK_POINT..HEAD`, excluding `FORK_POINT` itself.
+5. **Edge case `i == 0`:** No inherited commits detected. Record `SQUASH_DETECTED=uncertain`. Do not record a FORK_POINT.
+
+**Confidence assignment:**
+
+- **HIGH** - sharp inflection (diff at fork point < 30% of diff at range endpoints) AND corroborated by at least one of Step 1, Step 2, Step 3, or `BASE_WAS_REWRITTEN=true`.
+- **MEDIUM** - inflection exists but is gradual, OR sharp but not corroborated except by `HEURISTIC_SIGNAL`.
+- **LOW** - ambiguous trend, multiple possible fork points.
+
+**No-corroboration cap:** If the content walk produces an inflection that NO prior signal corroborates (no Step 1 local branch match, no Step 2 PR, no Step 3 message match, and `BASE_WAS_REWRITTEN=false`), cap confidence at **LOW** regardless of how sharp the inflection looks. Set the Findings Presentation warning: "No independent signal confirms this fork point. Normal rebase is the safer default unless you can verify."
 
 **Record results (only when `i > 0`):**
-- `FORK_POINT` = the commit hash at position `i-1` (the last inherited commit, parent of the inflection point)
+- `FORK_POINT` = commit hash at position `i-1`
 - `DETECTION_METHOD` = "content-based diff walk"
-- Record confidence:
-  - **HIGH** if the inflection is sharp (diff at fork point is <30% of diff at first commit, and subsequent commits grow steadily)
-  - **MEDIUM** if the inflection exists but is gradual
-  - **LOW** if the inflection is ambiguous (multiple possible fork points, or the trend isn't clear)
-- If a PR candidate from Step 2 exists and aligns with the fork point: upgrade confidence by one level
+- `SQUASH_DETECTED` = true
+- Confidence per rules above
 
-**If no clear inflection is found:** Record `SQUASH_DETECTED` = "uncertain", include all collected data in findings.
+**If no clear inflection is found:** Record `SQUASH_DETECTED=uncertain`, include all collected data in findings.
 
 #### Findings Presentation
 
