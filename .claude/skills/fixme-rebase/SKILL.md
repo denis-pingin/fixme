@@ -66,6 +66,24 @@ Before anything else, capture the full current state. This is the recovery basel
    ```
    This snapshot is used for the final summary comparison.
 
+6. **Detect shallow clone:**
+   ```bash
+   git rev-parse --is-shallow-repository
+   ```
+   - **Returns `false`:** Set `SHALLOW_CLONE=false`. Proceed.
+   - **Returns `true`:** Set `SHALLOW_CLONE=true`. Inform the user:
+
+     "This is a shallow clone. Fork-point detection is less reliable beyond the shallow boundary, and the content walk in Phase 2.5 cannot run safely against truncated history.
+
+     Options:
+     1. Run `git fetch --unshallow` now and continue with full detection (may be a large download)
+     2. Proceed in degraded detection mode (content walk skipped, Phase 2.5 confidence downgraded by one level)"
+
+     **Wait for user choice.**
+
+     - If user picks option 1: run `git fetch --unshallow origin`, verify success with `git rev-parse --is-shallow-repository` returning `false`, then set `SHALLOW_CLONE=false` and proceed.
+     - If user picks option 2: keep `SHALLOW_CLONE=true` and proceed. Downstream phases honor this flag inline: Phase 1 Step 5a aborts auto-reset on missing commits, Phase 2.5 Step 5 content walk is skipped entirely, Phase 2.5 Steps 1-3 downgrade confidence by one level.
+
 ### Phase 1: Base Branch Detection
 
 Determine what to rebase onto. Priority order:
@@ -929,15 +947,10 @@ If all our commits are marked `=` in cherry-mark output:
 Stop.
 
 ### Shallow clone
-If `git rev-parse --is-shallow-repository` returns `true`:
 
-A shallow clone is a partial copy of the repository that only includes recent commit history (created with `git clone --depth N`). The merge-base - the common ancestor commit where the current branch diverged from the base branch - may lie beyond the shallow boundary. Without the merge-base, git cannot determine which commits belong to the branch vs the base, and the rebase will fail.
+Shallow clone detection and user prompting happens in **Phase 0 Step 6**. If the user chooses degraded mode there, the `SHALLOW_CLONE=true` flag is honored inline at each downstream step: Phase 1 Step 5a ancestry check aborts auto-reset on missing commits, Phase 2.5 Step 5 content walk is skipped entirely, and any Phase 2.5 verdict has its confidence downgraded by one level. The Findings Presentation includes a "Detection ran on a shallow clone. Content walk was skipped. Accuracy reduced." warning.
 
-The fix is `git fetch --unshallow origin`, which downloads the full history. This can be a large download on repos with extensive history.
-
-Tell the user: "This is a shallow clone. The merge-base needed for rebase may be beyond the shallow boundary. Running `git fetch --unshallow origin` is required, but may be a large download depending on repo size. Proceed?"
-
-**Wait for user confirmation before deepening.**
+A shallow clone is a partial copy of the repository that only includes recent commit history (created with `git clone --depth N`). The merge-base - the common ancestor commit where the current branch diverged from the base branch - may lie beyond the shallow boundary. Without the merge-base, git cannot determine which commits belong to the branch vs the base, and the rebase will fail. The fix offered in Phase 0 is `git fetch --unshallow origin`.
 
 ### Squash-merged ancestor with no evidence
 
