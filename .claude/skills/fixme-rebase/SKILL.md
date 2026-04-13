@@ -321,6 +321,8 @@ If `candidate_mb` is a descendant of `MERGE_BASE`, it means the current branch a
 
 #### Step 2: GitHub PR Metadata
 
+**Empty result is expected when `BASE_WAS_REWRITTEN=true`.** The upstream rewrite scenario typically involves no PR - the base branch was rewritten locally and force-pushed by an author, not merged via a pull request. If Step 2 returns no matching PRs in this case, that is expected data, NOT a negative detection signal. Do not lower the overall Phase 2.5 confidence on the basis of a Step 2 miss when `BASE_WAS_REWRITTEN=true`.
+
 Query GitHub for recently merged PRs whose squash-merge commit is on the target branch and whose source branch shares history with the current branch. This is the highest-value detection step because squash merges almost always happen through PRs, and the PR metadata directly gives us the original branch name and the squash commit SHA.
 
 ```bash
