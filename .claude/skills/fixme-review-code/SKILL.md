@@ -125,6 +125,18 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 - Pre-existing issues in unchanged code (review scope is the changes only)
 - Missing features that aren't in the plan or spec (that's a plan gap, not a code issue)
 
+## Multi-Option Suggestions
+
+When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity instead of collapsing it to a favorite.
+
+- **List every genuinely distinct option.** If three approaches are viable, list three - not one option with a parenthetical "or alternatively...".
+- **For each option, give Approach / Pros / Cons / Impact / Effort.** Keep it tight but concrete. Pros and Cons must be grounded in this codebase, not generic ("cleaner code" is not a Pro).
+- **Do not use editorial shortcut labels** like "simpler", "easier", "cleaner", "lighter touch", "just do X" as the basis for preferring one option. These are anchors, not arguments. An option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters.
+- **If you can confidently recommend one option**, state the recommendation and cite the evidence (what you read, what you measured, what tradeoff is decisive). Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
+- **Dropping the fix entirely is itself an option** and must be evaluated the same way. "Keep the current code" is only acceptable when every alternative is demonstrably worse than the status quo - not when one alternative is just "simpler".
+
+The downstream handler treats your Suggestion as a hypothesis. Single-option suggestions push the handler toward FIX. Multi-option suggestions push it toward FIX_UNCLEAR. Get this right or the user never sees the real choice.
+
 ## Output Format
 
 ### Per Finding
@@ -136,7 +148,7 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 | **Severity** | BLOCKING (broken/wrong behavior) / IMPORTANT (works but with significant issues) / MINOR (improvement) |
 | **Issue** | What's wrong - specific, referencing actual code |
 | **Evidence** | The code that demonstrates the problem. For test issues: show both the test code and the production code it should be exercising |
-| **Suggestion** | How to fix it. Concrete: name the file, the function, what to change |
+| **Suggestion** | How to fix it. Concrete: name the file, the function, what to change. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
 | **Confidence** | HIGH / MEDIUM / LOW |
 
 ### Report Structure
@@ -154,3 +166,4 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 - If unsure, frame as a question, not a finding.
 - TEST-QUALITY findings about reimplemented business logic are always BLOCKING severity. There are no exceptions. A test that doesn't exercise production code is not a test.
 - The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough.
+- When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
