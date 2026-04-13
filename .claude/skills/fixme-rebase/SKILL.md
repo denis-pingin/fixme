@@ -360,7 +360,7 @@ For each merged PR:
    ```
    If true: the current branch shares a more recent ancestor with the PR's source branch than with the target. This PR's source branch is likely our parent.
 
-   If the PR's source branch ref is deleted (common): fall back to content comparison. The squash commit's diff against its parent should closely match the combined diff of commits between MERGE_BASE and the fork point. This is expensive, so instead record the PR as a **candidate** and let Step 4 (content walk) confirm the fork point.
+   If the PR's source branch ref is deleted (common): fall back to content comparison. The squash commit's diff against its parent should closely match the combined diff of commits between MERGE_BASE and the fork point. This is expensive, so instead record the PR as a **candidate** and let Step 5 (content walk) confirm the fork point.
 
 3. **If a definitive match is found** (PR source branch still exists and merge-base confirms ancestry):
    - Record `FORK_POINT` = `pr_branch_mb`
@@ -372,7 +372,7 @@ For each merged PR:
 4. **If candidates found but not definitive** (branch deleted, can't confirm via merge-base):
    - Record each candidate PR with its number, branch name, squash commit SHA, and title
    - Record `DETECTION_METHOD` = "GitHub PR metadata (candidate)"
-   - Record confidence: **MEDIUM** - need Step 3/4 to confirm
+   - Record confidence: **MEDIUM** - need Step 3 and/or Step 5 to confirm
    - Continue to Step 3
 
 **If no candidates found:** Continue to Step 3.
