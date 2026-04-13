@@ -274,13 +274,18 @@ Understand the scope of what's about to happen.
    ```
    If found, note that `--autosquash` should be used.
 
-### Phase 2.5: Squash-Merged Ancestor Detection
+### Phase 2.5: Already-Represented Ancestor Detection
 
-When a parent feature branch has been squash-merged to the target branch, the current branch retains the parent's individual commits. A normal `git rebase <target>` tries to replay ALL those commits (including the parent's) onto the target, causing massive conflicts because the target already contains those changes in squashed form. The fix is `git rebase --onto <target> <fork-point>` which replays only the current branch's own commits.
+Detect scenarios where the current branch carries commits already represented on the target branch, so the rebase can switch to `git rebase --onto <target> <fork-point>` and replay only the current branch's own work. Two scenarios are in scope:
 
-This phase runs a cascade of increasingly expensive detection steps, short-circuiting when a definitive answer is found. If a squash-merged ancestor is detected, the rebase switches to `--onto` mode. The user always confirms before execution.
+1. **Squash merge via PR** - a parent feature branch was merged to the target via GitHub's squash-merge. The current branch still holds the parent's individual commits; a normal rebase tries to replay all of them and hits massive conflicts because the target already contains those changes in squashed form.
+2. **Upstream rewrite of the base branch** - the base branch was rewritten in place on its upstream (force-push after `git rebase`, `git commit --amend`, interactive rebase, etc.). After Phase 1 Step 5a resets local `<BASE_BRANCH>` to the rewritten upstream, commits on our side of the merge-base may be identical-content copies of pre-rewrite base commits that now live on the new base under different SHAs. A normal rebase replays them and produces either empty commits or conflicts.
 
-**When to skip:** If the commit count from Phase 2 step 2 is small (5 or fewer commits in `MERGE_BASE..HEAD`) AND the cherry-mark analysis from Phase 2 step 6 shows no `=`-marked commits, skip this phase - the scenario is unlikely and detection cost isn't justified. Proceed directly to Phase 3.
+This phase runs a cascade of increasingly expensive detection steps, short-circuiting when a definitive answer is found. If an already-represented ancestor is detected, the rebase switches to `--onto` mode. The user always confirms before execution.
+
+**Prohibition on prose rationalization:** Once a detection step begins executing (particularly the Step 5 content walk), it MUST complete. Do not bail out of a running step based on narrative interpretation of the intermediate data ("this looks like organic refactors", "too much file overlap", "probably not a squash"). The algorithmic signal (inflection analysis, message-match partition, cherry-mark count) is authoritative. Prose reasoning about the data is not a substitute for running the algorithm to completion.
+
+**When to skip the phase entirely:** If the commit count from Phase 2 step 2 is 5 or fewer in `MERGE_BASE..HEAD` AND the cherry-mark analysis from Phase 2 step 6 shows no `=`-marked commits AND `BASE_WAS_REWRITTEN` is false, skip this phase - the scenario is unlikely and detection cost isn't justified. Proceed directly to Phase 3. When `BASE_WAS_REWRITTEN=true`, never skip: the rewrite itself is independent evidence that already-represented commits likely exist.
 
 #### Step 1: Local Branch Check
 
