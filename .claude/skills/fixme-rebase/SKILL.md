@@ -192,18 +192,20 @@ Determine what to rebase onto. Priority order:
        **Diverged STOP (only reached when ancestry check says auto-reset is unsafe):** Tell the user: "Base branch `<BASE_BRANCH>` has diverged from its upstream `$UPSTREAM` (N local commits ahead, M remote commits behind) and the local-ahead commits are not all reachable from HEAD. Cannot auto-reset. Please reconcile `<BASE_BRANCH>` with its upstream first." Do not proceed.
 
    **b. Freshen the current branch:**
+
+   Resolve the tracked upstream dynamically - never hardcode `origin`:
    ```bash
-   git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null
+   CUR_UPSTREAM=$(git rev-parse --abbrev-ref @{upstream} 2>/dev/null)
    ```
    - **No upstream (local-only or not yet pushed):** Skip - nothing to check.
    - **Has upstream:** Fetch and compare:
      ```bash
-     git fetch origin $(git branch --show-current)
-     git rev-list HEAD...@{upstream} --count --left-right
+     git fetch $(echo "$CUR_UPSTREAM" | cut -d/ -f1) $(echo "$CUR_UPSTREAM" | cut -d/ -f2-)
+     git rev-list HEAD...$CUR_UPSTREAM --count --left-right
      ```
-     - **Behind only (0 ahead, N behind):** **STOP.** Tell the user: "Your branch is behind `origin/<branch>` by N commits. Pull or fast-forward before rebasing to avoid losing remote changes."
+     - **Behind only (0 ahead, N behind):** **STOP.** Tell the user: "Your branch is behind `$CUR_UPSTREAM` by N commits. Pull or fast-forward before rebasing to avoid losing remote changes."
      - **Up-to-date or ahead-only:** Good, proceed.
-     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Your branch has diverged from `origin/<branch>` (N ahead, M behind). This is unusual. Reconcile with your remote before rebasing."
+     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Your branch has diverged from `$CUR_UPSTREAM` (N ahead, M behind). This is unusual. Reconcile with your upstream before rebasing."
 
 Record the chosen base branch as `BASE_BRANCH`. The rebase target is always the local ref `<BASE_BRANCH>` (guaranteed fresh by step 5).
 
