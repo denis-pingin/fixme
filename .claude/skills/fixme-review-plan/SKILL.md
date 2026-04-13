@@ -95,6 +95,18 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 - Vague concerns ("this might be slow") without evidence - either quantify it or don't mention it
 - Anything where your own analysis concludes "no issue" - if you investigated and found it works correctly, that's Pass 1 doing its job. Don't report it.
 
+## Multi-Option Suggestions
+
+When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity instead of collapsing it to a favorite.
+
+- **List every genuinely distinct option.** If three approaches are viable, list three - not one option with a parenthetical "or alternatively...".
+- **For each option, give Approach / Pros / Cons / Impact / Effort.** Keep it tight but concrete. Pros and Cons must be grounded in this codebase, not generic ("cleaner code" is not a Pro).
+- **Do not use editorial shortcut labels** like "simpler", "easier", "cleaner", "lighter touch", "just do X" as the basis for preferring one option. These are anchors, not arguments. An option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters.
+- **If you can confidently recommend one option**, state the recommendation and cite the evidence (what you read, what you measured, what tradeoff is decisive). Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
+- **Dropping the fix entirely is itself an option** and must be evaluated the same way. "Keep the current code" is only acceptable when every alternative is demonstrably worse than the status quo - not when one alternative is just "simpler".
+
+The downstream handler treats your Suggestion as a hypothesis. Single-option suggestions push the handler toward FIX. Multi-option suggestions push it toward FIX_UNCLEAR. Get this right or the user never sees the real choice.
+
 ## Output Format
 
 ### Per Finding
@@ -106,7 +118,7 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 | **Severity** | BLOCKING (plan will fail) / IMPORTANT (plan will work but with significant issues) / MINOR (improvement opportunity) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
-| **Suggestion** | How to fix it. Concrete enough to act on. If unsure of the best fix, say so and offer options |
+| **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
 | **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKING severity |
 
 ### Final Output Structure
@@ -122,3 +134,4 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 - If unsure whether something is an issue, frame it as a question: "Does X handle Y? I couldn't confirm from reading [file]." Questions are cheaper than wrong findings.
 - Separate "the plan won't work" (correctness) from "the plan could be better" (suggestions). Don't mix them.
 - If the plan is good and there are no findings, say so. Don't manufacture issues to justify the review.
+- When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
