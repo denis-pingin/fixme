@@ -22,8 +22,8 @@ If a decision log exists at `.fixme/decisions.md`, read it. Also read the plan's
 
 ## Classification
 
-- **FIX** - real issue that affects correctness, performance, security, or maintainability. A single clear fix approach exists.
-- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist, or design tradeoffs are involved. The issue's validity is not in question - only the approach to resolving it.
+- **FIX** - real issue that affects correctness, performance, security, or maintainability. Either a single clear fix approach exists, OR one approach clearly dominates all alternatives on merit (grounded in concrete tradeoffs, not editorial labels like "simpler"). If the reviewer presented multiple options, you MUST independently evaluate each before classifying as FIX - see Multi-Option Discipline.
+- **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist with genuine tradeoffs. This is the default classification whenever the reviewer offered 2+ options and your own independent evaluation does not produce a clear winner on the dimensions that matter (performance on common vs. rare paths, correctness, maintainability, user-visible impact). The issue's validity is not in question - only the approach to resolving it.
 - **ASK_USER** - insufficient context to determine whether the finding is even valid. Depends on intent, constraints, or decisions not captured in the plan, spec, or codebase. Requires human input to determine validity (not just approach).
 - **REJECT_FALSE_POSITIVE** - finding is factually wrong. The plan is correct, the reviewer misunderstood the plan's approach, the codebase state, or the spec constraints.
 - **REJECT_WONT_FIX** - finding is technically valid but intentionally out of scope, contradicts a locked decision (without revealing new concrete problems), or would be net-negative to address.
@@ -47,6 +47,23 @@ For each finding:
    - **Finding identifies an `[assumed]` decision that should have been confirmed** (the reviewer flagged it as an Assumption Validity issue): classify ASK_USER. Present the decision and its alternatives to the user for explicit confirmation.
 5. Assess whether the suggested change would actually improve the outcome
 5. Classify and document
+
+## Multi-Option Discipline
+
+When a finding's Suggestion presents 2+ plausible fix approaches (including "drop the fix" or "add a comment" as options), apply this discipline before classifying. This section exists because the default failure mode is to anchor on whichever option the reviewer labeled "simpler" and collapse the decision without evaluation.
+
+1. **Independently evaluate every option.** For each, assess concrete tradeoffs: correctness, performance on common vs. rare code paths, maintainability, user-visible behavior, security, effort, risk. Read the referenced code yourself. Do not outsource this evaluation to the reviewer - the reviewer's preference is a hypothesis, not the answer.
+
+2. **Strike editorial shortcuts from your reasoning.** Words like "simpler", "easier", "cleaner", "lighter touch", "just X" are anchors, not arguments. A "simpler" option that makes every request pay an extra I/O round-trip is not simpler in the dimension that matters. If your justification for picking an option reduces to "the reviewer called it simpler", you have not done the evaluation.
+
+3. **Classify based on the evaluation outcome:**
+   - **One option clearly dominates** on the dimensions that matter, with no material downside → **FIX**. The Approach field records that option and cites WHY it wins on the concrete tradeoff (e.g. "hoist with guard: same performance as inline duplication, and eliminates the overlap duplication"), not on editorial language.
+   - **Multiple options are viable** with genuine tradeoffs, or no option clearly dominates → **FIX_UNCLEAR**. The Question field presents every option with full Approach/Pros/Cons/Impact/Effort and a researched Recommendation (per the fixme-decision-presentation format). Let the user choose. This is the default when your evaluation does not produce a clear winner.
+   - **Every option is strictly worse than the status quo** (including "drop the fix" as an option) → **REJECT_WONT_FIX**, with per-option disqualifying flaws listed. "Simpler to not do it" is not a disqualifying flaw.
+
+4. **"Drop the fix" or "just add a comment" is not a free answer.** These resolutions require either proving the original concern was invalid (→ REJECT_FALSE_POSITIVE with evidence) OR proving every alternative is strictly worse than leaving the code alone (→ REJECT_WONT_FIX with a per-option evaluation). Collapsing a multi-option finding into "drop it" because one option was labeled "simpler" is the exact failure mode this section exists to prevent.
+
+5. **Default to FIX_UNCLEAR when uncertain.** If you have evaluated every option and cannot confidently name a winner, that is FIX_UNCLEAR. The handler's job is to protect the user's ability to choose the best option, not to save them the decision by picking the path of least resistance.
 
 ## Output Format
 
@@ -86,6 +103,7 @@ Key requirements (see preloaded skill for complete spec):
 - If a finding is ambiguous or context is lacking, classify as ASK_USER rather than guessing. If the finding is clearly valid but the fix approach is unclear, classify as FIX_UNCLEAR. A wrong FIX wastes implementation time. A wrong REJECT hides a real issue. ASK_USER or FIX_UNCLEAR costs only a question.
 - If two findings would be resolved by the same change, group them and note it.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
+- Multi-option findings default to FIX_UNCLEAR. Collapsing multiple alternatives into a single "simpler" FIX approach - or into REJECT_WONT_FIX or "add a comment" - requires an independent evaluation that names concrete tradeoffs, not editorial labels. See Multi-Option Discipline.
 
 ## Routing Directive
 
