@@ -1,12 +1,12 @@
 ---
 name: fixme-pr-comments
-description: Fetch unresolved PR comments from review threads, Claude bot, and Greptile, analyze EVERY comment individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
+description: Fetch unresolved PR comments from review threads, Claude bot, Greptile, and regular human issue comments, analyze EVERY comment individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
 argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
 # Address PR Comments
 
-Automatically fetch, analyze, and address **unresolved** PR review comments, actionable Claude bot issue comments, AND Greptile summary findings.
+Automatically fetch, analyze, and address **unresolved** PR review comments, actionable Claude bot issue comments, Greptile summary findings, AND regular human issue comments posted as full reviews.
 
 ## Hard Constraints
 
@@ -31,7 +31,7 @@ Parse arguments from skill invocation. All flags default to OFF (all phases run)
 
 ### 1. Fetch Unresolved PR Comments
 
-There are **three sources** of actionable comments to check:
+There are **four sources** of actionable comments to check:
 
 #### Source A: Review Threads (inline PR review comments)
 
@@ -808,10 +808,11 @@ state. The reply comment IS the resolution signal.
 
 ## Notes
 
-- **Three sources of comments**: Review threads (inline), Claude bot issue comments (regular), AND Greptile summary findings (permanent PR comment)
+- **Four sources of comments**: Review threads (inline), Claude bot issue comments (regular), Greptile summary findings (permanent PR comment), AND regular human issue comments (non-bot PR issue comments posted as full reviews)
 - **Only unresolved review threads are fetched** - resolved threads are skipped entirely
 - **All claude[bot] comments are fetched and read in full** - no pattern-based filtering
 - **Greptile summary comment**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login.
+- **Human issue comments (Source D)**: Fetched from the same `/issues/{number}/comments` REST endpoint as Sources B and C, filtered to `user.type != "Bot"` AND login not ending in `[bot]` AND login not in the known-AI allowlist (claude[bot], greptile-apps[bot], copilot-pull-request-reviewer). Each comment body may contain multiple findings, parsed and analyzed like Source B. Resolution posts a reply issue comment addressing the reviewer by login - no GraphQL thread resolve (not applicable to regular issue comments).
 - **Skip already-replied findings**: If a reply already addresses a Claude bot or Greptile finding (references a commit SHA or says "Fixed"), skip it
 - **FIX vs FIX_UNCLEAR vs ASK_USER**: FIX items proceed without user input. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid.
 - **`--pause` flag**: When set, the workflow pauses after analysis (Step 2/2.5) and presents a final execution plan before dispatching fixme-task. The user can approve, cancel, or modify the fix list. Without `--pause`, execution proceeds automatically after analysis.
@@ -823,7 +824,7 @@ state. The reply comment IS the resolution signal.
 - **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`) OR matches a known AI reviewer login (e.g. `copilot-pull-request-reviewer`). When in doubt, check the author's `type` field from the GitHub API - bots have `type: "Bot"`. AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
 - **Pagination is mandatory for all API calls.** REST endpoints (issue comments) must use `--paginate` to fetch all pages. GraphQL endpoints (review threads) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
-- **Source-prefixed item IDs**: Every comment gets a permanent ID at fetch time (A1, A2 for review threads; B1, B2 for Claude bot; C1, C2 for Greptile). IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
+- **Source-prefixed item IDs**: Every comment gets a permanent ID at fetch time (A1, A2 for review threads; B1, B2 for Claude bot; C1, C2 for Greptile; D1, D2 for regular human issue comments). IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
 - **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
