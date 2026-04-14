@@ -757,6 +757,42 @@ git push
    - **{finding title}**: {explanation why not fixing}"
    ```
 
+#### For human review issue comments (Source D):
+
+Regular issue comments cannot be "resolved" via the GraphQL `resolveReviewThread`
+mutation - that mutation only applies to review threads. The resolution pattern for
+Source D is therefore identical to Sources B and C: post a new issue comment that
+references the original reviewer and summarizes which findings were addressed or
+rejected. Thread resolution is not applicable.
+
+**If addressed (fix that was implemented)**:
+1. Reply to the PR with a new issue comment explaining which findings were fixed,
+   addressing the original reviewer by login:
+   ```bash
+   gh api /repos/{owner}/{repo}/issues/{number}/comments \
+     -X POST -f body="@{reviewer_login} Addressed review findings from your comment in {commit_sha}:
+   - **{finding title}**: {brief explanation of fix}
+   - ..."
+   ```
+
+**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
+1. Reply with a new issue comment explaining why each finding was not addressed,
+   addressing the original reviewer by login:
+   ```bash
+   gh api /repos/{owner}/{repo}/issues/{number}/comments \
+     -X POST -f body="@{reviewer_login} Reviewed findings from your comment:
+   - **{finding title}**: {explanation why not fixing}"
+   ```
+
+**Mixed outcomes**: If the original Source D comment contains multiple findings with
+different verdicts (some addressed, some rejected), post a SINGLE reply that lists
+every finding with its individual outcome, so the reviewer sees the full accounting
+in one notification. Do not split into two separate reply comments.
+
+**No thread resolve**: There is NO `resolveReviewThread` call for Source D. Regular
+issue comments remain visible on the PR timeline - they do not have a "resolved"
+state. The reply comment IS the resolution signal.
+
 ## Decision Guide
 
 | Scenario | Action | Resolve? |
