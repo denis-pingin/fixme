@@ -721,7 +721,7 @@ If no backup is needed (simple, clean, few commits, not pushed): skip this step.
 Run the project's full verification suite BEFORE the rebase. This establishes what "working" looks like.
 
 1. **Load project verification commands:**
-   - **First**, check `.fixme/project-context.yaml` for `build.command`, `lint.command`, and `test.command`. If present, use those.
+   - **First**, check `.fixme/config.json` field `project` for `build`, `lint`, and `test.command` (or `test` if it's a string). If present, use those.
    - **Fallback:** detect from CLAUDE.md, package.json, Makefile, or convention.
 
 2. **Run each and record results:**
@@ -887,8 +887,7 @@ Stop here. Do not retry without user guidance.
    ```
 
    If any lockfile changed:
-   - Check `.fixme/project-context.yaml` for `install.command`. If present, use it.
-   - Otherwise detect from lockfile: `bun.lockb` → `bun install`, `package-lock.json` → `npm install`, `yarn.lock` → `yarn install`, `pnpm-lock.yaml` → `pnpm install`, etc.
+   - Detect install command from lockfile: `bun.lockb` → `bun install`, `package-lock.json` → `npm install`, `yarn.lock` → `yarn install`, `pnpm-lock.yaml` → `pnpm install`, `Gemfile.lock` → `bundle install`, `Cargo.lock` → `cargo build`, `go.sum` → `go mod download`, `poetry.lock` → `poetry install`, `composer.lock` → `composer install`.
    - Run the install command and confirm it succeeds before proceeding.
 
 3. **Run full verification suite:**
@@ -908,7 +907,7 @@ Stop here. Do not retry without user guidance.
    ```
    If there are staged or unstaged changes (from fixing verification regressions, resolving unused imports, updating type signatures, etc.):
    - Stage all modified tracked files: `git add -u`
-   - Commit with a message following the project's commit conventions (check CLAUDE.md, recent git log, or `.fixme/project-context.yaml` for the expected format).
+   - Commit with a message following the project's commit conventions (check CLAUDE.md or recent git log for the expected format).
    - Do NOT leave uncommitted changes for the user to discover later.
 
    This step is a no-op if verification passed without needing fixes.
