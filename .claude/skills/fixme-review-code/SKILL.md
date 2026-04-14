@@ -41,49 +41,183 @@ Before evaluating anything, understand:
 
 This prevents the most common source of false findings: reviewing code without understanding why it was written that way.
 
-## What to Look For
+## Foundational Mindset: Do Not Trust
 
-### Plan Compliance
-- Steps that were skipped or partially implemented
-- Deviations from the plan's approach without documented justification
-- Files in the plan's File Map that weren't touched, or files touched that aren't in the File Map
+Execution reports describe intent - what the agent said it did. The codebase describes reality - what actually exists. These often differ. Every claim from the execution report, every passing-test assertion, every "implemented as planned" statement is a hypothesis until verified by reading the actual code.
 
-### Correctness
-- Logic errors, off-by-one, wrong comparisons, swapped arguments
-- Race conditions, missing awaits, unhandled promise rejections
-- Null/undefined access paths that aren't guarded
-- Wrong types, unsafe casts, type assertions that hide real mismatches
-- State mutations where immutability is expected (or vice versa)
-- Error handling that swallows errors silently or handles the wrong error type
+The most dangerous failure mode is code that looks complete but is hollow: files exist but contain stubs, tests exist but do not exercise production code, components are wired but data does not flow through them. Surface-level review catches nothing. Depth-first verification catches everything.
 
-### Test Quality
+## Verification Dimensions
+
+Use the dimension name as the finding's Category value (e.g., Dimension 3: Stub Detection -> category STUB-DETECTION).
+
+### Dimension 1: Plan Compliance
+
+**Question:** Was every plan step implemented, and are there any unplanned changes?
+
+**Process:**
+1. Walk through each plan task and step. For each, find the corresponding change in the codebase (via git diff or file inspection)
+2. Check for skipped steps: plan steps with no corresponding code change
+3. Check for partial implementations: step was started but not completed (e.g., function created but not all branches implemented)
+4. Check for unplanned changes: files modified or created that are not in the plan's File Map
+5. For deviations from the plan's approach: check whether the deviation is documented/justified in the execution results
+
+**Red flags:**
+- Plan step has no corresponding code change (step was skipped)
+- Files in the plan's File Map that were not touched
+- Files touched that are not in the plan's File Map (unplanned changes)
+- Executor deviated from the plan's approach without documented justification
+- Plan specified a particular implementation pattern but the code uses a different one
+
+### Dimension 2: Artifact Verification
+
+**Question:** Do created artifacts pass the 4-level verification check?
+
+For every new file created by the plan, verify at four levels:
+
+**Process:**
+1. **Level 1 - Exists:** Does the file exist at the path specified in the plan?
+2. **Level 2 - Substantive:** Is the file a real implementation, not a stub? Check for: placeholder returns (`return null`, `return {}`, `return []`), minimal boilerplate with no logic, `// TODO` markers where implementation should be, functions that only log or throw "not implemented"
+3. **Level 3 - Wired:** Is the artifact imported/used by other code? Check: is the new module imported somewhere? Is the new route registered? Is the new component rendered by a parent? Is the new function called?
+4. **Level 4 - Data flows:** For artifacts that handle dynamic data - does real data actually flow through? Check: does the API route query real data (not return hardcoded values)? Does the component render data from its actual data source (not placeholder text)? Do form handlers send data to actual endpoints?
+
+**Red flags:**
+- File exists but contains only boilerplate with no meaningful logic (Level 2 failure)
+- File is complete but nothing imports or references it (Level 3 failure)
+- Component renders but its data source returns hardcoded empty arrays/objects (Level 4 failure)
+- API route exists and is called but returns `Response.json([])` with no database query (Level 4 failure)
+
+### Dimension 3: Stub Detection
+
+**Question:** Are there placeholder implementations masquerading as complete code?
+
+**Process:**
+1. Scan all new and modified files for stub patterns (see concrete patterns below)
+2. For each match, determine if it is truly a stub or a valid implementation (e.g., `return null` in an error guard is not a stub; `return null` as the entire component render IS a stub)
+3. Check that every function body has meaningful logic - not just logging, not just re-throwing, not just returning a default
+
+**Concrete stub patterns to scan for:**
+- `return <div>Component</div>` or `return <div>Placeholder</div>` - component that renders only its own name
+- `return null` or `return <></>` as the full component return
+- `return Response.json([])` or `return Response.json({})` with no preceding data query
+- `onClick={() => {}}` or `onChange={() => {}}` - empty event handlers
+- `onSubmit={(e) => e.preventDefault()}` with no actual form handling logic
+- `console.log('...')` as the only statement in a handler or callback
+- `throw new Error('Not implemented')` or `throw new Error('TODO')`
+- Functions whose entire body is a single `return` of a hardcoded value
+
+**Red flags:**
+- Handler that only calls `preventDefault()` with no submission logic
+- API route that returns static data without querying a data source
+- Component that accepts props but never reads them
+- Callback that logs but takes no action
+- Function body that is empty or contains only a comment
+
+### Dimension 4: Test Quality
+
+**Question:** Do tests call production code, or do they reimplement logic and test themselves?
 
 **This is a primary focus area.** Bad tests are worse than no tests - they create false confidence.
 
-- **Reimplemented business logic in tests (CRITICAL).** If a test file contains a function, calculation, mapping, or transformation that duplicates production code instead of importing and calling it - this is always a finding. The test must exercise the production code, not a copy of it. Common patterns:
-  - Test defines its own version of a helper/utility that exists in production
-  - Test hardcodes a computation result instead of calling the function
-  - Test reimplements a state machine, parser, or transformer to "verify" it matches
-  - Test copies constants, configs, or mappings from production instead of importing them
-- **Wrong assertions.** Test passes but doesn't actually verify the intended behavior. Assertions that are always true, assertions on the wrong value, assertions that test implementation details instead of behavior.
-- **Missing assertions.** Test sets up a scenario but doesn't assert the important outcomes. Especially: tests that only assert "no error thrown" when they should assert specific results.
-- **Missing test cases.** Plan specified tests that weren't written. Behavioral changes without corresponding tests. Error paths without tests.
-- **Fragile tests.** Tests coupled to implementation details (internal state, private methods, call order) rather than observable behavior.
-- **Mocked production code.** Tests that mock the very thing they should be testing. Mocks are for external dependencies, not for the code under test.
+**Process:**
+1. For each test file, check: does the test import and call the production function/component it claims to test?
+2. Check for reimplemented business logic: does the test file contain a function, calculation, mapping, or transformation that duplicates production code instead of importing and calling it?
+3. Check assertions: does each assertion verify the intended behavior? Look for: assertions that are always true, assertions on the wrong value, missing assertions after setup
+4. Check test coverage: are all plan-specified tests written? Are behavioral changes covered? Are error paths tested?
+5. Check test independence: does each test mock only external dependencies, never the code under test?
 
-### Performance
-- N+1 queries or API calls in loops
+**Reimplemented logic patterns (always BLOCKING):**
+- Test defines its own version of a helper/utility that exists in production
+- Test hardcodes a computation result instead of calling the production function
+- Test reimplements a state machine, parser, or transformer to "verify" it matches
+- Test copies constants, configs, or mappings from production instead of importing them
+
+**Other red flags:**
+- Test has setup but no assertions (or only asserts "no error thrown")
+- Test asserts implementation details (internal state, private methods, call order) rather than observable behavior
+- Test mocks the very function/component it should be testing
+- Plan specified a test but no corresponding test exists in the code
+- Test passes but does not actually verify what its name claims
+
+### Dimension 5: Silent Failure Scan
+
+**Question:** Do catch blocks, fallbacks, and defaults log enough context to debug failures?
+
+**Process:**
+1. Find all `catch` blocks, `.catch()` callbacks, fallback/default values, and error boundaries in changed files
+2. For each, check: is there a log statement (or equivalent) that includes what failed, which entity was affected (IDs, keys, paths), and what the fallback was?
+3. Check for silent swallowing: `catch(() => defaultValue)` with no logging, `catch(e) {}` with empty body, `catch(e) { return null }` with no log
+
+**Red flags:**
+- `catch(() => defaultValue)` with no logging whatsoever
+- `catch(e) {}` - empty catch body
+- `.catch(() => null)` or `.catch(() => [])` - silent fallback
+- Error caught but only the message is logged, not which entity/operation was affected
+- `try/catch` that returns a generic error message without logging the original error
+- Default values used silently when the data source fails (no indication that degradation occurred)
+
+### Dimension 6: Correctness
+
+**Question:** Are there logic errors, race conditions, null access, or type issues in the implementation?
+
+**Process:**
+1. Trace through each changed function's logic with concrete inputs (happy path AND edge cases)
+2. Check for: off-by-one errors, wrong comparisons, swapped arguments, missing awaits, unhandled promise rejections
+3. Check for null/undefined access paths that are not guarded
+4. Check for type issues: wrong types, unsafe casts, type assertions that hide real mismatches
+5. Check for state mutations where immutability is expected (or vice versa)
+
+**Red flags:**
+- Missing `await` on an async function call where the result is used
+- Array index access without bounds checking where the array could be empty
+- String comparison where numeric comparison is needed (or vice versa)
+- Object spread that silently drops properties due to key collision
+- Promise created but never awaited (fire-and-forget without explicit intent)
+- Conditional logic with unreachable branches or always-true/always-false conditions
+- Missing cleanup of event listeners, subscriptions, or timers in components/hooks
+- User input used without sanitization in security-sensitive contexts
+- N+1 queries or API calls inside loops
 - Unnecessary re-renders (missing memoization where components receive new object/array references on every render)
 - Large data structures created on every call where they could be static
 - Synchronous blocking operations where async is expected
-- Missing cleanup (event listeners, subscriptions, timers not torn down)
-
-### Security
-- User input used without sanitization
-- Secrets or tokens in code or logs
+- Secrets or tokens hardcoded in source code or logged in plaintext
 - Missing authentication/authorization checks that the plan specified
 
-### Consistency
+### Dimension 7: Behavioral Spot-Check
+
+**Question:** Does runnable code actually work when invoked?
+
+**Process:**
+1. Identify code that can be verified without running a full application: CLI tools, module exports, test files, build scripts
+2. For test files: can the test file be run? Does it produce the expected pass/fail results?
+3. For modules: can the module be imported without errors? Does it export the expected functions/types?
+4. For CLI tools: does `--help` or basic invocation produce expected output?
+5. This dimension is optional - skip with a note if no code is practically spot-checkable in the review context
+
+**Red flags:**
+- Test file that cannot run due to import errors or missing dependencies
+- Module that throws on import due to circular dependencies or missing re-exports
+- Build script that fails because it references a file that was moved or renamed by the plan
+- CLI command that crashes on basic invocation
+
+### Dimension 8: Anti-Pattern Scan
+
+**Question:** Are there TODOs, placeholders, hardcoded empties, or console-only handlers in the implementation?
+
+**Process:**
+1. Search all new and modified files for: `TODO`, `FIXME`, `XXX`, `HACK`, `PLACEHOLDER`, `not yet implemented`, `coming soon`
+2. Search for empty implementations: `return null`, `return {}`, `return []`, `=> {}`, empty function bodies
+3. Search for console-only handlers: functions whose entire logic is `console.log(...)` or `console.warn(...)`
+4. Search for hardcoded empty data that flows to rendering: `useState([])` that is never populated, props with `={[]}` or `={{}}`
+5. For each match, verify it is actually an anti-pattern in context (e.g., `return null` in a conditional guard is fine; `return null` as the entire render is not)
+
+**Red flags:**
+- `TODO` or `FIXME` comment in code that the plan claimed to fully implement
+- Empty function body (`() => {}`) for an event handler that should have logic
+- `return []` or `return {}` where the function should query or compute data
+- `console.log` as the only action in a handler (no side effect, no state change, no API call)
+- Placeholder text in UI ("Lorem ipsum", "Coming soon", component name as display text)
+- `useState([])` or `useState(null)` that is never updated by a fetch/subscription/event
 - Naming that doesn't match codebase conventions
 - Patterns that diverge from how neighboring code does the same thing
 - Import style inconsistencies
@@ -144,7 +278,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | Field | Description |
 |-------|-------------|
 | **Location** | Exact file path and line range |
-| **Category** | PLAN-COMPLIANCE / CORRECTNESS / TEST-QUALITY / PERFORMANCE / SECURITY / CONSISTENCY |
+| **Category** | PLAN-COMPLIANCE / ARTIFACT-VERIFICATION / STUB-DETECTION / TEST-QUALITY / SILENT-FAILURE-SCAN / CORRECTNESS / BEHAVIORAL-SPOT-CHECK / ANTI-PATTERN-SCAN |
 | **Severity** | BLOCKING (broken/wrong behavior) / IMPORTANT (works but with significant issues) / MINOR (improvement) |
 | **Issue** | What's wrong - specific, referencing actual code |
 | **Evidence** | The code that demonstrates the problem. For test issues: show both the test code and the production code it should be exercising |
@@ -155,7 +289,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 
 1. **Summary**: 1-2 sentences. Is this implementation solid, or does it need revision? Be direct.
 2. **Scope**: list of files reviewed, plan referenced, base branch compared against
-3. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, TEST-QUALITY and CORRECTNESS before other categories.
+3. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, TEST-QUALITY, STUB-DETECTION, and CORRECTNESS before other categories.
 4. **Verified OK**: brief list of things that were checked and found correct - this builds trust in the review's thoroughness and helps the handler skip re-checking these areas
 5. **Questions**: things that couldn't be determined and need clarification
 
@@ -165,5 +299,6 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 - NEVER flag what hasn't been verified against the code AND the plan AND the codebase conventions.
 - If unsure, frame as a question, not a finding.
 - TEST-QUALITY findings about reimplemented business logic are always BLOCKING severity. There are no exceptions. A test that doesn't exercise production code is not a test.
+- STUB-DETECTION findings for artifacts that the plan claimed to fully implement are BLOCKING severity. A stub masquerading as a complete implementation is a missed deliverable.
 - The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough.
 - When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
