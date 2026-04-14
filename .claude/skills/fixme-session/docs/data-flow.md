@@ -45,8 +45,8 @@ The central shared artifact. Every agent reads it; several write to specific sec
 | **Frontmatter: `transitions[]`** | `fixme-tools.cjs` (appended on every transition) | -- (audit trail) |
 | **Frontmatter: `durations{}`** | `fixme-tools.cjs` (computed on state exit) | Session summary command |
 | **`<!-- section: original-report -->`** | Intake Agent (Step 2) | Investigation Agent (Phase 1) |
-| **`<!-- section: structured-fields -->`** | Intake Agent (Step 4) | Investigation Agent (Phase 1), Fix-Verifier (Phase 5 -- expected/actual behavior) |
-| **`<!-- section: investigation -->`** | Investigation Agent (Phase 5, append-only) | Fix-Researcher (Phase 1), Fix-Planner (Phase 1 on retry), Fix-Verifier (Phase 5 -- repro steps) |
+| **`<!-- section: structured-fields -->`** | Intake Agent (Step 4) | Investigation Agent (Phase 1), fixme-browser-verify |
+| **`<!-- section: investigation -->`** | Investigation Agent (Phase 5, append-only) | Fix-Researcher (Phase 1), Fix-Planner (Phase 1 on retry), fixme-browser-verify |
 | **`<!-- section: fix -->`** | Fix-Agent (status bullets after each sub-agent) | Fix-Planner (Phase 1 on retry -- prior attempt history) |
 
 **Key pattern:** SKILL.md and Fix-Agent NEVER read ticket body sections. They only interact with frontmatter via `fixme-tools.cjs` commands. Sub-agents read the body sections they need.
@@ -60,16 +60,16 @@ The central shared artifact. Every agent reads it; several write to specific sec
 | `tickets_done/failed/skipped/total` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
 | `duration_seconds` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
 
-### 3. Project Context (`.fixme/project-context.yaml`)
+### 3. Project Config (`.fixme/config.json` `project` section)
 
 | Field | Written By | Read By |
 |-------|-----------|---------|
-| `dev_server.url` | `context detect` + user confirmation | SKILL.md (browser setup, passed to agents), Investigation Agent, Fix-Verifier |
-| `dev_server.command` | `context detect` + user confirmation | SKILL.md (server start) |
-| `build.command` | `context detect` + user confirmation | Fix-Verifier (Phase 3a) |
-| `lint.command` | `context detect` + user confirmation | Fix-Verifier (Phase 3b) |
-| `test.command` | `context detect` + user confirmation | Fix-Verifier (Phase 3c) |
-| `framework`, `dev_server.hmr` | `context detect` + user confirmation | Investigation Agent, Fix-Researcher (context) |
+| `project.devServer.url` | `context detect` + user confirmation | SKILL.md (browser setup, passed to agents), Investigation Agent, fixme-browser-verify |
+| `project.devServer.command` | `context detect` + user confirmation | SKILL.md (server start) |
+| `project.build` | `context detect` + user confirmation | fixme-execute-plan |
+| `project.lint` | `context detect` + user confirmation | fixme-execute-plan |
+| `project.test` | `context detect` + user confirmation | fixme-execute-plan |
+| `project.framework`, `project.devServer.hmr` | `context detect` + user confirmation | Investigation Agent (context) |
 
 **Lifecycle:** Written once on first session start (with user confirmation). Read silently on subsequent starts. Never modified without user approval.
 
@@ -85,23 +85,17 @@ Single-write, single-reader. NOT rewritten on retry -- same research is reused a
 
 | Written By | Read By |
 |-----------|---------|
-| Fix-Planner (Phase 4, one per attempt) | Fix-Implementer (Phase 1), Fix-Verifier (Phase 1 + Phase 4 plan coverage) |
+| Fix-Planner (Phase 4, one per attempt) | Fix-Implementer (Phase 1), fixme-execute-plan |
 
 One file per attempt. On retry, a new plan file is created (e.g., `0003-plan-2.md`). Old plans remain as history.
 
-### 6. Verification Report (`<ticket-folder>/verifications/NNNN-verify-N.md`)
-
-| Written By | Read By |
-|-----------|---------|
-| Fix-Verifier (Phase 6, one per attempt) | Fix-Agent (Step 4d -- verdict + failure summary), Fix-Planner (Phase 1 on retry), Fix-Implementer (Phase 1 on re-cycle) |
-
-### 7. Screenshots / Assets (`<ticket-folder>/assets/`)
+### 6. Screenshots / Assets (`<ticket-folder>/assets/`)
 
 | File Pattern | Written By | Read By |
 |-------------|-----------|---------|
-| `repro-*.png` | Investigation Agent (Phase 2) | Fix-Verifier (comparison reference) |
+| `repro-*.png` | Investigation Agent (Phase 2) | fixme-browser-verify (comparison reference) |
 | `fix-check-*.png` | Fix-Implementer (Phase 4, optional) | -- (debug aid) |
-| `verify-*.png` | Fix-Verifier (Phase 5c) | -- (evidence) |
+| `verify-*.png` | fixme-browser-verify (Phase 5c) | -- (evidence) |
 | User screenshots | Intake Agent (copied from user paths) | Investigation Agent (Phase 1) |
 
 ---
@@ -240,32 +234,6 @@ Reads from disk:                  Work summary (~3-8 lines)
 
 **State transitions owned:** `planning -> implementing`
 
-### Fix-Verifier
-
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Verification report:
-  - Ticket folder path            <ticket>/verifications/NNNN-verify-N.md
-  - Plan file path                   - Constraint checklist (build/lint/test/browser)
-  - Project context path             - Plan coverage table
-  - Attempt number                   - Failure details (on FAIL)
-  - Dev server URL                   - Verdict: PASS or FAIL
-
-Reads from disk:                Assets:
-  - Plan file (expected            verify-*.png screenshots
-    changes list)
-  - Ticket file (repro steps,   Return value:
-    expected/actual behavior)     Work summary (~3-8 lines)
-  - Project context (commands)
-  - Source files (plan coverage
-    check via Read/Grep)
-  - Browser (repro steps replay,
-    console, network)
-```
-
-**State transitions owned:** `implementing -> verifying`
-
 ### SKILL.md (Orchestrator)
 
 ```
@@ -298,7 +266,7 @@ Agent return values:              - Status tables
 Step  Agent              Reads                          Writes                         State
 ----  -----------------  -----------------------------  ----------------------------   --------
  1    SKILL.md           --                             session.md (create)            --
- 2    SKILL.md           project-context.yaml           (load or detect+save)          --
+ 2    SKILL.md           config.json                    (load or detect+save)          --
  3    SKILL.md           --                             browser opened, login done     --
  4    SKILL.md           --                             ticket.md (create template)    queued
  5    Intake Agent       ticket.md (template)           ticket.md (report, fields)     queued
@@ -306,13 +274,13 @@ Step  Agent              Reads                          Writes                  
                          user screenshot files           assets/ (copied screenshots)
  6    SKILL.md           ticket list (find next)        active_intakes updated         queued
  7    Invest. Agent      ticket.md (report, fields)     ticket.md (investigation       investigating
-                         project-context.yaml             section: repro + root cause)
+                         config.json                      section: repro + root cause)
                          codebase (Grep/Read)           assets/repro-*.png
                          browser (snapshot/console)
  8    SKILL.md           ticket list (check state)      --                             investigating
  9    Fix-Agent          ticket.md (frontmatter)        ticket.md (base_commit)        investigating
 10    Fix-Researcher     ticket.md (investigation)      research/NNNN-research.md      researching
-                         project-context.yaml
+                         config.json
                          codebase (15 calls max)
 11    Fix-Agent          Glob (research file exists?)   ticket.md fix section          researching
                                                           (research bullet + summary)
@@ -327,12 +295,10 @@ Step  Agent              Reads                          Writes                  
 15    Fix-Agent          git diff --name-only           ticket.md fix section          implementing
                                                           (implement bullet + summary)
                                                         ticket.md (files_changed)
-16    Fix-Verifier       plans/NNNN-plan-1.md           verifications/NNNN-verify-1.md verifying
-                         ticket.md (repro steps,        assets/verify-*.png
-                           expected/actual behavior)
-                         project-context.yaml
-                         source files (coverage)
-                         browser (repro replay)
+16    fixme-browser-verify  plans/NNNN-plan-1.md            assets/verify-*.png            verifying
+                                            ticket.md (repro steps)         (browser verification report)
+                                            config.json                     in agent return value)
+                                            source files (Read)
 17    Fix-Agent          Glob (report exists?)          ticket.md fix section          verifying
                          verification report (verdict)    (verify bullet + summary)
 18    SKILL.md           ticket list (state=verifying)  git add + git commit           verifying
@@ -363,9 +329,10 @@ Step  Agent              Reads                          Writes                  
                          verifications/NNNN-verify-1.md
                            (failure details)
 21    Fix-Agent          git diff --name-only           ticket.md (files_changed)      implementing
-22    Fix-Verifier       plans/NNNN-plan-2.md           verifications/NNNN-verify-2.md verifying
-                         ticket.md, project-context     assets/verify-*.png
-                         browser
+22    fixme-browser-verify  plans/NNNN-plan-2.md            assets/verify-*.png            verifying
+                                            ticket.md (repro steps)         (browser verification
+                                            config.json                       report in return value)
+                                            browser
 23    Fix-Agent          verification report            ticket.md fix section          verifying
                            (PASS or FAIL)
  ...continues to SKILL.md commit (PASS) or next retry / failure...
@@ -388,8 +355,8 @@ Step  Agent              Reads                          Writes                  
 | Fix-Researcher | Phase 1 | Full ticket file (investigation section) | Root cause + affected files |
 | Fix-Planner | Phase 1 | Full ticket file (investigation + fix history) | Context for plan design |
 | Fix-Planner (retry) | Phase 1 | Full ticket + prior plan + verification report | Understand what failed |
-| Fix-Verifier | Phase 1 | Plan file | Expected changes |
-| Fix-Verifier | Phase 5 | Ticket file (repro steps, expected/actual) | Browser verification script |
+| fixme-browser-verify | Phase 1 | Plan file | Expected changes |
+| fixme-browser-verify | Phase 5 | Ticket file (repro steps, expected/actual) | Browser verification script |
 
 **Rule:** SKILL.md and Fix-Agent never read ticket body -- only frontmatter via CLI. Sub-agents read the full file because they need body sections.
 
@@ -434,5 +401,5 @@ All agents interact with shared state through `fixme-tools.cjs`. Direct frontmat
 | `session list` | SKILL.md (resume flow) | Lists sessions |
 | `session summary` | SKILL.md (auto-close, graceful stop) | Computes session stats |
 | `context detect` | SKILL.md (first run) | Auto-detects project config |
-| `context load` | SKILL.md (every start/resume), Fix-Verifier | Reads project-context.yaml |
-| `context save` | SKILL.md (after user confirmation) | Writes project-context.yaml |
+| `context load` | SKILL.md (every start/resume) | Reads `.fixme/config.json` project section |
+| `context save` | SKILL.md (after user confirmation) | Writes `.fixme/config.json` project section |

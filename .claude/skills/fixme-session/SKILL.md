@@ -59,9 +59,9 @@ When sub-command is `start`:
 1. **Create session:**
    Invoke fixme-tickets: `session create .fixme/sessions [--name <name>]`
 
-2. **Load or detect project context:**
+2. **Load or detect project config:**
    Invoke fixme-tickets: `context load`
-   - If project context found: use it silently, do not prompt user.
+   - If project config found: use it silently, do not prompt user.
    - If NOT found: invoke fixme-tickets: `context detect`
      Parse the JSON output. **Output** the detected configuration as a formatted markdown table in text (framework, dev server URL, build/lint/test commands). Then call AskUserQuestion with a short plain-text prompt: "Does this project configuration look correct?" with options "Looks correct" and "I need to adjust something". If the user needs adjustments, ask follow-up questions to get the correct values, then manually adjust the JSON.
      After confirmation, invoke fixme-tickets: `context save --data '<JSON from detect output>'`
@@ -116,20 +116,20 @@ After loading project context (during start or resume), set up the browser envir
 
 Load the dev server URL from project context:
 Invoke fixme-tickets: `context load`
-Extract `dev_server.url` and `dev_server.command` from the output.
+Extract `devServer.url` and `devServer.command` from the output.
 
 Check if the dev server is already reachable by attempting to open it in the browser:
 ```bash
-playwright-cli open <dev_server.url>
+playwright-cli open <devServer.url>
 ```
 
 If the browser shows a connection error (ERR_CONNECTION_REFUSED or similar):
 - Start the dev server in the background:
   ```bash
-  <dev_server.command> &
+  <devServer.command> &
   ```
-- Wait for the server to be ready: retry `playwright-cli open <dev_server.url>` every 2 seconds, up to 30 seconds.
-- If the server doesn't start within 30 seconds, use AskUserQuestion: "Dev server didn't start within 30 seconds." with options "I'll start it manually" / "Cancel session". If user starts manually: retry `playwright-cli open <dev_server.url>` to confirm.
+- Wait for the server to be ready: retry `playwright-cli open <devServer.url>` every 2 seconds, up to 30 seconds.
+- If the server doesn't start within 30 seconds, use AskUserQuestion: "Dev server didn't start within 30 seconds." with options "I'll start it manually" / "Cancel session". If user starts manually: retry `playwright-cli open <devServer.url>` to confirm.
 
 If the browser successfully loads the page, the server is already running.
 
@@ -203,7 +203,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
      <task>
      Investigate this bug:
      - Task description: <title and description from ticket>
-     - Dev server URL: <dev_server.url from project context>
+     - Dev server URL: <devServer.url from project config>
      - Output directory: <ticket-folder>/research/
      </task>
    ```
@@ -234,7 +234,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
        - Task: <task description from ticket title + investigation findings summary>
        - Pipeline: <pipeline name from step 4>
        - Ticket: <ticket-folder>/ticket.md
-       - Project context: .fixme/project-context.yaml
+       - Config: .fixme/config.json
 
        When complete, write a summary to <ticket-folder>/task-result.md with:
        - status: "completed" or "failed"
@@ -305,14 +305,14 @@ When the investigation agent reports a BLOCKER (browser crash, server down, auth
 
 2. **Browser crash recovery:**
    ```bash
-   playwright-cli open <dev_server.url>
+   playwright-cli open <devServer.url>
    ```
    Wait for the app to fully load (`playwright-cli run-code "async page => { await page.waitForLoadState('networkidle'); }"`), then take a snapshot to check page state. If login page is showing, follow the same login flow as Session Environment Setup step 3 (ask user to log in via AskUserQuestion). If authenticated content is visible, re-dispatch the investigation agent.
 
 3. **Server down recovery:**
    Restart the dev server:
    ```bash
-   <dev_server.command> &
+   <devServer.command> &
    ```
    Wait for readiness, then re-dispatch.
 
@@ -498,7 +498,7 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 ## References
 
 - **State machine rules:** See `~/.claude/skills/fixme-tickets-md/references/state-machine.md` for the complete list of valid state transitions, enforcement rules, and retry semantics.
-- **Project context format:** See `~/.claude/skills/fixme-tickets-md/references/project-context-schema.md` for the YAML schema, detection sources, and lifecycle rules.
+- **Project config format:** See `~/.claude/skills/fixme-session/references/config-schema.md` for the `project` section schema, detection sources, and lifecycle rules.
 - **Config schema:** See `~/.claude/skills/fixme-session/references/config-schema.md` for pipeline definitions and ticket backend configuration.
 - **Investigation agent:** See `~/.claude/skills/fixme-investigate/SKILL.md` for the standalone investigation skill.
 - **Task pipeline:** See `~/.claude/skills/fixme-task/SKILL.md` for the end-to-end plan-execute-review pipeline.
