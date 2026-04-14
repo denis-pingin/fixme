@@ -1230,14 +1230,12 @@ function sessionSummary(sessionDir) {
 function contextDetect(flags) {
   const projectDir = flags['project-dir'] || process.cwd();
 
-  const context = {
-    dev_server: { command: null, url: null, hmr: false },
-    build: { command: null },
-    test: { runner: null, command: null, filter_by_file: null, filter_by_name: null, init_command: null },
-    lint: { command: null },
+  const project = {
+    devServer: { command: null, url: null, hmr: false },
+    build: null,
+    lint: null,
+    test: { command: null, runner: null },
     framework: null,
-    detected_from: [],
-    detected_at: new Date().toISOString(),
   };
 
   // 1. package.json
@@ -1246,38 +1244,31 @@ function contextDetect(flags) {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       const scripts = pkg.scripts || {};
-      context.detected_from.push('package.json');
 
-      if (scripts.dev) context.dev_server.command = 'yarn dev';
-      if (scripts.build) context.build.command = 'yarn build';
-      if (scripts.test) context.test.command = 'yarn test';
-      if (scripts.lint) context.lint.command = 'yarn lint';
+      if (scripts.dev) project.devServer.command = 'yarn dev';
+      if (scripts.build) project.build = 'yarn build';
+      if (scripts.test) project.test.command = 'yarn test';
+      if (scripts.lint) project.lint = 'yarn lint';
 
       // Framework detection from dependencies
       const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-      if (allDeps['next']) context.framework = 'next.js';
-      else if (allDeps['nuxt']) context.framework = 'nuxt';
-      else if (allDeps['@angular/core']) context.framework = 'angular';
-      else if (allDeps['svelte'] || allDeps['@sveltejs/kit']) context.framework = 'svelte';
-      else if (allDeps['vue']) context.framework = 'vue';
-      else if (allDeps['react']) context.framework = 'react';
+      if (allDeps['next']) project.framework = 'next.js';
+      else if (allDeps['nuxt']) project.framework = 'nuxt';
+      else if (allDeps['@angular/core']) project.framework = 'angular';
+      else if (allDeps['svelte'] || allDeps['@sveltejs/kit']) project.framework = 'svelte';
+      else if (allDeps['vue']) project.framework = 'vue';
+      else if (allDeps['react']) project.framework = 'react';
 
       // Test runner detection
       if (allDeps['vitest']) {
-        context.test.runner = 'vitest';
-        context.test.filter_by_file = 'yarn test {file}';
-        context.test.filter_by_name = "yarn test -t '{name}'";
+        project.test.runner = 'vitest';
       } else if (allDeps['jest']) {
-        context.test.runner = 'jest';
-        context.test.filter_by_file = 'yarn test {file}';
-        context.test.filter_by_name = "yarn test -t '{name}'";
+        project.test.runner = 'jest';
       } else if (allDeps['mocha']) {
-        context.test.runner = 'mocha';
-        context.test.filter_by_file = 'yarn test -- {file}';
-        context.test.filter_by_name = "yarn test -- --grep '{name}'";
+        project.test.runner = 'mocha';
       }
     } catch (e) {
-      // Invalid package.json — skip
+      // Invalid package.json - skip
     }
   }
 
@@ -1288,8 +1279,7 @@ function contextDetect(flags) {
   ];
   for (const cfg of hmrConfigs) {
     if (fs.existsSync(path.join(projectDir, cfg))) {
-      context.dev_server.hmr = true;
-      context.detected_from.push(cfg);
+      project.devServer.hmr = true;
       break;
     }
   }
@@ -1302,22 +1292,18 @@ function contextDetect(flags) {
       const envContent = fs.readFileSync(envPath, 'utf8');
       const portMatch = envContent.match(/^PORT\s*=\s*(\d+)/m);
       if (portMatch) {
-        const port = portMatch[1];
-        context.dev_server.url = `http://localhost:${port}`;
-        if (!context.detected_from.includes(envFile)) {
-          context.detected_from.push(envFile);
-        }
+        project.devServer.url = `http://localhost:${portMatch[1]}`;
         break;
       }
     }
   }
 
   // Default URL
-  if (context.dev_server.command && !context.dev_server.url) {
-    context.dev_server.url = 'http://localhost:3000';
+  if (project.devServer.command && !project.devServer.url) {
+    project.devServer.url = 'http://localhost:3000';
   }
 
-  return output(context);
+  return output(project);
 }
 
 function contextSave(flags) {
@@ -1341,160 +1327,44 @@ function contextSave(flags) {
     fs.mkdirSync(fixmeDir, { recursive: true });
   }
 
-  // Serialize to YAML
-  const yamlContent = jsonToYaml(data);
-  const filePath = path.join(fixmeDir, 'project-context.yaml');
-  fs.writeFileSync(filePath, yamlContent);
+  // Read existing config.json if it exists, merge project into it
+  const configPath = path.join(fixmeDir, 'config.json');
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (e) {
+      // Corrupted config.json - start fresh but warn
+      config = {};
+    }
+  }
 
-  return output({ path: filePath, saved: true });
+  config.project = data;
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+
+  return output({ path: configPath, saved: true });
 }
 
 function contextLoad(flags) {
   const projectDir = flags['project-dir'] || process.cwd();
-  const filePath = path.join(projectDir, '.fixme', 'project-context.yaml');
+  const configPath = path.join(projectDir, '.fixme', 'config.json');
 
-  if (!fs.existsSync(filePath)) {
-    return error("No project context found. Run 'context detect' first.");
+  if (!fs.existsSync(configPath)) {
+    return error("No project config found. Run '/fixme-config' to set up.");
   }
 
-  const content = fs.readFileSync(filePath, 'utf8');
-  const data = yamlToJson(content);
-
-  return output(data);
-}
-
-// ============================================================================
-// YAML <-> JSON for project context (purpose-built, max 2 levels)
-// ============================================================================
-
-/**
- * Serialize a JSON object to YAML string (shallow, max 2 levels).
- */
-function jsonToYaml(obj) {
-  const lines = [];
-
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined) {
-      lines.push(`${key}:`);
-    } else if (typeof value === 'string') {
-      if (needsQuoting(value)) {
-        lines.push(`${key}: "${escapeYamlString(value)}"`);
-      } else {
-        lines.push(`${key}: ${value}`);
-      }
-    } else if (typeof value === 'boolean' || typeof value === 'number') {
-      lines.push(`${key}: ${value}`);
-    } else if (Array.isArray(value)) {
-      if (value.length === 0) {
-        lines.push(`${key}: []`);
-      } else {
-        lines.push(`${key}:`);
-        for (const item of value) {
-          if (typeof item === 'string') {
-            if (needsQuoting(item)) {
-              lines.push(`  - "${escapeYamlString(item)}"`);
-            } else {
-              lines.push(`  - ${item}`);
-            }
-          } else {
-            lines.push(`  - ${serializeScalar(item)}`);
-          }
-        }
-      }
-    } else if (typeof value === 'object') {
-      lines.push(`${key}:`);
-      for (const [subKey, subVal] of Object.entries(value)) {
-        if (subVal === null || subVal === undefined) {
-          lines.push(`  ${subKey}:`);
-        } else if (typeof subVal === 'string') {
-          if (needsQuoting(subVal)) {
-            lines.push(`  ${subKey}: "${escapeYamlString(subVal)}"`);
-          } else {
-            lines.push(`  ${subKey}: ${subVal}`);
-          }
-        } else if (typeof subVal === 'boolean' || typeof subVal === 'number') {
-          lines.push(`  ${subKey}: ${subVal}`);
-        } else {
-          lines.push(`  ${subKey}: ${serializeScalar(subVal)}`);
-        }
-      }
-    }
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    return error(`Invalid config.json: ${e.message}`);
   }
 
-  return lines.join('\n') + '\n';
-}
-
-/**
- * Parse a shallow YAML file (max 2 levels) into a JSON object.
- */
-function yamlToJson(content) {
-  const lines = content.split('\n');
-  const obj = {};
-  let currentKey = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.trim() === '' || line.trim().startsWith('#')) continue;
-
-    const indent = line.match(/^(\s*)/)[1].length;
-
-    if (indent === 0) {
-      // Top-level key
-      const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)/);
-      if (!match) continue;
-
-      currentKey = match[1];
-      const valueStr = match[2].trim();
-
-      if (valueStr === '') {
-        // Check next lines
-        const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
-        const nextIndent = nextLine.match(/^(\s*)/)?.[1].length || 0;
-
-        if (nextIndent > 0 && nextLine.trimStart().startsWith('- ')) {
-          // Array
-          obj[currentKey] = [];
-          let j = i + 1;
-          while (j < lines.length) {
-            const al = lines[j];
-            if (al.trim() === '') { j++; continue; }
-            const ai = al.match(/^(\s*)/)[1].length;
-            if (ai === 0) break;
-            const am = al.trimStart().match(/^-\s+(.*)/);
-            if (am) {
-              obj[currentKey].push(parseScalar(am[1].trim()));
-            }
-            j++;
-          }
-          i = j - 1;
-        } else if (nextIndent > 0) {
-          // Nested object
-          obj[currentKey] = {};
-          let j = i + 1;
-          while (j < lines.length) {
-            const nl = lines[j];
-            if (nl.trim() === '') { j++; continue; }
-            const ni = nl.match(/^(\s*)/)[1].length;
-            if (ni === 0) break;
-            const nm = nl.trim().match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)/);
-            if (nm) {
-              obj[currentKey][nm[1]] = parseScalar(nm[2].trim());
-            }
-            j++;
-          }
-          i = j - 1;
-        } else {
-          obj[currentKey] = null;
-        }
-      } else if (valueStr.startsWith('[')) {
-        obj[currentKey] = parseInlineArray(valueStr);
-      } else {
-        obj[currentKey] = parseScalar(valueStr);
-      }
-    }
+  if (!config.project) {
+    return error("No project settings in config.json. Run '/fixme-config' to configure.");
   }
 
-  return obj;
+  return output(config.project);
 }
 
 // ============================================================================

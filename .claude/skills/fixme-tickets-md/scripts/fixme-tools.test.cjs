@@ -994,6 +994,104 @@ test('fallback: legacy transitions when no --pipeline and no pipeline in frontma
   assert(result.data.to === 'investigating', `Should transition to investigating, got ${result.data.to}`);
 });
 
+// ── context commands (config.json migration) ─────────────────────────
+console.log('\n── context commands ──');
+
+test('context detect outputs camelCase project format', () => {
+  const tmp = createTmpDir();
+  // Create a minimal package.json
+  fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+    scripts: { dev: 'next dev', build: 'next build', test: 'jest', lint: 'eslint .' },
+    dependencies: { next: '^14.0.0', react: '^18.0.0' },
+    devDependencies: { jest: '^29.0.0' }
+  }));
+  const result = runInDir('context detect', tmp);
+  assert(result.ok, 'context detect should succeed');
+  const d = result.data;
+  // Must use config.json camelCase format
+  assert(d.devServer !== undefined, 'should have devServer key (camelCase)');
+  assert(d.devServer.command === 'yarn dev', 'devServer.command should be yarn dev');
+  assert(d.devServer.url === 'http://localhost:3000', 'devServer.url should default to localhost:3000');
+  assert(d.build === 'yarn build', 'build should be yarn build');
+  assert(d.test.command === 'yarn test', 'test.command should be yarn test');
+  assert(d.test.runner === 'jest', 'test.runner should be jest');
+  assert(d.lint === 'yarn lint', 'lint should be yarn lint');
+  assert(d.framework === 'next.js', 'framework should be next.js');
+  // Must NOT have old yaml-style keys
+  assert(d.dev_server === undefined, 'should NOT have dev_server (snake_case)');
+});
+
+test('context save writes to config.json project key', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const projectData = JSON.stringify({
+    devServer: { url: 'http://localhost:3000', command: 'yarn dev', hmr: true },
+    build: 'yarn build', lint: 'yarn lint',
+    test: { command: 'yarn test', runner: 'vitest' },
+    framework: 'react'
+  });
+  const result = runInDir(`context save --data '${projectData}'`, tmp);
+  assert(result.ok, 'context save should succeed');
+  // Verify config.json was written
+  const configPath = path.join(fixmeDir, 'config.json');
+  assert(fs.existsSync(configPath), 'config.json should exist');
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert(config.project !== undefined, 'config should have project key');
+  assert(config.project.devServer.url === 'http://localhost:3000', 'project.devServer.url correct');
+  assert(config.project.framework === 'react', 'project.framework correct');
+  // Must NOT have created project-context.yaml
+  assert(!fs.existsSync(path.join(fixmeDir, 'project-context.yaml')), 'yaml file must not exist');
+});
+
+test('context save preserves existing config keys', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  // Write existing config with pipelines and models
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    ticketBackend: 'fixme-tickets-md',
+    models: { profile: 'balanced' },
+    pipelines: { default: [{ name: 'plan', skills: ['fixme-write-plan'] }] }
+  }, null, 2));
+  const projectData = JSON.stringify({
+    devServer: { url: 'http://localhost:5173', command: 'yarn dev', hmr: true },
+    build: 'yarn build'
+  });
+  const result = runInDir(`context save --data '${projectData}'`, tmp);
+  assert(result.ok, 'context save should succeed');
+  const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
+  assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend preserved');
+  assert(config.models.profile === 'balanced', 'models preserved');
+  assert(config.pipelines.default.length === 1, 'pipelines preserved');
+  assert(config.project.devServer.url === 'http://localhost:5173', 'project updated');
+});
+
+test('context load reads from config.json project key', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    project: {
+      devServer: { url: 'http://localhost:4000', command: 'npm run dev', hmr: false },
+      build: 'npm run build',
+      test: { command: 'npm test', runner: 'vitest' }
+    }
+  }, null, 2));
+  const result = runInDir('context load', tmp);
+  assert(result.ok, 'context load should succeed');
+  assert(result.data.devServer.url === 'http://localhost:4000', 'loaded correct url');
+  assert(result.data.build === 'npm run build', 'loaded correct build');
+  assert(result.data.test.runner === 'vitest', 'loaded correct test runner');
+});
+
+test('context load fails when no config.json exists', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('context load', tmp);
+  assert(!result.ok, 'should fail');
+  assert(result.data && result.data.error, 'should have error message');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
