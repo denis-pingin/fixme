@@ -204,6 +204,72 @@ gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
 **Skip already-addressed issues**: Same logic as Source B - check if a reply comment exists
 that specifically references the finding by file path or description.
 
+#### Source D: Regular human issue comments (non-bot PR comments)
+
+Human reviewers sometimes post their entire review as a single regular PR issue comment
+instead of a formal review with inline threads. These comments are NOT review threads (so
+Source A misses them) and are NOT from a bot allowlisted login (so Sources B and C miss
+them). They MUST still be analyzed.
+
+```bash
+# Fetch ALL issue comments from non-bot authors.
+# Filter: exclude anyone whose user.type is "Bot", anyone whose login ends with "[bot]",
+# and the explicit known-AI allowlist (claude[bot], greptile-apps[bot],
+# copilot-pull-request-reviewer). This is the exact inverse of the AI author detection
+# rule in the Notes section - Source D is "everyone who is NOT an AI reviewer".
+#
+# IMPORTANT: Use --paginate. Without it, only the first page (default 30 items) is
+# returned and later comments are silently missed.
+gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
+  --jq '[.[]
+    | select(.user.type != "Bot")
+    | select((.user.login | endswith("[bot]")) | not)
+    | select(.user.login != "claude[bot]")
+    | select(.user.login != "greptile-apps[bot]")
+    | select(.user.login != "copilot-pull-request-reviewer")
+    | {id, user: .user.login, created_at, body}]'
+```
+
+**Why the filter is redundant**: `user.type != "Bot"` catches GitHub App bots and the
+`endswith("[bot]")` check catches bots whose `type` is mislabelled. The explicit
+allowlist checks are a belt-and-braces guard against GitHub API inconsistencies and
+keep Source D in strict parity with the Sources B/C allowlist. Do not remove any of the
+three filter layers.
+
+**Double-count avoidance**: Source B already claims `claude[bot]`, Source C already
+claims `greptile-apps[bot]`, and Source A already claims any comment that is part of a
+review thread. The jq filter above excludes the two known bot logins. GitHub review
+thread comments are returned by a DIFFERENT endpoint (`reviewThreads` in GraphQL) and
+do NOT appear in `/issues/{number}/comments`, so there is no overlap with Source A. A
+single comment can belong to at most one source.
+
+**Reading Source D comments**: Read the FULL body of every Source D comment. A human
+review posted as a single issue comment can contain multiple distinct findings in
+prose, numbered lists, bullet points, or inline-quoted code blocks. Extract each
+finding as a separate item the same way Source B (Claude bot) findings are extracted.
+For each extracted finding, record: the originating comment's `id` (needed for the
+resolution reply in Step 6), the author's login (for the report), the finding title
+or first-sentence summary, the description, and any file paths / line ranges mentioned
+in the prose.
+
+If a Source D comment body contains no actionable findings (e.g. it is just a
+"LGTM", a "thanks!", or a question for the author), skip it with verdict
+`REJECT_FALSE_POSITIVE` and record "no actionable finding in comment body" as the
+reasoning. Do NOT silently drop it - every comment must appear in the final report
+with a verdict (see presentation rule 11).
+
+**Skip already-addressed findings**: For each specific finding extracted from a
+Source D comment, check if a LATER issue comment exists that specifically references
+that finding. A reply is only considered to address a finding if:
+
+1. It was posted AFTER the Source D comment (higher comment ID or later `created_at`)
+2. It explicitly references the specific finding (by title, file path, or description)
+3. It references a commit SHA or says "Fixed" in relation to that specific finding
+
+This is the same rule used for Sources B and C. A reply addressing finding X from
+comment A does NOT count as addressing finding Y from comment B. Each finding in each
+comment must be independently checked.
+
 #### Display all comments
 
 Assign each comment a **source-prefixed ID** at fetch time: A1, A2, ... for review threads;
