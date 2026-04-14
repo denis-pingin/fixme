@@ -145,17 +145,17 @@ If "I need to adjust": ask follow-up questions one at a time for each value the 
 
 Per Decision 13, this round configures ONLY `linear.teamId` and `linear.teamName`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
 
-#### Step 5a: Verify Linear MCP availability
+#### Step 5a: Discover and select team (Decision 13 hybrid flow)
 
-Make a probe call to a Linear MCP tool (`mcp__claude_ai_Linear__list_teams` with no filters). If the call fails with "tool not found", a connection error, or any error indicating Linear MCP is not available, STOP the skill immediately and report:
+Call `mcp__claude_ai_Linear__list_teams` with no filters.
+
+**If the call fails** with "tool not found", a connection error, or any error indicating Linear MCP is not available, STOP the skill immediately and report:
 
 > "Linear MCP is not available. I need it to configure the Linear backend. Please enable it and tell me to continue."
 
-Do NOT proceed to Step 5b. Do NOT write any Linear fields. Do NOT save the config.
+Do NOT proceed. Do NOT write any Linear fields. Do NOT save the config.
 
-#### Step 5b: Discover and select team (Decision 13 hybrid flow)
-
-Call `mcp__claude_ai_Linear__list_teams`. Parse the response into an array of `{ id, name, key }` objects. Preserve the order returned by the API as the canonical discovered list.
+**If the call succeeds**, parse the response into an array of `{ id, name, key }` objects. Preserve the order returned by the API as the canonical discovered list.
 
 Branch on team count:
 
@@ -165,7 +165,7 @@ Branch on team count:
 
 Do NOT proceed. Do NOT write any Linear fields.
 
-**Exactly one team returned:** Use it automatically. Set `selectedTeam = teams[0]`. Print `Using Linear team: {name} ({key})`. Proceed to Step 5c.
+**Exactly one team returned:** Use it automatically. Set `selectedTeam = teams[0]`. Print `Using Linear team: {name} ({key})`. Proceed to Step 5b.
 
 **Two or more teams returned:** Use the hybrid flow below.
 
@@ -208,9 +208,9 @@ Do NOT proceed. Do NOT write any Linear fields.
 
 4. **Set the resolved values:** `selectedTeam = <the matched team object>`. Print `Selected Linear team: {selectedTeam.name} ({selectedTeam.key})`.
 
-#### Step 5c: Stage Linear values
+#### Step 5b: Stage Linear values
 
-After Step 5b resolves `selectedTeam`, hold these values in memory for the merge in Step 7:
+After Step 5a resolves `selectedTeam`, hold these values in memory for the merge in Step 7:
 
 - `linear.teamId` = `selectedTeam.id`
 - `linear.teamName` = `selectedTeam.name`
