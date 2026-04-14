@@ -64,6 +64,31 @@
       { "name": "plan", "skills": ["fixme-write-plan"] },
       { "name": "implement", "skills": ["fixme-execute-plan"] }
     ]
+  },
+  "linear": {
+    "teamId": "abc123-team-id",
+    "teamName": "Engineering",
+    "defaultLabels": ["bug"],
+    "defaultProject": "project-id-or-name"
+  },
+  "ticketTemplate": {
+    "default": "standard",
+    "templates": {
+      "standard": {
+        "sections": [
+          { "heading": "Summary", "hint": "Brief description of the issue or feature" },
+          { "heading": "Acceptance Criteria", "hint": "What done looks like" }
+        ]
+      },
+      "bug": {
+        "sections": [
+          { "heading": "Bug Description", "hint": "What's happening" },
+          { "heading": "Steps to Reproduce", "hint": "Numbered steps" },
+          { "heading": "Expected Behavior", "hint": "What should happen" },
+          { "heading": "Actual Behavior", "hint": "What actually happens" }
+        ]
+      }
+    }
   }
 }
 ```
@@ -120,6 +145,17 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 | `project.test` | string | No | Test command |
 | `ticketBackend` | string | No | Ticket backend skill name. Default: `"fixme-tickets-md"` |
 | `pipelines` | object | No | Named pipeline definitions. Default pipelines provided if absent. |
+| `linear` | object | No | Linear integration settings. Used by `fixme-ticket` skill. |
+| `linear.teamId` | string | No | Default Linear team ID. If set, skips team selection prompt. |
+| `linear.teamName` | string | No | Default Linear team name. Resolved to team ID via `list_teams` if `teamId` is not set. |
+| `linear.defaultLabels` | string[] | No | Label names applied to new tickets by default. Merged with user-detected labels (deduplicated, case-insensitive). User can override during metadata editing. |
+| `linear.defaultProject` | string | No | Default project ID or name for new tickets. Used only when user text does not explicitly mention a project. User can override during metadata editing. |
+| `ticketTemplate` | object | No | Ticket template configuration. Used by `fixme-ticket` skill. |
+| `ticketTemplate.default` | string | No | Name of the default template (must match a key in `ticketTemplate.templates`). |
+| `ticketTemplate.templates` | object | No | Named template definitions. Each key is a template name, value is a template object. |
+| `ticketTemplate.templates.<name>.sections` | array | Yes (if template) | Ordered list of section objects defining the template structure. |
+| `ticketTemplate.templates.<name>.sections[].heading` | string | Yes | Section heading text. |
+| `ticketTemplate.templates.<name>.sections[].hint` | string | Yes | Placeholder hint shown when section content is empty. |
 
 ## Defaults
 
