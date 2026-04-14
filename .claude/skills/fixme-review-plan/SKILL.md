@@ -46,44 +46,172 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 6. **Does this contradict a locked decision?** If the plan includes a Locked Decisions section in its Context, those are settled user choices. Do not flag findings that disagree with locked decisions. If a locked decision itself appears problematic (would cause a bug, break something), frame it as a question in the Questions section, not as a finding.
 7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
 
-## What to Look For
+## Foundational Mindset: Do Not Trust
 
-### Correctness
-- Steps that won't work as described given the actual codebase state
-- Wrong assumptions about existing APIs, types, data shapes (verify by reading code)
-- Race conditions, ordering issues, missing error propagation
-- Steps that contradict each other
+Plans describe intent, not reality. Every claim a plan makes about the codebase - file paths, function signatures, type shapes, API behaviors, existing patterns - is a hypothesis until verified by reading the actual code. The reviewer's job is to verify these claims, not assume them.
 
-### Completeness
-- Missing steps that are implied but not explicit (especially cleanup, error handling, state reset)
-- Happy path only - no handling of failure modes that are likely in practice
-- Missing test steps for behavioral changes
-- Migrations, backwards compatibility, or rollback not addressed when they should be
+A plan where every step is individually correct but collectively does not solve the stated problem is the most dangerous failure mode. It passes a checklist review but fails goal-backward analysis. Always start from the outcome and work backwards.
 
-### Feasibility
-- Steps that assume APIs or capabilities that don't exist in the dependencies
-- Performance implications that aren't acknowledged (N+1 queries, unnecessary re-renders, large payloads)
+## Verification Dimensions
+
+Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim Verification -> category CLAIM-VERIFICATION).
+
+### Dimension 1: Goal Achievement
+
+**Question:** If every step executes perfectly, is the stated problem actually solved?
+
+**Process:**
+1. Read the plan's Goal line and the spec/task description
+2. Work backwards from the goal: what must be TRUE in the codebase for this goal to be achieved?
+3. For each required truth, find the plan step(s) that establish it
+4. Check for gaps: truths that have no covering step, or steps that exist but do not actually achieve the truth they claim to address
+
+**Red flags:**
+- Plan steps are all individually reasonable but collectively miss the root cause
+- Goal says "fix X" but steps only address a symptom of X
+- Success criteria in the plan are weaker than what the spec requires
+- Plan solves a different (easier) problem than the one stated
+
+### Dimension 2: Requirement Coverage
+
+**Question:** Does every requirement from the spec/task map to one or more plan steps?
+
+**Process:**
+1. Extract all requirements from the spec, task description, and any referenced context documents
+2. For each requirement, find the plan step(s) that implement it
+3. For each plan step, verify it maps back to at least one requirement (detect scope creep)
+4. Check for partial coverage: requirement has a step but the step only addresses part of it
+
+**Red flags:**
+- Requirement mentioned in spec but no plan step addresses it
+- Multiple requirements share one vague step ("implement the fix" for three distinct behaviors)
+- Plan includes steps not traceable to any requirement (scope creep)
+- Requirement partially covered (handles the happy path but not the error case the spec mentions)
+
+### Dimension 3: Claim Verification
+
+**Question:** Are the plan's factual claims about the codebase actually true?
+
+**Process:**
+1. Identify every factual claim the plan makes: file paths, function signatures, type shapes, import paths, API behaviors, existing patterns, dependency versions
+2. For each claim, read the actual code to verify it
+3. Check the plan's Stable Context section - are the recorded patterns and conventions accurate?
+4. For modifications: verify the line ranges cited in the plan match what is actually at those lines
+
+**Red flags:**
+- Plan references a file path that does not exist
+- Plan assumes a function signature that differs from the actual code
+- Plan claims a type has a field it does not have, or misses a required field
+- Plan assumes an import path that would not resolve
+- Plan cites a line range but the content at those lines is different from what the plan describes
+- Plan's Stable Context describes patterns that have changed since it was written
+
+### Dimension 4: Step Correctness
+
+**Question:** Will each step work as described given the actual state of the codebase?
+
+**Process:**
+1. For each step that creates or modifies code, trace through the logic against the actual codebase
+2. Check for: wrong API usage (verify against actual dependency version), type mismatches, missing awaits, race conditions, swapped arguments, off-by-one errors
+3. Check that each step's preconditions are met by the steps that come before it
+4. Check that steps do not contradict each other (step 3 adds X, step 7 removes X)
+
+**Red flags:**
+- Step assumes an API or framework behavior that differs from the actual dependency version in the project
+- Step creates a function call with wrong argument types or order
+- Step modifies a file but the modification would cause a type error, lint error, or runtime crash
+- Two steps make contradictory changes to the same code
+- Step relies on a side effect of a previous step that is not guaranteed (ordering assumption)
+- Plan fights existing codebase patterns instead of working with them
+- Result would not be maintainable by someone who didn't write the plan
+- Simpler approaches exist that achieve the same outcome
+
+### Dimension 5: Artifact Wiring
+
+**Question:** Are the artifacts the plan creates connected to each other and to the existing codebase, not just created in isolation?
+
+**Process:**
+1. For each new file the plan creates, check: does another step import/reference/register it?
+2. For each new function/component/route, check: does a step wire it to its caller/consumer/route table?
+3. For modifications to existing files, check: are downstream consumers of the modified code updated if the interface changes?
+4. Check for missing "glue" steps: barrel export updates, route registrations, config entries, dependency injections
+
+**Red flags:**
+- New component created but no step imports it into a parent
+- New API route created but no step calls it from the client
+- New utility function created but no step uses it (or the plan says "the executor will wire it up")
+- Interface of an existing function changed but callers are not updated
+- New test file created but not added to test configuration (if the project requires explicit registration)
+
+### Dimension 6: Executability
+
+**Question:** Can an executor follow each step without making judgment calls not specified in the plan?
+
+**Process:**
+1. For each step, apply the Delegation Test: could an executor with zero codebase knowledge execute this step by reading it alone?
+2. Check for ambiguous instructions: "update appropriately", "add error handling", "similar to X", "adapt from Y"
+3. For new file steps: is the complete content provided, or must the executor design the content?
+4. For modification steps: are exact locations (file path, line range, or anchor text) specified?
+
+**Red flags:**
+- Step says "based on X" or "adapted from Y" without specifying the final result
+- Step says "add appropriate error handling" without specifying which errors and how to handle each
+- Step says "similar to the pattern in Z" without inlining the pattern
+- New file step lacks complete content or detailed structural specification
+- Step could be interpreted two different ways with materially different outcomes
+- Step uses "the executor should decide" or "may need to adjust" language
+
+### Dimension 7: Scope Sanity
+
+**Question:** Is the plan small enough to execute without quality degradation?
+
+**Process:**
+1. Count total steps across all tasks
+2. Count total files created or modified
+3. Assess complexity: are the changes straightforward (rename, config) or complex (new algorithms, state machines, concurrency)?
+4. Check whether the plan should be split: are there independent subsystems being changed in a single plan?
+
+**Red flags:**
+- Plan has more than ~15 implementation steps (excluding verification/commit steps)
+- Plan modifies more than ~10 files
+- Single task has more than ~12 steps
+- Plan combines unrelated changes (bug fix + refactor + new feature in one plan)
+- Complex domain logic (auth, payments, concurrency) crammed into a task with many other changes
 - Steps that would require changes outside the plan's stated scope
 
-### Architecture
-- Does the plan fight existing patterns or work with them?
-- Will the result be maintainable by someone who didn't write the plan?
-- Are there simpler approaches that achieve the same outcome?
+### Dimension 8: Ordering and Dependencies
 
-### Ordering and Dependencies
-- Steps that depend on outputs of later steps
-- Parallelizable work that's sequenced unnecessarily (observation, not a problem)
-- Missing verification checkpoints between risky phases
+**Question:** Are steps correctly ordered with no circular dependencies or missing prerequisites?
 
-### Assumption Validity
-- Check every `[assumed]` Locked Decision. For each: does a realistic alternative exist that would materially change the plan? If yes, this should have been confirmed by the user - flag it as a finding (category: COMPLETENESS, severity: IMPORTANT). The plan writer should have surfaced this during the Design Decision Checkpoint.
-- Check whether any `[assumed]` decision contradicts patterns observed in the codebase. An assumption that fights the codebase is higher risk than one that follows it.
-- Do NOT flag `[confirmed]` decisions - those were explicitly chosen by the user.
+**Process:**
+1. For each step, identify what it depends on (files that must exist, functions that must be defined, types that must be available)
+2. Verify that every dependency is satisfied by a step that comes before it in the plan
+3. Check for circular dependencies between tasks (Task 2 needs Task 3's output, Task 3 needs Task 2's output)
+4. Check for missing verification checkpoints between risky phases (e.g., no build check between two tasks that could conflict)
 
-### Questions Section Audit
-- Read the plan's Questions section (if present). Each item should be purely informational context for the executor.
-- Promote to a finding any item that is actually: a correctness concern (the plan might not work), a feasibility risk (something might break), an unresolved design decision (multiple approaches exist), or a known flaw being deferred to the executor. These are plan incompleteness, not questions.
-- Items that start with "if", "might", "may need to", or "the executor should decide" are red flags - they suggest the plan writer deferred real work.
+**Red flags:**
+- Step N uses a function/type/file created in step M where M > N
+- Two tasks have mutual dependencies (Task A imports from Task B and vice versa, but only one can be implemented first)
+- Commit step appears between "write failing test" and "implement to make test pass" (breaks TDD contract)
+- No verification step between tasks that modify the same files
+
+### Dimension 9: Decision Compliance
+
+**Question:** Does the plan respect locked decisions and exclude deferred scope?
+
+**Process:**
+1. Read the plan's Locked Decisions section and the decision log at `.fixme/decisions.md` (if it exists)
+2. For each `[confirmed]` decision: verify the plan implements it as stated. Do not flag findings that merely disagree with confirmed decisions.
+3. For each `[assumed]` decision: check whether a realistic alternative exists that would materially change the plan. If yes, flag it (severity: IMPORTANT) - the plan writer should have surfaced this during the Design Decision Checkpoint.
+4. Check whether the plan includes work that was explicitly deferred or marked out of scope in previous iterations
+5. Read the plan's Questions section (if present). Each item should be purely informational context. Promote to a finding any item that is actually: a correctness concern, a feasibility risk, an unresolved design decision, or a known flaw being deferred to the executor.
+
+**Red flags:**
+- Plan contradicts a `[confirmed]` locked decision
+- Plan includes work explicitly marked as deferred or out of scope
+- `[assumed]` decision has a realistic alternative that would materially change the plan structure
+- Questions section contains items that start with "if", "might", "may need to", or "the executor should decide" - these suggest the plan writer deferred real work
+- Questions section contains correctness concerns or feasibility risks disguised as informational notes
 
 ## What NOT to Flag
 
@@ -114,7 +242,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | Field | Description |
 |-------|-------------|
 | **Location** | Which plan step(s) this relates to |
-| **Category** | CORRECTNESS / COMPLETENESS / FEASIBILITY / ARCHITECTURE / ORDERING |
+| **Category** | GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE |
 | **Severity** | BLOCKING (plan will fail) / IMPORTANT (plan will work but with significant issues) / MINOR (improvement opportunity) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
@@ -124,7 +252,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 ### Final Output Structure
 
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
-2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, CORRECTNESS before other categories.
+2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, GOAL-ACHIEVEMENT and STEP-CORRECTNESS before other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 
 ## Rules
