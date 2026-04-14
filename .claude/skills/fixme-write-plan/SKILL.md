@@ -189,6 +189,8 @@ These are exactly the conditions under which silent overrides happen. The gate e
    - Re-read the specific files it references (targeted, not full codebase)
    - If it contradicts a Stable Context item, re-verify that item against the codebase
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
+   - **Never silently drop a FIX item.** If you believe a FIX should not be implemented, that is not your call - flag it back to the user via the Input Audit as a new question with concrete evidence (what you read, what tradeoff changed your mind, what alternative you propose). "Drop it and add a clarifying comment" is only acceptable when the handler's Approach field explicitly specifies exactly that as the full resolution.
+   - **Never substitute your own "lighter touch" for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems "simpler" is a silent override and the exact failure mode the handler's Multi-Option Discipline exists to prevent.
 4. In **code revision only**: re-read all files that were modified during execution (listed in execution results). The codebase has changed - file-level context is stale.
 5. Skip full codebase exploration. Only do targeted re-reads as described above.
 6. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
@@ -536,7 +538,7 @@ Before saving the plan, verify:
 - [ ] The File Map matches the actual steps (nothing missing, nothing extra)
 - [ ] Context section is populated with all significant discoveries from codebase exploration
 - [ ] Locked Decisions section carries forward all decisions from previous iterations (revision mode)
-- [ ] No FIX item was silently ignored - each is addressed in the revised plan or flagged as a conflict
+- [ ] No FIX item was silently ignored, dropped, downgraded to a clarifying comment, or collapsed to a "simpler" substitute - each is either implemented using the handler's specified Approach (for FIX), resolved via the user's Locked Decision (for FIX_UNCLEAR), or flagged back to the user as a new question with concrete evidence
 - [ ] Every task has a structured Expected Outcome (Build/Lint/Tests/Behavior)
 - [ ] No step delegates design decisions to the executor - apply the Delegation Test to every create/modify step
 - [ ] New file steps include full content or detailed structural specification
