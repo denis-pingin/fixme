@@ -95,7 +95,7 @@ Load the pipeline definition and project settings:
    ]
    ```
 4. **Filter out disabled phases** (`enabled === false`)
-5. **Extract project settings** from config's `project` field. If absent, fall back to `.fixme/project-context.yaml`
+5. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
 
 ## Ticket Integration (Optional)
 
@@ -145,7 +145,7 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `.fixme/config.json`, `.fixme/plans/*.md`, `.fixme/decisions.md`, `.fixme/project-context.yaml`, or plan files referenced in conversation
+- **Read** - ONLY on `.fixme/config.json`, `.fixme/plans/*.md`, `.fixme/decisions.md`, or plan files referenced in conversation
 - **Write** - ONLY on `.fixme/decisions.md`
 - **Bash** - ONLY `mkdir -p .fixme/plans` or `mkdir -p .fixme`
 - **TodoWrite** - to create and track the dispatch manifest steps
