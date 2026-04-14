@@ -75,6 +75,7 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-rebase/             # Safe branch rebasing with conflict resolution and verification
   fixme-research/           # Codebase exploration around a known issue (standalone)
   fixme-browser-verify/     # Browser verification after code changes (standalone)
+  fixme-ticket/             # Create Linear tickets from description or context (standalone)
   fixme-tickets/            # Abstract ticket interface (routes to backend)
   fixme-tickets-md/         # Markdown file ticket backend (wraps fixme-tools.cjs)
     scripts/                # fixme-tools.cjs (state CLI) + tests
@@ -108,7 +109,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-research | Codebase explorer | Writes research output, never fixes code | opus |
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | sonnet |
 
-Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
+Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
 
 Model selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget profiles. Default (no config): opus for all agents.
 
