@@ -1091,6 +1091,21 @@ test('context load fails when no config.json exists', () => {
   const result = runInDir('context load', tmp);
   assert(!result.ok, 'should fail');
   assert(result.data && result.data.error, 'should have error message');
+  assert(/\/fixme-config/.test(result.data.error), 'error should mention /fixme-config');
+});
+
+test('context load fails when config.json has no project key', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({}, null, 2));
+  const result = runInDir('context load', tmp);
+  assert(!result.ok, 'should fail');
+  assert(result.data && result.data.error, 'should have error message');
+  assert(
+    /config\.json|fixme-config/.test(result.data.error),
+    'error should mention config.json or fixme-config'
+  );
 });
 
 // ============================================================================
