@@ -22,8 +22,7 @@ You need three things. When invoked directly (via `/fixme-investigate`), resolve
 
 **Dev server URL:** Resolve in order:
 1. `.fixme/config.json` field `project.devServer.url`
-2. `.fixme/project-context.yaml` field `dev_server.url`
-3. Ask the user
+2. Ask the user
 
 **Output directory:** Default to `.fixme/investigations/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
 
