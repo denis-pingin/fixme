@@ -119,7 +119,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-research | Codebase explorer | Writes research output, never fixes code | opus |
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | sonnet |
 
-Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
+Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
 
 Model selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget profiles. Default (no config): opus for all agents.
 
