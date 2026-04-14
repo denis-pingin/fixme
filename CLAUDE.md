@@ -30,6 +30,15 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 
 **CRITICAL: Always edit source files in `.claude/skills/`, NEVER edit `~/.claude/skills/` directly.** The installed copies at `~/.claude/skills/` are overwritten by `install.sh`. Edits made there will be lost on next install and won't be tracked in git. Workflow: edit in `.claude/skills/` -> run `./install.sh` to deploy.
 
+### Configuring fixme
+
+```bash
+# Interactive setup of pipelines, models, project commands, and Linear backend
+/fixme-config
+```
+
+Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. The Linear configuration round runs only when the user selects the Linear backend and requires Linear MCP to be available.
+
 ### fixme-tools.cjs CLI
 
 The state management tool used by ticket backends. Key commands:
@@ -75,11 +84,12 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-rebase/             # Safe branch rebasing with conflict resolution and verification
   fixme-research/           # Codebase exploration around a known issue (standalone)
   fixme-browser-verify/     # Browser verification after code changes (standalone)
+  fixme-config/             # Interactive configuration management (standalone)
   fixme-ticket/             # Create Linear tickets from description or context (standalone)
   fixme-tickets/            # Abstract ticket interface (routes to backend)
   fixme-tickets-md/         # Markdown file ticket backend (wraps fixme-tools.cjs)
     scripts/                # fixme-tools.cjs (state CLI) + tests
-    references/             # state-machine.md, project-context-schema.md
+    references/             # state-machine.md
     templates/              # ticket.md, session.md templates
   fixme-tickets-linear/     # Linear ticket backend (v2 stub)
 ```
@@ -140,7 +150,6 @@ Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER,
 - `.fixme/config.json` - Pipeline definitions and project settings
 - `.fixme/plans/` - Implementation plans (written by fixme-write-plan)
 - `.fixme/decisions.md` - Accumulated user decisions across pipeline iterations
-- `.fixme/project-context.yaml` - Detected project configuration (fallback)
 
 ## Writing Skills
 
