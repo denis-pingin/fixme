@@ -110,11 +110,11 @@ When sub-command is `resume`:
 
 ## Session Environment Setup
 
-After loading project context (during start or resume), set up the browser environment. This happens once per session start/resume, not per ticket.
+After loading project config (during start or resume), set up the browser environment. This happens once per session start/resume, not per ticket.
 
 ### 1. Start Dev Server (if not running)
 
-Load the dev server URL from project context:
+Load the dev server URL from project config:
 Invoke fixme-tickets: `context load`
 Extract `devServer.url` and `devServer.command` from the output.
 
@@ -487,7 +487,7 @@ These rules are non-negotiable. Violating them causes bugs that are extremely ha
 
 8. **NEVER use Playwright MCP tools.** Browser automation is done exclusively via `playwright-cli` commands (e.g., `playwright-cli open`, `playwright-cli snapshot`). The `mcp__plugin_playwright_playwright__*` tools are forbidden.
 
-9. **Use AskUserQuestion for all user confirmations and choices.** Never ask questions via plain text output. Always use the AskUserQuestion tool with appropriate options so the user gets a structured prompt. This includes: project context confirmation, login prompts, investigation result choices, low-confidence bug report confirmation, and any other decision point.
+9. **Use AskUserQuestion for all user confirmations and choices.** Never ask questions via plain text output. Always use the AskUserQuestion tool with appropriate options so the user gets a structured prompt. This includes: project config confirmation, login prompts, investigation result choices, low-confidence bug report confirmation, and any other decision point.
 
 10. **Structured data goes in text output, not in AskUserQuestion.** AskUserQuestion renders as plain text -- markdown tables, code blocks, and formatting are NOT supported. When you need to present structured information AND ask a question: first output the formatted data as a normal text message (markdown works in text output), then immediately call AskUserQuestion with a short plain-text prompt referencing what you just showed. Never embed tables or formatted data inside AskUserQuestion fields.
 

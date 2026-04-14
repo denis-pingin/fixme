@@ -126,7 +126,7 @@ INPUTS                          OUTPUTS
 ----------------------------    ----------------------------
 Task prompt:                    Ticket file (appended):
   - Ticket file path              - investigation section (### Attempt N)
-  - Project context path            - Reproduction steps
+  - Project config path             - Reproduction steps
   - Asset directory path             - Reproduction evidence
   - Dev server URL                   - Affected files + code snippets
                                      - Root cause hypothesis
@@ -134,7 +134,7 @@ Reads from disk:
   - Ticket file (report +        Assets:
     structured fields +             - repro-*.png screenshots
     prior attempts if retry)
-  - Project context YAML          Return value:
+  - .fixme/config.json            Return value:
   - Codebase (Grep/Glob/Read)      "Investigated #NNNN: ..."
   - Browser (snapshot/console/      or "BLOCKER #NNNN: ..."
     network via playwright-cli)
@@ -149,7 +149,7 @@ INPUTS                          OUTPUTS
 ----------------------------    ----------------------------
 Task prompt:                    Ticket file (edited):
   - Ticket folder path            - base_commit frontmatter
-  - Project context path          - files_changed frontmatter
+  - Project config path           - files_changed frontmatter
                                   - fix section (status bullets
 Reads from disk:                    per sub-agent with durations
   - Ticket frontmatter (via         and work summaries)
@@ -173,13 +173,13 @@ INPUTS                          OUTPUTS
 ----------------------------    ----------------------------
 Task prompt:                    Research file:
   - Ticket folder path            <ticket>/research/NNNN-research.md
-  - Project context path            - Affected files table
+  - Project config path             - Affected files table
                                      - Code flow trace
 Reads from disk:                     - Dependencies
   - Ticket file (investigation       - Risks
     section -- root cause,           - Approach candidates (1-3)
     affected files, evidence)
-  - Project context YAML          Return value:
+  - .fixme/config.json            Return value:
   - Codebase (max 15 tool calls)    Work summary (~3-8 lines)
 ```
 
@@ -218,7 +218,7 @@ INPUTS                          OUTPUTS
 Task prompt:                    Source code changes:
   - Ticket folder path            (files modified per plan)
   - Plan file path
-  - Project context path         Optional assets:
+  - Project config path          Optional assets:
   - Verifier feedback (path        fix-check-*.png (visual bugs)
     or "first cycle")
                                 Return value:
@@ -248,7 +248,7 @@ $ARGUMENTS:                     Session file:
 Reads from disk (via CLI):      Git:
   - Session list/state             - git commit (on fix success)
   - Ticket list/state/next         - git revert (on fix failure)
-  - Project context
+  - Project config
                                 User-facing:
 Agent return values:              - Status tables
   - Intake summary                 - Session summaries

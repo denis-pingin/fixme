@@ -98,7 +98,7 @@ Returns session metadata with ticket counts by state.
 
 ### Context Operations
 
-**context detect** - Auto-detect project context
+**context detect** - Auto-detect project config
 
 ```bash
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
@@ -106,7 +106,7 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
 
 Scans the project and outputs a JSON project config object (camelCase keys matching config.json project section).
 
-**context load** - Load saved project context
+**context load** - Load saved project config
 
 ```bash
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
@@ -114,7 +114,7 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
 
 Reads `.fixme/config.json` and returns the project section.
 
-**context save** - Save project context
+**context save** - Save project config
 
 ```bash
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --data '<json>'
