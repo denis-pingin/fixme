@@ -17,7 +17,11 @@
     },
     "build": "yarn build",
     "lint": "yarn lint",
-    "test": "yarn test"
+    "test": {
+      "command": "yarn test",
+      "runner": "vitest"
+    },
+    "framework": "next.js"
   },
   "ticketBackend": "fixme-tickets-md",
   "pipelines": {
@@ -136,13 +140,16 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `project` | object | No | Project settings. If absent, auto-detected. |
+| `project` | object | No | Project settings. If absent, auto-detected via `/fixme-config` or `context detect`. |
 | `project.devServer.url` | string | No | Dev server base URL |
 | `project.devServer.command` | string | No | Shell command to start dev server |
 | `project.devServer.hmr` | boolean | No | Whether HMR is supported |
 | `project.build` | string | No | Build command |
 | `project.lint` | string | No | Lint command |
-| `project.test` | string | No | Test command |
+| `project.test` | string\|object | No | Test command (string) or test config object |
+| `project.test.command` | string | No | Test command (when using object form) |
+| `project.test.runner` | string | No | Test runner: `vitest`, `jest`, `mocha`, or null |
+| `project.framework` | string | No | Detected framework: `next.js`, `nuxt`, `angular`, `svelte`, `vue`, `react` |
 | `ticketBackend` | string | No | Ticket backend skill name. Default: `"fixme-tickets-md"` |
 | `pipelines` | object | No | Named pipeline definitions. Default pipelines provided if absent. |
 | `linear` | object | No | Linear integration settings. Used by `fixme-ticket` skill. |
@@ -161,4 +168,4 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 
 If `config.json` doesn't exist or `pipelines` is absent, fixme-task uses the `"default"` pipeline hardcoded in the skill (identical to the `"default"` above).
 
-If `project` is absent, fixme-task reads `.fixme/project-context.yaml` as fallback (backwards compatible).
+If `project` is absent, run `/fixme-config` to auto-detect and configure project settings.
