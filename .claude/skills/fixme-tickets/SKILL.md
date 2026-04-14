@@ -42,9 +42,9 @@ All operations are dispatched to the backend skill via the Agent tool. Pass the 
 
 | Operation | Arguments | Description |
 |-----------|-----------|-------------|
-| `context detect` | _(none)_ | Auto-detect project context |
-| `context load` | _(none)_ | Load saved project context |
-| `context save` | `--data '<json>'` | Save project context |
+| `context detect` | _(none)_ | Auto-detect project config (outputs config.json project format) |
+| `context load` | _(none)_ | Load project config from `.fixme/config.json` |
+| `context save` | `--data '<json>'` | Save project config to `.fixme/config.json` (merges into existing config) |
 
 ## Dispatch Protocol
 

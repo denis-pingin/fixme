@@ -104,7 +104,7 @@ Returns session metadata with ticket counts by state.
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
 ```
 
-Scans the project for `package.json`, framework config files, etc. and outputs a YAML project context.
+Scans the project and outputs a JSON project config object (camelCase keys matching config.json project section).
 
 **context load** - Load saved project context
 
@@ -112,7 +112,7 @@ Scans the project for `package.json`, framework config files, etc. and outputs a
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
 ```
 
-Reads `.fixme/project-context.yaml` and returns it.
+Reads `.fixme/config.json` and returns the project section.
 
 **context save** - Save project context
 
@@ -120,7 +120,7 @@ Reads `.fixme/project-context.yaml` and returns it.
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --data '<json>'
 ```
 
-Writes the provided JSON data as `.fixme/project-context.yaml`.
+Writes the provided JSON data to the project section of `.fixme/config.json`, preserving other config keys.
 
 ## Output Format
 
