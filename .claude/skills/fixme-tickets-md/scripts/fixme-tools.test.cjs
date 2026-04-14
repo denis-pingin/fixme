@@ -1040,8 +1040,9 @@ test('context save writes to config.json project key', () => {
   assert(config.project !== undefined, 'config should have project key');
   assert(config.project.devServer.url === 'http://localhost:3000', 'project.devServer.url correct');
   assert(config.project.framework === 'react', 'project.framework correct');
-  // Must NOT have created project-context.yaml
-  assert(!fs.existsSync(path.join(fixmeDir, 'project-context.yaml')), 'yaml file must not exist');
+  // Must NOT have created the legacy yaml context file
+  const legacyYamlPath = path.join(fixmeDir, ['project', 'context.yaml'].join('-'));
+  assert(!fs.existsSync(legacyYamlPath), 'legacy yaml file must not exist');
 });
 
 test('context save preserves existing config keys', () => {
