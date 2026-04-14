@@ -272,9 +272,7 @@ comment must be independently checked.
 
 #### Display all comments
 
-Assign each comment a **source-prefixed ID** at fetch time: A1, A2, ... for review threads;
-B1, B2, ... for Claude bot findings; C1, C2, ... for Greptile findings. These IDs are permanent -
-they follow the item through analysis and into the final report regardless of verdict.
+Assign each comment a **source-prefixed ID** at fetch time: A1, A2, ... for review threads; B1, B2, ... for Claude bot findings; C1, C2, ... for Greptile findings; D1, D2, ... for regular human issue comments. These IDs are permanent - they follow the item through analysis and into the final report regardless of verdict.
 
 Display all sources in format:
 ```
@@ -293,11 +291,15 @@ Display all sources in format:
 ### Greptile Summary Findings ({count})
 - **C1.** [comment_id: {id}] file.ts#line (source: outside-diff|confidence):
   > issue description
+
+### Human Review Comments ({count})
+- **D1.** [comment_id: {id}] @author file.ts#line:
+  > issue description (one finding extracted from the comment body)
+- **D2.** [comment_id: {id}] @author:
+  > another finding from a different comment
 ```
 
-**Skip if no actionable comments**: If all review threads are resolved AND no unaddressed
-Claude bot findings exist AND no unaddressed Greptile findings exist, report
-"No unresolved comments" and exit.
+**Skip if no actionable comments**: If all review threads are resolved AND no unaddressed Claude bot findings exist AND no unaddressed Greptile findings exist AND no unaddressed human issue-comment findings exist, report "No unresolved comments" and exit.
 
 ### 2. Analyze Each Unresolved Comment
 
