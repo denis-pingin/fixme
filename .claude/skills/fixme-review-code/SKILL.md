@@ -182,6 +182,7 @@ For every new file created by the plan, verify at four levels:
 - Synchronous blocking operations where async is expected
 - Secrets or tokens hardcoded in source code or logged in plaintext
 - Missing authentication/authorization checks that the plan specified
+- Catch block handles the wrong error class (e.g., catches generic Error when a specific subclass is expected, or rethrows with a different type that loses information)
 
 ### Dimension 7: Behavioral Spot-Check
 

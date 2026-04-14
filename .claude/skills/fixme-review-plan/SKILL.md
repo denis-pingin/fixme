@@ -125,6 +125,7 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 - Plan fights existing codebase patterns instead of working with them
 - Result would not be maintainable by someone who didn't write the plan
 - Simpler approaches exist that achieve the same outcome
+- Step introduces a performance regression not acknowledged in the plan (N+1 queries, unnecessary re-renders, large payloads)
 
 ### Dimension 5: Artifact Wiring
 
@@ -213,6 +214,23 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 - Questions section contains items that start with "if", "might", "may need to", or "the executor should decide" - these suggest the plan writer deferred real work
 - Questions section contains correctness concerns or feasibility risks disguised as informational notes
 
+### Dimension 10: Completeness
+
+**Question:** Does the plan include all the work required to actually complete the task, including implicit steps not spelled out in the spec?
+
+**Process:**
+1. Identify the category of change (new feature, refactor, bug fix, schema change, UI change)
+2. For each category, check against the standard implicit-work checklist:
+   - State-modifying steps -> cleanup / error handling / state reset
+   - Behavioral changes -> test steps
+   - Schema/contract changes -> migration, backwards compatibility, rollback plan
+3. Flag items from the checklist that the plan omits
+
+**Red flags:**
+- Missing steps that are implied but not explicit (especially cleanup, error handling, state reset)
+- Missing test steps for behavioral changes
+- Migrations, backwards compatibility, or rollback not addressed when they should be
+
 ## What NOT to Flag
 
 - Style preferences or naming opinions
@@ -242,7 +260,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | Field | Description |
 |-------|-------------|
 | **Location** | Which plan step(s) this relates to |
-| **Category** | GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE |
+| **Category** | GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE / COMPLETENESS |
 | **Severity** | BLOCKING (plan will fail) / IMPORTANT (plan will work but with significant issues) / MINOR (improvement opportunity) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
