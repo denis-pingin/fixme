@@ -38,7 +38,7 @@ Parse current values (defaults if not present):
 - `pipelines` - named pipeline definitions (default: absent, meaning hardcoded `default` pipeline)
 - `project.devServer.url` - dev server URL (default: null)
 - `project.devServer.command` - dev server start command (default: null)
-- `project.devServer.hmr` - HMR support (default: false)
+- `project.devServer.hmr` - Hot Module Replacement support (default: false)
 - `project.build` - build command (default: null)
 - `project.lint` - lint command (default: null)
 - `project.test` - test command or object (default: null)
@@ -118,7 +118,7 @@ Detected project settings:
 | Test command      | {test cmd or 'not set'}  |
 | Test runner       | {runner or 'unknown'}    |
 | Lint command      | {lint or 'not set'}      |
-| HMR               | {hmr}                    |
+| Hot Module Reload  | {hmr}                    |
 ```
 
 Then ask:
@@ -143,7 +143,7 @@ If "I need to adjust": ask follow-up questions one at a time for each value the 
 
 **Run this round ONLY if the Backend answer in Round 1 was "Linear" (`fixme-tickets-linear`). Skip entirely otherwise.**
 
-Per Decision 13, this round configures ONLY `linear.teamId` and `linear.teamName`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
+This round configures ONLY `linear.teamId` and `linear.teamName`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
 
 #### Step 5a: Discover and select team (Decision 13 hybrid flow)
 
