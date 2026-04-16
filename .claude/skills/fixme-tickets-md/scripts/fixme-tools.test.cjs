@@ -997,14 +997,15 @@ test('fallback: legacy transitions when no --pipeline and no pipeline in frontma
 // ── context commands (config.json migration) ─────────────────────────
 console.log('\n── context commands ──');
 
-test('context detect outputs camelCase project format', () => {
+test('context detect outputs camelCase project format with yarn', () => {
   const tmp = createTmpDir();
-  // Create a minimal package.json
+  // Create a minimal package.json + yarn.lock
   fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
     scripts: { dev: 'next dev', build: 'next build', test: 'jest', lint: 'eslint .' },
     dependencies: { next: '^14.0.0', react: '^18.0.0' },
     devDependencies: { jest: '^29.0.0' }
   }));
+  fs.writeFileSync(path.join(tmp, 'yarn.lock'), '');
   const result = runInDir('context detect', tmp);
   assert(result.ok, 'context detect should succeed');
   const d = result.data;
@@ -1019,6 +1020,36 @@ test('context detect outputs camelCase project format', () => {
   assert(d.framework === 'next.js', 'framework should be next.js');
   // Must NOT have old yaml-style keys
   assert(d.dev_server === undefined, 'should NOT have dev_server (snake_case)');
+});
+
+test('context detect uses bun when bun.lockb exists', () => {
+  const tmp = createTmpDir();
+  fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+    scripts: { dev: 'next dev', build: 'next build', test: 'vitest', lint: 'eslint .' },
+    dependencies: { next: '^14.0.0' },
+    devDependencies: { vitest: '^1.0.0' }
+  }));
+  fs.writeFileSync(path.join(tmp, 'bun.lockb'), '');
+  const result = runInDir('context detect', tmp);
+  assert(result.ok, 'context detect should succeed');
+  const d = result.data;
+  assert(d.devServer.command === 'bun dev', 'devServer.command should be bun dev');
+  assert(d.build === 'bun build', 'build should be bun build');
+  assert(d.test.command === 'bun test', 'test.command should be bun test');
+  assert(d.lint === 'bun lint', 'lint should be bun lint');
+});
+
+test('context detect falls back to npm run when no lockfile', () => {
+  const tmp = createTmpDir();
+  fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+    scripts: { build: 'tsc', test: 'jest' },
+    devDependencies: { jest: '^29.0.0' }
+  }));
+  const result = runInDir('context detect', tmp);
+  assert(result.ok, 'context detect should succeed');
+  const d = result.data;
+  assert(d.build === 'npm run build', 'build should be npm run build');
+  assert(d.test.command === 'npm run test', 'test.command should be npm run test');
 });
 
 test('context save writes to config.json project key', () => {

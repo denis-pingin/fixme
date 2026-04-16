@@ -1238,17 +1238,34 @@ function contextDetect(flags) {
     framework: null,
   };
 
-  // 1. package.json
+  // 1. Detect package manager from lockfile
+  const pmDetect = [
+    ['bun.lockb', 'bun'],
+    ['bun.lock', 'bun'],
+    ['pnpm-lock.yaml', 'pnpm'],
+    ['yarn.lock', 'yarn'],
+    ['package-lock.json', 'npm'],
+  ];
+  let pm = 'npm'; // fallback
+  for (const [lockfile, name] of pmDetect) {
+    if (fs.existsSync(path.join(projectDir, lockfile))) {
+      pm = name;
+      break;
+    }
+  }
+  const run = pm === 'npm' ? 'npm run' : pm;
+
+  // 2. package.json
   const pkgPath = path.join(projectDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       const scripts = pkg.scripts || {};
 
-      if (scripts.dev) project.devServer.command = 'yarn dev';
-      if (scripts.build) project.build = 'yarn build';
-      if (scripts.test) project.test.command = 'yarn test';
-      if (scripts.lint) project.lint = 'yarn lint';
+      if (scripts.dev) project.devServer.command = `${run} dev`;
+      if (scripts.build) project.build = `${run} build`;
+      if (scripts.test) project.test.command = `${run} test`;
+      if (scripts.lint) project.lint = `${run} lint`;
 
       // Framework detection from dependencies
       const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
