@@ -195,7 +195,11 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Read `.fixme/config.json` to determine which pipeline to use for this ticket. Default: `"full"` for bug fix sessions (has investigate + research + plan + implement + verify). The pipeline name will be passed to fixme-task.
 
 5. **Optionally dispatch pre-pipeline phases (synchronous):**
-   If the pipeline has an `investigate` phase AND the session has a browser environment, dispatch the investigation agent synchronously (it needs the live browser):
+   If the pipeline has an `investigate` phase AND the session has a browser environment, dispatch the investigation agent synchronously (it needs the live browser).
+
+   **Before dispatching, transition the ticket to investigating:**
+   Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md investigating`
+   If the transition fails, transition to failed and skip to next ticket (go to step 2).
 
    ```
    Task tool dispatch (subagent_type: "fixme-investigate"):
@@ -376,7 +380,12 @@ This procedure is used by both `/fixme-session report` and inline bug detection:
    ```
 
 4. **On Task return:**
-   - If agent returned a summary (starts with "Queued #"): relay it to the user verbatim.
+   - If agent returned a summary (starts with "Queued #") with a slug (contains `| slug: <value>`):
+     Parse the slug from the output (extract the value after `| slug: `).
+     Rename the ticket via fixme-tickets:
+     Invoke fixme-tickets: `rename <ticket-path> --slug <parsed-slug>`
+     Relay the summary (without the `| slug:` suffix) to the user.
+   - If agent returned a summary but no slug: relay it to the user (rename skipped, ticket keeps temp slug).
    - If agent returned an error or no summary: transition ticket to failed:
      Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md failed --reason "Intake agent failed: <error summary>"`
      Inform user: "Intake failed for bug report (#NNNN). The report is preserved -- you can resubmit."

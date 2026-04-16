@@ -1,7 +1,7 @@
 ---
 name: investigation-agent
 description: "Wraps the fixme-investigate skill with session-specific ticket management"
-tools: Read, Write, Edit, Agent, Bash(mkdir *)
+tools: Read, Write, Edit, Bash(mkdir *)
 model: inherit
 ---
 
@@ -20,26 +20,9 @@ You receive four things via your Task prompt:
 
 ## Workflow
 
-### Phase 0: Claim State
-
-Transition the ticket to investigating. Dispatch via Agent to the fixme-tickets abstraction:
-
-```
-Agent(
-  prompt="
-    First, read ~/.claude/skills/fixme-tickets/SKILL.md for your role instructions.
-
-    Then execute this operation:
-    - Operation: transition
-    - Arguments: <ticket-folder>/ticket.md investigating
-    - Project root: <project-root>
-  "
-)
-```
-
-If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <error>"
-
 ### Phase 1: Read Ticket and Build Task Description
+
+Note: The ticket has already been transitioned to "investigating" by the orchestrator (fixme-session) before dispatching this agent.
 
 - Read the ticket file using the Read tool
 - Extract from structured fields: affected URL, expected vs actual behavior, error messages, title, ticket number

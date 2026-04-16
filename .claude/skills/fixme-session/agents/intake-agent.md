@@ -63,36 +63,17 @@ Create a slug that describes the core issue:
 - Examples: `login-button-unresponsive`, `sidebar-overflow-mobile`, `form-validation-missing-email`
 - Do NOT include the ticket number in the slug
 
-### Step 6: Rename the ticket
+### Step 6: Return summary
 
-Rename the ticket through the fixme-tickets abstraction. Dispatch via Agent:
-
-```
-Agent(
-  prompt="
-    First, read ~/.claude/skills/fixme-tickets/SKILL.md for your role instructions.
-
-    Then execute this operation:
-    - Operation: rename
-    - Arguments: <ticket-path> --slug <generated-slug>
-    - Project root: <project-root>
-  "
-)
-```
-
-Capture the output to get the `newPath`.
-
-### Step 7: Return summary
-
-Return ONLY a one-liner summary as your final response:
+Return ONLY a one-liner summary as your final response, including the generated slug:
 
 ```
-Queued #NNN: <Generated Title>
+Queued #NNN: <Generated Title> | slug: <generated-slug>
 ```
 
-Where NNN is the ticket number (from the ticket frontmatter `number` field) and the title is derived from the slug (capitalize each word, replace hyphens with spaces).
+Where NNN is the ticket number (from the ticket frontmatter `number` field), the title is derived from the slug (capitalize each word, replace hyphens with spaces), and the slug is the exact value generated in Step 5.
 
-Example: `Queued #0003: Login Button Unresponsive`
+Example: `Queued #0003: Login Button Unresponsive | slug: login-button-unresponsive`
 
 ## Rules
 
@@ -101,7 +82,8 @@ Example: `Queued #0003: Login Button Unresponsive`
 - Keep codebase exploration to **5 or fewer** Glob/Grep calls. Identify the affected area, not why the bug exists.
 - If the report mentions image/screenshot file paths, check if they exist. Copy existing ones to the ticket's `assets/` subdirectory. Note missing ones in the Original Report section.
 - If the report is extremely vague (single word, no context), still process it. Generate the best slug and structured fields you can. The investigation agent will gather more context.
-- Your final output must be ONLY the one-liner summary. No explanations, no recommendations, no additional text.
+- Your final output must be ONLY the one-liner summary (with slug). No explanations, no recommendations, no additional text.
+- Do NOT rename the ticket yourself. Return the slug in your output -- the orchestrator handles the rename.
 
 ## Example
 
@@ -123,6 +105,4 @@ Example: `Queued #0003: Login Button Unresponsive`
 - Error Messages: None reported
 **Slug:** `login-button-unresponsive`
 
-**Rename command:** Dispatch Agent to fixme-tickets: `rename .fixme/sessions/.../0003-intake-tmp-a7b3/ticket.md --slug login-button-unresponsive`
-
-**Output:** `Queued #0003: Login Button Unresponsive`
+**Output:** `Queued #0003: Login Button Unresponsive | slug: login-button-unresponsive`
