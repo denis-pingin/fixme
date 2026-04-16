@@ -315,7 +315,7 @@ The skill reads optional configuration from `.fixme/config.json`:
 
 All configuration is optional. Without it, the skill resolves everything interactively via Linear MCP tool calls and user prompts.
 
-**Config default behavior:** `linear.defaultLabels` and `linear.defaultProject` are automatically applied to new tickets during Phase 1 content gathering. They appear in the Phase 2 preview with "(config default)" source annotations. The user can override, add to, or clear them during the metadata editing flow. Config defaults never override explicit user mentions -- user text takes priority for project, and labels are deduplicated.
+**Config default behavior:** `linear.defaultLabels` and `linear.defaultProject` are automatically applied to new tickets during Phase 1 content gathering. They are matched against Linear data during auto-discovery (Phase 2 Step 2) and shown in the preview with match status annotations. The user can override, add to, or clear them during the metadata editing flow. Config defaults never override explicit user mentions -- user text takes priority for project, and labels are deduplicated.
 
 ## MCP Tool Reference
 
