@@ -5,6 +5,7 @@ tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-plan-review
   - fixme-decision-presentation
+effort: high
 ---
 
 <role>

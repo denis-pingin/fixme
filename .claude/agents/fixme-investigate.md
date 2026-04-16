@@ -5,6 +5,7 @@ tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-investigate
 permissionMode: acceptEdits
+effort: high
 ---
 
 <role>
