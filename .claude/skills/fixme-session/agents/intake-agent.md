@@ -65,13 +65,22 @@ Create a slug that describes the core issue:
 
 ### Step 6: Rename the ticket
 
-Rename the ticket file using fixme-tools.cjs:
+Rename the ticket through the fixme-tickets abstraction. Dispatch via Agent:
 
-```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket rename <ticket-path> --slug <generated-slug>
+```
+Agent(
+  prompt="
+    First, read ~/.claude/skills/fixme-tickets/SKILL.md for your role instructions.
+
+    Then execute this operation:
+    - Operation: rename
+    - Arguments: <ticket-path> --slug <generated-slug>
+    - Project root: <project-root>
+  "
+)
 ```
 
-Capture the JSON output to get the `newPath`.
+Capture the output to get the `newPath`.
 
 ### Step 7: Return summary
 
@@ -114,6 +123,6 @@ Example: `Queued #0003: Login Button Unresponsive`
 - Error Messages: None reported
 **Slug:** `login-button-unresponsive`
 
-**Rename command:** `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket rename .fixme/sessions/.../0003-intake-tmp-a7b3/ticket.md --slug login-button-unresponsive`
+**Rename command:** Dispatch Agent to fixme-tickets: `rename .fixme/sessions/.../0003-intake-tmp-a7b3/ticket.md --slug login-button-unresponsive`
 
 **Output:** `Queued #0003: Login Button Unresponsive`

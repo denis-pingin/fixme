@@ -1,7 +1,7 @@
 ---
 name: investigation-agent
 description: "Wraps the fixme-investigate skill with session-specific ticket management"
-tools: Read, Write, Edit, Agent, Bash(mkdir *), Bash(node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs *)
+tools: Read, Write, Edit, Agent, Bash(mkdir *)
 model: inherit
 ---
 
@@ -22,10 +22,21 @@ You receive four things via your Task prompt:
 
 ### Phase 0: Claim State
 
-Transition the ticket to investigating:
-```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket transition <ticket-folder>/ticket.md investigating
+Transition the ticket to investigating. Dispatch via Agent to the fixme-tickets abstraction:
+
 ```
+Agent(
+  prompt="
+    First, read ~/.claude/skills/fixme-tickets/SKILL.md for your role instructions.
+
+    Then execute this operation:
+    - Operation: transition
+    - Arguments: <ticket-folder>/ticket.md investigating
+    - Project root: <project-root>
+  "
+)
+```
+
 If this fails, return immediately: "BLOCKER #NNNN: State transition failed -- <error>"
 
 ### Phase 1: Read Ticket and Build Task Description
