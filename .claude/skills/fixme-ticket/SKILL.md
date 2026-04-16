@@ -107,7 +107,7 @@ If `--template <name>` was specified OR if `.fixme/config.json` has a `ticketTem
 
 If no template is configured and `--template` was not specified, skip template application and use the raw description as-is.
 
-### Phase 2: Resolve Team and Preview Ticket
+### Phase 2: Resolve Team, Auto-Discover, and Preview Ticket
 
 **Step 1: Resolve team context (prerequisite for all metadata operations)**
 
@@ -119,61 +119,78 @@ The Linear MCP requires a team context for creating issues, and labels/users/wor
 4. If neither is configured, call `mcp__claude_ai_Linear__list_teams`:
    - If exactly one team exists, use it automatically
    - If multiple teams exist, present the list to the user via AskUserQuestion and let them pick
-5. Store the resolved team ID for use by all subsequent steps in Phase 2 and Phase 3
+5. Store the resolved team ID for use by all subsequent steps
 
-**Step 2: Present the ticket preview**
+**Step 2: Auto-discover metadata from Linear**
 
-Present the ticket preview to the user as formatted text output. This preview shows the final content (including any template formatting applied in Phase 1). For labels and project, annotate each value with its source so the user can see what came from config defaults vs. what was detected from their text:
+After resolving the team, immediately fetch metadata from Linear to pre-populate the ticket. These calls are independent -- make them in parallel:
+
+1. Fetch labels: call `mcp__claude_ai_Linear__list_issue_labels` with the resolved team ID -> store as `availableLabels`
+2. Fetch projects: call `mcp__claude_ai_Linear__list_projects` -> store as `availableProjects`
+3. Fetch team members: call `mcp__claude_ai_Linear__list_users` -> store as `teamMembers`
+
+If any call fails, log a warning and continue without that metadata. Auto-discovery failures are non-blocking.
+
+**Match and pre-select metadata using the fetched data:**
+
+- **Labels**: For each label name from text detection or config defaults, case-insensitive match against `availableLabels`. Matched labels get their IDs resolved immediately. Unmatched labels are dropped with a note in the preview (e.g., "'xyz' not found in Linear labels"). If no labels were detected or matched, note the count of available labels for awareness.
+- **Project**: If a project name was detected or set from config, match case-insensitively against `availableProjects` and auto-select with resolved ID. If nothing was detected and exactly one project exists, auto-suggest it. If multiple projects and nothing detected, note count and top 3 names.
+- **Assignee**: Identify the authenticated user in `teamMembers` and pre-suggest assigning to them. Show as "Your Name (you)". If the authenticated user cannot be identified, leave as "unassigned" but note the count of team members.
+- **Priority**: Map detected priority signals to Linear levels: "urgent"/"critical"/"blocker" -> 1 (Urgent), "high" -> 2 (High), "medium" -> 3 (Medium), "low"/"nice to have" -> 4 (Low). No signals -> 0 (No priority).
+
+All resolved IDs from this step carry through to Phase 3 -- no redundant resolution needed later.
+
+**Step 3: Present the ticket preview**
+
+Present the enriched ticket preview with auto-discovered suggestions clearly annotated:
 
 ```
 ## Ticket Preview
 
-**Title:** <extracted or composed title>
+**Title:** <title>
 
 **Description:**
-<full description text, with template sections applied if a template was used>
+<full description text>
 
-**Metadata (detected):**
+**Metadata:**
 - Team: <resolved team name>
-- Labels: <each label with source annotation, e.g., "bug (config default), urgent (detected from text)" -- or "none detected" if no labels from either source>
-- Project: <project name with source annotation, e.g., "Alpha (config default)" or "Alpha (detected from text)" -- or "none detected">
-- Priority: <any detected priority, or "none detected">
+- Labels: <matched labels, e.g., "bug (matched)" -- or "none (15 labels available)" if none matched>
+- Project: <auto-selected, e.g., "Alpha (only project)" or "Alpha (matched)" -- or "none (pick from: Alpha, Beta, Gamma)" if multiple>
+- Assignee: <auto-suggested, e.g., "Denis Pingin (you)" -- or "unassigned (5 members available)">
+- Priority: <mapped priority, e.g., "3 - Medium (detected)" -- or "None">
 - Files mentioned: <list, or "none">
 ```
 
 Then use AskUserQuestion to ask: "Review the ticket preview above. What would you like to adjust?" with options:
 - "Looks good, create it"
-- "I want to set metadata" (labels, project, assignee, etc.)
+- "I want to change metadata" (labels, project, assignee, etc.)
 - "Edit the description"
 - "Cancel"
 
-**If "I want to set metadata":**
+**If "I want to change metadata":**
 
-Present metadata options. Use AskUserQuestion for each one the user wants to set. For each metadata field, resolve the value using Linear MCP tools, passing the resolved team ID where required:
+Present metadata options using the data already fetched in Step 2. No additional API calls needed for listing labels, projects, or users.
 
 #### Labels
 
-1. Fetch available labels: use `mcp__claude_ai_Linear__list_labels` with the resolved team ID
-2. Present available labels to the user. Pre-select any labels already attached to the ticket (both config-default labels and text-detected labels). Show the source of each pre-selected label, e.g., "bug (config default) [pre-selected]", "urgent (detected from text) [pre-selected]".
-3. Let the user pick additional labels, remove pre-selected ones, or type a new label name. The user's selections here are final -- they override both config defaults and text detection.
-4. Store the resolved label IDs from the `list_labels` response. Match each selected label name against the fetched labels (case-insensitive). These IDs are ready for Phase 3 -- no further resolution needed.
+1. Present `availableLabels` (fetched in Step 2). Pre-select any labels that were auto-matched. Show the source of each pre-selected label.
+2. Let the user pick additional labels, remove pre-selected ones, or type a new label name. The user's selections are final.
+3. Store the resolved label IDs from the already-fetched `availableLabels`. Match each selected label name case-insensitively.
 
 #### Project
 
-1. Fetch available projects: use `mcp__claude_ai_Linear__list_projects`
-2. Present available projects to the user. If a default project is already set (from config or text detection), show it as pre-selected with its source annotation, e.g., "Alpha (config default) [pre-selected]".
-3. Let the user pick a different project, confirm the pre-selected one, or clear the selection. The user's choice here is final.
-4. Store the resolved project ID from the `list_projects` response. This ID is ready for Phase 3 -- no further resolution needed.
+1. Present `availableProjects` (fetched in Step 2). If a project was auto-selected, show it as pre-selected.
+2. Let the user pick a different project, confirm the selection, or clear it.
+3. Store the resolved project ID from the already-fetched `availableProjects`.
 
 #### Assignee
 
-1. Fetch team members: use `mcp__claude_ai_Linear__list_users` or equivalent
-2. Present available team members to the user
-3. Let the user pick one
+1. Present `teamMembers` (fetched in Step 2). If an assignee was auto-suggested, show them as pre-selected.
+2. Let the user pick one.
 
 #### Status
 
-1. Fetch workflow states: use `mcp__claude_ai_Linear__list_workflow_states` with the resolved team ID
+1. Fetch workflow states: use `mcp__claude_ai_Linear__list_issue_statuses` with the resolved team ID
 2. Present available statuses to the user
 3. Let the user pick one (default: team's default status, typically "Backlog" or "Todo")
 
@@ -183,7 +200,7 @@ Ask the user for a due date. Accept natural language ("next Friday", "2026-04-20
 
 #### Priority
 
-Map user input to Linear priority levels:
+Present Linear priority levels. Pre-select the auto-detected priority if any. Let the user adjust:
 - 0 = No priority
 - 1 = Urgent
 - 2 = High
@@ -194,7 +211,7 @@ After the user finishes setting metadata, proceed directly to Phase 3 (IDs are a
 
 **If "Edit the description":**
 
-Use AskUserQuestion: "What should the description be?" The user provides updated text. Return to Phase 2 Step 2 with the updated content (template is NOT re-applied -- the user is editing the final form).
+Use AskUserQuestion: "What should the description be?" The user provides updated text. Return to Step 3 with the updated content (template is NOT re-applied -- the user is editing the final form).
 
 **If "Cancel":**
 
@@ -202,28 +219,7 @@ Stop. Output: "Ticket creation cancelled."
 
 **If "Looks good, create it":**
 
-Proceed to Phase 2 Step 3 (resolve names to IDs).
-
-**Step 3: Resolve label and project names to IDs**
-
-At this point, labels and project are stored as name strings (from Phase 1 text detection and config defaults). Before entering Phase 3, resolve them to IDs:
-
-1. **Labels:** If there are any accumulated label names:
-   - Call `mcp__claude_ai_Linear__list_labels` with the resolved team ID
-   - For each label name, find a match in the response (case-insensitive name comparison)
-   - If a label name has no match, warn: "Label '<name>' not found in team labels -- skipping." Drop that label from the list.
-   - Collect the matched label IDs into an array for Phase 3
-   - If `list_labels` fails entirely (tool unavailable), warn: "Could not resolve label names to IDs -- labels will be omitted." Clear the labels list.
-2. **Project:** If a project value is set and it is a name string (not already a UUID/ID):
-   - Call `mcp__claude_ai_Linear__list_projects`
-   - Find a match by name (case-insensitive) in the response
-   - If no match is found, warn: "Project '<name>' not found -- project will be omitted." Clear the project value.
-   - If matched, store the project ID for Phase 3
-   - If `list_projects` fails entirely (tool unavailable), warn: "Could not resolve project name to ID -- project will be omitted." Clear the project value.
-
-**Note:** This step only runs on the "Looks good" path. The "I want to set metadata" path resolves IDs during the interactive editing flow (labels in the Labels subsection step 4, project in the Project subsection step 4), so those IDs are already available when that path reaches Phase 3.
-
-Proceed to Phase 3.
+Labels, project, assignee, and priority are already resolved from auto-discovery (Step 2). Proceed directly to Phase 3.
 
 ### Phase 3: Create the Ticket
 
@@ -253,8 +249,8 @@ No ticket was created (dry run mode).
    - `title`: the ticket title
    - `description`: the full markdown description (with template applied if applicable)
    - `teamId`: resolved team ID (from Phase 2 Step 1)
-   - `labelIds`: array of label IDs (resolved in Phase 2 Step 3 or during metadata editing)
-   - `projectId`: project ID (resolved in Phase 2 Step 3 or during metadata editing)
+   - `labelIds`: array of label IDs (resolved in auto-discovery (Phase 2 Step 2) or during metadata editing)
+   - `projectId`: project ID (resolved in auto-discovery (Phase 2 Step 2) or during metadata editing)
    - `assigneeId`: assignee user ID (if any)
    - `stateId`: workflow state ID (if any)
    - `dueDate`: ISO date string (if any)
@@ -280,7 +276,7 @@ If the user mentioned files to attach or documents to upload:
    - Warn the user: "Linear MCP doesn't support file attachments directly. Embedding file content in a comment instead."
    - For each file:
      - Read the file content
-     - Create a comment on the issue via `mcp__claude_ai_Linear__create_comment` (or update the description) with the file content in a fenced code block
+     - Create a comment on the issue via `mcp__claude_ai_Linear__save_comment` (or update the description) with the file content in a fenced code block
    - If the comment tool is also unavailable:
      - Warn: "Could not attach files. The following files were referenced: <list>. Please attach them manually."
 
@@ -332,10 +328,10 @@ The skill uses these Linear MCP tools. Tool names follow the pattern `mcp__claud
 | Get issue | `get_issue` | Verify creation succeeded |
 | List projects | `list_projects` | Resolve project name to ID |
 | List teams | `list_teams` | Resolve team for issue creation |
-| List labels | `list_labels` | Resolve label names to IDs (team-scoped) |
+| List issue labels | `list_issue_labels` | Resolve label names to IDs (team-scoped) |
 | List users | `list_users` | Resolve assignee name to ID |
-| List workflow states | `list_workflow_states` | Resolve status name to ID (team-scoped) |
-| Create comment | `create_comment` | Attachment fallback, add context |
+| List issue statuses | `list_issue_statuses` | Resolve status name to ID (team-scoped) |
+| Save comment | `save_comment` | Attachment fallback, add context |
 | Create attachment | `create_attachment` | Attach files to issue |
 
 **Tool discovery:** Not all tools may be available in every environment. The skill attempts each tool as needed and handles "tool not found" errors gracefully (with warnings), except for `save_issue` which is required -- without it, no ticket can be created.
@@ -348,7 +344,7 @@ The skill uses these Linear MCP tools. Tool names follow the pattern `mcp__claud
 
 3. **Use AskUserQuestion for all user decisions.** Structured prompts with options, not freeform text questions.
 
-4. **Graceful degradation for optional tools.** If `list_labels`, `list_users`, `list_workflow_states`, `create_attachment`, or `create_comment` are unavailable, warn the user and skip that feature. The core flow (create issue with title + description) must always work.
+4. **Graceful degradation for optional tools.** If `list_issue_labels`, `list_users`, `list_issue_statuses`, `create_attachment`, or `save_comment` are unavailable, warn the user and skip that feature. The core flow (create issue with title + description) must always work.
 
 5. **Template application preserves user content.** Never discard content that doesn't fit a template section. Add a "Notes" section as a catch-all.
 
@@ -358,10 +354,10 @@ The skill uses these Linear MCP tools. Tool names follow the pattern `mcp__claud
 
 8. **Log all MCP failures with context.** Every failed MCP call gets a warning message that includes: which tool failed, what parameters were used (excluding any sensitive data), and what the fallback behavior is.
 
-9. **Respect Linear's data model.** Labels, projects, statuses, and users are resolved by ID, not by name. Always resolve names to IDs via MCP list/search tools before passing to `save_issue`. Both paths through Phase 2 (direct confirmation and metadata editing) must produce resolved IDs before reaching Phase 3.
+9. **Respect Linear's data model.** Labels, projects, statuses, and users are resolved by ID, not by name. Auto-discovery (Phase 2 Step 2) resolves IDs upfront. The metadata editing path uses the same pre-fetched data. All paths must have resolved IDs before reaching Phase 3.
 
 10. **One ticket per invocation.** The skill creates exactly one ticket. For batch creation, the user invokes the skill multiple times.
 
-11. **Resolve team before metadata.** Labels, users, and workflow states are team-scoped in Linear. The team must be resolved before any metadata listing operations. Never call `list_labels`, `list_users`, or `list_workflow_states` without a resolved team ID.
+11. **Resolve team before metadata.** Labels, users, and workflow states are team-scoped in Linear. The team must be resolved before any metadata listing operations. Never call `list_issue_labels`, `list_users`, or `list_issue_statuses` without a resolved team ID.
 
 12. **Config defaults are additive, never overriding.** `linear.defaultLabels` are merged with user-detected labels (deduplicated, case-insensitive). `linear.defaultProject` is used only when no project was explicitly mentioned by the user. The user can always override or clear config defaults during the metadata editing flow.
