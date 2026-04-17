@@ -14,6 +14,7 @@ Automatically fetch, analyze, and address **unresolved** PR review comments, act
 - **Never read source code except during analysis (Step 2).** Step 2 reads referenced code to determine if comments are valid. After categorization is complete, no more source code reads. All implementation happens inside fixme-task.
 - **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
 - **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
+- **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
 
 ## Configuration
 
@@ -578,12 +579,12 @@ After all analysis is complete and all decisions are resolved, present a final e
 and wait for explicit user confirmation before proceeding.
 
 ```
-## Ready to Execute ({N} fixes)
+## Ready to Execute ({N} fixes via fixme-task pipeline)
 
 {For each fix item, one line:}
 {N}. **{Issue title}** - {the planned fix action} -> [{files affected}]
 
-Proceed with fixing these issues? (yes / no / modify)
+All fixes will be dispatched to fixme-task (plan -> execute -> review). Proceed? (yes / no / modify)
 ```
 
 **User responses:**
@@ -594,34 +595,29 @@ Proceed with fixing these issues? (yes / no / modify)
 
 ### 3. Address Valid Issues
 
-For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), dispatch a single fixme-task agent to handle the full plan-execute-review pipeline.
+For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), invoke fixme-task to handle the full plan-execute-review pipeline.
 
-#### Dispatch fixme-task (synchronous)
+**PIPELINE GATE (self-check before proceeding):** Your next action MUST be a `Skill("fixme-task")` invocation. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The Skill tool is the ONLY tool you use in this step.
 
-Dispatch a **foreground** Agent using the fixme-task agent type:
+#### Invoke fixme-task (inline pipeline)
 
-    Agent(
-      subagent_type="fixme-task",
-      model="sonnet",
-      prompt="
-        <task>
-        Fix these PR comment issues. This is a PR comment fix task.
+Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) within platform depth limits. The Skill tool runs fixme-task in the current session context (depth 0), allowing its Agent dispatches to land at depth 1.
 
-        Fix items:
-        - [full list of fix items with file paths, line numbers, and comment text]
-        - [for FIX items: the analysis from Step 2]
-        - [for resolved FIX_UNCLEAR items: the chosen approach and rationale from Step 2.5]
-        </task>
+    Skill(
+      skill="fixme-task",
+      args="Fix these PR comment issues. This is a PR comment fix task.
 
-        <project>
-        Project root: [path]
-        </project>
-      "
+      Fix items:
+      - [full list of fix items with file paths, line numbers, and comment text]
+      - [for FIX items: the analysis from Step 2]
+      - [for resolved FIX_UNCLEAR items: the chosen approach and rationale from Step 2.5]
+
+      Project root: [path]"
     )
 
-Wait for the fixme-task agent to complete. fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally.
+fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally.
 
-**CRITICAL**: The agent runs with a clean prompt - do NOT leak your current conversation context into the agent prompt. Provide only the task-specific data listed above. The agent definition handles role binding and SKILL.md preloading via `skills` frontmatter.
+**NOTE**: fixme-task runs inline in this session's context, not as an isolated agent. This is intentional - the Agent tool cannot be used from within an agent (platform constraint). The pipeline's sub-agents (fixme-write-plan, fixme-execute-plan, etc.) still get isolated context windows when dispatched by fixme-task via the Agent tool.
 
 ### 4. Verify All Changes
 
@@ -827,4 +823,4 @@ state. The reply comment IS the resolution signal.
 - **Source-prefixed item IDs**: Every comment gets a permanent ID at fetch time (A1, A2 for review threads; B1, B2 for Claude bot; C1, C2 for Greptile; D1, D2 for regular human issue comments). IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
-- **fixme-task dispatch**: uses `subagent_type="fixme-task"` which loads the agent definition from `~/.claude/agents/fixme-task.md`. The agent definition preloads the SKILL.md via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
+- **fixme-task invocation**: uses `Skill("fixme-task")` to run the pipeline inline in the current session. fixme-task dispatches its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) via the Agent tool at depth 1. This avoids the platform constraint that agents cannot dispatch other agents.
