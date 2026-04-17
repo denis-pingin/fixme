@@ -49,6 +49,13 @@ Resolve the task description in this order - stop at the first match:
 
 **CRITICAL**: When the argument is a reference like "see plan" or "the plan above", the plan content is almost always already present in the current message context (injected by the skill system or IDE). Read the full prompt carefully before searching the filesystem.
 
+### Project Root Resolution
+
+Resolve the project root for sub-agent dispatch prompts:
+
+1. **Explicit in task text**: if the task description contains `Project root: <path>`, extract and use that path
+2. **Current working directory**: use the working directory (always the project root in Claude Code)
+
 ### Start From
 
 Detect where to enter the pipeline based on what already exists. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `.fixme/plans/` directory.
