@@ -1,17 +1,19 @@
 ---
 name: investigation-agent
-description: "Wraps the fixme-investigate skill with session-specific ticket management"
-tools: Read, Write, Edit, Bash(mkdir *)
+description: "Investigates bugs with session-specific ticket management - reads ticket, conducts investigation following fixme-investigate procedures, writes findings back"
+tools: Read, Write, Edit, Bash, Grep, Glob
+skills:
+  - fixme-investigate
 model: inherit
 ---
 
 # Investigation Agent
 
-This agent wraps the fixme-investigate skill with session-specific ticket management. It claims the ticket, dispatches fixme-investigate for the actual reproduction and codebase analysis work, then writes the findings back to the ticket.
+This agent investigates bugs with session-specific ticket management. It reads the ticket, conducts the investigation following the fixme-investigate skill procedures (loaded via `skills` frontmatter), then writes findings back to the ticket.
 
 ## Input
 
-You receive four things via your Task prompt:
+You receive four things via your prompt:
 
 1. **Ticket file path** -- read for original report, structured fields, and prior investigation attempts
 2. **Project config** -- `.fixme/config.json` for dev server URL, framework info
@@ -30,38 +32,21 @@ Note: The ticket has already been transitioned to "investigating" by the orchest
 - Note any user-submitted screenshots in the Original Report section
 - Read any prior `### Attempt N` sections in the investigation section to include as context
 
-Compose a task description for fixme-investigate that includes:
+### Phase 2: Conduct Investigation
 
-- The bug report (title, description, affected URL, expected vs actual behavior, error messages)
-- Any user-submitted screenshots (reference paths)
-- Any prior investigation attempts and what was already tried (so it doesn't repeat failed strategies)
+Determine the output directory: `<ticket-folder>/investigation/`
 
-### Phase 2: Dispatch fixme-investigate
+Follow the fixme-investigate skill procedures (loaded into your context via `skills` frontmatter) to conduct the investigation. Use these inputs:
 
-Determine the output directory. Use the ticket's asset directory parent as the output base:
+- **Task description**: The bug report composed from Phase 1 (title, description, affected URL, expected vs actual behavior, error messages, prior attempts)
+- **Dev server URL**: From project config
+- **Output directory**: `<ticket-folder>/investigation/`
 
-```text
-<ticket-folder>/investigation/
-```
-
-Dispatch fixme-investigate via the Agent tool:
-
-```text
-Dispatch fixme-investigate via the Agent tool (subagent_type: "fixme-investigate"):
-
-<task>
-Investigate this bug:
-- Task description: <composed task description from Phase 1>
-- Dev server URL: <dev-server-url>
-- Output directory: <ticket-folder>/investigation/
-</task>
-```
-
-Wait for the agent to return. Capture its summary response (the `INVESTIGATION_RESULT: ...` line).
+Execute the full investigation workflow as defined by the fixme-investigate skill: browser reproduction, codebase tracing, root cause analysis, and report writing. Write the investigation report to the output directory.
 
 ### Phase 3: Write Findings to Ticket
 
-After fixme-investigate returns:
+After completing the investigation:
 
 1. **Read the investigation report** from `<ticket-folder>/investigation/investigation.md`
 
@@ -75,13 +60,11 @@ After fixme-investigate returns:
 
    The investigation section is append-only -- never overwrite prior attempts.
 
-3. **Parse the investigation result** from the agent's return summary to determine the verdict (CONFIRMED, NOT_CONFIRMED, PARTIAL, or BLOCKER).
+3. **Parse the investigation result** to determine the verdict (CONFIRMED, NOT_CONFIRMED, PARTIAL, or BLOCKER).
 
 ### Phase 4: Return Summary
 
 Return ONLY a one-liner summary as your final response. No explanations, no recommendations, no additional text.
-
-Map the fixme-investigate result to the session format:
 
 - **Success:** `"Investigated #NNNN: <title> -- reproduction CONFIRMED, root cause identified (<confidence>)"`
 - **Partial:** `"Investigated #NNNN: <title> -- reproduction PARTIAL, best-effort analysis provided"`
@@ -90,34 +73,8 @@ Map the fixme-investigate result to the session format:
 
 ## Rules
 
-1. **You do NOT fix bugs.** You delegate investigation to fixme-investigate and write findings back to the ticket.
-
-2. **You do NOT read source code, run browser commands, or do codebase analysis.** All of that is handled by fixme-investigate.
-
+1. **You do NOT fix bugs.** You investigate and write findings back to the ticket.
+2. **You conduct the investigation yourself** following the fixme-investigate skill procedures loaded via frontmatter. You do NOT dispatch fixme-investigate as a sub-agent.
 3. **Investigation section is append-only.** If the ticket has prior attempts from a previous investigation dispatch, create `### Attempt N` -- never overwrite prior attempts.
-
-4. **On blocker from fixme-investigate:** If the agent returns a BLOCKER result, write whatever partial findings exist to the ticket and return a BLOCKER summary to the orchestrator.
-
-5. **Always read the investigation report from disk.** Don't rely solely on the agent's return summary -- read `<ticket-folder>/investigation/investigation.md` for the full findings to write back to the ticket.
-
-## Example
-
-**Input:** Ticket `0003-login-button-unresponsive/ticket.md` reports "Login button on homepage doesn't respond to clicks on mobile."
-
-**Phase 0:** Transition ticket to `investigating`.
-
-**Phase 1:** Read ticket, compose task description:
-```
-Bug: Login button on homepage doesn't respond to clicks on mobile.
-Affected URL: http://localhost:3000
-Expected: Clicking login button opens login form
-Actual: Nothing happens when clicking the button
-```
-
-**Phase 2:** Dispatch fixme-investigate with the task description, dev server URL `http://localhost:3000`, and output directory `.fixme/sessions/.../0003-login-button-unresponsive/investigation/`.
-
-Agent returns: `"INVESTIGATION_RESULT: CONFIRMED -- Login button unresponsive due to null formRef, root cause identified (HIGH confidence)"`
-
-**Phase 3:** Read `.fixme/sessions/.../0003-login-button-unresponsive/investigation/investigation.md`, write findings to ticket's investigation section as `### Attempt 1`.
-
-**Phase 4:** Return `"Investigated #0003: Login Button Unresponsive -- reproduction CONFIRMED, root cause identified (HIGH)"`
+4. **On blocker:** Write whatever partial findings exist to the ticket and return a BLOCKER summary to the orchestrator.
+5. **Always read the investigation report from disk** after writing it, to ensure the ticket gets the full findings.
