@@ -1,5 +1,5 @@
 ---
-name: fixme-decision-presentation
+name: fixme-howto-present-decisions
 description: Shared decision presentation guidelines for the fixme pipeline. Defines the canonical format for ASK_USER and FIX_UNCLEAR decision blocks presented to users. Preloaded into handler agents via skills frontmatter.
 ---
 
