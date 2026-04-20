@@ -574,6 +574,78 @@ function buildTransitionsFromPhases(phases) {
   return t;
 }
 
+// ============================================================================
+// Fixme Root Resolution
+// ============================================================================
+
+/**
+ * Find the project root that contains the .fixme/ directory.
+ *
+ * Resolution order:
+ * 1. If startDir has .fixme/ -> return startDir (local takes priority)
+ * 2. Walk up ancestors looking for a parent with .fixme/:
+ *    a. If parent .fixme/config.json has sub_repos and startDir matches -> return parent
+ *    b. If startDir (or any dir between startDir and parent) has .git -> return parent
+ * 3. Never go above $HOME or filesystem root
+ * 4. Fallback: return startDir
+ */
+function findFixmeRoot(startDir) {
+  const resolved = path.resolve(startDir);
+  const root = path.parse(resolved).root;
+  const homedir = require('os').homedir();
+
+  // If startDir already contains .fixme/, it IS the project root.
+  const ownFixme = path.join(resolved, '.fixme');
+  if (fs.existsSync(ownFixme) && fs.statSync(ownFixme).isDirectory()) {
+    return startDir;
+  }
+
+  // Check if startDir or any ancestor up to candidateParent contains .git
+  function isInsideGitRepo(candidateParent) {
+    let d = resolved;
+    while (d !== root) {
+      if (fs.existsSync(path.join(d, '.git'))) return true;
+      if (d === candidateParent) break;
+      d = path.dirname(d);
+    }
+    return false;
+  }
+
+  let dir = resolved;
+  while (dir !== root) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    if (parent === homedir) break;
+
+    const parentFixme = path.join(parent, '.fixme');
+    if (fs.existsSync(parentFixme) && fs.statSync(parentFixme).isDirectory()) {
+      // Check config.json for sub_repos
+      const configPath = path.join(parentFixme, 'config.json');
+      try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const subRepos = config.sub_repos || [];
+
+        if (Array.isArray(subRepos) && subRepos.length > 0) {
+          const relPath = path.relative(parent, resolved);
+          const topSegment = relPath.split(path.sep)[0];
+          if (subRepos.includes(topSegment)) {
+            return parent;
+          }
+        }
+      } catch {
+        // config.json missing or malformed - fall back to .git heuristic
+      }
+
+      // Heuristic: parent has .fixme/ and startDir is inside a git repo
+      if (isInsideGitRepo(parent)) {
+        return parent;
+      }
+    }
+    dir = parent;
+  }
+  return startDir;
+}
+
 /**
  * Load pipeline phase names from config.
  * Returns array of phase name strings, or null if pipeline not found.
@@ -1476,4 +1548,4 @@ if (require.main === module) {
 }
 
 // Exports for testing
-module.exports = { buildTransitionsFromPhases, parseFrontmatter };
+module.exports = { buildTransitionsFromPhases, parseFrontmatter, findFixmeRoot };

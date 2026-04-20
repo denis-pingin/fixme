@@ -13,7 +13,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
-const { buildTransitionsFromPhases } = require(TOOLS_PATH);
+const { buildTransitionsFromPhases, findFixmeRoot } = require(TOOLS_PATH);
 
 let passed = 0;
 let failed = 0;
@@ -1137,6 +1137,104 @@ test('context load fails when config.json has no project key', () => {
     /config\.json|fixme-config/.test(result.data.error),
     'error should mention config.json or fixme-config'
   );
+});
+
+// ============================================================================
+// Test Suite: findFixmeRoot resolution
+// ============================================================================
+
+console.log('\n=== findFixmeRoot resolution ===\n');
+
+test('findFixmeRoot: returns startDir when .fixme/ exists locally', () => {
+  const root = createTmpDir();
+  fs.mkdirSync(path.join(root, '.fixme'), { recursive: true });
+  const result = findFixmeRoot(root);
+  assert(result === root, `Should return startDir when .fixme/ exists locally, got ${result}`);
+});
+
+test('findFixmeRoot: walks up to parent with .fixme/ when sub-dir has .git', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  const subRepo = path.join(workspace, 'app');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+  const result = findFixmeRoot(subRepo);
+  assert(result === workspace, `Should return parent workspace, got ${result}`);
+});
+
+test('findFixmeRoot: respects sub_repos config', () => {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    sub_repos: ['frontend', 'backend']
+  }));
+  const subRepo = path.join(workspace, 'frontend');
+  fs.mkdirSync(subRepo, { recursive: true });
+  // No .git needed when sub_repos matches
+  const result = findFixmeRoot(subRepo);
+  assert(result === workspace, `Should return parent via sub_repos match, got ${result}`);
+});
+
+test('findFixmeRoot: ignores parent .fixme/ when sub_repos does not match', () => {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    sub_repos: ['frontend', 'backend']
+  }));
+  const unrelated = path.join(workspace, 'scripts');
+  fs.mkdirSync(unrelated, { recursive: true });
+  // No .git and not in sub_repos
+  const result = findFixmeRoot(unrelated);
+  assert(result === unrelated, `Should NOT match unrelated dir, got ${result}`);
+});
+
+test('findFixmeRoot: prefers local .fixme/ over parent .fixme/', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  const subRepo = path.join(workspace, 'app');
+  fs.mkdirSync(path.join(subRepo, '.fixme'), { recursive: true });
+  const result = findFixmeRoot(subRepo);
+  assert(result === subRepo, `Should prefer local .fixme/, got ${result}`);
+});
+
+test('findFixmeRoot: falls back to startDir when no .fixme/ found', () => {
+  const isolated = createTmpDir();
+  const result = findFixmeRoot(isolated);
+  assert(result === isolated, `Should fall back to startDir, got ${result}`);
+});
+
+test('findFixmeRoot: works with nested sub-dirs (walks up through multiple levels)', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  const deepPath = path.join(workspace, 'app', 'src', 'modules');
+  fs.mkdirSync(deepPath, { recursive: true });
+  // Put .git in the app dir (sub-repo root)
+  fs.mkdirSync(path.join(workspace, 'app', '.git'), { recursive: true });
+  const result = findFixmeRoot(deepPath);
+  assert(result === workspace, `Should walk up through nested dirs, got ${result}`);
+});
+
+test('findFixmeRoot: parent .fixme/ without config.json uses git heuristic', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  // No config.json in .fixme/
+  const subRepo = path.join(workspace, 'api');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+  const result = findFixmeRoot(subRepo);
+  assert(result === workspace, `Should use git heuristic when no config.json, got ${result}`);
+});
+
+test('findFixmeRoot: parent .fixme/ without config.json AND no .git falls back', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  // No config.json, no .git anywhere
+  const subDir = path.join(workspace, 'scripts');
+  fs.mkdirSync(subDir, { recursive: true });
+  const result = findFixmeRoot(subDir);
+  assert(result === subDir, `Should fall back when no .git and no sub_repos match, got ${result}`);
 });
 
 // ============================================================================
