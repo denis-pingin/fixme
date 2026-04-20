@@ -58,7 +58,7 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 
 3. **Classify based on the evaluation outcome:**
    - **One option clearly dominates** on the dimensions that matter, with no material downside → **FIX**. The Approach field records that option and cites WHY it wins on the concrete tradeoff (e.g. "hoist with guard: same performance as inline duplication, and eliminates the overlap duplication"), not on editorial language.
-   - **Multiple options are viable** with genuine tradeoffs, or no option clearly dominates → **FIX_UNCLEAR**. The Question field presents every option with full Approach/Pros/Cons/Impact/Effort and a researched Recommendation (per the fixme-decision-presentation format). Let the user choose. This is the default when your evaluation does not produce a clear winner.
+   - **Multiple options are viable** with genuine tradeoffs, or no option clearly dominates → **FIX_UNCLEAR**. The Question field presents every option with full Approach/Pros/Cons/Impact/Effort and a researched Recommendation (per the fixme-howto-present-decisions format). Let the user choose. This is the default when your evaluation does not produce a clear winner.
    - **Every option is strictly worse than the status quo** (including "drop the fix" as an option) → **REJECT_WONT_FIX**, with per-option disqualifying flaws listed. "Simpler to not do it" is not a disqualifying flaw.
 
 4. **"Drop the fix" or "just add a comment" is not a free answer.** These resolutions require either proving the original concern was invalid (→ REJECT_FALSE_POSITIVE with evidence) OR proving every alternative is strictly worse than leaving the code alone (→ REJECT_WONT_FIX with a per-option evaluation). Collapsing a multi-option finding into "drop it" because one option was labeled "simpler" is the exact failure mode this section exists to prevent.
@@ -86,7 +86,7 @@ Group related findings that would be addressed by the same fix. Order: FIX (HIGH
 
 ## Decision Presentation Guidelines (ASK_USER and FIX_UNCLEAR)
 
-**The full guidelines are preloaded from the `fixme-decision-presentation` skill.** Follow them exactly for all ASK_USER and FIX_UNCLEAR Question fields.
+**The full guidelines are preloaded from the `fixme-howto-present-decisions` skill.** Follow them exactly for all ASK_USER and FIX_UNCLEAR Question fields.
 
 Key requirements (see preloaded skill for complete spec):
 

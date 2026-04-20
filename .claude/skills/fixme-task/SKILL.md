@@ -571,7 +571,7 @@ automatically, {Y} need(s) your input{, Z dismissed}.
    Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
 ```
 
-**3. Decision points** - Present each ASK_USER and FIX_UNCLEAR item using the handler's **full Question field verbatim**. The handler's Question field follows the Decision Presentation Guidelines (from the `fixme-decision-presentation` shared skill) and is already formatted as a structured decision block.
+**3. Decision points** - Present each ASK_USER and FIX_UNCLEAR item using the handler's **full Question field verbatim**. The handler's Question field follows the Decision Presentation Guidelines (from the `fixme-howto-present-decisions` shared skill) and is already formatted as a structured decision block.
 
 **Do NOT summarize, rephrase, or compress the handler's Question field.** The handler invested significant effort in making the question self-contained, properly structured, and concrete. Summarizing it destroys the context, clickable file references, option structure (Pros/Cons/Impact/Effort), and cross-references that make the decision possible.
 

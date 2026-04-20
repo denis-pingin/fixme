@@ -530,7 +530,7 @@ show every item - not "and 15 more similar".
 
 Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a single structured write-up.
 
-**Follow the Decision Presentation Guidelines from the `fixme-decision-presentation` skill** (read it at `~/.claude/skills/fixme-decision-presentation/SKILL.md`). Each decision point uses the full structured decision block format:
+**Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill** (read it at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md`). Each decision point uses the full structured decision block format:
 
 - `## Decision {N}: {short title}` heading
 - `**Context**:` establishing WHERE in the codebase and WHAT the code does, with clickable file references

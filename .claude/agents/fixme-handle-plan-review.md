@@ -4,7 +4,7 @@ description: Triages plan review findings using the unified taxonomy (FIX, FIX_U
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-plan-review
-  - fixme-decision-presentation
+  - fixme-howto-present-decisions
 effort: high
 ---
 
