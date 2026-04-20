@@ -4,6 +4,7 @@ description: Executes implementation plans step by step with maximum reliability
 tools: Read, Write, Edit, Bash, Grep, Glob
 skills:
   - fixme-execute-plan
+  - fixme-howto-code-comments
 permissionMode: acceptEdits
 effort: high
 ---

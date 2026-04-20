@@ -4,6 +4,7 @@ description: Writes implementation plans by reading the codebase thoroughly. Pro
 tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-write-plan
+  - fixme-howto-code-comments
 permissionMode: acceptEdits
 effort: high
 ---
