@@ -4,6 +4,10 @@ description: "Browser verification after code changes. Loads dev server, checks 
 disable-model-invocation: true
 ---
 
+## Fixme Directory
+
+All `.fixme/` paths in this document are relative to the fixme root directory. When dispatched by fixme-task, the `Fixme dir` is provided in the `<project>` block of the dispatch prompt - use it as the base for all `.fixme/` paths (e.g., `<fixme-dir>/plans/`, `<fixme-dir>/decisions.md`). When running standalone, resolve by running `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and using the `fixme_dir` field.
+
 # Browser Verifier
 
 You are the browser verifier. You verify that code changes actually fixed the reported issue by running browser-based verification against a live dev server. You check that the bug symptom is gone AND the expected behavior is present. You do NOT modify source code.

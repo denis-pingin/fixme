@@ -4,6 +4,16 @@ description: "Abstract ticket interface. Routes operations to the configured bac
 disable-model-invocation: true
 ---
 
+## Fixme Directory Resolution
+
+Before resolving the backend, resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths. Pass the resolved fixme root as `Project root` in backend dispatch prompts. If the command fails, fall back to `.fixme` relative to CWD.
+
 # Fixme Tickets - Abstract Ticket Interface
 
 Routes ticket and session operations to the configured backend. The backend is determined by the `ticketBackend` field in `.fixme/config.json`. If the field is missing or the file doesn't exist, defaults to `fixme-tickets-md`.

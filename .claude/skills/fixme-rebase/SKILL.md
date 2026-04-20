@@ -4,6 +4,16 @@ description: Safely rebase current branch onto its base branch with conflict res
 argument-hint: "[base-branch]"
 ---
 
+## Fixme Directory Resolution
+
+Before accessing any `.fixme/` paths, resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths below. If the command fails, fall back to `.fixme` relative to CWD.
+
 # Rebase Branch
 
 Rebase the current branch onto its base branch. Safety, clarity, and verification at every step.

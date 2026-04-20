@@ -9,6 +9,16 @@ allowed-tools:
 argument-hint: "[init]"
 ---
 
+## Fixme Directory Resolution
+
+Before loading config, resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths in this skill. If the command fails, fall back to `.fixme` relative to CWD.
+
 # Fixme Config
 
 Interactive configuration of fixme settings: model profile, pipeline selection, ticket backend, project commands, and Linear integration. Updates `.fixme/config.json`.
@@ -28,7 +38,7 @@ If the user selects the markdown backend, Linear MCP is not required and the Lin
 ### Step 1: Load current config
 
 ```bash
-cat .fixme/config.json 2>/dev/null || echo '{}'
+cat <fixme-dir>/config.json 2>/dev/null || echo '{}'
 ```
 
 Parse current values (defaults if not present):
@@ -137,7 +147,66 @@ AskUserQuestion([
 ])
 ```
 
-If "I need to adjust": ask follow-up questions one at a time for each value the user wants to change. Use AskUserQuestion with the current value shown, and an "Other" option for custom input. After each correction, confirm and move to the next.
+If "I need to adjust": collect corrections in two steps.
+
+**Step 4a - Identify which settings to change.** All 8 settings listed explicitly across 2 multi-select questions. Test command and test runner are ALWAYS separate items:
+
+```
+AskUserQuestion([
+  {
+    question: "Which server/build settings need adjustment?",
+    header: "Server & Build",
+    multiSelect: true,
+    options: [
+      { label: "Dev server URL", description: "Currently: {url or 'not set'}" },
+      { label: "Dev server command", description: "Currently: {command or 'not set'}" },
+      { label: "Build command", description: "Currently: {build or 'not set'}" },
+      { label: "Hot Module Replacement", description: "Currently: {hmr}" }
+    ]
+  },
+  {
+    question: "Which test/lint/framework settings need adjustment?",
+    header: "Test & Lint",
+    multiSelect: true,
+    options: [
+      { label: "Test command", description: "Currently: {test.command or 'not set'}" },
+      { label: "Test runner", description: "Currently: {test.runner or 'unknown'}" },
+      { label: "Lint command", description: "Currently: {lint or 'not set'}" },
+      { label: "Framework", description: "Currently: {framework or 'unknown'}" }
+    ]
+  }
+])
+```
+
+**Step 4b - Collect new values.** Present AskUserQuestion calls (up to 4 questions each) with one question per setting selected in Step 4a. Each selected setting gets its own dedicated question - never merge multiple settings into one question.
+
+Text settings (all except Hot Module Replacement) show the current value as first option plus "Not set" to clear:
+
+```
+{
+  question: "Test command?",
+  header: "Test",
+  multiSelect: false,
+  options: [
+    { label: "{current test.command or 'not set'}", description: "Keep current" },
+    { label: "Not set", description: "Clear this setting" }
+  ]
+}
+```
+
+Hot Module Replacement uses Yes/No:
+
+```
+{
+  question: "Hot Module Replacement?",
+  header: "Hot Module Replacement",
+  multiSelect: false,
+  options: [
+    { label: "Yes", description: "Dev server supports Hot Module Replacement" },
+    { label: "No", description: "No Hot Module Replacement support" }
+  ]
+}
+```
 
 ### Step 5: Linear discovery round (conditional)
 
@@ -262,10 +331,10 @@ Merge new settings into existing config.json (preserving any keys not covered by
 
 When backend is `fixme-tickets-md`, leave the existing `linear` object (if any) untouched - do not delete or overwrite it.
 
-Write to `.fixme/config.json`:
+Write to `<fixme-dir>/config.json`:
 
 ```bash
-mkdir -p .fixme
+mkdir -p <fixme-dir>
 ```
 
 Write the config file using the Write tool.
@@ -301,7 +370,7 @@ If the backend is `fixme-tickets-linear`, append a Linear block to the table:
 Then print:
 
 ```
-Config saved to .fixme/config.json
+Config saved to <fixme-dir>/config.json
 ```
 
 ## Pipeline Definitions

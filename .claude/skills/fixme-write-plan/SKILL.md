@@ -4,6 +4,10 @@ description: Write implementation plans that are unambiguous, complete, correct,
 argument-hint: "<task description or path to spec>"
 ---
 
+## Fixme Directory
+
+All `.fixme/` paths in this document are relative to the fixme root directory. When dispatched by fixme-task, the `Fixme dir` is provided in the `<project>` block of the dispatch prompt - use it as the base for all `.fixme/` paths (e.g., `<fixme-dir>/plans/`, `<fixme-dir>/decisions.md`). When running standalone, resolve by running `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and using the `fixme_dir` field.
+
 # Write Plan
 
 Write implementation plans that leave nothing to interpretation. The plan is the only output - no source code modifications allowed.

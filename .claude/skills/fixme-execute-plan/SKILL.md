@@ -4,6 +4,10 @@ description: Execute an implementation plan with maximum reliability. Follows pl
 argument-hint: "<path to plan file>"
 ---
 
+## Fixme Directory
+
+All `.fixme/` paths in this document are relative to the fixme root directory. When dispatched by fixme-task, the `Fixme dir` is provided in the `<project>` block of the dispatch prompt - use it as the base for all `.fixme/` paths (e.g., `<fixme-dir>/plans/`, `<fixme-dir>/decisions.md`). When running standalone, resolve by running `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and using the `fixme_dir` field.
+
 # Execute Plan
 
 Execute an implementation plan step by step. Verification is sacred. Work is never done until everything passes.

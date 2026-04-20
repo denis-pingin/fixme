@@ -5,7 +5,7 @@ description: End-to-end orchestrator that executes config-driven pipelines with 
 
 # Fixme Task - Config-Driven Pipeline Orchestrator
 
-Execute a named pipeline from `.fixme/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage context accumulation, decision persistence, loop control, and optional ticket state transitions.
+Execute a named pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage context accumulation, decision persistence, loop control, and optional ticket state transitions.
 
 ## Hard Constraints
 
@@ -16,7 +16,7 @@ Execute a named pipeline from `.fixme/config.json`. Each pipeline is an ordered 
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. The orchestrator never shows findings to the user and asks "want me to fix this directly?" or "should we skip the loop?" If your next message to the user is a summary of findings with options, STOP - you are about to bypass the pipeline.
-- **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `.fixme/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
+- **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
 
 ## Input Resolution
 
@@ -33,7 +33,7 @@ Parse the invocation argument to extract pipeline name, task description, and op
 
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
-2. Check the first remaining word against pipeline names in `.fixme/config.json`. If it matches a pipeline name, use it and remove it from remaining args. If no match, it's part of the task description and pipeline is `"default"`.
+2. Check the first remaining word against pipeline names in `<fixme-dir>/config.json`. If it matches a pipeline name, use it and remove it from remaining args. If no match, it's part of the task description and pipeline is `"default"`.
 3. The remaining args are the task description.
 4. If no config file exists, only `"default"` is recognized as a pipeline name (and it uses the hardcoded default pipeline).
 
@@ -58,14 +58,14 @@ Resolve the project root for sub-agent dispatch prompts:
 
 ### Start From
 
-Detect where to enter the pipeline based on what already exists. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `.fixme/plans/` directory.
+Detect where to enter the pipeline based on what already exists. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `<fixme-dir>/plans/` directory.
 
-- **Plan exists** (found in conversation context, IDE selection, path argument, or `.fixme/plans/`): skip the plan-writing phase, enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
+- **Plan exists** (found in conversation context, IDE selection, path argument, or `<fixme-dir>/plans/`): skip the plan-writing phase, enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
 - **Plan exists + already reviewed** (review findings provided): enter at the plan phase's **review handler**.
 - **Plan exists + already executed** (execution results or code changes present): enter at the implement phase's **review** step (if it has one).
 - **Nothing exists**: start from the first phase of the pipeline (default).
 
-When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `.fixme/decisions.md`.
+When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `<fixme-dir>/decisions.md`.
 
 ### Investigation Tasks
 
@@ -78,7 +78,13 @@ If the task asks "why", "what causes", "debug", or describes unexpected behavior
 
 Load the pipeline definition and project settings:
 
-1. **Read `.fixme/config.json`** if it exists
+0. **Resolve fixme root:**
+   ```bash
+   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+   ```
+   This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Store `fixme_dir` - use it as the base for ALL `.fixme/` paths below and in dispatch prompts. If the command fails, fall back to `.fixme` relative to CWD.
+
+1. **Read `<fixme-dir>/config.json`** if it exists
 2. **Extract the named pipeline** (or `"default"`) from `pipelines`
 3. **If no config or no `pipelines` key**, use the hardcoded default pipeline:
    ```json
@@ -152,9 +158,9 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `.fixme/config.json`, `.fixme/plans/*.md`, `.fixme/decisions.md`, or plan files referenced in conversation
-- **Write** - ONLY on `.fixme/decisions.md`
-- **Bash** - ONLY `mkdir -p .fixme/plans` or `mkdir -p .fixme`
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/decisions.md`, or plan files referenced in conversation
+- **Write** - ONLY on `<fixme-dir>/decisions.md`
+- **Bash** - ONLY `mkdir -p <fixme-dir>/plans` or `mkdir -p <fixme-dir>`, or `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root`
 - **TodoWrite** - to create and track the dispatch manifest steps
 
 Any other tool use (Read on source code, Grep, Glob, Edit on source code) is a pipeline violation. If you need information from the codebase, dispatch an agent to get it.
@@ -265,7 +271,7 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 
 **Never paste SKILL.md content into the agent prompt.** Never tell agents to "read your SKILL.md first." The agent definition handles both role binding and SKILL.md preloading.
 
-Resolve the model for each agent from `.fixme/config.json` (see Model Resolution below). Default: opus for all agents.
+Resolve the model for each agent from `<fixme-dir>/config.json` (see Model Resolution below). Default: opus for all agents.
 
 The dispatch prompt structure for every sub-skill:
 
@@ -280,6 +286,7 @@ Agent(
 
     <project>
     Project root: [path]
+    Fixme dir: [fixme_dir from root resolution]
     </project>
   "
 )
@@ -293,7 +300,7 @@ Tool access for each sub-skill is enforced by its agent definition in `~/.claude
 
 ### Model Resolution
 
-Resolve the model for each sub-agent before dispatching. Read `.fixme/config.json` and check for a `models` section.
+Resolve the model for each sub-agent before dispatching. Read `<fixme-dir>/config.json` and check for a `models` section.
 
 **Resolution order:**
 1. `models.overrides[agent-name]` (per-agent override)
@@ -343,7 +350,7 @@ Ticket transitions are dispatched through the `fixme-tickets` abstraction skill,
    - Arguments: [all arguments]
    - Project root: [path]
    ```
-2. The fixme-tickets skill resolves the backend from `.fixme/config.json` and handles the rest
+2. The fixme-tickets skill resolves the backend from `<fixme-dir>/config.json` and handles the rest
 
 ### Phase-specific dispatch contracts
 
@@ -477,7 +484,7 @@ When a review handler returns FIX items, **always route through the proper loop*
 
 ## Decision Log
 
-Persisted at `.fixme/decisions.md` in the project root. Created by the orchestrator on first ASK_USER or FIX_UNCLEAR interaction. Only the orchestrator writes to this file - sub-skills read it.
+Persisted at `<fixme-dir>/decisions.md` in the project root. Created by the orchestrator on first ASK_USER or FIX_UNCLEAR interaction. Only the orchestrator writes to this file - sub-skills read it.
 
 Format:
 

@@ -4,6 +4,10 @@ description: "Explore codebase around a known issue to find relevant files, trac
 argument-hint: "<issue description> [--investigation <path>]"
 ---
 
+## Fixme Directory
+
+All `.fixme/` paths in this document are relative to the fixme root directory. When dispatched by fixme-task, the `Fixme dir` is provided in the `<project>` block of the dispatch prompt - use it as the base for all `.fixme/` paths (e.g., `<fixme-dir>/plans/`, `<fixme-dir>/decisions.md`). When running standalone, resolve by running `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and using the `fixme_dir` field.
+
 # Fix Researcher
 
 You are the fix researcher. You explore the codebase around a known issue to find relevant files, trace code paths, identify dependencies and risks, and suggest approach candidates. You do NOT fix bugs or write code.

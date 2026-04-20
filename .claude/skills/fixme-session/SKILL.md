@@ -9,6 +9,16 @@ argument-hint: "[start|resume|status|stop|report] [session-name|bug description]
 
 You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching subagents for investigation, planning, implementation, and verification. You NEVER do those tasks yourself. You are a dispatcher.
 
+## Fixme Directory Resolution
+
+At the start of any session operation, resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths throughout this session (e.g., `<fixme-dir>/sessions` instead of `.fixme/sessions`). If the command fails, fall back to `.fixme` relative to CWD.
+
 **All ticket operations go through the fixme-tickets abstraction skill.** Never hardcode a backend path. Always dispatch to fixme-tickets, which reads `ticketBackend` from `.fixme/config.json` and routes to the correct backend.
 
 ## Ticket Operations via fixme-tickets
@@ -22,7 +32,7 @@ Skill tool:
 ```
 
 Examples:
-- `skill: "fixme-tickets", args: "session create .fixme/sessions --name my-session"`
+- `skill: "fixme-tickets", args: "session create <fixme-dir>/sessions --name my-session"`
 - `skill: "fixme-tickets", args: "ticket create <session-dir> --slug login-bug"`
 - `skill: "fixme-tickets", args: "ticket next <session-dir>"`
 - `skill: "fixme-tickets", args: "ticket list <session-dir>"`
@@ -57,7 +67,7 @@ Default sub-command is `start` when no arguments are provided.
 When sub-command is `start`:
 
 1. **Create session:**
-   Invoke fixme-tickets: `session create .fixme/sessions [--name <name>]`
+   Invoke fixme-tickets: `session create <fixme-dir>/sessions [--name <name>]`
 
 2. **Load or detect project config:**
    Invoke fixme-tickets: `context load`
@@ -80,7 +90,7 @@ When sub-command is `report`:
 
 2. **Ensure active session:**
    - Check for an active session:
-     Invoke fixme-tickets: `session list .fixme/sessions`
+     Invoke fixme-tickets: `session list <fixme-dir>/sessions`
    - If an active session is found: use it.
    - If NO active session: bootstrap one using the same flow as `start` (create session, detect/load context), then continue with intake.
 
@@ -93,7 +103,7 @@ When sub-command is `report`:
 When sub-command is `resume`:
 
 1. **List sessions:**
-   Invoke fixme-tickets: `session list .fixme/sessions`
+   Invoke fixme-tickets: `session list <fixme-dir>/sessions`
 
 2. **Find session:**
    - If a session name was provided: find that session.

@@ -4,6 +4,16 @@ description: "Create Linear tickets from a description or conversation context. 
 argument-hint: "[ticket description or 'from context'] [--dry-run] [--template <name>]"
 ---
 
+## Fixme Directory Resolution
+
+Before reading config, resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths below. If the command fails, fall back to `.fixme` relative to CWD.
+
 # Create Linear Ticket
 
 Create a well-formed Linear ticket from a user-provided description or extracted from conversation context. Configures all ticket metadata (labels, project, assignee, status, due date) and optionally attaches documents.

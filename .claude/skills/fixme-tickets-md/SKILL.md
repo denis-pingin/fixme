@@ -4,6 +4,10 @@ description: "Markdown file ticket backend. Wraps fixme-tools.cjs CLI for ticket
 disable-model-invocation: true
 ---
 
+## Fixme Directory
+
+When dispatched by fixme-tickets, the `Project root` in the dispatch prompt determines where `.fixme/` lives. Use the provided project root as the base for all `.fixme/` paths. The CLI tool (`fixme-tools.cjs`) auto-resolves the fixme root internally, so paths passed to CLI commands are resolved automatically.
+
 # Fixme Tickets MD - Markdown File Backend
 
 Ticket and session management backed by markdown files with YAML frontmatter. Each ticket is a `.md` file in a session directory. State transitions are enforced by the `fixme-tools.cjs` CLI.
