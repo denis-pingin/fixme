@@ -650,9 +650,8 @@ function findFixmeRoot(startDir) {
  * Load pipeline phase names from config.
  * Returns array of phase name strings, or null if pipeline not found.
  */
-function loadPipelinePhases(pipelineName) {
-  // Try .fixme/config.json relative to CWD
-  const configPath = path.join(process.cwd(), '.fixme', 'config.json');
+function loadPipelinePhases(pipelineName, fixmeRoot) {
+  const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
   if (!fs.existsSync(configPath)) return null;
 
   try {
@@ -674,14 +673,14 @@ function loadPipelinePhases(pipelineName) {
  * Resolve the transition map for a given ticket.
  * Priority: --pipeline flag -> ticket frontmatter pipeline -> hardcoded default.
  */
-function resolveTransitions(fm, flags) {
+function resolveTransitions(fm, flags, fixmeRoot) {
   // 1. Check --pipeline flag (also stores it in frontmatter for future use)
   const pipelineFlag = flags.pipeline || null;
   // 2. Check ticket frontmatter
   const pipelineName = pipelineFlag || fm.pipeline || null;
 
   if (pipelineName) {
-    const phases = loadPipelinePhases(pipelineName);
+    const phases = loadPipelinePhases(pipelineName, fixmeRoot);
     if (phases && phases.length > 0) {
       return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName };
     }
@@ -821,7 +820,7 @@ function resolveTicketPath(inputPath) {
   return inputPath;
 }
 
-function ticketTransition(ticketPath, newState, flags) {
+function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
   ticketPath = resolveTicketPath(ticketPath);
   if (!fs.existsSync(ticketPath)) {
     return error(`Ticket file not found: ${ticketPath}`);
@@ -836,7 +835,7 @@ function ticketTransition(ticketPath, newState, flags) {
   }
 
   // Resolve transition map
-  const { transitions: transMap, phases, pipelineName } = resolveTransitions(fm, flags);
+  const { transitions: transMap, phases, pipelineName } = resolveTransitions(fm, flags, fixmeRoot);
 
   // Store pipeline in frontmatter if provided via flag
   if (flags.pipeline && !fm.pipeline) {
@@ -1395,8 +1394,8 @@ function contextDetect(flags) {
   return output(project);
 }
 
-function contextSave(flags) {
-  const projectDir = flags['project-dir'] || process.cwd();
+function contextSave(flags, fixmeRoot) {
+  const projectDir = flags['project-dir'] || fixmeRoot || process.cwd();
   const dataStr = flags.data || null;
 
   if (!dataStr) {
@@ -1434,8 +1433,8 @@ function contextSave(flags) {
   return output({ path: configPath, saved: true });
 }
 
-function contextLoad(flags) {
-  const projectDir = flags['project-dir'] || process.cwd();
+function contextLoad(flags, fixmeRoot) {
+  const projectDir = flags['project-dir'] || fixmeRoot || process.cwd();
   const configPath = path.join(projectDir, '.fixme', 'config.json');
 
   if (!fs.existsSync(configPath)) {
@@ -1482,6 +1481,14 @@ function error(message) {
 // Main Router
 // ============================================================================
 
+function rootCommand() {
+  const fixmeRoot = findFixmeRoot(process.cwd());
+  return output({
+    fixme_root: fixmeRoot,
+    fixme_dir: path.join(fixmeRoot, '.fixme'),
+  });
+}
+
 function main() {
   const allArgs = process.argv.slice(2);
   if (allArgs.length === 0) {
@@ -1491,6 +1498,7 @@ function main() {
   const command = allArgs[0];
   const subcommand = allArgs[1] || '';
   const { args, flags } = parseArgs(allArgs.slice(2));
+  const fixmeRoot = findFixmeRoot(process.cwd());
 
   try {
     switch (command) {
@@ -1499,7 +1507,7 @@ function main() {
           case 'create':
             return ticketCreate(args[0], flags);
           case 'transition':
-            return ticketTransition(args[0], args[1], flags);
+            return ticketTransition(args[0], args[1], flags, fixmeRoot);
           case 'list':
             return ticketList(args[0], flags);
           case 'next':
@@ -1527,15 +1535,18 @@ function main() {
           case 'detect':
             return contextDetect(flags);
           case 'save':
-            return contextSave(flags);
+            return contextSave(flags, fixmeRoot);
           case 'load':
-            return contextLoad(flags);
+            return contextLoad(flags, fixmeRoot);
           default:
             return error(`Unknown context subcommand: '${subcommand}'. Valid: detect, save, load`);
         }
 
+      case 'root':
+        return rootCommand();
+
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, root`);
     }
   } catch (e) {
     return error(e.message);

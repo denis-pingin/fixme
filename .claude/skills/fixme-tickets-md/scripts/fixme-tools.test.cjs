@@ -1238,6 +1238,106 @@ test('findFixmeRoot: parent .fixme/ without config.json AND no .git falls back',
 });
 
 // ============================================================================
+// Test Suite: root CLI command
+// ============================================================================
+
+console.log('\n=== root CLI command ===\n');
+
+test('root: returns fixme_root and fixme_dir for local .fixme/', () => {
+  const tmp = fs.realpathSync(createTmpDir());
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  const result = runInDir('root', tmp);
+  assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.fixme_root === tmp, `fixme_root should be ${tmp}, got ${result.data.fixme_root}`);
+  assert(result.data.fixme_dir === path.join(tmp, '.fixme'), `fixme_dir should end with .fixme, got ${result.data.fixme_dir}`);
+});
+
+test('root: resolves to parent when .fixme/ is in parent and sub-dir has .git', () => {
+  const workspace = fs.realpathSync(createTmpDir());
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  const subRepo = path.join(workspace, 'myapp');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+  const result = runInDir('root', subRepo);
+  assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.fixme_root === workspace, `fixme_root should be workspace, got ${result.data.fixme_root}`);
+  assert(result.data.fixme_dir === path.join(workspace, '.fixme'), `fixme_dir should be in workspace, got ${result.data.fixme_dir}`);
+});
+
+test('root: falls back to CWD when no .fixme/ found', () => {
+  const tmp = fs.realpathSync(createTmpDir());
+  const result = runInDir('root', tmp);
+  assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.fixme_root === tmp, `fixme_root should be CWD, got ${result.data.fixme_root}`);
+  assert(result.data.fixme_dir === path.join(tmp, '.fixme'), `fixme_dir should be CWD/.fixme, got ${result.data.fixme_dir}`);
+});
+
+// ============================================================================
+// Test Suite: multi-root integration (CLI commands resolve parent .fixme/)
+// ============================================================================
+
+console.log('\n=== multi-root integration ===\n');
+
+test('multi-root: ticket transition uses pipeline from parent .fixme/config.json', () => {
+  const workspace = createTmpDir();
+  createPipelineConfig(workspace); // creates workspace/.fixme/config.json
+  const subRepo = path.join(workspace, 'myapp');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+
+  // Create session and ticket in the workspace .fixme
+  const sessionResult = runInDir(`session create "${path.join(workspace, '.fixme', 'sessions')}" --name multi-test`, subRepo);
+  assert(sessionResult.ok, `Session create failed: ${JSON.stringify(sessionResult.data)}`);
+  const sessionDir = sessionResult.data.path;
+
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug multi-root-bug`, subRepo);
+  assert(createResult.ok, `Ticket create failed: ${JSON.stringify(createResult.data)}`);
+  const ticketPath = createResult.data.path;
+
+  // Transition using pipeline from parent config - CWD is subRepo
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, subRepo);
+  assert(t1.ok, `Transition should use parent config, got: ${JSON.stringify(t1.data)}`);
+  assert(t1.data.to === 'plan', `Should transition to plan, got ${t1.data.to}`);
+});
+
+test('multi-root: context save writes to parent .fixme/config.json', () => {
+  const workspace = createTmpDir();
+  fs.mkdirSync(path.join(workspace, '.fixme'), { recursive: true });
+  const subRepo = path.join(workspace, 'myapp');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+
+  const projectData = JSON.stringify({ build: 'yarn build', framework: 'react' });
+  const result = runInDir(`context save --data '${projectData}'`, subRepo);
+  assert(result.ok, `context save should succeed, got: ${JSON.stringify(result.data)}`);
+
+  // Verify it wrote to workspace/.fixme/config.json, NOT subRepo/.fixme/config.json
+  const parentConfig = path.join(workspace, '.fixme', 'config.json');
+  assert(fs.existsSync(parentConfig), 'config.json should be in parent .fixme/');
+  const localConfig = path.join(subRepo, '.fixme', 'config.json');
+  assert(!fs.existsSync(localConfig), 'config.json should NOT be in subRepo .fixme/');
+
+  const config = JSON.parse(fs.readFileSync(parentConfig, 'utf8'));
+  assert(config.project.framework === 'react', 'project data should be written correctly');
+});
+
+test('multi-root: context load reads from parent .fixme/config.json', () => {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    project: { build: 'yarn build', framework: 'next.js' }
+  }));
+  const subRepo = path.join(workspace, 'myapp');
+  fs.mkdirSync(subRepo, { recursive: true });
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+
+  const result = runInDir('context load', subRepo);
+  assert(result.ok, `context load should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.framework === 'next.js', `Should load parent config, got ${result.data.framework}`);
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 
