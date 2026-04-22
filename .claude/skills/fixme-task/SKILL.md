@@ -54,7 +54,7 @@ Resolve the task description in this order - stop at the first match:
 Resolve the project root for sub-agent dispatch prompts:
 
 1. **Explicit in task text**: if the task description contains `Project root: <path>`, extract and use that path
-2. **Current working directory**: use the working directory (always the project root in Claude Code)
+2. **Current working directory**: use the working directory
 
 ### Start From
 
@@ -271,9 +271,25 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 
 **Never paste SKILL.md content into the agent prompt.** Never tell agents to "read your SKILL.md first." The agent definition handles both role binding and SKILL.md preloading.
 
-Resolve the model for each agent from `<fixme-dir>/config.json` (see Model Resolution below). Default: opus for all agents.
+**Before every Agent dispatch, resolve the model via the CLI and print a visibility banner.** This is non-negotiable. The orchestrator must not dispatch without first asking the tool what model to use, and must not dispatch silently.
 
-The dispatch prompt structure for every sub-skill:
+Step 1 - Resolve the model:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model <agent-name>
+```
+
+Returns JSON like `{"agent":"fixme-write-plan","model":"opus","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, do not skip the call.
+
+Step 2 - Print the banner as a single line of user-visible text before the Agent tool call:
+
+```
+→ dispatching fixme-write-plan (model: opus, profile: quality, source: profile)
+```
+
+The banner is the user's only window into model selection. If you dispatch without it, you are hiding state the user needs to audit runtime behavior.
+
+Step 3 - Dispatch with the resolved model:
 
 ```
 Agent(
@@ -300,14 +316,14 @@ Tool access for each sub-skill is enforced by its agent definition in `~/.claude
 
 ### Model Resolution
 
-Resolve the model for each sub-agent before dispatching. Read `<fixme-dir>/config.json` and check for a `models` section.
+Model resolution is performed by `fixme-tools.cjs resolve-model` (see the dispatch contract above). The CLI is the authoritative source for both the profile table and the `override > profile > default` resolution order. When `models.profile` is not set or the `models` section is missing, the CLI returns `opus` with `profile: quality` and `source: default`. When a configured profile is unknown (typo, future value), the CLI also falls back to `opus`/`quality`/`default` - so a malformed profile never silently picks a different model.
 
-**Resolution order:**
-1. `models.overrides[agent-name]` (per-agent override)
-2. `models.profile` table lookup (profile-based)
-3. Default: `opus` (no config = quality profile)
+**`source` field values:**
+- `override` - came from `models.overrides[agent]`
+- `profile` - came from the profile table lookup
+- `default` - nothing applied (no config, unknown profile, or agent absent from the profile table)
 
-**Profile table:**
+Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 
 | Agent | quality | balanced | budget |
 |-------|---------|----------|--------|
@@ -335,7 +351,7 @@ Resolve the model for each sub-agent before dispatching. Read `<fixme-dir>/confi
 }
 ```
 
-Valid model values: `opus`, `sonnet`, `haiku`, `inherit`.
+Valid model values: `opus`, `sonnet`, `haiku`, `inherit`. The CLI does not validate the model string - it returns whatever is configured so malformed values surface at Agent dispatch time rather than being silently dropped.
 
 ### Ticket transition dispatch
 
@@ -484,7 +500,7 @@ When a review handler returns FIX items, **always route through the proper loop*
 
 ## Decision Log
 
-Persisted at `<fixme-dir>/decisions.md` in the project root. Created by the orchestrator on first ASK_USER or FIX_UNCLEAR interaction. Only the orchestrator writes to this file - sub-skills read it.
+Persisted at `<fixme-dir>/decisions.md`. Created by the orchestrator on first ASK_USER or FIX_UNCLEAR interaction. Only the orchestrator writes to this file - sub-skills read it.
 
 Format:
 
