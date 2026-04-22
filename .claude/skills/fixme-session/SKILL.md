@@ -211,15 +211,32 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md investigating`
    If the transition fails, transition to failed and skip to next ticket (go to step 2).
 
-   ```
-   Task tool dispatch (subagent_type: "fixme-investigate"):
+   **Resolve model and print visibility banner before dispatch:**
 
-     <task>
-     Investigate this bug:
-     - Task description: <title and description from ticket>
-     - Dev server URL: <devServer.url from project config>
-     - Output directory: <ticket-folder>/research/
-     </task>
+   ```bash
+   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model fixme-investigate
+   ```
+
+   Print a one-line banner to the user (before calling the Agent tool):
+
+   ```
+   → dispatching fixme-investigate (model: {model}, profile: {profile}, source: {source})
+   ```
+
+   Then dispatch:
+
+   ```
+   Agent(
+     subagent_type: "fixme-investigate",
+     model: "{resolved-model}",
+     prompt: |
+       <task>
+       Investigate this bug:
+       - Task description: <title and description from ticket>
+       - Dev server URL: <devServer.url from project config>
+       - Output directory: <ticket-folder>/research/
+       </task>
+   )
    ```
 
    After the investigation agent returns:
@@ -237,11 +254,26 @@ This is the core execution cycle. Repeat until the user stops the session or the
 6. **Dispatch fixme-task in background:**
    Record `active_task` in session.md frontmatter (set to the ticket path). Use the Edit tool to update the frontmatter.
 
+   **Resolve model and print visibility banner before dispatch:**
+
+   ```bash
+   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model fixme-task
    ```
-   Task tool dispatch:
-     description: "Execute pipeline for ticket #NNNN"
-     run_in_background: true
-     subagent_type: "fixme-task"
+
+   Print a one-line banner to the user:
+
+   ```
+   → dispatching fixme-task in background (model: {model}, profile: {profile}, source: {source})
+   ```
+
+   Then dispatch:
+
+   ```
+   Agent(
+     description: "Execute pipeline for ticket #NNNN",
+     run_in_background: true,
+     subagent_type: "fixme-task",
+     model: "{resolved-model}",
      prompt: |
        <task>
        Execute this task:
@@ -256,6 +288,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
        - summary: <one-line description of what was done>
        - failure_reason: <if failed, why>
        </task>
+   )
    ```
 
 7. **Return to conversation loop:**
