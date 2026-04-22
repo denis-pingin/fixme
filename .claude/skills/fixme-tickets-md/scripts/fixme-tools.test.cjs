@@ -1338,6 +1338,128 @@ test('multi-root: context load reads from parent .fixme/config.json', () => {
 });
 
 // ============================================================================
+// resolve-model tests
+// ============================================================================
+
+test('resolve-model: no config returns opus/quality/default', () => {
+  const dir = createTmpDir();
+  const res = runInDir('resolve-model fixme-write-plan', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.agent === 'fixme-write-plan', `agent: ${res.data.agent}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+test('resolve-model: empty models object returns quality defaults', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({ models: {} }));
+  const res = runInDir('resolve-model fixme-execute-plan', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+test('resolve-model: balanced profile returns per-agent mapping', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'balanced' }
+  }));
+  const executor = runInDir('resolve-model fixme-execute-plan', dir);
+  assert(executor.ok, `exit: ${JSON.stringify(executor)}`);
+  assert(executor.data.model === 'sonnet', `executor model: ${executor.data.model}`);
+  assert(executor.data.profile === 'balanced', `executor profile: ${executor.data.profile}`);
+  assert(executor.data.source === 'profile', `executor source: ${executor.data.source}`);
+
+  const planner = runInDir('resolve-model fixme-write-plan', dir);
+  assert(planner.ok, `exit: ${JSON.stringify(planner)}`);
+  assert(planner.data.model === 'opus', `planner model: ${planner.data.model}`);
+  assert(planner.data.profile === 'balanced', `planner profile: ${planner.data.profile}`);
+});
+
+test('resolve-model: budget profile', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'budget' }
+  }));
+  const verify = runInDir('resolve-model fixme-browser-verify', dir);
+  assert(verify.ok, `exit: ${JSON.stringify(verify)}`);
+  assert(verify.data.model === 'haiku', `verify model: ${verify.data.model}`);
+  assert(verify.data.profile === 'budget', `verify profile: ${verify.data.profile}`);
+});
+
+test('resolve-model: override beats profile', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: {
+      profile: 'budget',
+      overrides: { 'fixme-execute-plan': 'opus' }
+    }
+  }));
+  const res = runInDir('resolve-model fixme-execute-plan', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'override', `source: ${res.data.source}`);
+});
+
+test('resolve-model: unknown profile falls back to quality', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'bogus' }
+  }));
+  const res = runInDir('resolve-model fixme-write-plan', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+test('resolve-model: unknown agent falls back to opus/default', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'budget' }
+  }));
+  const res = runInDir('resolve-model fixme-nonexistent', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.agent === 'fixme-nonexistent', `agent: ${res.data.agent}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+test('resolve-model: missing agent arg errors', () => {
+  const dir = createTmpDir();
+  const res = runInDir('resolve-model', dir);
+  assert(!res.ok, 'expected non-zero exit');
+  assert(res.data && res.data.error, `expected error field: ${JSON.stringify(res)}`);
+});
+
+test('resolve-model: malformed config falls back gracefully', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), 'not valid json {{{');
+  const res = runInDir('resolve-model fixme-write-plan', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.model === 'opus', `model: ${res.data.model}`);
+  assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 

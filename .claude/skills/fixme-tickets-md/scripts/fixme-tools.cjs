@@ -6,6 +6,100 @@ const fs = require('fs');
 const path = require('path');
 
 // ============================================================================
+// Model Profile Table
+// ============================================================================
+
+const MODEL_PROFILES = {
+  quality: {
+    'fixme-write-plan': 'opus',
+    'fixme-review-plan': 'opus',
+    'fixme-review-code': 'opus',
+    'fixme-investigate': 'opus',
+    'fixme-research': 'opus',
+    'fixme-handle-plan-review': 'opus',
+    'fixme-handle-code-review': 'opus',
+    'fixme-execute-plan': 'opus',
+    'fixme-task': 'opus',
+    'fixme-browser-verify': 'opus',
+  },
+  balanced: {
+    'fixme-write-plan': 'opus',
+    'fixme-review-plan': 'opus',
+    'fixme-review-code': 'opus',
+    'fixme-investigate': 'opus',
+    'fixme-research': 'opus',
+    'fixme-handle-plan-review': 'opus',
+    'fixme-handle-code-review': 'opus',
+    'fixme-execute-plan': 'sonnet',
+    'fixme-task': 'sonnet',
+    'fixme-browser-verify': 'sonnet',
+  },
+  budget: {
+    'fixme-write-plan': 'sonnet',
+    'fixme-review-plan': 'sonnet',
+    'fixme-review-code': 'sonnet',
+    'fixme-investigate': 'sonnet',
+    'fixme-research': 'sonnet',
+    'fixme-handle-plan-review': 'sonnet',
+    'fixme-handle-code-review': 'sonnet',
+    'fixme-execute-plan': 'sonnet',
+    'fixme-task': 'haiku',
+    'fixme-browser-verify': 'haiku',
+  },
+};
+
+const DEFAULT_MODEL = 'opus';
+const DEFAULT_PROFILE = 'quality';
+
+/**
+ * Resolve the model for a sub-agent based on config.
+ * Resolution order:
+ *   1. models.overrides[agent] (source = 'override')
+ *   2. MODEL_PROFILES[models.profile][agent] (source = 'profile')
+ *   3. Default: opus (source = 'default')
+ * Profile is reported as-is from config even when the agent isn't in the table
+ * (so the user's selection stays visible in the banner).
+ */
+function resolveModel(agentName, fixmeRoot) {
+  const result = { agent: agentName, model: DEFAULT_MODEL, profile: DEFAULT_PROFILE, source: 'default' };
+
+  const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
+  let config = null;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    return result;
+  }
+
+  const models = (config && typeof config.models === 'object') ? config.models : null;
+  if (!models) return result;
+
+  const rawProfile = typeof models.profile === 'string' ? models.profile : null;
+  const profileKnown = rawProfile && Object.prototype.hasOwnProperty.call(MODEL_PROFILES, rawProfile);
+  result.profile = profileKnown ? rawProfile : DEFAULT_PROFILE;
+
+  const overrides = (models.overrides && typeof models.overrides === 'object') ? models.overrides : {};
+  if (Object.prototype.hasOwnProperty.call(overrides, agentName) && typeof overrides[agentName] === 'string') {
+    result.model = overrides[agentName];
+    result.source = 'override';
+    if (rawProfile) result.profile = rawProfile;
+    return result;
+  }
+
+  if (profileKnown) {
+    const table = MODEL_PROFILES[rawProfile];
+    if (Object.prototype.hasOwnProperty.call(table, agentName)) {
+      result.model = table[agentName];
+      result.source = 'profile';
+      return result;
+    }
+    result.profile = rawProfile;
+  }
+
+  return result;
+}
+
+// ============================================================================
 // YAML Frontmatter Parser/Serializer
 // ============================================================================
 
@@ -1545,8 +1639,17 @@ function main() {
       case 'root':
         return rootCommand();
 
+      case 'resolve-model': {
+        // subcommand slot holds the agent name for this single-arg command
+        const agentName = subcommand;
+        if (!agentName) {
+          return error('Usage: fixme-tools.cjs resolve-model <agent-name>');
+        }
+        return output(resolveModel(agentName, fixmeRoot));
+      }
+
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, root`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, root, resolve-model`);
     }
   } catch (e) {
     return error(e.message);
@@ -1559,4 +1662,4 @@ if (require.main === module) {
 }
 
 // Exports for testing
-module.exports = { buildTransitionsFromPhases, parseFrontmatter, findFixmeRoot };
+module.exports = { buildTransitionsFromPhases, parseFrontmatter, findFixmeRoot, resolveModel, MODEL_PROFILES };
