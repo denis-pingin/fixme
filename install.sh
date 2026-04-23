@@ -1,32 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SKILLS_SRC="$(cd "$(dirname "$0")" && pwd)/.claude/skills"
-SKILLS_DEST="$HOME/.claude/skills"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+SKILLS_SRC="$REPO_ROOT/.claude/skills"
+AGENTS_SRC="$REPO_ROOT/.claude/agents"
 
 if [ ! -d "$SKILLS_SRC" ]; then
   echo "Error: source not found at $SKILLS_SRC" >&2
   exit 1
 fi
 
-mkdir -p "$SKILLS_DEST"
+SKILL_DESTS=(
+  "$HOME/.claude/skills"
+  "$HOME/.codex/skills"
+)
 
-for dir in "$SKILLS_SRC"/fixme*; do
-  name="$(basename "$dir")"
-  rm -rf "$SKILLS_DEST/$name"
-  cp -R "$dir" "$SKILLS_DEST/$name"
-  echo "Installed $name"
+for dest in "${SKILL_DESTS[@]}"; do
+  mkdir -p "$dest"
+  for dir in "$SKILLS_SRC"/fixme*; do
+    name="$(basename "$dir")"
+    rm -rf "$dest/$name"
+    cp -R "$dir" "$dest/$name"
+    echo "Installed $name -> $dest"
+  done
 done
 
-AGENTS_SRC="$(cd "$(dirname "$0")" && pwd)/.claude/agents"
-AGENTS_DEST="$HOME/.claude/agents"
-
 if [ -d "$AGENTS_SRC" ]; then
+  AGENTS_DEST="$HOME/.claude/agents"
   mkdir -p "$AGENTS_DEST"
   for file in "$AGENTS_SRC"/fixme-*.md; do
     [ -f "$file" ] || continue
     name="$(basename "$file")"
     cp "$file" "$AGENTS_DEST/$name"
-    echo "Installed agent $name"
+    echo "Installed agent $name -> $AGENTS_DEST"
   done
 fi
