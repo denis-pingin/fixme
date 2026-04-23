@@ -1,9 +1,15 @@
 # Fixme
 
-A Claude Code skill suite for automated bug fixing and task execution. Two entry points:
+A Claude Code skill suite for automated task execution. Turn a task description into a verified fix through config-driven pipelines with plan/review/execute/review cycles, ticket state management, and PR comment resolution.
 
-- **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background pipelines to investigate, fix, and verify each bug.
+Primary entry points:
+
 - **`/fixme-task`** - Single-task pipeline executor. Plan, review, execute, review code - with configurable phases and review loops.
+- **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background pipelines to investigate, fix, and verify each bug.
+- **`/fixme-pr-comments`** - Fetch and address unresolved PR review comments through the full plan/execute cycle.
+- **`/fixme-rebase`** - Safe branch rebasing with conflict resolution and verification.
+- **`/fixme-ticket`** - Create Linear tickets from a description or conversation context.
+- **`/fixme-config`** - Interactive configuration for pipelines, model profiles, and project settings.
 
 ## Quick Start
 
@@ -55,6 +61,22 @@ Fetches unresolved PR comments (review threads, Claude bot, Greptile), analyzes 
 ```
 
 Safely rebases the current branch onto its base branch (auto-detected from PR target or merge-base). Backs up when needed, resolves conflicts with intent awareness, and runs full verification before declaring done.
+
+### Create a Linear ticket
+
+```text
+/fixme-ticket login button broken on mobile, only on iOS Safari
+```
+
+Creates a Linear ticket from a description or the current conversation context. Auto-discovers team, project, and label metadata upfront. Supports templates, assignment, status, due dates, and attachments.
+
+### Configure pipelines and models
+
+```text
+/fixme-config
+```
+
+Interactive setup for `.fixme/config.json` - pipelines, model profiles (quality/balanced/budget), project commands (build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
 
 ## Architecture
 
@@ -126,6 +148,8 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-pr-comments` | Fetch, analyze, and address unresolved PR review comments |
 | `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
+| `fixme-ticket` | Create Linear tickets from description or conversation context |
+| `fixme-config` | Interactive configuration for pipelines, models, and project settings |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |
 | `fixme-tickets-linear` | Linear ticket backend (v2 stub) |
