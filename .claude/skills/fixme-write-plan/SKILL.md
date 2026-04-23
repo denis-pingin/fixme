@@ -263,7 +263,7 @@ The Input Audit prevents premature confidence before exploration. This checkpoin
 
 ## Plan Save Location
 
-Save to `.fixme/plans/<date>-<feature-name>.md` in the project root. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
+Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
 
 In revision mode, overwrite the existing plan file at the same path. Do not create a new file.
 

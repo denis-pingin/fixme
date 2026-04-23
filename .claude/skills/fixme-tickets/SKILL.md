@@ -20,7 +20,7 @@ Routes ticket and session operations to the configured backend. The backend is d
 
 ## Backend Resolution
 
-1. Read `.fixme/config.json` from the project root
+1. Read `<fixme-dir>/config.json` (using `fixme_dir` resolved above)
 2. Extract `ticketBackend` field (e.g., `"fixme-tickets-md"`, `"fixme-tickets-linear"`)
 3. If missing or file doesn't exist, use `fixme-tickets-md`
 4. Dispatch the operation to `~/.claude/skills/{ticketBackend}/SKILL.md`
