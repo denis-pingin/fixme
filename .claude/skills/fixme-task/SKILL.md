@@ -61,6 +61,10 @@ Resolve the task description in this order - stop at the first match:
 
 **CRITICAL**: When the argument is a reference like "see plan" or "the plan above", the plan content is almost always already present in the current message context (injected by the skill system or IDE). Read the full prompt carefully before searching the filesystem.
 
+**The filesystem is never a source of tasks.** `<fixme-dir>/plans/` is checked only in the "Start From" step below, and only to find a plan **for the already-resolved task** - never to discover what the task is. If you cannot resolve the task from arguments, IDE selection, or conversation context, the answer is rule 5 (ask the user). Listing `<fixme-dir>/plans/` to find "something to work on" is a pipeline violation.
+
+**Failure mode to avoid**: when conversation context already specifies the task (rule 4), do not then go scan `<fixme-dir>/plans/` and treat the most recent file as relevant. Old plans in that directory are for past tasks. They will mislead the pipeline. The "Start From" check below is for finding a plan that matches the current task - if no plan in conversation matches, start fresh.
+
 ### Project Root Resolution
 
 Resolve the project root for sub-agent dispatch prompts:
@@ -70,7 +74,7 @@ Resolve the project root for sub-agent dispatch prompts:
 
 ### Start From
 
-Detect where to enter the pipeline based on what already exists. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `<fixme-dir>/plans/` directory.
+Detect where to enter the pipeline based on what already exists **for the resolved task**. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `<fixme-dir>/plans/` directory.
 
 - **Plan exists** (found in conversation context, IDE selection, path argument, or `<fixme-dir>/plans/`): skip the plan-writing phase, enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
 - **Plan exists + already reviewed** (review findings provided): enter at the plan phase's **review handler**.
@@ -78,6 +82,20 @@ Detect where to enter the pipeline based on what already exists. Check sources i
 - **Nothing exists**: start from the first phase of the pipeline (default).
 
 When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `<fixme-dir>/decisions.md`.
+
+#### Match-or-skip rule for `<fixme-dir>/plans/` (NON-NEGOTIABLE)
+
+A plan candidate found via the filesystem (source 4) is only usable if it **demonstrably matches the resolved task**. Source 4 is a fallback - it is never a tiebreaker, never a "best guess," never a substitute for resolving the task in the first place.
+
+**Required match check before treating a filesystem plan as the entry point:**
+
+1. The plan's title, scope, or top-level summary must reference the same subject as the resolved task. A PR-comments plan does not match a feature-development task. A plan dated last week for ticket-X does not match today's ticket-Y.
+2. If the resolved task came from **conversation context** (Task Resolution rule 4) and conversation context did NOT explicitly reference an existing plan, **skip source 4 entirely**. Conversation-context tasks start fresh by default. Do not list `<fixme-dir>/plans/`. Do not open candidate files. The pipeline enters at phase 1.
+3. If you list `<fixme-dir>/plans/` and the most recent file looks plausibly related but you are not certain it is for THIS task, treat it as no match. Start fresh. A wrong plan is worse than no plan - it pulls the executor toward the wrong work.
+
+**The most recent file in `<fixme-dir>/plans/` is not "the current task's plan" by default.** That directory is an archive of past work. Treating recency as relevance is a pipeline violation.
+
+If no candidate plan matches the resolved task across all four sources, the answer is **"Nothing exists" -> start from the first phase**. Never paper over the absence of a plan by adopting an unrelated one.
 
 ### Investigation Tasks
 
