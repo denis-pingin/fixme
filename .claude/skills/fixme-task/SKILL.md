@@ -22,6 +22,18 @@ Execute a named pipeline from `<fixme-dir>/config.json`. Each pipeline is an ord
 
 Parse the invocation argument to extract pipeline name, task description, and optional ticket path.
 
+### Fixme Root Resolution (FIRST)
+
+Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve the fixme root:
+
+```bash
+node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+```
+
+This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Store `fixme_dir` - use it as the base for ALL `.fixme/` paths in this skill and in dispatch prompts. If the command fails, fall back to `.fixme` relative to CWD.
+
+**Never use `find`, `ls`, or any other filesystem command to look for `.fixme/` before this step.** In multi-root workspaces the `.fixme/` directory lives at the parent project root, not at CWD - only `fixme-tools.cjs root` knows where to find it.
+
 ### Argument Parsing
 
 ```
@@ -76,13 +88,7 @@ If the task asks "why", "what causes", "debug", or describes unexpected behavior
 
 ## Config Loading
 
-Load the pipeline definition and project settings:
-
-0. **Resolve fixme root:**
-   ```bash
-   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
-   ```
-   This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Store `fixme_dir` - use it as the base for ALL `.fixme/` paths below and in dispatch prompts. If the command fails, fall back to `.fixme` relative to CWD.
+Load the pipeline definition and project settings (using `<fixme-dir>` resolved in Input Resolution):
 
 1. **Read `<fixme-dir>/config.json`** if it exists
 2. **Extract the named pipeline** (or `"default"`) from `pipelines`
