@@ -28,6 +28,84 @@ Parse arguments from skill invocation. All flags default to OFF (all phases run)
 | `--skip-resolve` | Skip resolving review threads and posting fix comments |
 | `--skip-response` | Skip replying to comments (both fix explanations and not-a-bug replies) |
 
+## Workflow Manifest (NON-NEGOTIABLE)
+
+Before fetching any comments, expand the entire workflow into a flat, numbered manifest using TodoWrite. Every step - including routing decisions and conditional skips - becomes an explicit entry. This eliminates conditional branching ("did I present analysis yet?") and makes skipping the analysis-presentation gate structurally impossible.
+
+### Building the Manifest
+
+Always build the full 15-step manifest, regardless of which flags are set. Conditional steps still get manifest entries; the routing entries decide whether their bodies execute.
+
+### The Manifest
+
+```
+Step 1   [fetch]            Fetch Sources A, B, C, D with mandatory pagination
+Step 2   [fetch/display]    Assign source IDs (A1, B1, C1, D1...) and display all fetched items
+Step 3   [analyze]          Analyze every item individually; classify with verdict
+Step 4   [analyze/present]  Present `## PR Comment Analysis` to user
+Step 5   [analyze/route]    Route: any FIX_UNCLEAR or ASK_USER -> 6, otherwise -> 7
+Step 6   [consult]          Run consultation loop until all decisions are resolved
+Step 7   [consult/route]    Route: zero FIX items remain -> 14, --pause -> 8, otherwise -> 9
+Step 8   [confirm]          Present `## Ready to Execute` and wait for user response
+Step 9   [dispatch]         Dispatch Skill("fixme-task") with the resolved FIX list
+Step 10  [verify]           Run build/lint/test using project-documented commands
+Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
+Step 12  [commit]           Commit changes (and push unless --skip-push is set)
+Step 13  [resolve/route]    Route: --skip-resolve -> 15, otherwise -> 14
+Step 14  [resolve]          Reply and resolve threads per source/author rules
+Step 15  [done]             Run summary
+```
+
+### Routing Rules
+
+- **Step 5 (analyze/route)**: If at least one item was classified `FIX_UNCLEAR` or `ASK_USER`, advance to Step 6. Otherwise jump directly to Step 7.
+- **Step 7 (consult/route)**: If after consultation zero `FIX` items remain (every item was rejected or already-fixed), jump to Step 14 to post replies and skip the dispatch path entirely. Otherwise: if `--pause` is set advance to Step 8; if not set, jump to Step 9.
+- **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
+- **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
+
+### BLOCKING GATE
+
+**Dispatching Step 9 (fixme-task) is forbidden until Step 4 (Present `## PR Comment Analysis`) is marked `completed` in TodoWrite.** Even if `--pause` is not set, the analysis presentation is mandatory - `--pause` only controls whether Step 8 (Ready to Execute confirmation) waits for the user. The analysis report is always shown.
+
+If you find yourself with FIX items resolved and Step 4 is still `pending` or `in_progress`, you have skipped the gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed.
+
+### Creating the Manifest with TodoWrite
+
+After deriving the manifest, create it via TodoWrite. Step 1 starts `in_progress`; all other steps start `pending`:
+
+```
+TodoWrite([
+  { content: "Step 1 [fetch] Fetch Sources A-D with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
+  { content: "Step 2 [fetch/display] Display fetched items with source IDs", status: "pending", activeForm: "Displaying fetched items" },
+  { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
+  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis`", status: "pending", activeForm: "Presenting analysis" },
+  { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
+  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
+  { content: "Step 7 [consult/route] Route on remaining FIX count and --pause", status: "pending", activeForm: "Routing on confirmation" },
+  { content: "Step 8 [confirm] Present `## Ready to Execute` and wait", status: "pending", activeForm: "Awaiting confirmation" },
+  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with FIX list", status: "pending", activeForm: "Dispatching fixme-task" },
+  { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
+  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
+  { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
+  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
+  { content: "Step 14 [resolve] Reply and resolve threads per source/author rules", status: "pending", activeForm: "Resolving threads" },
+  { content: "Step 15 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
+])
+```
+
+### Following the Manifest
+
+Execute steps in order. After each step (whether a Bash command, an analysis, a presentation, a consultation, or a dispatch):
+
+1. Process the output of the step
+2. Mark the current step `completed` via TodoWrite
+3. Set the next step (per routing rules) to `in_progress`
+4. Execute the next step
+
+**Never skip steps. Never combine steps. Never "optimize" the sequence. The manifest is the law.**
+
+**Never treat any step as workflow completion unless it is Step 15 (Run summary).** If uncompleted steps remain in the manifest, the workflow is not done. If you feel like outputting a completion message and there are pending steps, STOP - you are about to skip remaining steps.
+
 ## Workflow
 
 ### 1. Fetch Unresolved PR Comments
@@ -598,6 +676,8 @@ All fixes will be dispatched to fixme-task (plan -> execute -> review). Proceed?
 For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), invoke fixme-task to handle the full plan-execute-review pipeline.
 
 **PIPELINE GATE (self-check before proceeding):** Your next action MUST be a `Skill("fixme-task")` invocation. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The Skill tool is the ONLY tool you use in this step.
+
+**BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in TodoWrite before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
 
 #### Invoke fixme-task (inline pipeline)
 
