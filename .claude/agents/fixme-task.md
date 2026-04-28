@@ -4,6 +4,7 @@ description: Config-driven pipeline orchestrator. Dispatches sub-skills as agent
 tools: Agent, Read, Write, Bash, TodoWrite
 skills:
   - fixme-task
+  - fixme-howto-fixme-dir
 effort: high
 ---
 

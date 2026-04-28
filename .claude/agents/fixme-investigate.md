@@ -4,6 +4,7 @@ description: Reproduces bugs in a real browser and investigates codebase to find
 tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-investigate
+  - fixme-howto-fixme-dir
 permissionMode: acceptEdits
 effort: high
 ---
