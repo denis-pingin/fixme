@@ -4,7 +4,7 @@ description: Explores codebase around a known issue to find relevant files, trac
 tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-research
-  - fixme-howto-fixme-dir
+  - fixme-howto-find-fixme-dir
 permissionMode: acceptEdits
 effort: high
 ---

@@ -2,12 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status (2026-04-29):** This plan was executed and refactored mid-flight. Mid-execution, the duplication of the canonical preamble across 17 skills was identified as a DRY violation. The original architecture (full preamble inlined in every skill) was replaced with a shared `fixme-howto-fixme-dir` skill referenced via `skills:` frontmatter (for sub-agents) or via a 3-line pointer in the SKILL.md body (for top-level skills). See "DRY Refactor" section at the bottom.
+> **Status (2026-04-29):** This plan was executed and refactored mid-flight. Mid-execution, the duplication of the canonical preamble across 17 skills was identified as a DRY violation. The original architecture (full preamble inlined in every skill) was replaced with a shared `fixme-howto-find-fixme-dir` skill referenced via `skills:` frontmatter (for sub-agents) or via a 3-line pointer in the SKILL.md body (for top-level skills). See "DRY Refactor" section at the bottom.
 
 **Goal:** Stop agents from running Bash commands and file operations against literal `.fixme/` paths. In multi-root workspaces the actual fixme directory lives at the parent project root, not at CWD - so any literal `.fixme/` reference in a skill instruction is a footgun. Make `<fixme-dir>` the single placeholder used everywhere in skill bodies, and force agents to resolve it via `fixme-tools.cjs root` before any operation.
 
 **Architecture (final, after DRY refactor):**
-- One canonical skill (`fixme-howto-fixme-dir/SKILL.md`) defines the resolution rule and the prohibition list. Every other fixme skill references it.
+- One canonical skill (`fixme-howto-find-fixme-dir/SKILL.md`) defines the resolution rule and the prohibition list. Every other fixme skill references it.
 - Sub-skills (those with agent definitions in `.claude/agents/`) preload the howto skill via `skills:` frontmatter. The agent has the rule in context automatically.
 - Top-level skills (no agent definition - invoked directly via the Skill tool) include a 3-line pointer in their SKILL.md that references the howto file path and embeds the operational essence (resolve via `fixme-tools.cjs root`, never use literal `.fixme/`).
 - Body text uses `<fixme-dir>` as the placeholder for the resolved path. The literal string `.fixme/` only appears in (1) frontmatter `description:` for the howto skill itself, (2) prohibition examples inside preambles, (3) the documented `git clean --exclude=.fixme/` exception, (4) generated code (`fixme-tools.cjs`).
@@ -18,16 +18,16 @@
 
 ## DRY Refactor (executed 2026-04-29)
 
-The original plan inlined a 19-line canonical preamble in every skill. Mid-execution this was flagged as massive duplication. The preamble was extracted into a shared `fixme-howto-fixme-dir` skill following the existing pattern (`fixme-howto-present-decisions`, `fixme-howto-code-comments`).
+The original plan inlined a 19-line canonical preamble in every skill. Mid-execution this was flagged as massive duplication. The preamble was extracted into a shared `fixme-howto-find-fixme-dir` skill following the existing pattern (`fixme-howto-present-decisions`, `fixme-howto-code-comments`).
 
 ### Final layout
 
-- `.claude/skills/fixme-howto-fixme-dir/SKILL.md` - the canonical rule, including the resolution algorithm, the full prohibition list, the multi-root rationale, and the `git clean --exclude` documented exception.
-- `.claude/agents/*.md` - every sub-agent definition adds `fixme-howto-fixme-dir` to its `skills:` frontmatter so the rule is preloaded automatically when the agent runs.
+- `.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` - the canonical rule, including the resolution algorithm, the full prohibition list, the multi-root rationale, and the `git clean --exclude` documented exception.
+- `.claude/agents/*.md` - every sub-agent definition adds `fixme-howto-find-fixme-dir` to its `skills:` frontmatter so the rule is preloaded automatically when the agent runs.
 - All other skill SKILL.md files - replaced their full preamble with a 3-line pointer:
 
   ```markdown
-  Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-fixme-dir`. Short version: when dispatched, use the `Fixme dir:` value from the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root`. Never use a literal `.fixme/` path in any tool.
+  Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir`. Short version: when dispatched, use the `Fixme dir:` value from the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root`. Never use a literal `.fixme/` path in any tool.
   ```
 
 - All body content uses `<fixme-dir>/...` placeholders. Literal `.fixme/...` appears only in the howto skill, the documented `git clean` exception, and prohibition examples.

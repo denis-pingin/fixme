@@ -1,5 +1,5 @@
 ---
-name: fixme-howto-fixme-dir
+name: fixme-howto-find-fixme-dir
 description: Canonical rule for resolving the fixme directory and the prohibition against literal .fixme/ paths. Preloaded into agents via skills frontmatter; referenced by every fixme skill.
 ---
 

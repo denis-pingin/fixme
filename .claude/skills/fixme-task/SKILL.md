@@ -24,7 +24,7 @@ Parse the invocation argument to extract pipeline name, task description, and op
 
 ### Fixme Root Resolution (FIRST)
 
-Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
+Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
 
 When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 

@@ -11,7 +11,7 @@ You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching su
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-fixme-dir` (read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md`).
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
 **Short version:** run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
@@ -336,7 +336,7 @@ When a background fixme-task completes (notification received or detected on res
       # pattern (not an absolute path). The literal `.fixme/` is required here
       # so untracked fixme state is preserved during cleanup. This is the only
       # place in the fixme skills where literal `.fixme/` is correct - see
-      # fixme-howto-fixme-dir for the rule.
+      # fixme-howto-find-fixme-dir for the rule.
       git clean -fd --exclude=.fixme/
       ```
    e. Transition to failed:

@@ -14,7 +14,7 @@ This skill does not interact with `<fixme-dir>` directly. All pipeline state (de
 4. Invoking `Skill("fixme-task", ...)` with the resolved FIX list as a text argument
 5. Verifying, committing, replying to comments, resolving threads
 
-**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool.** Resolution rules and the full prohibition list are in `fixme-howto-fixme-dir` (read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the FIX list as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all state.
+**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the FIX list as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all state.
 
 When `fixme-task`'s SKILL.md says "the orchestrator writes to the decision log", **the orchestrator means `fixme-task` itself**, not the caller of `Skill("fixme-task")`. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
 

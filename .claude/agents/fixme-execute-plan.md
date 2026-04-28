@@ -5,7 +5,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 skills:
   - fixme-execute-plan
   - fixme-howto-code-comments
-  - fixme-howto-fixme-dir
+  - fixme-howto-find-fixme-dir
 permissionMode: acceptEdits
 effort: high
 ---

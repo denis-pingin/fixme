@@ -4,7 +4,7 @@ description: Reviews code produced by plan execution. Finds real bugs, gaps, tes
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-review-code
-  - fixme-howto-fixme-dir
+  - fixme-howto-find-fixme-dir
 effort: high
 ---
 
