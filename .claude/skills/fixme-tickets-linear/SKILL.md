@@ -42,6 +42,6 @@ Context operations (`detect`, `load`, `save`) are local-only and do not map to L
 When implemented, this backend will need to:
 
 1. **Map state machine to Linear statuses.** Each Linear team has its own workflow statuses. The backend will need to resolve pipeline phases to Linear status IDs on first use.
-2. **Store the Linear-to-fixme mapping.** A local mapping file (`.fixme/linear-mapping.json`) will track which Linear status IDs correspond to which pipeline phases.
+2. **Store the Linear-to-fixme mapping.** A local mapping file (`<fixme-dir>/linear-mapping.json`) will track which Linear status IDs correspond to which pipeline phases.
 3. **Enforce transition rules locally.** The state machine validation runs before calling Linear, not after. Invalid transitions are rejected without touching the API.
 4. **Handle offline/conflict.** If Linear state diverges from expected (e.g., someone moved an issue in the UI), the backend should detect and report the conflict rather than silently overwriting.

@@ -22,7 +22,7 @@ Resolve inputs in this order:
 
 Read the plan, the findings, and the spec/context document (if referenced) before proceeding.
 
-If a decision log exists at `.fixme/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
+If a decision log exists at `<fixme-dir>/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
 
 ## Classification
 

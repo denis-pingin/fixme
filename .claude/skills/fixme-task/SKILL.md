@@ -1,6 +1,6 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Loads pipeline definitions from .fixme/config.json (or uses hardcoded defaults), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, context accumulation, and ticket state transitions. Use when given a task that should go through the plan-execute-review cycle (or any configured pipeline).
+description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded defaults), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, context accumulation, and ticket state transitions. Use when given a task that should go through the plan-execute-review cycle (or any configured pipeline).
 ---
 
 # Fixme Task - Config-Driven Pipeline Orchestrator

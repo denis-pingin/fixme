@@ -32,7 +32,7 @@ Parse `$ARGUMENTS` for the description and optional flags:
 | `from context` | Extract ticket details from conversation context |
 | (empty) | Ask the user for a description |
 | `--dry-run` | Show what would be created without creating it |
-| `--template <name>` | Use a named template from `.fixme/config.json` |
+| `--template <name>` | Use a named template from `<fixme-dir>/config.json` |
 
 Flags can appear anywhere in the arguments. The non-flag text is the ticket description.
 
@@ -59,20 +59,20 @@ When the user says "from context" or equivalent:
 
 **Apply config defaults (both modes):**
 
-After initial content is gathered (from either mode), read `.fixme/config.json` and check for `linear.defaultLabels` and `linear.defaultProject`:
+After initial content is gathered (from either mode), read `<fixme-dir>/config.json` and check for `linear.defaultLabels` and `linear.defaultProject`:
 
-1. If `.fixme/config.json` exists and has a `linear` key:
+1. If `<fixme-dir>/config.json` exists and has a `linear` key:
    - If `linear.defaultLabels` is a non-empty array, add each label to the detected labels list. Deduplicate: if a label name from the config already appears in the user-detected labels (case-insensitive match), keep only one copy. Track the source of each label -- "config default" or "detected from text".
    - If `linear.defaultProject` is a non-empty string, store it as the default project value. Track the source as "config default". If the user's text also explicitly mentions a project, the user mention takes priority and the config default is discarded.
-2. If `.fixme/config.json` does not exist, or `linear` is absent, or both fields are absent/empty, proceed with only the user-detected metadata.
+2. If `<fixme-dir>/config.json` does not exist, or `linear` is absent, or both fields are absent/empty, proceed with only the user-detected metadata.
 
 **In both modes**, after initial content is gathered and config defaults are applied, apply any configured template (see Template Application below), then proceed to Phase 2 for preview.
 
 **Template Application (after raw content is gathered):**
 
-If `--template <name>` was specified OR if `.fixme/config.json` has a `ticketTemplate.default` field:
+If `--template <name>` was specified OR if `<fixme-dir>/config.json` has a `ticketTemplate.default` field:
 
-1. Read `.fixme/config.json`
+1. Read `<fixme-dir>/config.json`
 2. Look up the template by name under `ticketTemplate.templates.<name>` (or use `ticketTemplate.default` to find the default template name, then look it up under `ticketTemplate.templates`)
 3. Apply the template to the ticket description
 
@@ -119,7 +119,7 @@ If no template is configured and `--template` was not specified, skip template a
 
 The Linear MCP requires a team context for creating issues, and labels/users/workflow states are team-scoped. Resolve the team before anything else:
 
-1. Check `.fixme/config.json` for `linear.teamId` or `linear.teamName`
+1. Check `<fixme-dir>/config.json` for `linear.teamId` or `linear.teamName`
 2. If `linear.teamId` is configured, use it directly
 3. If `linear.teamName` is configured but not `teamId`, call `mcp__claude_ai_Linear__list_teams` and match by name to get the ID
 4. If neither is configured, call `mcp__claude_ai_Linear__list_teams`:
@@ -299,7 +299,7 @@ URL: <linear-url>
 
 ## Configuration Reference
 
-The skill reads optional configuration from `.fixme/config.json`:
+The skill reads optional configuration from `<fixme-dir>/config.json`:
 
 ```json
 {

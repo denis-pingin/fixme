@@ -41,7 +41,7 @@ Before anything else, capture the full current state. This is the recovery basel
    git branch --show-current
    ```
    Determine protected branches dynamically:
-   - **Check `.fixme/config.json`** for a `protectedBranches` array (if present).
+   - **Check `<fixme-dir>/config.json`** for a `protectedBranches` array (if present).
    - **Check remote default branch:** `git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'`
    - **Fallback heuristic:** check which of `main`, `master`, `develop` exist locally or on the remote.
    - Combine all sources into the protected set.
@@ -253,7 +253,7 @@ Understand the scope of what's about to happen.
 
 4. **Set up working directory:**
    ```bash
-   REBASE_DIR=".fixme/rebase/$(date -u +%Y%m%dT%H%M%SZ)-$(git branch --show-current)-$(echo <BASE_BRANCH> | tr '/' '-')"
+   REBASE_DIR="<fixme-dir>/rebase/$(date -u +%Y%m%dT%H%M%SZ)-$(git branch --show-current)-$(echo <BASE_BRANCH> | tr '/' '-')"
    mkdir -p "$REBASE_DIR"
    ```
    Record `REBASE_DIR` - all working files go here.
@@ -727,7 +727,7 @@ If no backup is needed (simple, clean, few commits, not pushed): skip this step.
 Run the project's full verification suite BEFORE the rebase. This establishes what "working" looks like.
 
 1. **Load project verification commands:**
-   - **First**, check `.fixme/config.json` field `project` for `build`, `lint`, and `test.command` (or `test` if it's a string). If present, use those.
+   - **First**, check `<fixme-dir>/config.json` field `project` for `build`, `lint`, and `test.command` (or `test` if it's a string). If present, use those.
    - **Fallback:** detect from CLAUDE.md, package.json, Makefile, or convention.
 
 2. **Run each and record results:**

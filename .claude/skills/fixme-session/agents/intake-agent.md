@@ -88,9 +88,9 @@ Example: `Queued #0003: Login Button Unresponsive | slug: login-button-unrespons
 ## Example
 
 **Input:**
-- Ticket path: `.fixme/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/ticket.md`
+- Ticket path: `<fixme-dir>/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/ticket.md`
 - Bug description: "The login button on the homepage doesn't respond to clicks on mobile Safari. I've tried refreshing but it still doesn't work."
-- Ticket assets dir: `.fixme/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/assets/`
+- Ticket assets dir: `<fixme-dir>/sessions/2026-02-20_143022/0003-intake-tmp-a7b3/assets/`
 
 **Codebase exploration (3 calls):**
 1. `Glob: **/login*.{tsx,jsx}` -- finds `src/components/LoginButton.tsx`, `src/pages/login.tsx`

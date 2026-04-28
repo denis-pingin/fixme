@@ -23,7 +23,7 @@ Review the code produced by plan execution. Find everything that's actually wron
 Resolve inputs in this order:
 1. **Argument**: if file paths are passed (plan, spec, diff/branch), use them
 2. **Conversation context**: if the plan and execution results are in the current conversation, use them
-3. **Git**: use `git diff` against the base branch to identify all changed files, and find the most recent plan in `.fixme/plans/`
+3. **Git**: use `git diff` against the base branch to identify all changed files, and find the most recent plan in `<fixme-dir>/plans/`
 4. **Ask**: prompt the user for plan location and how to identify the changes
 
 Read all of these before writing the report:

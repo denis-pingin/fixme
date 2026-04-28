@@ -116,7 +116,7 @@ Scans the project and outputs a JSON project config object (camelCase keys match
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
 ```
 
-Reads `.fixme/config.json` and returns the project section.
+Reads `<fixme-dir>/config.json` and returns the project section.
 
 **context save** - Save project config
 
@@ -124,7 +124,7 @@ Reads `.fixme/config.json` and returns the project section.
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --data '<json>'
 ```
 
-Writes the provided JSON data to the project section of `.fixme/config.json`, preserving other config keys.
+Writes the provided JSON data to the project section of `<fixme-dir>/config.json`, preserving other config keys.
 
 ## Output Format
 

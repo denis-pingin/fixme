@@ -1,6 +1,6 @@
 ---
 name: fixme-tickets
-description: "Abstract ticket interface. Routes operations to the configured backend (fixme-tickets-md, fixme-tickets-linear, etc). Reads ticketBackend from .fixme/config.json."
+description: "Abstract ticket interface. Routes operations to the configured backend (fixme-tickets-md, fixme-tickets-linear, etc). Reads ticketBackend from <fixme-dir>/config.json."
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Fixme Tickets - Abstract Ticket Interface
 
-Routes ticket and session operations to the configured backend. The backend is determined by the `ticketBackend` field in `.fixme/config.json`. If the field is missing or the file doesn't exist, defaults to `fixme-tickets-md`.
+Routes ticket and session operations to the configured backend. The backend is determined by the `ticketBackend` field in `<fixme-dir>/config.json`. If the field is missing or the file doesn't exist, defaults to `fixme-tickets-md`.
 
 ## Backend Resolution
 
@@ -49,8 +49,8 @@ All operations are dispatched to the backend skill via the Agent tool. Pass the 
 | Operation | Arguments | Description |
 |-----------|-----------|-------------|
 | `context detect` | _(none)_ | Auto-detect project config (outputs config.json project format) |
-| `context load` | _(none)_ | Load project config from `.fixme/config.json` |
-| `context save` | `--data '<json>'` | Save project config to `.fixme/config.json` (merges into existing config) |
+| `context load` | _(none)_ | Load project config from `<fixme-dir>/config.json` |
+| `context save` | `--data '<json>'` | Save project config to `<fixme-dir>/config.json` (merges into existing config) |
 
 ## Dispatch Protocol
 
@@ -75,7 +75,7 @@ For each operation:
 ```
 User invokes: fixme-tickets create /path/to/session --slug login-bug
 
-1. Read .fixme/config.json -> ticketBackend: "fixme-tickets-md"
+1. Read <fixme-dir>/config.json -> ticketBackend: "fixme-tickets-md"
 2. Agent dispatch:
    "First, read ~/.claude/skills/fixme-tickets-md/SKILL.md for your role instructions.
 

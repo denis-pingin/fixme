@@ -25,10 +25,10 @@ You need three things. When invoked directly (via `/fixme-investigate`), resolve
 **Task description:** Argument text -> IDE selection -> conversation context -> ask user.
 
 **Dev server URL:** Resolve in order:
-1. `.fixme/config.json` field `project.devServer.url`
+1. `<fixme-dir>/config.json` field `project.devServer.url`
 2. Ask the user
 
-**Output directory:** Default to `.fixme/investigations/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
+**Output directory:** Default to `<fixme-dir>/investigations/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
 
 ## Workflow
 
@@ -195,7 +195,7 @@ Examples:
 
 ## Example
 
-**Input:** Task description reports "Login button on homepage doesn't respond to clicks on mobile." Dev server URL: `http://localhost:3000`. Output dir: `.fixme/investigations/login-button`.
+**Input:** Task description reports "Login button on homepage doesn't respond to clicks on mobile." Dev server URL: `http://localhost:3000`. Output dir: `<fixme-dir>/investigations/login-button`.
 
 **Reproduction (Phase 2-3):**
 ```
@@ -204,7 +204,7 @@ playwright-cli snapshot              # find login button ref
 playwright-cli click e7              # click login button
 playwright-cli snapshot              # observe: nothing happened
 playwright-cli console               # TypeError: Cannot read property 'submit' of null at login.tsx:42
-playwright-cli screenshot --filename=.fixme/investigations/login-button/assets/repro-login-no-response.png
+playwright-cli screenshot --filename=<fixme-dir>/investigations/login-button/assets/repro-login-no-response.png
 ```
 Verdict: **CONFIRMED** -- console error confirms button click fails.
 
@@ -217,6 +217,6 @@ Read: src/pages/login.tsx (lines 10-25)
 ```
 Root cause: `LoginButton` assumes `formRef.current` is always available, but on the homepage it's rendered without the `LoginForm` wrapper, so `formRef.current` is `null`.
 
-**Output:** Investigation report written to `.fixme/investigations/login-button/investigation.md`.
+**Output:** Investigation report written to `<fixme-dir>/investigations/login-button/investigation.md`.
 
 **Return:** `"INVESTIGATION_RESULT: CONFIRMED -- Login button unresponsive due to null formRef, root cause identified (HIGH confidence)"`

@@ -2,7 +2,7 @@
 
 ## Storage
 
-- **File:** `.fixme/config.json`
+- **File:** `<fixme-dir>/config.json`
 - **Scope:** Per-project (shared across all sessions)
 
 ## Schema

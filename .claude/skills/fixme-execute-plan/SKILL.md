@@ -25,7 +25,7 @@ Execute an implementation plan step by step. Verification is sacred. Work is nev
 Resolve the plan in this order:
 1. **Argument**: if a file path is passed as an argument, use it
 2. **IDE context**: if the user has a plan file open/selected, use it
-3. **Convention**: check `.fixme/plans/` for the most recent plan
+3. **Convention**: check `<fixme-dir>/plans/` for the most recent plan
 4. **Ask**: prompt the user for the plan location
 
 ## Process

@@ -47,7 +47,7 @@ Given a pipeline with enabled phases `[P0, P1, P2, ..., PN]` (phases with `enabl
 
 When `ticket transition` is called, it resolves the valid transitions in this order:
 
-1. **`--pipeline` flag** on the command: loads the named pipeline from `.fixme/config.json`, stores the name in ticket frontmatter
+1. **`--pipeline` flag** on the command: loads the named pipeline from `<fixme-dir>/config.json`, stores the name in ticket frontmatter
 2. **`pipeline` field in ticket frontmatter**: loads that pipeline from config
 3. **Hardcoded fallback**: uses the legacy transition matrix (backwards compatible with tickets created before this change)
 

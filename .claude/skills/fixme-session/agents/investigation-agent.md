@@ -16,8 +16,8 @@ This agent investigates bugs with session-specific ticket management. It reads t
 You receive four things via your prompt:
 
 1. **Ticket file path** -- read for original report, structured fields, and prior investigation attempts
-2. **Project config** -- `.fixme/config.json` for dev server URL, framework info
-3. **Asset directory path** -- the `assets/` subdirectory inside the ticket folder (e.g., `.fixme/sessions/<session>/NNNN-slug/assets/`)
+2. **Project config** -- `<fixme-dir>/config.json` for dev server URL, framework info
+3. **Asset directory path** -- the `assets/` subdirectory inside the ticket folder (e.g., `<fixme-dir>/sessions/<session>/NNNN-slug/assets/`)
 4. **Dev server URL** -- the base URL of the running dev server
 
 ## Workflow
@@ -28,7 +28,7 @@ Note: The ticket has already been transitioned to "investigating" by the orchest
 
 - Read the ticket file using the Read tool
 - Extract from structured fields: affected URL, expected vs actual behavior, error messages, title, ticket number
-- Read `.fixme/config.json` and extract `project.devServer.url` for dev server URL
+- Read `<fixme-dir>/config.json` and extract `project.devServer.url` for dev server URL
 - Note any user-submitted screenshots in the Original Report section
 - Read any prior `### Attempt N` sections in the investigation section to include as context
 

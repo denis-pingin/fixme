@@ -62,7 +62,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan being revised
 - **FIX items**: classified findings from the plan review handler (markdown)
-- **Decision log path**: `.fixme/decisions.md` (may not exist on first iteration)
+- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist on first iteration)
 
 ### Code Revision Mode
 
@@ -72,7 +72,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Previous plan path**: the plan that was executed
 - **FIX items**: classified findings from the code review handler (markdown)
 - **Execution results**: summary from the executor's completion report (markdown)
-- **Decision log path**: `.fixme/decisions.md`
+- **Decision log path**: `<fixme-dir>/decisions.md`
 
 ### Rewrite Mode
 
@@ -81,7 +81,7 @@ Triggered when a prior plan exists but there are no structured FIX items from a 
 Inputs:
 - **Original task**: the unchanged task description (may be implicit - "improve this plan")
 - **Previous plan path**: the plan to improve
-- **Decision log path**: `.fixme/decisions.md` (may not exist)
+- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
 
 Key rules for rewrite mode:
 - **Locked decisions from the prior plan are constraints, not suggestions.** They were settled by the user or a prior iteration. To change one, flag it during the Input Audit - never silently override.
@@ -102,7 +102,7 @@ List everything provided or discoverable:
 
 - **Task description**: what the user wants done (from argument, conversation, or IDE context)
 - **Existing plan**: if a prior plan is provided or referenced - note its path and identify its Goal, Locked Decisions, and Stable Context sections
-- **Locked decisions**: from existing plan's Context section and/or `.fixme/decisions.md`
+- **Locked decisions**: from existing plan's Context section and/or `<fixme-dir>/decisions.md`
 - **FIX items**: from review handler output (if plan or code revision)
 - **Execution results**: from executor (if code revision)
 - **User constraints**: explicit instructions, preferences, or scope limits mentioned anywhere in the conversation
@@ -188,7 +188,7 @@ These are exactly the conditions under which silent overrides happen. The gate e
 ### Context Recovery (revision and rewrite modes - skip in fresh mode)
 
 1. Read the previous plan's `## Context` section for Stable Context (architecture, patterns, conventions, dependency versions, API shapes).
-2. Read locked decisions from the previous plan's Context section AND from the decision log at `.fixme/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
+2. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
 3. Read the FIX items. For each FIX item:
    - Re-read the specific files it references (targeted, not full codebase)
    - If it contradicts a Stable Context item, re-verify that item against the codebase

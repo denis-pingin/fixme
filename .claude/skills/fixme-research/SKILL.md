@@ -26,10 +26,10 @@ You need up to three things. When invoked directly (via `/fixme-research`), reso
 
 **Investigation findings:** Resolve in order:
 1. Explicit `--investigation <path>` argument
-2. If not provided, check `.fixme/investigations/` for subdirectories containing `investigation.md`. If found, show the most recent one to the user: "Found investigation at `<path>` (from `<date>`). Use this as input?" Only use it if the user confirms.
+2. If not provided, check `<fixme-dir>/investigations/` for subdirectories containing `investigation.md`. If found, show the most recent one to the user: "Found investigation at `<path>` (from `<date>`). Use this as input?" Only use it if the user confirms.
 3. If none found or user declines, proceed without investigation findings (extract starting points from task description).
 
-**Output directory:** Default to `.fixme/research/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
+**Output directory:** Default to `<fixme-dir>/research/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
 
 ## Workflow
 

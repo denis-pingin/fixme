@@ -27,7 +27,7 @@ Before classifying anything, read all of these:
 - Every file the findings reference (full file, not just the cited lines)
 - The test files the findings reference (full file)
 - Neighboring files when the finding is about conventions or patterns
-- The decision log at `.fixme/decisions.md` (if it exists) and the plan's Locked Decisions section. These are settled user choices.
+- The decision log at `<fixme-dir>/decisions.md` (if it exists) and the plan's Locked Decisions section. These are settled user choices.
 
 ## Classification
 

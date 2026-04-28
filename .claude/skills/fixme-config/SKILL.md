@@ -1,6 +1,6 @@
 ---
 name: fixme-config
-description: "Interactive configuration for fixme pipelines, model profiles, project settings, and Linear integration. Creates or updates .fixme/config.json."
+description: "Interactive configuration for fixme pipelines, model profiles, project settings, and Linear integration. Creates or updates <fixme-dir>/config.json."
 allowed-tools:
   - Read
   - Write
@@ -17,7 +17,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Fixme Config
 
-Interactive configuration of fixme settings: model profile, pipeline selection, ticket backend, project commands, and Linear integration. Updates `.fixme/config.json`.
+Interactive configuration of fixme settings: model profile, pipeline selection, ticket backend, project commands, and Linear integration. Updates `<fixme-dir>/config.json`.
 
 ## Prerequisites
 
@@ -97,7 +97,7 @@ AskUserQuestion([
     header: "Backend",
     multiSelect: false,
     options: [
-      { label: "Markdown (Recommended)", description: "Local markdown files in .fixme/sessions/" },
+      { label: "Markdown (Recommended)", description: "Local markdown files in <fixme-dir>/sessions/" },
       { label: "Linear", description: "Linear issue tracker (requires Linear MCP)" }
     ]
   }

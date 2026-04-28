@@ -17,7 +17,7 @@ Review an implementation plan and produce high-quality, evidence-backed findings
 Resolve the plan to review in this order:
 1. **Argument**: if a file path is passed as an argument, use it
 2. **IDE context**: if the user has a file open/selected, use it
-3. **Convention**: check `.fixme/plans/` for the most recent plan
+3. **Convention**: check `<fixme-dir>/plans/` for the most recent plan
 4. **Ask**: prompt the user for the plan location
 
 Read the plan fully before proceeding. If a specification or context document is referenced in the plan, read that too.
@@ -205,7 +205,7 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 **Question:** Does the plan respect locked decisions and exclude deferred scope?
 
 **Process:**
-1. Read the plan's Locked Decisions section and the decision log at `.fixme/decisions.md` (if it exists)
+1. Read the plan's Locked Decisions section and the decision log at `<fixme-dir>/decisions.md` (if it exists)
 2. For each `[confirmed]` decision: verify the plan implements it as stated. Do not flag findings that merely disagree with confirmed decisions.
 3. For each `[assumed]` decision: check whether a realistic alternative exists that would materially change the plan. If yes, flag it (severity: IMPORTANT) - the plan writer should have surfaced this during the Design Decision Checkpoint.
 4. Check whether the plan includes work that was explicitly deferred or marked out of scope in previous iterations

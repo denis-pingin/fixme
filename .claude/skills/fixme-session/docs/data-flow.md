@@ -60,7 +60,7 @@ The central shared artifact. Every agent reads it; several write to specific sec
 | `tickets_done/failed/skipped/total` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
 | `duration_seconds` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
 
-### 3. Project Config (`.fixme/config.json` `project` section)
+### 3. Project Config (`<fixme-dir>/config.json` `project` section)
 
 | Field | Written By | Read By |
 |-------|-----------|---------|
@@ -134,7 +134,7 @@ Reads from disk:
   - Ticket file (report +        Assets:
     structured fields +             - repro-*.png screenshots
     prior attempts if retry)
-  - .fixme/config.json            Return value:
+  - <fixme-dir>/config.json            Return value:
   - Codebase (Grep/Glob/Read)      "Investigated #NNNN: ..."
   - Browser (snapshot/console/      or "BLOCKER #NNNN: ..."
     network via playwright-cli)
@@ -179,7 +179,7 @@ Reads from disk:                     - Dependencies
   - Ticket file (investigation       - Risks
     section -- root cause,           - Approach candidates (1-3)
     affected files, evidence)
-  - .fixme/config.json            Return value:
+  - <fixme-dir>/config.json            Return value:
   - Codebase (max 15 tool calls)    Work summary (~3-8 lines)
 ```
 
@@ -365,7 +365,7 @@ Step  Agent              Reads                          Writes                  
 ## Ticket Folder Structure (Complete)
 
 ```
-.fixme/sessions/<session-name>/
+<fixme-dir>/sessions/<session-name>/
   session.md                          # Session metadata + active_intakes
   NNNN-slug/                          # One folder per ticket
     ticket.md                         # Central ticket file (frontmatter + sections)
@@ -401,5 +401,5 @@ All agents interact with shared state through `fixme-tools.cjs`. Direct frontmat
 | `session list` | SKILL.md (resume flow) | Lists sessions |
 | `session summary` | SKILL.md (auto-close, graceful stop) | Computes session stats |
 | `context detect` | SKILL.md (first run) | Auto-detects project config |
-| `context load` | SKILL.md (every start/resume) | Reads `.fixme/config.json` project section |
-| `context save` | SKILL.md (after user confirmation) | Writes `.fixme/config.json` project section |
+| `context load` | SKILL.md (every start/resume) | Reads `<fixme-dir>/config.json` project section |
+| `context save` | SKILL.md (after user confirmation) | Writes `<fixme-dir>/config.json` project section |
