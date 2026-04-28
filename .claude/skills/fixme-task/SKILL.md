@@ -30,9 +30,19 @@ Before anything else - before parsing arguments, before checking the filesystem 
 node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
 ```
 
-This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Store `fixme_dir` - use it as the base for ALL `.fixme/` paths in this skill and in dispatch prompts. If the command fails, fall back to `.fixme` relative to CWD.
+This returns `{ "fixme_root": "<absolute-path>", "fixme_dir": "<absolute-path>/.fixme" }`. Store the `fixme_dir` value - it is what `<fixme-dir>` refers to throughout this skill, in every dispatch prompt, and in every agent's `<project>` block.
 
-**Never use `find`, `ls`, or any other filesystem command to look for `.fixme/` before this step.** In multi-root workspaces the `.fixme/` directory lives at the parent project root, not at CWD - only `fixme-tools.cjs root` knows where to find it.
+**Never write a literal `.fixme/` path anywhere in this skill's execution.** This rule covers every tool the agent has:
+
+- **Bash:** no `find .fixme`, `ls .fixme`, `test -f .fixme/...`, `cat .fixme/...`, `mkdir .fixme/...`, `rm .fixme/...`, `cd .fixme`, `[ -e .fixme/... ]`, or any other shell command with a literal `.fixme/` argument
+- **Read, Write, Edit:** no path argument starting with `.fixme/`
+- **Grep, Glob:** no pattern starting with `.fixme/`
+
+In a multi-root VS Code workspace the actual `.fixme/` directory lives at the parent project root, not at CWD. A literal `.fixme/` path silently resolves to a non-existent or wrong location and the skill creates state in the wrong place. Only `<fixme-dir>` (the value resolved above) points to the correct location.
+
+If `fixme-tools.cjs root` cannot run (e.g., the CLI script is missing), STOP and report the failure to the user. Do NOT fall back to literal `.fixme/`.
+
+When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 
 ### Argument Parsing
 
@@ -184,7 +194,12 @@ The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
 - **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/decisions.md`, or plan files referenced in conversation
 - **Write** - ONLY on `<fixme-dir>/decisions.md`
-- **Bash** - ONLY `mkdir -p <fixme-dir>/plans` or `mkdir -p <fixme-dir>`, or `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root`
+- **Bash** - ONLY:
+  - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (the FIRST command, always)
+  - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch)
+  - `mkdir -p <fixme-dir>` or `mkdir -p <fixme-dir>/plans` (using the resolved path, never literal `.fixme/`)
+
+  Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
 - **TodoWrite** - to create and track the dispatch manifest steps
 
 Any other tool use (Read on source code, Grep, Glob, Edit on source code) is a pipeline violation. If you need information from the codebase, dispatch an agent to get it.
