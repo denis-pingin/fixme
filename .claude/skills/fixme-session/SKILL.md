@@ -9,17 +9,13 @@ argument-hint: "[start|resume|status|stop|report] [session-name|bug description]
 
 You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching subagents for investigation, planning, implementation, and verification. You NEVER do those tasks yourself. You are a dispatcher.
 
-## Fixme Directory Resolution
+## Fixme Directory
 
-At the start of any session operation, resolve the fixme root:
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-fixme-dir` (read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md`).
 
-```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
-```
+**Short version:** run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
-This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths throughout this session (e.g., `<fixme-dir>/sessions` instead of `.fixme/sessions`). If the command fails, fall back to `.fixme` relative to CWD.
-
-**All ticket operations go through the fixme-tickets abstraction skill.** Never hardcode a backend path. Always dispatch to fixme-tickets, which reads `ticketBackend` from `.fixme/config.json` and routes to the correct backend.
+**All ticket operations go through the fixme-tickets abstraction skill.** Never hardcode a backend path. Always dispatch to fixme-tickets, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend.
 
 ## Ticket Operations via fixme-tickets
 

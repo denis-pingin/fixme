@@ -4,15 +4,11 @@ description: Safely rebase current branch onto its base branch with conflict res
 argument-hint: "[base-branch]"
 ---
 
-## Fixme Directory Resolution
+## Fixme Directory
 
-Before accessing any `.fixme/` paths, resolve the fixme root:
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-fixme-dir` (read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md`).
 
-```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
-```
-
-This returns `{ "fixme_root": "<path>", "fixme_dir": "<path>/.fixme" }`. Use `fixme_dir` as the base for all `.fixme/` paths below. If the command fails, fall back to `.fixme` relative to CWD.
+**Short version:** run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
 # Rebase Branch
 

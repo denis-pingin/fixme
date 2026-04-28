@@ -24,23 +24,7 @@ Parse the invocation argument to extract pipeline name, task description, and op
 
 ### Fixme Root Resolution (FIRST)
 
-Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve the fixme root:
-
-```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
-```
-
-This returns `{ "fixme_root": "<absolute-path>", "fixme_dir": "<absolute-path>/.fixme" }`. Store the `fixme_dir` value - it is what `<fixme-dir>` refers to throughout this skill, in every dispatch prompt, and in every agent's `<project>` block.
-
-**Never write a literal `.fixme/` path anywhere in this skill's execution.** This rule covers every tool the agent has:
-
-- **Bash:** no `find .fixme`, `ls .fixme`, `test -f .fixme/...`, `cat .fixme/...`, `mkdir .fixme/...`, `rm .fixme/...`, `cd .fixme`, `[ -e .fixme/... ]`, or any other shell command with a literal `.fixme/` argument
-- **Read, Write, Edit:** no path argument starting with `.fixme/`
-- **Grep, Glob:** no pattern starting with `.fixme/`
-
-In a multi-root VS Code workspace the actual `.fixme/` directory lives at the parent project root, not at CWD. A literal `.fixme/` path silently resolves to a non-existent or wrong location and the skill creates state in the wrong place. Only `<fixme-dir>` (the value resolved above) points to the correct location.
-
-If `fixme-tools.cjs root` cannot run (e.g., the CLI script is missing), STOP and report the failure to the user. Do NOT fall back to literal `.fixme/`.
+Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
 
 When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 

@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 ## Fixme Directory
 
-When dispatched by fixme-tickets, the `Project root` in the dispatch prompt determines where `.fixme/` lives. Use the provided project root as the base for all `.fixme/` paths. The CLI tool (`fixme-tools.cjs`) auto-resolves the fixme root internally, so paths passed to CLI commands are resolved automatically.
+This backend is dispatched by `fixme-tickets`, which passes the resolved `Project root` in the dispatch prompt. Use that as the base for any path. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-fixme-dir` (read at `~/.claude/skills/fixme-howto-fixme-dir/SKILL.md`). The CLI tool (`fixme-tools.cjs`) auto-resolves the fixme root internally, so paths passed to CLI commands are resolved automatically.
 
 # Fixme Tickets MD - Markdown File Backend
 
