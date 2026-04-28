@@ -332,6 +332,11 @@ When a background fixme-task completes (notification received or detected on res
    d. If there are changed files, revert them:
       ```bash
       git checkout <base_commit> -- <files from step c>
+      # Documented exception: git clean --exclude takes a working-tree-relative
+      # pattern (not an absolute path). The literal `.fixme/` is required here
+      # so untracked fixme state is preserved during cleanup. This is the only
+      # place in the fixme skills where literal `.fixme/` is correct - see
+      # fixme-howto-fixme-dir for the rule.
       git clean -fd --exclude=.fixme/
       ```
    e. Transition to failed:
