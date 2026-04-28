@@ -6,22 +6,7 @@ disable-model-invocation: true
 
 ## Fixme Directory
 
-Every `<fixme-dir>` placeholder in this document refers to the resolved fixme directory.
-
-**Resolve `<fixme-dir>` BEFORE any operation:**
-
-- **When dispatched by fixme-task or another orchestrator:** `<fixme-dir>` is provided as `Fixme dir: <absolute-path>` in the `<project>` block of the dispatch prompt. Use that value directly.
-- **When running standalone (no orchestrator):** Run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output.
-
-**Never write a literal `.fixme/` path anywhere in this skill's execution.** Forbidden in every tool:
-
-- **Bash:** no `find .fixme`, `ls .fixme`, `test -f .fixme/...`, `cat .fixme/...`, `mkdir .fixme/...`, `rm .fixme/...`, `cd .fixme`, or any other shell command with a literal `.fixme/` argument
-- **Read, Write, Edit:** no path argument starting with `.fixme/`
-- **Grep, Glob:** no pattern starting with `.fixme/`
-
-In a multi-root VS Code workspace the actual `.fixme/` directory lives at the parent project root, not at CWD. A literal `.fixme/` path silently resolves to a non-existent or wrong location and the skill creates state in the wrong place. Only `<fixme-dir>` (resolved above) points to the correct location.
-
-If `fixme-tools.cjs root` cannot run, STOP and report the failure. Do NOT fall back to literal `.fixme/`.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
 
 # Browser Verifier
 
