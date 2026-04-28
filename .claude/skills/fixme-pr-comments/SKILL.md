@@ -4,6 +4,26 @@ description: Fetch unresolved PR comments from review threads, Claude bot, Grept
 argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
+## Fixme Directory
+
+This skill does not interact with `<fixme-dir>` directly. All pipeline state (decisions log, plans, config, ticket files - anything under the fixme directory) is owned exclusively by `fixme-task` and its sub-skills. This orchestrator's job is limited to:
+
+1. Fetching PR comments
+2. Analyzing each comment
+3. Consulting the user on ambiguous fixes
+4. Invoking `Skill("fixme-task", ...)` with the resolved FIX list as a text argument
+5. Verifying, committing, replying to comments, resolving threads
+
+**Never write a literal `.fixme/` path anywhere in this skill's execution.** Forbidden in every tool:
+
+- **Bash:** no `find .fixme`, `ls .fixme`, `test -f .fixme/...`, `cat .fixme/...`, `mkdir .fixme/...`, `rm .fixme/...`, `cd .fixme`, or any other shell command with a literal `.fixme/` argument
+- **Read, Write, Edit:** no path argument starting with `.fixme/`
+- **Grep, Glob:** no pattern starting with `.fixme/`
+
+If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the FIX list as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all state.
+
+When `fixme-task`'s SKILL.md says "the orchestrator writes to the decision log", **the orchestrator means `fixme-task` itself**, not the caller of `Skill("fixme-task")`. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
+
 # Address PR Comments
 
 Automatically fetch, analyze, and address **unresolved** PR review comments, actionable Claude bot issue comments, Greptile summary findings, AND regular human issue comments posted as full reviews.
@@ -15,6 +35,7 @@ Automatically fetch, analyze, and address **unresolved** PR review comments, act
 - **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
 - **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
 - **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
+- **Never touch `.fixme/` or `<fixme-dir>/` files. Ever.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are passed as text inputs to `Skill("fixme-task", args=...)`, never written to disk by this skill.
 
 ## Configuration
 
