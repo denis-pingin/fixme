@@ -56,6 +56,28 @@ Plans describe intent, not reality. Every claim a plan makes about the codebase 
 
 A plan where every step is individually correct but collectively does not solve the stated problem is the most dangerous failure mode. It passes a checklist review but fails goal-backward analysis. Always start from the outcome and work backwards.
 
+## Foundational Principle: DRY and Simplicity (FIRST PRINCIPLE)
+
+**DRY and simplicity are first principles of plan review.** Plans plant the duplication that ships in code. Every duplicate, every unjustified wrapper, every "two names for one rule" defect that ends up in the diff existed first as a sentence in a plan. Catching it here is the cheapest possible point in the pipeline - the executor has not run yet, callers have not attached yet, the cleanup is one plan edit instead of a code revert.
+
+Behavior-correct planning is not enough. A plan that produces working code containing duplication, repeated logic, repeated literals, unjustified wrappers, or two names for one rule is a defective plan. Identical logic at two sites is one bug waiting to diverge - and once the plan ships and the code is written, the next change will edit one site and forget the other.
+
+The plan-level failure modes this principle covers:
+
+- **Sibling-without-delta** - the plan asks the executor to introduce two named entities (functions, predicates, types, helpers, constants) that share the same shape but the plan does not specify a behavioral difference between them. The executor will satisfy the literal wording by writing identical bodies.
+- **Loose phrasing** - the plan uses formulations like "introduce named predicates", "make the distinction explicit", "split for clarity", "extract a helper" without specifying the behavioral delta or what each new entity must do that an existing entity does not.
+- **Duplicates an existing entity** - the plan asks the executor to create a new function/helper/type/constant that already exists in the codebase under a different name.
+- **Unjustified wrapper** - the plan asks for a function that wraps an existing function and adds no behavior.
+- **Single-call helper** - the plan extracts a helper that will be called from exactly one place, where inlining would be clearer.
+- **Type/alias rename** - the plan introduces a type that resolves to an existing type with no domain difference.
+- **Repeated literals/expressions** - the plan asks for the same string/path/key to be hardcoded at multiple call sites instead of centralized, or asks for the same expression to be evaluated multiple times instead of stored.
+- **Pattern-level repetition** - the plan describes the same algorithm twice in different steps without acknowledging or extracting it.
+- **Speculative split** - the plan justifies introducing two entities with "they will diverge later". Plans should split when divergence actually arrives, not before.
+
+The forcing rule for the plan reviewer: **whenever a plan introduces a new named entity, the plan must answer two questions concretely.** (1) What does this entity do that no existing entity already does? (2) If a sibling entity is introduced in the same patch, what is the behavioral delta between them? If the plan does not answer both questions, the plan is incomplete and the executor will fill the gap with duplication.
+
+The dimension that operationalizes this principle is **Dimension 11: DRY and Simplicity (Plan-Level)**. Despite its number, it is checked first - the Findings ordering rule places `DRY-AND-SIMPLICITY` ahead of every other category.
+
 ## Verification Dimensions
 
 Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim Verification -> category CLAIM-VERIFICATION).
@@ -235,6 +257,84 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 - Missing test steps for behavioral changes
 - Migrations, backwards compatibility, or rollback not addressed when they should be
 
+### Dimension 11: DRY and Simplicity (Plan-Level)
+
+**Question:** Does the plan ask the executor to write duplication, repeated logic, repeated literals, unjustified wrappers, or two names for one rule?
+
+**This is checked first, not last.** Despite being numbered last for backwards compatibility, every plan review starts here. See the Foundational Principle section above. Plans plant the duplication that ships in code - the cheapest place to catch it is here, before the executor runs and before downstream callers attach.
+
+**Why this category exists:** when a plan instructs "make the distinction explicit", "introduce named predicates", "extract a helper for clarity", or "split this into separate functions", the literal wording can be satisfied by adding a second name with an identical body. Type checks pass, tests pass, behavior is unchanged - but the codebase now has two names for one rule, and downstream callers will treat them as two distinct domains. The plan reviewer must close this loophole at the planning stage by demanding a behavioral delta whenever the plan introduces multiple named entities.
+
+**Process:**
+
+1. **Enumerate every new named entity the plan introduces.** List every new function, helper, predicate, hook, type, interface, type alias, enum, module-level constant, component, and significant variable that the plan asks the executor to create.
+
+2. **For each new entity, find the closest sibling that could already do the job.** Read the codebase. A "sibling" is any existing entity with overlapping shape and purpose - same parameter list, same return type, same general role.
+
+3. **Apply the existence test.** Ask: does this entity already exist somewhere, possibly under a different name? If yes, the plan should reuse the existing entity, not introduce a new one. Flag the duplicate-of-existing case.
+
+4. **Apply the sibling-delta test.** When the plan introduces two or more entities of the same shape (siblings introduced together):
+   - Does the plan specify what each entity does that the others do not?
+   - Is the behavioral delta described in concrete terms (different filter, different argument, different return) or only in naming terms ("X is the followed-agent version, Y is the circle version")?
+   - If the plan only specifies names without describing the behavioral delta, the plan is incomplete - flag it. The executor will write identical bodies because the plan does not tell them otherwise.
+
+5. **Apply the wrapper test.** For every new entity that delegates to or wraps an existing entity, ask: what behavior does the new entity add that callers cannot get by calling the existing entity directly? If the answer is "none", the wrapper is unjustified - flag it.
+
+6. **Apply the inline test.** For every new helper the plan extracts, count its planned call sites. If the helper will be called from exactly one place and the plan does not anticipate additional callers, the extraction is unjustified - inlining would be clearer.
+
+7. **Scan for plan-level repetition:**
+   - The same algorithm or transformation described in two different steps without acknowledging the duplication
+   - The same literal value (string, path, key, ID, tag) hardcoded at multiple call sites that the plan describes as separate edits
+   - The same expression evaluated multiple times in the planned code instead of stored once
+   - Multiple plan steps that produce structurally identical code in different files
+
+8. **Detect loose phrasing that produces duplicates.** Flag plan instructions like:
+   - "introduce named predicates X and Y" without specifying what X filters that Y does not (and vice versa)
+   - "make the distinction explicit by splitting into A and B" without saying what each side actually does differently
+   - "extract a helper for clarity" without specifying the call sites that will use it and the behavior it encapsulates
+   - "create a wrapper for X" without specifying what the wrapper adds
+   - "for future divergence" or "we may want to differ later" - these are speculative and not a license to ship duplication
+
+9. **Apply the speculative-divergence test.** If the plan justifies introducing two entities by claiming "they will diverge later" or "we want the option to change one without the other", treat this as a defect. Plans should split when divergence actually arrives. Speculative future divergence is not a license to plant duplication today.
+
+**Concrete patterns to flag:**
+
+- Plan introduces two predicates with names that imply a domain split (`isVisibleX`, `isVisibleXForCircle`) without specifying what each one filters
+- Plan introduces a "specialized" version of a generic function without saying what the specialization does
+- Plan creates a new helper with a body that already exists in a shared module the plan does not import
+- Plan asks for a wrapper that calls one underlying function and does nothing else
+- Plan introduces a type alias whose definition matches an existing type
+- Plan hardcodes the same string literal in three new files instead of asking for a constant
+- Plan describes the same transformation in two different task sections without extracting it
+- Plan uses "split for clarity" or "introduce named X" without giving the behavioral contract for each side
+
+**Red flags:**
+
+- Two new named entities with the same described shape but no described behavioral delta
+- Plan creates an entity whose described behavior matches an existing entity's behavior
+- Wrappers, helpers, or aliases that the plan introduces without specifying what they add over what already exists
+- Single-call helpers extracted "for clarity" that obscure rather than clarify
+- Repeated literal values across plan steps that should be a constant
+- Plan steps that describe identical or near-identical code blocks in different files
+- Loose verbs in the plan ("split", "extract", "introduce", "make explicit") without a concrete behavioral contract for each new entity
+
+**Verification before flagging:**
+
+For each suspected case, write down what the plan tells the executor about the new entity's behavior. If you cannot construct an unambiguous body from the plan alone - one that differs from every sibling entity - the plan is the defect. The executor cannot guess the missing delta; they will produce duplication.
+
+**Possible fixes (the finding's Suggestion must list these as Multi-Option when more than one applies):**
+
+1. **Reuse:** drop the new entity from the plan; have the executor use the existing entity at all call sites. Best when the new entity duplicates an existing one.
+2. **Specify the delta:** rewrite the plan step to spell out exactly what each sibling entity does that the others do not (e.g., "X excludes archived agents, Y includes them when state==='archived' is requested"). Best when the names imply a real distinction the plan failed to describe.
+3. **Collapse to one:** rewrite the plan to introduce one named entity instead of two. Best when the names were never meant to encode distinct rules.
+4. **Inline:** rewrite the plan to inline the proposed helper at its single call site instead of extracting it. Best when there is exactly one caller.
+5. **Centralize:** rewrite the plan to introduce a shared constant/helper/module instead of repeating the same value or logic across multiple steps.
+6. **Defer the split:** remove the speculative split from the plan; revisit when divergence actually arrives.
+
+The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions.
+
+**Severity:** BLOCKING by default. A plan that asks the executor to write duplication is a defective plan and must be revised before execution. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly anticipates would be cleaned up in a follow-up step.
+
 ## What NOT to Flag
 
 - Style preferences or naming opinions
@@ -264,7 +364,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | Field | Description |
 |-------|-------------|
 | **Location** | Which plan step(s) this relates to |
-| **Category** | GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE / COMPLETENESS |
+| **Category** | DRY-AND-SIMPLICITY / GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE / COMPLETENESS |
 | **Severity** | BLOCKING (plan will fail) / IMPORTANT (plan will work but with significant issues) / MINOR (improvement opportunity) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
@@ -274,12 +374,13 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 ### Final Output Structure
 
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
-2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, GOAL-ACHIEVEMENT and STEP-CORRECTNESS before other categories.
+2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 
 ## Rules
 
 - Fewer high-quality findings >>> many low-quality ones. 5 real issues beats 20 maybes.
+- DRY-AND-SIMPLICITY findings where the plan asks the executor to introduce duplication, repeated logic, repeated literals, unjustified wrappers, single-call helpers, type aliases without domain difference, or two named entities without a specified behavioral delta are BLOCKING severity. Plans plant the duplication that ships in code. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly schedules its cleanup. Loose phrasing like "introduce named predicates" or "split for clarity" without a behavioral contract for each new entity is itself the finding - the plan is incomplete and will produce duplication.
 - NEVER critique what hasn't been verified against the codebase. "I think this API doesn't support X" is not a finding. Read the code, confirm, then report.
 - If unsure whether something is an issue, frame it as a question: "Does X handle Y? I couldn't confirm from reading [file]." Questions are cheaper than wrong findings.
 - Separate "the plan won't work" (correctness) from "the plan could be better" (suggestions). Don't mix them.
