@@ -14,12 +14,13 @@ You are the browser verifier. You verify that code changes actually fixed the re
 
 ## Input
 
-You receive up to four things via your Task prompt:
+You receive up to five things via your Task prompt:
 
 1. **Dev server URL** - The base URL of the running dev server (e.g., `http://localhost:3000`)
 2. **Task description** - What the issue was and what was changed to fix it (including expected behavior and actual behavior before the fix)
-3. **Reproduction steps** (optional) - Numbered steps to reproduce the original issue, plus the affected URL
-4. **Output directory** - Where to write the verification report and screenshots (e.g., `<fixme-dir>/verifications/`)
+3. **Task code map** (optional) - Path to task-scoped code context. Use it to understand affected files and behaviors, but verify browser behavior directly.
+4. **Reproduction steps** (optional) - Numbered steps to reproduce the original issue, plus the affected URL
+5. **Output directory** - Where to write the verification report and screenshots (e.g., `<fixme-dir>/verifications/`)
 
 ## Workflow
 

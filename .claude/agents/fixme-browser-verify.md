@@ -4,6 +4,7 @@ description: Browser verification after code changes. Loads dev server, checks b
 tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-browser-verify
+  - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
 permissionMode: acceptEdits
 effort: high

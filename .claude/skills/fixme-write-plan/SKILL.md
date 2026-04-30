@@ -1,6 +1,6 @@
 ---
 name: fixme-write-plan
-description: Write implementation plans that are unambiguous, complete, correct, and efficient. Plans are written for an engineer with zero codebase context. Guards against any source code modifications - only the plan document is produced. Reads the codebase thoroughly before writing. Runs a mandatory Input Audit gate before any planning work to surface ambiguities and locked decision conflicts. Supports four modes - fresh (full exploration), plan revision (incorporate plan review FIX items), code revision (incorporate code review FIX items after execution), and rewrite (improve existing plan without structured FIX items).
+description: Write implementation plans and task-scoped code maps that are unambiguous, complete, correct, and efficient. Plans are written for an engineer with zero codebase context. Code maps preserve verified codebase context for downstream review and revision cycles. Guards against any source code modifications - only the plan document and matching code map are produced. Reads the codebase thoroughly before writing. Runs a mandatory Input Audit gate before any planning work to surface ambiguities and locked decision conflicts. Supports four modes - fresh (full exploration), plan revision (incorporate plan review FIX items), code revision (incorporate code review FIX items after execution), and rewrite (improve existing plan without structured FIX items).
 argument-hint: "<task description or path to spec>"
 ---
 
@@ -10,7 +10,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Write Plan
 
-Write implementation plans that leave nothing to interpretation. The plan document is the only artifact - no source code modifications allowed.
+Write implementation plans that leave nothing to interpretation, and task-scoped code maps that preserve verified codebase context for later cycles. The plan document and matching code map are the only writable artifacts - no source code modifications allowed.
 
 ## Why This Matters
 
@@ -22,7 +22,7 @@ Every gap, ambiguity, or wrong assumption in the plan cascades downstream and co
 
 ## Hard Constraints
 
-- **NO source code modifications.** Only create/edit the plan document itself. If tempted to "quickly fix" something in the codebase, stop. That's the executor's job.
+- **NO source code modifications.** Only create/edit the plan document and matching task code map. If tempted to "quickly fix" something in the codebase, stop. That's the executor's job.
 - **NO assumptions.** If anything is unclear about the task, the codebase, or the approach - surface it in the Questions section or ask the user directly. Never guess.
 - **NO thought process in the plan.** No "we could do X or Y" discussions, no tradeoff analysis, no "I considered...". The plan states what to do, not what was considered. Decisions are made before they enter the plan.
 - **NO ambiguity.** Every step must be actionable by an engineer who has never seen this codebase. If a step could be interpreted two ways, it's wrong.
@@ -62,6 +62,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan being revised
 - **Review context packet**: compact current-run decisions, fixes since last review, verification summaries, and source references
+- **Code map path**: task code map from the prior plan, if available
 - **FIX items**: classified findings from the plan review handler (markdown)
 - **Decision log path**: `<fixme-dir>/decisions.md` (may not exist on first iteration)
 
@@ -72,6 +73,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan that was executed
 - **Review context packet**: compact current-run decisions, fixes since last review, verification summaries, and source references
+- **Code map path**: task code map from the executed plan, if available
 - **FIX items**: classified findings from the code review handler (markdown)
 - **Execution results**: summary from the executor's completion report (markdown)
 - **Decision log path**: `<fixme-dir>/decisions.md`
@@ -83,6 +85,7 @@ Triggered when a prior plan exists but there are no structured FIX items from a 
 Inputs:
 - **Original task**: the unchanged task description (may be implicit - "improve this plan")
 - **Previous plan path**: the plan to improve
+- **Code map path**: task code map referenced by the previous plan, if available
 - **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
 
 Key rules for rewrite mode:
@@ -104,6 +107,7 @@ List everything provided or discoverable:
 
 - **Task description**: what the user wants done (from argument, conversation, or IDE context)
 - **Existing plan**: if a prior plan is provided or referenced - note its path and identify its Goal, Locked Decisions, and Stable Context sections
+- **Existing code map**: if a prior plan, review context packet, or argument references a task code map - note its path and current/stale status
 - **Locked decisions**: from existing plan's Context section and/or `<fixme-dir>/decisions.md`
 - **FIX items**: from review handler output (if plan or code revision)
 - **Execution results**: from executor (if code revision)
@@ -190,18 +194,19 @@ These are exactly the conditions under which silent overrides happen. The gate e
 ### Context Recovery (revision and rewrite modes - skip in fresh mode)
 
 1. Read the previous plan's `## Context` section for Stable Context (architecture, patterns, conventions, dependency versions, API shapes).
-2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
-3. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
-4. Read the FIX items. For each FIX item:
+2. Read the prior task code map if provided or referenced by the previous plan/review context packet. Use it to target re-reads; it is orientation, not authority.
+3. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
+4. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
+5. Read the FIX items. For each FIX item:
    - Re-read the specific files it references (targeted, not full codebase)
-   - If it contradicts a Stable Context item, re-verify that item against the codebase
+   - If it contradicts a Stable Context or code map item, re-verify that item against the codebase
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
    - **Never silently drop a FIX item.** If you believe a FIX should not be implemented, that is not your call - flag it back to the user via the Input Audit as a new question with concrete evidence (what you read, what tradeoff changed your mind, what alternative you propose). "Drop it and add a clarifying comment" is only acceptable when the handler's Approach field explicitly specifies exactly that as the full resolution.
    - **Never substitute your own "lighter touch" for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems "simpler" is a silent override and the exact failure mode the handler's Multi-Option Discipline exists to prevent.
-5. In **code revision only**: re-read all files that were modified during execution (listed in execution results or in the review context packet). The codebase has changed - file-level context is stale.
-6. Skip full codebase exploration. Only do targeted re-reads as described above.
-7. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results, review context packet, and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
-8. **Rewrite mode only**: re-read the entire prior plan to understand its structure, task decomposition, and approach. Identify which aspects are quality issues (precision, completeness, delegation violations) vs. architectural choices (design decisions, scope, decomposition). Quality issues are in scope for improvement. Architectural choices are locked unless the user approved changes during the Input Audit.
+6. In **code revision only**: re-read all files that were modified during execution (listed in execution results, review context packet, or code map). The codebase has changed - file-level context is stale.
+7. Skip full codebase exploration. Only do targeted re-reads as described above.
+8. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results, review context packet, code map, and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
+9. **Rewrite mode only**: re-read the entire prior plan to understand its structure, task decomposition, and approach. Identify which aspects are quality issues (precision, completeness, delegation violations) vs. architectural choices (design decisions, scope, decomposition). Quality issues are in scope for improvement. Architectural choices are locked unless the user approved changes during the Input Audit.
 
 ### Understand the Codebase
 
@@ -213,7 +218,7 @@ Read extensively before writing a single line of plan:
 - Build/lint/test commands and CI expectations (exact commands from project docs, not guesses)
 - Dependencies and their versions (don't assume API shapes - verify by reading source or types)
 
-**Record everything you discover.** Every file you read, every API shape you verify, every pattern you observe goes into the Stable Context section. This is not busywork - it is the foundation that makes one-shot success possible. An incomplete Stable Context means the plan is built on unverified assumptions, and unverified assumptions are where plans fail.
+**Record everything you discover in the task code map.** Every file you read, every API shape you verify, every pattern you observe goes into the task code map using `fixme-howto-code-map`. The plan's Stable Context should contain only the compact context needed to execute the plan plus the code map path. This is not busywork - it is the foundation that makes one-shot success possible while avoiding repeated rediscovery in later cycles.
 
 ### Understand the Task
 
@@ -248,13 +253,13 @@ For each design decision collected above, apply this test:
 > Does a realistic alternative exist that would materially change the plan's structure, component boundaries, data flow, or user-facing behavior?
 
 - **Yes**: the decision MUST be presented to the user. Add it to the question list below.
-- **No** (truly mechanical - only one reasonable approach given the codebase): document it in the plan's Stable Context section as an observation, not a Locked Decision. Example: "The existing hooks all use `withAuthRetry` wrapping `Effect.runPromise`" is an observation. "We'll create a new `agentsFetchPaginated` helper instead of modifying the shared one" is a design decision.
+- **No** (truly mechanical - only one reasonable approach given the codebase): document it in the code map as an observation and add a compact Stable Context note only if the executor needs it. Example: "The existing hooks all use `withAuthRetry` wrapping `Effect.runPromise`" is an observation. "We'll create a new `agentsFetchPaginated` helper instead of modifying the shared one" is a design decision.
 
 Collect all questions and present them to the user using the same format as the Input Audit's Question Resolution Loop (Step 5). Process answers identically: explicit answers become `[confirmed]`, accepted recommendations become `[assumed]`. The `[assumed]` tag is valid here because the user was asked.
 
 **If no design decisions were collected:** the checkpoint passes silently. Proceed to writing.
 
-**If all design decisions are truly mechanical (no alternatives):** the checkpoint passes silently. Document each in Stable Context.
+**If all design decisions are truly mechanical (no alternatives):** the checkpoint passes silently. Document each in the task code map, with compact Stable Context notes only where execution depends on them.
 
 **You may not skip this checkpoint because:**
 - You already explored the codebase and "know" the right approach
@@ -264,21 +269,24 @@ Collect all questions and present them to the user using the same format as the 
 
 The Input Audit prevents premature confidence before exploration. This checkpoint prevents post-exploration confidence from bypassing user confirmation. Together they ensure every design decision in the plan was either confirmed by the user or explicitly accepted as a recommendation.
 
-## Plan Save Location
+## Plan And Code Map Save Location
 
 Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
 
-In revision mode, overwrite the existing plan file at the same path. Do not create a new file.
+Save the matching task code map to `<fixme-dir>/context/<plan-filename-stem>-code-map.md`. Create `<fixme-dir>/context/` if needed. Follow the structure in `fixme-howto-code-map`.
+
+In revision mode, overwrite the existing plan file and update the existing code map at the same paths. Do not create new files unless the plan path itself changes.
 
 ## Completion Output
 
-After saving the plan document, end the response with the routing directive:
+After saving the plan document and task code map, end the response with the routing directives:
 
 ```text
 PLAN_PATH: <absolute path to plan>
+CODE_MAP_PATH: <absolute path to task code map>
 ```
 
-Use the exact saved plan path. In revision mode, this is the existing plan path that was overwritten.
+Use the exact saved plan and code map paths. In revision mode, these are the existing paths that were overwritten or updated.
 
 ## Plan Document Structure
 
@@ -297,13 +305,15 @@ Use the exact saved plan path. In revision mode, this is the existing plan path 
 
 ## Context
 
+### Code Map
+`<absolute path to matching task code map>`
+
 ### Stable Context
-- [Architecture patterns and conventions discovered during codebase exploration]
-- [Dependency versions and API shapes that influenced decisions]
-- [Project structure and naming conventions]
+- [Compact execution-critical context from the task code map. Do not duplicate the full map here.]
+- [Architecture patterns and conventions the executor must follow]
+- [Dependency versions and API shapes that directly affect implementation]
 - [Build/test/lint commands and CI expectations - exact commands]
 - [Key constraints and design decisions with rationale]
-- [File-level context: summaries of key files read, their roles, relevant line ranges]
 
 ### Locked Decisions
 [User answers from ASK_USER and FIX_UNCLEAR questions. Each entry: the question, the answer, and the resulting decision. Empty on first pass. In revision mode, carry forward from previous plan and decision log.]
@@ -535,6 +545,7 @@ After writing the complete plan, read it end-to-end as if you were the executor.
 - **File Map vs Tasks.** Does every file in the File Map appear in at least one task? Does every file touched in a task appear in the File Map?
 - **Expected Outcomes vs Steps.** Can every Expected Outcome be verified by the steps in the task? If an outcome mentions a test name, does a step create that test?
 - **Verified claims.** Did you actually read every file path you reference? Did you actually verify every API shape you assume? If you're not sure, go read it now - before saving.
+- **Code map coverage.** Does the task code map include every source file, API shape, pattern, command, and touched file that influenced the plan?
 - **Implied steps.** Does creating a new module require updating a barrel export? Does moving a file require updating imports? Does adding a dependency require an install command? These are the steps most often missed.
 - **TDD completeness.** Does every behavioral task have the full cycle: write test, verify fails, implement, verify passes?
 - **Command accuracy.** Are all commands the project's actual commands from its docs/config, not generic guesses?
@@ -550,13 +561,15 @@ Before saving the plan, verify:
 - [ ] Every file path is exact and verified to exist (for modifications) or has a clear parent directory (for creation)
 - [ ] Every command is exact and runnable (verified against project's actual tooling)
 - [ ] No source code was modified during planning
+- [ ] The matching task code map was created or updated under `<fixme-dir>/context/`
 - [ ] No assumptions were made that should be questions
 - [ ] Design Decision Checkpoint was performed after codebase exploration - all design decisions with realistic alternatives were presented to the user
 - [ ] Questions section contains only informational context - no correctness concerns, feasibility risks, design decisions, or known flaws were deferred there
 - [ ] The plan can be executed top-to-bottom without backtracking
 - [ ] Dependencies between tasks are explicit and ordered correctly
 - [ ] The File Map matches the actual steps (nothing missing, nothing extra)
-- [ ] Context section is populated with all significant discoveries from codebase exploration
+- [ ] Stable Context is compact and points to the code map instead of duplicating broad file-level notes
+- [ ] Code map includes all significant discoveries from codebase exploration with source references and line ranges where possible
 - [ ] Locked Decisions section carries forward all decisions from previous iterations (revision mode)
 - [ ] No FIX item was silently ignored, dropped, downgraded to a clarifying comment, or collapsed to a "simpler" substitute - each is either implemented using the handler's specified Approach (for FIX), resolved via the user's Locked Decision (for FIX_UNCLEAR), or flagged back to the user as a new question with concrete evidence
 - [ ] Every task has a structured Expected Outcome (Build/Lint/Tests/Behavior)
@@ -567,4 +580,4 @@ Before saving the plan, verify:
 - [ ] Every verification step includes the exact command and expected output
 - [ ] No commit step falls between "write test" and "make test pass"
 - [ ] Revision mode: the approach is fundamentally different from any previously failed approach
-- [ ] Final response ends with `PLAN_PATH: <absolute path to plan>`
+- [ ] Final response ends with `PLAN_PATH: <absolute path to plan>` and `CODE_MAP_PATH: <absolute path to task code map>`

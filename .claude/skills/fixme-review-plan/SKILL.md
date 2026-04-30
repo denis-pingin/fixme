@@ -15,12 +15,12 @@ Review an implementation plan and produce high-quality, evidence-backed findings
 ## Input Resolution
 
 Resolve the plan to review in this order:
-1. **Argument**: if a plan path or review context packet is passed as an argument, use it
+1. **Argument**: if a plan path, code map path, or review context packet is passed as an argument, use it
 2. **IDE context**: if the user has a file open/selected, use it
 3. **Convention**: check `<fixme-dir>/plans/` for the most recent plan
 4. **Ask**: prompt the user for the plan location
 
-Read the plan fully before proceeding. If a specification or context document is referenced in the plan, read that too. If a review context packet is provided, read it for current-run decisions, prior fixes, and source references. The packet is orientation, not authority; verify against the plan, specs, and codebase before making findings.
+Read the plan fully before proceeding. If a specification, context document, or task code map is referenced in the plan, read that too. If a review context packet is provided, read it for current-run decisions, prior fixes, and source references. The packet and code map are orientation, not authority; verify against the plan, specs, and codebase before making findings.
 
 ## Two-Pass Review Process
 
@@ -28,7 +28,7 @@ Read the plan fully before proceeding. If a specification or context document is
 
 ### Pass 1: Investigation (internal, not in output)
 
-Read the plan, read the codebase, identify candidate issues. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
+Read the plan, read the task code map if available, read the codebase, identify candidate issues. Use the code map to target source reads and avoid rediscovering unrelated neighboring context. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
 
 - If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the output. If you talked yourself out of it, it's not a finding.
 - If gate-checking reveals uncertainty, move it to Questions.
@@ -49,7 +49,8 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 5. **Would fixing this actually improve the outcome?** Technically correct feedback that makes the plan worse (more complex, slower to ship, harder to maintain) is bad feedback.
 6. **Does this contradict a locked decision?** If the plan includes a Locked Decisions section in its Context, those are settled user choices. Do not flag findings that disagree with locked decisions. If a locked decision itself appears problematic (would cause a bug, break something), frame it as a question in the Questions section, not as a finding.
 7. **Does this contradict the review context packet?** If the packet records a current-run user decision or fix, verify it against the decision log or plan before flagging. If the packet and artifact conflict, the artifact wins.
-8. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
+8. **Does this contradict or depend on the code map?** Re-read the cited source lines before relying on the map. If the map is stale or incomplete, verify directly and mention the stale map only when it creates a concrete plan risk.
+9. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
 
 ## Foundational Mindset: Do Not Trust
 
@@ -121,9 +122,10 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 
 **Process:**
 1. Identify every factual claim the plan makes: file paths, function signatures, type shapes, import paths, API behaviors, existing patterns, dependency versions
-2. For each claim, read the actual code to verify it
-3. Check the plan's Stable Context section - are the recorded patterns and conventions accurate?
-4. For modifications: verify the line ranges cited in the plan match what is actually at those lines
+2. Use the task code map to find cited source ranges for those claims when available
+3. For each claim, read the actual code to verify it
+4. Check the plan's Stable Context section and code map - are the recorded patterns and conventions accurate?
+5. For modifications: verify the line ranges cited in the plan match what is actually at those lines
 
 **Red flags:**
 - Plan references a file path that does not exist
@@ -132,6 +134,8 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 - Plan assumes an import path that would not resolve
 - Plan cites a line range but the content at those lines is different from what the plan describes
 - Plan's Stable Context describes patterns that have changed since it was written
+- Plan has no task code map, or the code map omits source references for claims that drive implementation
+- Code map contains stale or contradictory facts that would mislead review or revision cycles
 
 ### Dimension 4: Step Correctness
 
@@ -377,7 +381,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
 2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
-4. **Scope**: plan reviewed and review context packet used if provided.
+4. **Scope**: plan reviewed, code map used if provided, and review context packet used if provided.
 
 ## Rules
 

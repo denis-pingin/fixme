@@ -15,8 +15,8 @@ Validate code review findings against the plan, the spec, and the actual impleme
 ## Input Resolution
 
 Resolve inputs in this order:
-1. **Argument**: if findings, file paths, or a review context packet are passed as arguments, use them
-2. **Conversation context**: if findings, plan, review context packet, and code are in the current conversation, use them
+1. **Argument**: if findings, file paths, code map path, or a review context packet are passed as arguments, use them
+2. **Conversation context**: if findings, plan, code map, review context packet, and code are in the current conversation, use them
 3. **IDE context**: if the user has a file open/selected, use it
 4. **Ask**: prompt the user for the findings, plan, and implementation locations
 
@@ -24,13 +24,14 @@ Before classifying anything, read all of these:
 - The review findings
 - The review context packet, if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
 - The implementation plan
+- The task code map, if provided or referenced by the plan. Use it to target source reads and avoid rediscovering unrelated neighboring context. It is orientation, not authority.
 - The spec/task description (if referenced)
 - Every file the findings reference (full file, not just the cited lines)
 - The test files the findings reference (full file)
-- Neighboring files when the finding is about conventions or patterns
+- Neighboring files when the finding is about conventions or patterns and the code map's cited sources are missing, stale, or insufficient
 - The decision log at `<fixme-dir>/decisions.md` (if it exists) and the plan's Locked Decisions section. These are settled user choices.
 
-If the packet and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
+If the packet/code map and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 
 ## Classification
 
@@ -48,11 +49,12 @@ For each finding, before classifying:
 1. **Read the actual implementation.** Not just the lines the finding cites - the full function, the full file if needed. Context around the cited code often explains why it was written that way.
 2. **Read the plan step that produced it.** If the code follows the plan exactly and the reviewer disagrees with the approach, that's a plan-level concern, not a code fix. Classify REJECT_WONT_FIX and note it's a plan design disagreement.
 3. **Read the spec/task.** The reviewer may not have understood the original intent. A finding that says "this doesn't handle X" when X is explicitly out of scope is REJECT_FALSE_POSITIVE.
-4. **Verify API/framework claims.** If the finding says "this API doesn't work like that" - check the actual dependency version in the project. Reviewers get this wrong frequently.
-5. **Check if the finding would break something.** Trace the suggested change through callers, tests, and dependent code. A finding that's locally correct but breaks something downstream is REJECT_WONT_FIX (or if the broader approach is unclear, FIX_UNCLEAR).
-6. **Check if "improvement" adds risk.** Refactoring suggestions that touch working code to make it "cleaner" add regression risk for aesthetic benefit. Unless there's a concrete flaw, REJECT_WONT_FIX.
-7. **Does this contradict a locked decision?** If yes: does the finding reveal a concrete problem not visible when the decision was made? If so, classify ASK_USER with new evidence. If the finding merely disagrees with the chosen approach, classify REJECT_WONT_FIX. The user already made this call.
-8. **Multi-option evaluation.** If the finding's Suggestion presents 2+ plausible fix approaches, you MUST independently evaluate each on concrete tradeoffs (correctness, performance on common vs. rare paths, maintainability, test quality, effort, risk) before classifying. Never anchor on editorial shortcuts ("simpler", "easier", "cleaner", "lighter touch", "just X") - an option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters. See Multi-Option Discipline below for the full decision tree.
+4. **Use the task code map to target source reads.** Re-read cited source ranges before relying on mapped facts. If the map is stale or incomplete, verify directly.
+5. **Verify API/framework claims.** If the finding says "this API doesn't work like that" - check the actual dependency version in the project. Reviewers get this wrong frequently.
+6. **Check if the finding would break something.** Trace the suggested change through callers, tests, and dependent code. A finding that's locally correct but breaks something downstream is REJECT_WONT_FIX (or if the broader approach is unclear, FIX_UNCLEAR).
+7. **Check if "improvement" adds risk.** Refactoring suggestions that touch working code to make it "cleaner" add regression risk for aesthetic benefit. Unless there's a concrete flaw, REJECT_WONT_FIX.
+8. **Does this contradict a locked decision?** If yes: does the finding reveal a concrete problem not visible when the decision was made? If so, classify ASK_USER with new evidence. If the finding merely disagrees with the chosen approach, classify REJECT_WONT_FIX. The user already made this call.
+9. **Multi-option evaluation.** If the finding's Suggestion presents 2+ plausible fix approaches, you MUST independently evaluate each on concrete tradeoffs (correctness, performance on common vs. rare paths, maintainability, test quality, effort, risk) before classifying. Never anchor on editorial shortcuts ("simpler", "easier", "cleaner", "lighter touch", "just X") - an option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters. See Multi-Option Discipline below for the full decision tree.
 
 ## Common False Positive Patterns
 

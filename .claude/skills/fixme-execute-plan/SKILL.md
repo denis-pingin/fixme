@@ -23,7 +23,7 @@ Execute an implementation plan step by step. Verification is sacred. Work is nev
 ## Input Resolution
 
 Resolve the plan in this order:
-1. **Argument**: if a file path is passed as an argument, use it
+1. **Argument**: if a plan path and optional code map path are passed as arguments, use them
 2. **IDE context**: if the user has a plan file open/selected, use it
 3. **Convention**: check `<fixme-dir>/plans/` for the most recent plan
 4. **Ask**: prompt the user for the plan location
@@ -34,14 +34,15 @@ Resolve the plan in this order:
 
 1. Read the plan fully
 2. Read the plan's `## Context` section. Stable Context provides architectural background. Locked Decisions are settled user choices - do not question or deviate from them during execution. If a plan step seems to contradict a locked decision, treat it as a plan concern and stop (step 5).
-3. Read every file referenced in the plan's File Map - verify paths exist (for modifications) and parent directories exist (for creations)
-4. Identify concerns:
+3. Read the task code map if provided or referenced in the plan. Use it to target source reads and verify API shapes, patterns, and commands. It is orientation, not authority.
+4. Read every file referenced in the plan's File Map - verify paths exist (for modifications) and parent directories exist (for creations)
+5. Identify concerns:
    - Steps that seem wrong given the current codebase state
    - Missing dependencies or prerequisites
    - Ambiguous steps that could be interpreted multiple ways
    - Steps that reference files/APIs/types that don't exist
-5. If concerns exist: **stop and raise them with the user before writing any code**
-6. If no concerns: proceed
+6. If concerns exist: **stop and raise them with the user before writing any code**
+7. If no concerns: proceed
 
 ### Phase 2: Baseline
 

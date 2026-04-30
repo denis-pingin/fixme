@@ -1,16 +1,16 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, compact review context packets, and ticket state transitions.
+description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, task code map paths, compact review context packets, and ticket state transitions.
 ---
 
 # Fixme Task - Config-Driven Pipeline Orchestrator
 
-Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage compact context handoff, artifact paths, decision persistence, loop control, and optional ticket state transitions.
+Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage compact context handoff, artifact paths, task code map paths, decision persistence, loop control, and optional ticket state transitions.
 
 ## Hard Constraints
 
 - **This skill is a dispatcher.** It never writes plans, reviews code, or classifies findings itself. It dispatches sub-skills as agents and routes their outputs.
-- **Never read source code.** The orchestrator reads ONLY specification files, plan files, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
+- **Never read source code.** The orchestrator reads ONLY specification files, plan files, task code map metadata/paths, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
 - **Never lose retrievable context.** Full artifacts stay available by path; dispatch prompts pass compact, task-scoped context packets. Do not paste full discussion history or unrelated decision-log entries into review cycles.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
@@ -130,6 +130,8 @@ Detect where to enter the selected pipeline based on what already exists **for t
 - **Plan exists + already executed** (execution results or code changes present): enter at the implement phase's **review** step (if it has one).
 - **Nothing exists**: start from the first phase of the pipeline (default).
 
+When a selected or discovered plan references a `### Code Map` path or the input provides a code map path, set `codeMapPath`. If no code map path exists, continue; the next plan-writing or plan-revision phase must create one.
+
 When entering mid-pipeline, still resolve the original task (for context packet construction) and check for an existing decision log at `<fixme-dir>/decisions.md`.
 
 ### Artifact Handoff
@@ -140,6 +142,7 @@ Maintain artifact paths as explicit state while routing the pipeline:
 - `technicalSpecificationPath`: last `SPEC_PATH` produced by `fixme-write-technical-spec`, or a technical specification path selected as input.
 - `currentSpecificationPath`: specification artifact currently being reviewed by `fixme-review-spec`.
 - `planPath`: plan artifact selected or produced by `fixme-write-plan` if the output names one.
+- `codeMapPath`: task-scoped code map artifact selected or produced by `fixme-write-plan` if the output names one.
 - `executionResults`: completion report from `fixme-execute-plan`.
 
 After every phase skill dispatch, parse its output for artifact directives:
@@ -147,6 +150,7 @@ After every phase skill dispatch, parse its output for artifact directives:
 ```text
 SPEC_PATH: <absolute path to specification>
 PLAN_PATH: <absolute path to plan>
+CODE_MAP_PATH: <absolute path to task code map>
 ```
 
 When `fixme-write-product-spec` returns `SPEC_PATH`, set both `productSpecificationPath` and `currentSpecificationPath`.
@@ -154,6 +158,8 @@ When `fixme-write-product-spec` returns `SPEC_PATH`, set both `productSpecificat
 When `fixme-write-technical-spec` returns `SPEC_PATH`, set both `technicalSpecificationPath` and `currentSpecificationPath`.
 
 When `fixme-write-plan` returns `PLAN_PATH`, set `planPath`.
+
+When `fixme-write-plan` returns `CODE_MAP_PATH`, set `codeMapPath`.
 
 If a downstream standard skill requires an artifact path and the path is missing, do not search broadly or guess from newest files. Re-dispatch the producer once with a resume prompt asking it to output the missing directive. If the directive is still missing, escalate to the user.
 
@@ -357,7 +363,7 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/decisions.md`, or specification/plan files referenced in conversation
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
 - **Write** - ONLY on `<fixme-dir>/decisions.md`
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (the FIRST command, always)
@@ -582,8 +588,9 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description
-- Plan revision mode (review FIX loop): original task + path to previous plan + current review context packet + FIX items from handler + path to decision log
-- Code revision mode (outer loop from later phase): original task + path to previous plan + current review context packet + execution results summary + FIX items from handler + path to decision log
+- Plan revision mode (review FIX loop): original task + path to previous plan + current code map path if available + current review context packet + FIX items from handler + path to decision log
+- Code revision mode (outer loop from later phase): original task + path to previous plan + current code map path if available + current review context packet + execution results summary + FIX items from handler + path to decision log
+- Must output `PLAN_PATH: <absolute path>` and `CODE_MAP_PATH: <absolute path>`; capture them as `planPath` and `codeMapPath`
 
 **fixme-write-product-spec** (when writing a product specification):
 - Fresh mode: original product request, ticket, or source material
@@ -599,6 +606,7 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan
+- Path to task code map if available
 - Current review context packet
 
 **fixme-review-spec** (when reviewing a specification):
@@ -617,20 +625,24 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 **fixme-handle-plan-review** (in `plan` phase review):
 - Review findings from reviewer
 - Path to plan
+- Path to task code map if available
 - Current review context packet
 - Path to decision log (if it exists)
 
 **fixme-execute-plan** (in `implement` phase):
 - Path to plan
+- Path to task code map if available
 
 **fixme-review-code** (in `implement` phase review):
 - Path to plan
+- Path to task code map if available
 - Current review context packet
 - Git diff information (base branch or commit range)
 
 **fixme-handle-code-review** (in `implement` phase review):
 - Review findings from reviewer
 - Path to plan
+- Path to task code map if available
 - Current review context packet
 - Path to decision log (if it exists)
 
@@ -641,9 +653,9 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 - Task description + investigation output from prior phase
 
 **fixme-browser-verify** (in `verify` phase):
-- Task description + plan path + current review context packet + execution results summary
+- Task description + plan path + current code map path if available + current review context packet + execution results summary
 
-For custom skills not listed above: pass the task description, artifact paths, and the current review context packet. Do not pass full accumulated discussion by default.
+For custom skills not listed above: pass the task description, artifact paths, the current code map path if available, and the current review context packet. Do not pass full accumulated discussion by default.
 
 ## Review Context Packets
 
@@ -655,6 +667,7 @@ Before each review, handler, revision, or verification dispatch, construct a com
 - If `decisions.md` contains unrelated prior runs, exclude them unless the current artifacts explicitly reference them.
 - If decision metadata is insufficient, include only decisions made during this `fixme-task` invocation or decisions already carried in the current plan/specification.
 - Include every fix applied since the previous review cycle, whether it came from automatic `FIX` routing or from a user decision that resolved `FIX_UNCLEAR` or `ASK_USER`.
+- Include the task code map path when one exists. Do not paste the full code map into the packet.
 - For code review, `Fixes Since Last Review` is extra orientation, not a scope limiter. Unless an explicit future focused-review mode says otherwise, every code review still reviews the full changed surface.
 
 ### Packet Shape
@@ -672,6 +685,7 @@ Use this shape in dispatch prompts:
 ### Artifacts
 
 - **Plan**: {absolute path, if any}
+- **Code map**: {absolute path, if any}
 - **Specification**: {absolute path, if any}
 - **Decision log**: {absolute path or "none yet"}
 - **Previous review findings**: {path or compact summary, if any}
@@ -710,6 +724,7 @@ Use this shape in dispatch prompts:
 - Do not omit user decisions that affect the current task.
 - Do not omit user-decision-driven fixes from `Fixes Since Last Review`; list them alongside automatic fixes.
 - If a packet statement conflicts with an artifact, the artifact wins. The receiving agent must verify from source before making findings.
+- If the code map is missing when a plan exists, continue with the plan and source artifacts, but ask the next plan revision to create the missing map.
 
 ## Step Processing
 
@@ -723,7 +738,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 |---|---|---|
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
 | Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
-| Plan writer | `PLAN_PATH: <absolute path>` | End of fixme-write-plan output |
+| Plan writer | `PLAN_PATH: <absolute path>` + `CODE_MAP_PATH: <absolute path>` | End of fixme-write-plan output |
 | Review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-*-review output |
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
@@ -768,7 +783,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 1. Validate the directive if one is expected (executors produce `EXECUTOR_STATUS: COMPLETE`)
 2. Capture a compact execution summary for the next review context packet: what changed, why, files changed, verification commands/results, and any deviations from plan
-3. Extract artifact directives (`SPEC_PATH`, `PLAN_PATH`) and update the artifact handoff state
+3. Extract artifact directives (`SPEC_PATH`, `PLAN_PATH`, `CODE_MAP_PATH`) and update the artifact handoff state
 4. Mark step `completed`, set next step to `in_progress`, dispatch next agent
 
 **Review steps** (`[phase/review]` entries - reviewers like fixme-review-plan, fixme-review-code):

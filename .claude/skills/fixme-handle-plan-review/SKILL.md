@@ -15,16 +15,16 @@ Validate review findings against the codebase and classify each using the unifie
 ## Input Resolution
 
 Resolve inputs in this order:
-1. **Argument**: if findings, file paths, or a review context packet are passed as arguments, use them
-2. **Conversation context**: if findings, plan, and review context packet are in the current conversation, use them
+1. **Argument**: if findings, file paths, code map path, or a review context packet are passed as arguments, use them
+2. **Conversation context**: if findings, plan, code map, and review context packet are in the current conversation, use them
 3. **IDE context**: if the user has a file open/selected, use it
 4. **Ask**: prompt the user for the findings and plan locations
 
-Read the plan, the findings, and the spec/context document (if referenced) before proceeding. If a review context packet is provided, read it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
+Read the plan, findings, task code map if provided or referenced, and spec/context document (if referenced) before proceeding. If a review context packet is provided, read it for current-run user decisions, all fixes since last review, and source references. The code map and packet are orientation, not authority.
 
 If a decision log exists at `<fixme-dir>/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
 
-If the packet and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
+If the packet/code map and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 
 ## Classification
 
@@ -42,7 +42,8 @@ For each finding:
 1. Read the actual code referenced by the finding
 2. Verify the finding's characterization of what the code does - do not trust it blindly
 3. Check whether the plan's context/spec explains the approach
-4. Check finding against locked decisions. Distinguish between `[confirmed]` decisions (user explicitly chose) and `[assumed]` decisions (user accepted recommendation by default or never explicitly answered):
+4. Use the task code map to target source reads, but re-read cited source ranges before relying on mapped facts
+5. Check finding against locked decisions. Distinguish between `[confirmed]` decisions (user explicitly chose) and `[assumed]` decisions (user accepted recommendation by default or never explicitly answered):
    - **Finding contradicts a `[confirmed]` decision:**
      - If the finding reveals a concrete problem (bug, security issue, data loss): classify ASK_USER. Explain what new evidence suggests the previous decision may need revisiting, and recommend a path forward.
      - If the finding merely disagrees with the approach: classify REJECT_WONT_FIX. The user explicitly made this call.
@@ -51,8 +52,8 @@ For each finding:
      - If the finding offers a materially better alternative: classify ASK_USER. The user accepted this by default - they deserve to see the better option. Present both the assumed approach and the proposed alternative.
      - If the finding is a minor stylistic disagreement: classify REJECT_WONT_FIX.
    - **Finding identifies an `[assumed]` decision that should have been confirmed** (the reviewer flagged it as an Assumption Validity issue): classify ASK_USER. Present the decision and its alternatives to the user for explicit confirmation.
-5. Assess whether the suggested change would actually improve the outcome
-5. Classify and document
+6. Assess whether the suggested change would actually improve the outcome
+7. Classify and document
 
 ## Multi-Option Discipline
 
