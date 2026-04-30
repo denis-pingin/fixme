@@ -17,9 +17,9 @@ Use **top-down progressive disclosure**:
 
 1. State the decision.
 2. Add a short framing paragraph that explains where we are, what problem we are solving, and what tension creates the choice.
-3. State the recommendation.
-4. State why the decision matters now.
-5. Give only the context, evidence, and option details needed to decide.
+3. State why the decision matters now.
+4. Give only the context, evidence, and option details needed to decide.
+5. State the recommendation after the reader has seen the evidence or options.
 6. Put deeper detail after the recommendation only when necessary.
 
 ## Decision Types
@@ -72,8 +72,6 @@ Every decision card starts with the same fast-orientation header:
 
 {2-4 short sentences. Start from the high-level product journey, system behavior, or workflow state. Narrow to the concrete issue. Explain the tension: what we gain, risk, or block depending on the answer. If this is about a reported issue, include the implication of not fixing it.}
 
-**Recommendation**: {Option A/B/C, yes/no, fix/reject/defer}
-
 **Why now**: {one sentence explaining what this blocks or what risk it resolves}
 ```
 
@@ -98,6 +96,8 @@ Use this body when the decision is about validity or scope:
 
 - **For real issue**: {decisive evidence that supports the finding}
 - **Against real issue**: {decisive evidence that weakens or explains away the finding}
+
+**Recommendation**: {plain-language verdict first, option label only in parentheses if options exist}
 
 **Rationale**:
 
@@ -141,6 +141,8 @@ Use this body when the decision is about fix approach:
   - {specific cost or risk grounded in this codebase}
 - **Effort**: {trivial | small | moderate | significant}
 
+**Recommendation**: Choose {option name} (Option A/B/C)
+
 **Rationale**:
 
 {why the recommended option wins, referencing the decisive option tradeoffs}
@@ -169,17 +171,18 @@ All decision output must be visually scannable. Dense walls of text are never ac
 
 Default budget:
 
-- Opening block: exactly 4 fields after the title: `Decision needed`, `Decision frame`, `Recommendation`, `Why now`.
+- Opening block: exactly 3 fields after the title: `Decision needed`, `Decision frame`, `Why now`.
 - Decision frame: 2-4 short sentences, one paragraph.
 - Context: max 5 bullets.
 - Impact if not fixed: one sentence, only for reported issues.
 - Evidence: max 2 bullets for `For real issue` and max 2 bullets for `Against real issue`.
 - Options: max 4 options.
 - Option fields: one short `What` line, one short `How it solves the issue` line, 1-2 `Pros` bullets, 1-2 `Cons` bullets, and one `Effort` line.
+- Recommendation: one sentence after `Evidence` for `ASK_USER`, or after `Options` for `FIX_UNCLEAR`.
 - Rationale: one short paragraph or max 4 bullets.
 - Acceptance: one line.
 
-If the decision cannot fit this budget, keep the header and recommendation compact, then add a `Details` section after `Acceptance`. Put only non-decisive supporting detail there.
+If the decision cannot fit this budget, keep the opening block, options, and recommendation compact, then add a `Details` section after `Acceptance`. Put only non-decisive supporting detail there.
 
 ## Option Rules
 
@@ -193,6 +196,9 @@ If the decision cannot fit this budget, keep the header and recommendation compa
 ## Recommendation Rules
 
 - **Recommendation is mandatory.** Always. No exceptions.
+- **Recommendation comes after evidence or options by default.** Do not write `Recommendation: Option A` before Option A has been presented.
+- **Spell out the recommendation before the option label.** Use `Choose Convex paginated result (Option A)`, not `Option A`.
+- **If a caller forces a recommendation into the opening block**, spell it out the same way: `Choose Convex paginated result (Option A)`. Never use only the option label before the options section.
 - **Research before recommending.** Read code, check docs, trace call paths. Never recommend based on general preference.
 - **Show only decisive work.** Include evidence that changes the recommendation. Omit non-decisive detail or move it to `Details`.
 - **Cross-reference the Options section.** Name which upsides are decisive and which downsides are acceptable. Do not just restate the option description.
@@ -219,8 +225,6 @@ If the decision cannot fit this budget, keep the header and recommendation compa
 **Decision frame**:
 
 The Agent gallery is moving from a static list to a mobile-friendly paginated feed. The product need is straightforward: users should be able to keep browsing agents without loading the full gallery at once. The technical tension is whether the specification should expose Convex's native pagination shape directly or hide it behind a custom domain-shaped result. If we leave this unresolved, the mobile hook and tests cannot agree on what the query returns.
-
-**Recommendation**: Option A
 
 **Why now**: Mobile pagination cannot be implemented or tested until the query result contract is fixed.
 
@@ -252,9 +256,11 @@ The Agent gallery is moving from a static list to a mobile-friendly paginated fe
   - Avoids Option A's naming leak, but adds a translation layer the current hook does not need.
 - **Effort**: small
 
+**Recommendation**: Choose Convex paginated result (Option A).
+
 **Rationale**:
 
-Option A wins because this gallery is explicitly Convex-backed and the existing mobile hook already speaks Convex pagination. Option B improves naming, but its adapter cost does not buy enough flexibility for this path.
+Convex paginated result wins because this gallery is explicitly Convex-backed and the existing mobile hook already speaks Convex pagination. Custom API-like result improves naming, but its adapter cost does not buy enough flexibility for this path.
 
 **Acceptance**:
 
