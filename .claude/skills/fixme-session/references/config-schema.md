@@ -67,6 +67,80 @@
     "quick": [
       { "name": "plan", "skills": ["fixme-write-plan"] },
       { "name": "implement", "skills": ["fixme-execute-plan"] }
+    ],
+    "product-spec": [
+      {
+        "name": "product-spec",
+        "skills": ["fixme-write-product-spec"],
+        "review": {
+          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+          "maxCycles": 3
+        }
+      }
+    ],
+    "technical-spec": [
+      {
+        "name": "technical-spec",
+        "skills": ["fixme-write-technical-spec"],
+        "review": {
+          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+          "maxCycles": 3
+        }
+      }
+    ],
+    "plan": [
+      {
+        "name": "plan",
+        "skills": ["fixme-write-plan"],
+        "review": {
+          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+          "maxCycles": 3
+        }
+      }
+    ],
+    "execute": [
+      {
+        "name": "implement",
+        "skills": ["fixme-execute-plan"],
+        "review": {
+          "skills": ["fixme-review-code", "fixme-handle-code-review"],
+          "maxCycles": 2
+        }
+      }
+    ],
+    "idea-to-production": [
+      {
+        "name": "product-spec",
+        "skills": ["fixme-write-product-spec"],
+        "review": {
+          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+          "maxCycles": 3
+        }
+      },
+      {
+        "name": "technical-spec",
+        "skills": ["fixme-write-technical-spec"],
+        "review": {
+          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+          "maxCycles": 3
+        }
+      },
+      {
+        "name": "plan",
+        "skills": ["fixme-write-plan"],
+        "review": {
+          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+          "maxCycles": 3
+        }
+      },
+      {
+        "name": "implement",
+        "skills": ["fixme-execute-plan"],
+        "review": {
+          "skills": ["fixme-review-code", "fixme-handle-code-review"],
+          "maxCycles": 2
+        }
+      }
     ]
   },
   "linear": {
@@ -167,5 +241,7 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 ## Defaults
 
 If `config.json` doesn't exist or `pipelines` is absent, fixme-task uses the `"default"` pipeline hardcoded in the skill (identical to the `"default"` above).
+
+Standard intent pipelines (`product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`) are also hardcoded in `fixme-task`. Projects may override them in config.
 
 If `project` is absent, run `/fixme-config` to auto-detect and configure project settings.

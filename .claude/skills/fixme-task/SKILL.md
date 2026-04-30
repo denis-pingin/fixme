@@ -1,16 +1,16 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded defaults), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, context accumulation, and ticket state transitions. Use when given a task that should go through the plan-execute-review cycle (or any configured pipeline).
+description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, context accumulation, and ticket state transitions.
 ---
 
 # Fixme Task - Config-Driven Pipeline Orchestrator
 
-Execute a named pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage context accumulation, decision persistence, loop control, and optional ticket state transitions.
+Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage context accumulation, artifact handoff, decision persistence, loop control, and optional ticket state transitions.
 
 ## Hard Constraints
 
 - **This skill is a dispatcher.** It never writes plans, reviews code, or classifies findings itself. It dispatches sub-skills as agents and routes their outputs.
-- **Never read source code.** The orchestrator reads ONLY plan files, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
+- **Never read source code.** The orchestrator reads ONLY specification files, plan files, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
 - **Never lose context.** Every piece of information (task, plans, findings, decisions, execution results) accumulates across iterations. Nothing is dropped.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
@@ -20,7 +20,7 @@ Execute a named pipeline from `<fixme-dir>/config.json`. Each pipeline is an ord
 
 ## Input Resolution
 
-Parse the invocation argument to extract pipeline name, task description, and optional ticket path.
+Parse the invocation argument to extract intent, pipeline name, task description, and optional ticket path.
 
 ### Fixme Root Resolution (FIRST)
 
@@ -31,17 +31,34 @@ When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<pr
 ### Argument Parsing
 
 ```
-/fixme-task full fix the login button        -> pipeline="full", task="fix the login button"
-/fixme-task fix the login button             -> pipeline="default", task="fix the login button"
-/fixme-task --ticket <path> fix the login    -> pipeline="default", ticket=<path>, task="fix the login"
-/fixme-task full --ticket <path> fix login   -> pipeline="full", ticket=<path>, task="fix login"
+/fixme-task full fix the login button                 -> pipeline="full", task="fix the login button"
+/fixme-task fix the login button                      -> pipeline="default", task="fix the login button"
+/fixme-task --ticket <path> fix the login             -> pipeline="default", ticket=<path>, task="fix the login"
+/fixme-task full --ticket <path> fix login            -> pipeline="full", ticket=<path>, task="fix login"
+/fixme-task --product-spec build import flow          -> pipeline="product-spec", task="build import flow"
+/fixme-task --tech-spec <product-spec-path>           -> pipeline="technical-spec", task="<product-spec-path>"
+/fixme-task --technical-spec <product-spec-path>      -> pipeline="technical-spec", task="<product-spec-path>"
+/fixme-task --plan <technical-spec-path>              -> pipeline="plan", task="<technical-spec-path>"
+/fixme-task --execute <plan-path>                     -> pipeline="execute", task="<plan-path>"
+/fixme-task --idea-to-production build import flow    -> pipeline="idea-to-production", task="build import flow"
+/fixme-task --pipeline product-spec build import flow -> pipeline="product-spec", task="build import flow"
 ```
 
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
-2. Check the first remaining word against pipeline names in `<fixme-dir>/config.json`. If it matches a pipeline name, use it and remove it from remaining args. If no match, it's part of the task description and pipeline is `"default"`.
-3. The remaining args are the task description.
-4. If no config file exists, only `"default"` is recognized as a pipeline name (and it uses the hardcoded default pipeline).
+2. Extract `--pipeline <name>` if present. Remove it from remaining args.
+3. Extract intent flags if present. Supported flags:
+   - `--product-spec` -> pipeline `product-spec`
+   - `--tech-spec` -> pipeline `technical-spec`
+   - `--technical-spec` -> pipeline `technical-spec`
+   - `--plan` -> pipeline `plan`
+   - `--execute` -> pipeline `execute`
+   - `--idea-to-production` -> pipeline `idea-to-production`
+4. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
+5. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
+6. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
+7. The remaining args are the task description.
+8. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
 
 ### Task Resolution
 
@@ -59,6 +76,39 @@ Resolve the task description in this order - stop at the first match:
 
 **Failure mode to avoid**: when conversation context already specifies the task (rule 4), do not then go scan `<fixme-dir>/plans/` and treat the most recent file as relevant. Old plans in that directory are for past tasks. They will mislead the pipeline. The "Start From" check below is for finding a plan that matches the current task - if no plan in conversation matches, start fresh.
 
+### Pipeline Auto-Detection
+
+Run auto-detection only when no explicit pipeline was selected by `--pipeline`, intent flag, or first-word pipeline name. Auto-detection chooses a starting point from the resolved task or current context.
+
+**High-confidence detections:**
+
+- **Product specification source** -> pipeline `technical-spec`
+  - Path contains `/specs/product/` or `/product-spec`.
+  - Content title or headings indicate a product specification: `# Product Specification`, `# [Feature Name]` with `Product Requirements`, `User Journeys`, or `Users, Roles, and Permissions`.
+- **Technical specification source** -> pipeline `plan`
+  - Path contains `/specs/technical/`, `/technical-spec`, or `/tech-spec`.
+  - Content headings indicate a technical specification: `Architecture and Ownership`, `Interfaces and Data Contracts`, `Persistence, Migration, and Backfill`, or `Workflow, Concurrency, and Failure Semantics`.
+- **Implementation plan source** -> pipeline `execute`
+  - Path contains `/plans/`.
+  - Content title or headings indicate an implementation plan: `Implementation Plan`, `File Map`, `Tasks`, or `> Execute with`.
+- **Explicit prose intent** -> matching pipeline
+  - User asks to write a product specification -> `product-spec`.
+  - User asks to write a technical specification or tech spec -> `technical-spec`.
+  - User asks to write a plan -> `plan`.
+  - User asks to execute or implement an existing plan -> `execute`.
+  - User asks for idea to production or end-to-end from idea -> `idea-to-production`.
+
+**Default detection:**
+
+- If the input is a loose bug fix, feature request, or implementation task and no artifact type is clear, use `default`.
+
+**Ambiguous detection:**
+
+- If multiple artifact types are present in conversation or IDE context and none is explicitly selected, ask once before continuing.
+- Present choices in user language: product specification, technical specification, plan, execute, or normal task.
+- Use `fixme-howto-present-decisions` for the user-facing decision.
+- Include a recommendation. Do not silently choose a long pipeline.
+
 ### Project Root Resolution
 
 Resolve the project root for sub-agent dispatch prompts:
@@ -68,14 +118,44 @@ Resolve the project root for sub-agent dispatch prompts:
 
 ### Start From
 
-Detect where to enter the pipeline based on what already exists **for the resolved task**. Check sources in this order: (1) conversation/prompt context (plans injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `<fixme-dir>/plans/` directory.
+Detect where to enter the selected pipeline based on what already exists **for the resolved task**. Check sources in this order: (1) conversation/prompt context (plans or specifications injected inline by skill system), (2) IDE selection, (3) argument as file path, (4) `<fixme-dir>/plans/` directory for plan pipelines only.
 
-- **Plan exists** (found in conversation context, IDE selection, path argument, or `<fixme-dir>/plans/`): skip the plan-writing phase, enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
+- **Product specification exists** and selected pipeline is `product-spec`: skip the writer phase, enter at the product-spec phase's review step. If the phase has no review, run summary.
+- **Product specification exists** and selected pipeline is `technical-spec`: start from the technical-spec writer phase with the product specification path as input.
+- **Technical specification exists** and selected pipeline is `technical-spec`: skip the writer phase, enter at the technical-spec phase's review step. If the phase has no review, run summary.
+- **Technical specification exists** and selected pipeline is `plan`: start from the plan writer phase with the technical specification path as input.
+- **Plan exists** and selected pipeline is `execute`: set `planPath` and start from the implement phase's execute skill.
+- **Plan exists** and selected pipeline has a `plan` phase: set `planPath`, skip the plan-writing phase, and enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
 - **Plan exists + already reviewed** (review findings provided): enter at the plan phase's **review handler**.
 - **Plan exists + already executed** (execution results or code changes present): enter at the implement phase's **review** step (if it has one).
 - **Nothing exists**: start from the first phase of the pipeline (default).
 
 When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `<fixme-dir>/decisions.md`.
+
+### Artifact Handoff
+
+Maintain artifact paths as explicit state while routing the pipeline:
+
+- `productSpecificationPath`: last `SPEC_PATH` produced by `fixme-write-product-spec`, or a product specification path selected as input.
+- `technicalSpecificationPath`: last `SPEC_PATH` produced by `fixme-write-technical-spec`, or a technical specification path selected as input.
+- `currentSpecificationPath`: specification artifact currently being reviewed by `fixme-review-spec`.
+- `planPath`: plan artifact selected or produced by `fixme-write-plan` if the output names one.
+- `executionResults`: completion report from `fixme-execute-plan`.
+
+After every phase skill dispatch, parse its output for artifact directives:
+
+```text
+SPEC_PATH: <absolute path to specification>
+PLAN_PATH: <absolute path to plan>
+```
+
+When `fixme-write-product-spec` returns `SPEC_PATH`, set both `productSpecificationPath` and `currentSpecificationPath`.
+
+When `fixme-write-technical-spec` returns `SPEC_PATH`, set both `technicalSpecificationPath` and `currentSpecificationPath`.
+
+When `fixme-write-plan` returns `PLAN_PATH`, set `planPath`.
+
+If a downstream standard skill requires an artifact path and the path is missing, do not search broadly or guess from newest files. Re-dispatch the producer once with a resume prompt asking it to output the missing directive. If the directive is still missing, escalate to the user.
 
 #### Match-or-skip rule for `<fixme-dir>/plans/` (NON-NEGOTIABLE)
 
@@ -103,8 +183,13 @@ If the task asks "why", "what causes", "debug", or describes unexpected behavior
 Load the pipeline definition and project settings (using `<fixme-dir>` resolved in Input Resolution):
 
 1. **Read `<fixme-dir>/config.json`** if it exists
-2. **Extract the named pipeline** (or `"default"`) from `pipelines`
-3. **If no config or no `pipelines` key**, use the hardcoded default pipeline:
+2. **Extract the selected pipeline** from `pipelines`
+3. **If the selected pipeline is missing from config but is one of the standard pipelines below**, use the hardcoded standard pipeline.
+4. **If no config or no `pipelines` key and no explicit pipeline was selected**, use the hardcoded `default` pipeline.
+
+### Standard Pipelines
+
+`default`:
    ```json
    [
      {
@@ -125,8 +210,104 @@ Load the pipeline definition and project settings (using `<fixme-dir>` resolved 
      }
    ]
    ```
-4. **Filter out disabled phases** (`enabled === false`)
-5. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
+
+`product-spec`:
+   ```json
+   [
+     {
+       "name": "product-spec",
+       "skills": ["fixme-write-product-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     }
+   ]
+   ```
+
+`technical-spec`:
+   ```json
+   [
+     {
+       "name": "technical-spec",
+       "skills": ["fixme-write-technical-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     }
+   ]
+   ```
+
+`plan`:
+   ```json
+   [
+     {
+       "name": "plan",
+       "skills": ["fixme-write-plan"],
+       "review": {
+         "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+         "maxCycles": 3
+       }
+     }
+   ]
+   ```
+
+`execute`:
+   ```json
+   [
+     {
+       "name": "implement",
+       "skills": ["fixme-execute-plan"],
+       "review": {
+         "skills": ["fixme-review-code", "fixme-handle-code-review"],
+         "maxCycles": 2
+       }
+     }
+   ]
+   ```
+
+`idea-to-production`:
+   ```json
+   [
+     {
+       "name": "product-spec",
+       "skills": ["fixme-write-product-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "technical-spec",
+       "skills": ["fixme-write-technical-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "plan",
+       "skills": ["fixme-write-plan"],
+       "review": {
+         "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "implement",
+       "skills": ["fixme-execute-plan"],
+       "review": {
+         "skills": ["fixme-review-code", "fixme-handle-code-review"],
+         "maxCycles": 2
+       }
+     }
+   ]
+   ```
+
+5. **If the selected pipeline is not configured and is not a standard pipeline**, ask the user to choose a configured pipeline or one of the standard intent flags.
+6. **Filter out disabled phases** (`enabled === false`)
+7. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
 
 ## Ticket Integration (Optional)
 
@@ -176,12 +357,12 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/decisions.md`, or plan files referenced in conversation
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/decisions.md`, or specification/plan files referenced in conversation
 - **Write** - ONLY on `<fixme-dir>/decisions.md`
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch)
-  - `mkdir -p <fixme-dir>` or `mkdir -p <fixme-dir>/plans` (using the resolved path, never literal `.fixme/`)
+  - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
 - **TodoWrite** - to create and track the dispatch manifest steps
@@ -408,21 +589,23 @@ For phases using the standard skills, these are the input contracts:
 - Fresh mode: original product request, ticket, or source material
 - Specification revision mode: original request + path to previous product specification + FIX items from `fixme-handle-spec-review` + path to decision log
 - Rewrite mode: original request if available + path to previous product specification + path to decision log
+- Must output `SPEC_PATH: <absolute path>`; capture it as `productSpecificationPath` and `currentSpecificationPath`
 
 **fixme-write-technical-spec** (when writing a technical specification):
 - Fresh mode: product specification path, original request, ticket, or source material
 - Specification revision mode: original request or product specification path + path to previous technical specification + FIX items from `fixme-handle-spec-review` + path to decision log
 - Rewrite mode: original request or product specification path if available + path to previous technical specification + path to decision log
+- Must output `SPEC_PATH: <absolute path>`; capture it as `technicalSpecificationPath` and `currentSpecificationPath`
 
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan
 
 **fixme-review-spec** (when reviewing a specification):
-- Path to specification
+- Path to `currentSpecificationPath`
 
 **fixme-handle-spec-review** (when handling specification review findings):
 - Review findings (full output from reviewer)
-- Path to specification
+- Path to `currentSpecificationPath`
 - Path to decision log (if it exists)
 - The phase must have an execute skill capable of revising the specification when the handler returns FIX items
 
@@ -467,6 +650,8 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 | Agent type | Expected directive | Example |
 |---|---|---|
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
+| Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
+| Plan writer | `PLAN_PATH: <absolute path>` | End of fixme-write-plan output |
 | Review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-*-review output |
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
@@ -511,7 +696,8 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 1. Validate the directive if one is expected (executors produce `EXECUTOR_STATUS: COMPLETE`)
 2. Capture the agent's full output as accumulated context for subsequent steps
-3. Mark step `completed`, set next step to `in_progress`, dispatch next agent
+3. Extract artifact directives (`SPEC_PATH`, `PLAN_PATH`) and update the artifact handoff state
+4. Mark step `completed`, set next step to `in_progress`, dispatch next agent
 
 **Review steps** (`[phase/review]` entries - reviewers like fixme-review-plan, fixme-review-code):
 

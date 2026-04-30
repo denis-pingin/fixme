@@ -399,3 +399,41 @@ When writing pipelines to config, use these definitions:
   { "name": "implement", "skills": ["fixme-execute-plan"] }
 ]
 ```
+
+**product-spec:**
+```json
+[
+  { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
+]
+```
+
+**technical-spec:**
+```json
+[
+  { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
+]
+```
+
+**plan:**
+```json
+[
+  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } }
+]
+```
+
+**execute:**
+```json
+[
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+]
+```
+
+**idea-to-production:**
+```json
+[
+  { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+  { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+]
+```

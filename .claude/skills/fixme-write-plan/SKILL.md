@@ -10,7 +10,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Write Plan
 
-Write implementation plans that leave nothing to interpretation. The plan is the only output - no source code modifications allowed.
+Write implementation plans that leave nothing to interpretation. The plan document is the only artifact - no source code modifications allowed.
 
 ## Why This Matters
 
@@ -266,6 +266,16 @@ The Input Audit prevents premature confidence before exploration. This checkpoin
 Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
 
 In revision mode, overwrite the existing plan file at the same path. Do not create a new file.
+
+## Completion Output
+
+After saving the plan document, end the response with the routing directive:
+
+```text
+PLAN_PATH: <absolute path to plan>
+```
+
+Use the exact saved plan path. In revision mode, this is the existing plan path that was overwritten.
 
 ## Plan Document Structure
 
@@ -551,3 +561,4 @@ Before saving the plan, verify:
 - [ ] Every verification step includes the exact command and expected output
 - [ ] No commit step falls between "write test" and "make test pass"
 - [ ] Revision mode: the approach is fundamentally different from any previously failed approach
+- [ ] Final response ends with `PLAN_PATH: <absolute path to plan>`
