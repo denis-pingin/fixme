@@ -137,6 +137,8 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | ----- | ------- |
 | `fixme-session` | Session orchestrator (intake, dispatch, cleanup) |
 | `fixme-task` | Config-driven pipeline executor |
+| `fixme-howto-write-product-spec` | Shared product specification writing rubric for behavior-first specifications |
+| `fixme-howto-write-technical-spec` | Shared technical specification writing rubric for deterministic implementation contracts |
 | `fixme-howto-review-spec` | Shared specification review rubric for reviewers or standalone use |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
 | `fixme-review-spec` | Review specifications for deterministic implementability |

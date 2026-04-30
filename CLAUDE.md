@@ -73,6 +73,8 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
     references/             # config-schema.md
     docs/                   # data-flow.md
   fixme-task/               # Config-driven pipeline executor
+  fixme-howto-write-product-spec/   # Shared product specification writing rubric
+  fixme-howto-write-technical-spec/ # Shared technical specification writing rubric
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use
   fixme-review-spec/        # Reviews specifications for deterministic implementability
   fixme-handle-spec-review/ # Triages specification review findings (unified taxonomy)
