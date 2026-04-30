@@ -356,6 +356,7 @@ Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 | fixme-review-code | opus | opus | sonnet |
 | fixme-investigate | opus | opus | sonnet |
 | fixme-research | opus | opus | sonnet |
+| fixme-handle-spec-review | opus | opus | sonnet |
 | fixme-handle-plan-review | opus | opus | sonnet |
 | fixme-handle-code-review | opus | opus | sonnet |
 | fixme-execute-plan | opus | sonnet | sonnet |
@@ -406,6 +407,14 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-review-spec** (in a spec review phase):
 - Path to spec
+
+**fixme-handle-spec-review** (in a spec phase review):
+- Review findings (full output from reviewer)
+- Path to spec
+- Path to decision log (if it exists)
+- The phase must have an execute skill capable of revising the spec when the handler returns FIX items
+
+Do not configure `fixme-handle-spec-review` as a review loop for a review-only phase whose only phase skill is `fixme-review-spec`. `HAS_FIX` routes back to the phase's first execute skill; without a spec-writing or spec-revision skill there is nothing safe to re-run.
 
 **fixme-handle-plan-review** (in `plan` phase review):
 - Review findings (full output from reviewer)
@@ -583,7 +592,7 @@ All user-facing output from the orchestrator must be visually scannable:
 - **Use headings** (`##`, `###`) to separate major sections (summary, confirmed fixes, decisions, closing prompt). The user must be able to skim headings to find what they need.
 - **Use bullet lists** for multiple items within a section. Never pack multiple items into a single paragraph.
 - **Use horizontal rules** (`---`) between independent decision blocks when presenting multiple decisions. Each decision is visually distinct.
-- **Bold key labels** (`**Context**:`, `**The question**:`, etc.) and start each on its own line.
+- **Bold key labels** (`**Decision needed**:`, `**Recommendation**:`, etc.) and start each on its own line.
 - **One idea per line/bullet.** Never combine two pieces of information into one bullet.
 - **Clickable file references everywhere.** Every file path is a markdown link with line numbers: `[schema.test.ts:132-143](/absolute/path/schema.test.ts#L132-L143)`. No plain-text paths.
 
@@ -621,36 +630,40 @@ automatically, {Y} need(s) your input{, Z dismissed}.
    Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
 ```
 
-**3. Decision points** - Present each ASK_USER and FIX_UNCLEAR item using the handler's **full Question field verbatim**. The handler's Question field follows the Decision Presentation Guidelines (from the `fixme-howto-present-decisions` shared skill) and is already formatted as a structured decision block.
+**3. Decision points** - Present each ASK_USER and FIX_UNCLEAR item using the handler's **full Question field verbatim**. The handler's Question field follows the Decision Presentation Guidelines (from the `fixme-howto-present-decisions` shared skill) and is already formatted as a structured decision card.
 
-**Do NOT summarize, rephrase, or compress the handler's Question field.** The handler invested significant effort in making the question self-contained, properly structured, and concrete. Summarizing it destroys the context, clickable file references, option structure (Pros/Cons/Impact/Effort), and cross-references that make the decision possible.
+**Do NOT summarize, rephrase, or compress the handler's Question field.** The handler invested significant effort in making the question self-contained, properly structured, and concrete. Summarizing it destroys the context, clickable file references, option structure, and cross-references that make the decision possible.
 
 **Do NOT replace the handler's structured format with flat paragraphs.** If the handler produced:
 
 ```
-## Decision: {title}
+## D1: {title}
+
+**Decision needed**: {one sentence}
+
+**Recommendation**: {Option A/B/C, yes/no, fix/reject/defer}
+
+**Why now**: {one sentence}
 
 **Context**: {established context with clickable file references}
 
-**The question**: {clear statement}
-
 **Options**:
 
-1. **{Option A}**
-   - Approach: ...
-   - Pros: ...
-   - Cons: ...
-   - Impact: ...
+- **A: {option name}**
+   - Changes: ...
+   - Upside: ...
+   - Downside: ...
    - Effort: ...
 
-2. **{Option B}**
-   - Approach: ...
-   - Pros: ...
-   - Cons: ...
-   - Impact: ...
+- **B: {option name}**
+   - Changes: ...
+   - Upside: ...
+   - Downside: ...
    - Effort: ...
 
-**Recommendation**: Option {X} - {reasoning}
+**Rationale**: {reasoning}
+
+**Acceptance**: {how to reply}
 ```
 
 ...then that EXACT structure, with all its spacing and sub-fields, is what the user sees. Not a compressed paragraph. Not a flat list. The full structured block with blank lines between sections.
@@ -672,8 +685,8 @@ Before sending the output to the user, verify:
 - [ ] No routing metadata terms appear anywhere in the text
 - [ ] Every file reference is a clickable markdown link with line numbers
 - [ ] Every section is separated by a blank line
-- [ ] Each decision block has the full structured format (Context, The question, Options with sub-fields, Recommendation)
-- [ ] Options have Pros, Cons, Impact, and Effort sub-fields (not just a flat sentence)
+- [ ] Each decision block has the full decision-card format (Decision needed, Recommendation, Why now, Context, and either Evidence or Options)
+- [ ] Options have Changes, Upside, Downside, and Effort sub-fields (not just a flat sentence)
 - [ ] Context explains WHAT the affected code does and WHERE it lives before stating the problem
 
 ### 3. Process answers

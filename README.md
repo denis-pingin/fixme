@@ -140,6 +140,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-howto-review-spec` | Shared spec review rubric for reviewers or standalone use |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
 | `fixme-review-spec` | Review specs for deterministic implementability |
+| `fixme-handle-spec-review` | Triage spec review findings (unified taxonomy) |
 | `fixme-review-plan` | Review plans for correctness and feasibility |
 | `fixme-handle-plan-review` | Triage plan review findings (unified taxonomy) |
 | `fixme-execute-plan` | Execute plans with verification gates |
