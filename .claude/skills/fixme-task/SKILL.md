@@ -714,11 +714,17 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 **Routing steps** (`[phase/route]` entries):
 
 1. Read the HANDLER_RESULT from the previous handler's output
-2. Follow the routing rules specified in the manifest entry:
+2. Validate the handler's classification counts before following the route:
+   - `FIX_UNCLEAR_COUNT > 0` or `ASK_USER_COUNT > 0` requires `HANDLER_RESULT: HAS_ASK_USER` and `NEXT_ACTION: ASK_USER_BATCH`
+   - `HANDLER_RESULT: CLEAN` is valid only when `FIX_COUNT`, `FIX_UNCLEAR_COUNT`, and `ASK_USER_COUNT` are all `0`
+   - `HANDLER_RESULT: HAS_FIX` is valid only when `FIX_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
+   - `FIX_UNCLEAR` never means no-fix and never allows the loop to exit. It means the finding is real and the user must choose the approach.
+3. If the directive and counts conflict, do not advance the loop. Re-dispatch the same handler with a correction prompt that quotes the inconsistent routing block and asks for a corrected routing directive.
+4. Follow the routing rules specified in the manifest entry:
    - **CLEAN**: mark step `completed`, advance to the next numbered step
    - **HAS_FIX**: mark step `completed`, jump back to the target step specified in the manifest. Check loop guards before jumping (see Loop Guards). When jumping back, reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`. This ensures the full loop (including review steps) runs again - resetting only the target would leave intermediate steps as `completed` and they'd be skipped.
    - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN or HAS_FIX.
-3. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
+5. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
 
 **Run Summary step** (`[done]` entry):
 
@@ -769,6 +775,8 @@ Rules:
 ## ASK_USER Batching
 
 When a handler produces FIX_UNCLEAR or ASK_USER items:
+
+`FIX_UNCLEAR` is included here intentionally. It is not an `ASK_USER` classification, but it uses the same user-input route because the issue is real and the approach choice belongs to the user. Never treat `FIX_UNCLEAR` as clean, no-fix, dismissed, or loop-exit.
 
 ### 1. Collect
 

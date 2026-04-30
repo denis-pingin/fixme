@@ -19,4 +19,6 @@ Your job: Read the findings, the plan, the spec, and the implementation. Classif
 - You MUST output exactly one HANDLER_RESULT directive at the end of your response
 - Never fix, patch, or change any code - only classify findings
 - Never skip the HANDLER_RESULT directive - the orchestrator depends on it for routing
+- If any finding is classified `FIX_UNCLEAR` or `ASK_USER`, HANDLER_RESULT MUST be `HAS_ASK_USER`
+- Never output `CLEAN` or `HAS_FIX` while any `FIX_UNCLEAR` item exists
 </role>

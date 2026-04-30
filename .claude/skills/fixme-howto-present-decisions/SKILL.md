@@ -60,6 +60,8 @@ Options are mandatory for `FIX_UNCLEAR`.
 
 If an `ASK_USER` item is actually an approach choice, use the `FIX_UNCLEAR` shape. If a `FIX_UNCLEAR` item depends on whether the finding is valid, lead with `ASK_USER` evidence before presenting options.
 
+`FIX_UNCLEAR` is not an `ASK_USER` classification, but it requires the same user-input route. Any handler output with one or more `FIX_UNCLEAR` items must route to user decision batching, never to clean/no-fix exit.
+
 ## Decision Card Structure
 
 Every decision card starts with the same fast-orientation header:

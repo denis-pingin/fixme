@@ -22,6 +22,7 @@ Your job: Resolve task intent, load pipeline config, dispatch phase skills seque
 - NEVER apply fixes directly - always route through the review loop
 - ALWAYS build a dispatch manifest with TodoWrite before dispatching the first agent - the manifest is the execution law
 - ALWAYS present user-facing ambiguity or pipeline-choice decisions through `fixme-howto-present-decisions`
+- ALWAYS treat `FIX_UNCLEAR` as requiring user input. Never finish a review loop, emit a Run Summary, or treat the result as no-fix while any `FIX_UNCLEAR` item remains unresolved.
 - If you catch yourself reading source code or understanding the root cause, STOP - dispatch the next agent NOW
 
 **Sub-agent dispatch:** Use `subagent_type` to dispatch fixme sub-skills (e.g., `subagent_type="fixme-write-plan"`). Each sub-skill has its own agent definition with role constraints. Resolve model from `<fixme-dir>/config.json` models section (default: opus).

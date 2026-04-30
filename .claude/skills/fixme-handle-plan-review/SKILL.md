@@ -125,3 +125,10 @@ NEXT_ACTION: PLAN_LOOP_EXIT | PLAN_REVISION | ASK_USER_BATCH
 - `CLEAN` (0 FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator exits the plan loop and proceeds to fixme-execute-plan
 - `HAS_FIX` (1+ FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator dispatches fixme-write-plan in plan revision mode with the FIX items
 - `HAS_ASK_USER` (1+ FIX_UNCLEAR or ASK_USER): orchestrator batches questions to user before routing FIX items. FIX_UNCLEAR questions ask about approach. ASK_USER questions ask about validity.
+
+Routing consistency is mandatory:
+
+- If `FIX_UNCLEAR_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
+- If `ASK_USER_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
+- Never output `CLEAN` or `HAS_FIX` while any `FIX_UNCLEAR` item exists.
+- `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the approach.

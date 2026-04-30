@@ -107,6 +107,13 @@ NEXT_ACTION: SPEC_LOOP_EXIT | SPEC_REVISION | ASK_USER_BATCH
 - `HAS_FIX` means 1+ FIX, 0 FIX_UNCLEAR, and 0 ASK_USER. The orchestrator loops back to the phase execute skill with the FIX items.
 - `HAS_ASK_USER` means 1+ FIX_UNCLEAR or ASK_USER. The orchestrator batches decision cards to the user, writes answers to the decision log, then re-runs this handler.
 
+Routing consistency is mandatory:
+
+- If `FIX_UNCLEAR_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
+- If `ASK_USER_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
+- Never output `CLEAN` or `HAS_FIX` while any `FIX_UNCLEAR` item exists.
+- `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the specification behavior or wording.
+
 If the configured phase has no execute skill capable of revising the specification, do not pretend the handler can fix it. State that the pipeline needs a phase that revises the specification or a user-edited specification before `HAS_FIX` can be applied safely.
 
 ## Rules
