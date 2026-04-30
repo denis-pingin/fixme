@@ -351,6 +351,8 @@ Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 | Agent | quality | balanced | budget |
 |-------|---------|----------|--------|
 | fixme-write-plan | opus | opus | sonnet |
+| fixme-write-product-spec | opus | opus | sonnet |
+| fixme-write-technical-spec | opus | opus | sonnet |
 | fixme-review-spec | opus | opus | sonnet |
 | fixme-review-plan | opus | opus | sonnet |
 | fixme-review-code | opus | opus | sonnet |
@@ -401,6 +403,16 @@ For phases using the standard skills, these are the input contracts:
 - Fresh mode (first invocation): original task description
 - Plan revision mode (review FIX loop): original task + path to previous plan + FIX items from handler + path to decision log
 - Code revision mode (outer loop from later phase): original task + path to previous plan + execution results + FIX items from handler + path to decision log
+
+**fixme-write-product-spec** (when writing a product specification):
+- Fresh mode: original product request, ticket, or source material
+- Specification revision mode: original request + path to previous product specification + FIX items from `fixme-handle-spec-review` + path to decision log
+- Rewrite mode: original request if available + path to previous product specification + path to decision log
+
+**fixme-write-technical-spec** (when writing a technical specification):
+- Fresh mode: product specification path, original request, ticket, or source material
+- Specification revision mode: original request or product specification path + path to previous technical specification + FIX items from `fixme-handle-spec-review` + path to decision log
+- Rewrite mode: original request or product specification path if available + path to previous technical specification + path to decision log
 
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan

@@ -76,6 +76,8 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-howto-write-product-spec/   # Shared product specification writing rubric
   fixme-howto-write-technical-spec/ # Shared technical specification writing rubric
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use
+  fixme-write-product-spec/   # Writes product specifications
+  fixme-write-technical-spec/ # Writes technical specifications
   fixme-review-spec/        # Reviews specifications for deterministic implementability
   fixme-handle-spec-review/ # Triages specification review findings (unified taxonomy)
   fixme-write-plan/         # Writes implementation plans
@@ -116,6 +118,8 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | sonnet |
 | fixme-review-spec | Specification reviewer | Read-only, structured findings | opus |
 | fixme-handle-spec-review | Specification finding classifier | Read-only, outputs routing directives | opus |
+| fixme-write-product-spec | Product specification writer | Writes only product specification files | opus |
+| fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus |
 | fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus |
 | fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | sonnet |
 | fixme-review-plan | Plan reviewer | Read-only, structured findings | opus |
@@ -155,6 +159,7 @@ Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER,
 
 - `.fixme/sessions/` - Session directories with ticket folders
 - `.fixme/config.json` - Pipeline definitions and project settings
+- `.fixme/specs/` - Product and technical specifications
 - `.fixme/plans/` - Implementation plans (written by fixme-write-plan)
 - `.fixme/decisions.md` - Accumulated user decisions across pipeline iterations
 

@@ -1380,6 +1380,16 @@ test('resolve-model: balanced profile returns per-agent mapping', () => {
   assert(planner.ok, `exit: ${JSON.stringify(planner)}`);
   assert(planner.data.model === 'opus', `planner model: ${planner.data.model}`);
   assert(planner.data.profile === 'balanced', `planner profile: ${planner.data.profile}`);
+
+  const productSpecWriter = runInDir('resolve-model fixme-write-product-spec', dir);
+  assert(productSpecWriter.ok, `exit: ${JSON.stringify(productSpecWriter)}`);
+  assert(productSpecWriter.data.model === 'opus', `product spec writer model: ${productSpecWriter.data.model}`);
+  assert(productSpecWriter.data.profile === 'balanced', `product spec writer profile: ${productSpecWriter.data.profile}`);
+
+  const technicalSpecWriter = runInDir('resolve-model fixme-write-technical-spec', dir);
+  assert(technicalSpecWriter.ok, `exit: ${JSON.stringify(technicalSpecWriter)}`);
+  assert(technicalSpecWriter.data.model === 'opus', `technical spec writer model: ${technicalSpecWriter.data.model}`);
+  assert(technicalSpecWriter.data.profile === 'balanced', `technical spec writer profile: ${technicalSpecWriter.data.profile}`);
 });
 
 test('resolve-model: spec reviewer follows reviewer profile mapping', () => {
@@ -1394,6 +1404,27 @@ test('resolve-model: spec reviewer follows reviewer profile mapping', () => {
   assert(res.data.model === 'sonnet', `model: ${res.data.model}`);
   assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
   assert(res.data.source === 'profile', `source: ${res.data.source}`);
+});
+
+test('resolve-model: spec writers follow writer profile mapping', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'budget' }
+  }));
+
+  const productSpecWriter = runInDir('resolve-model fixme-write-product-spec', dir);
+  assert(productSpecWriter.ok, `exit: ${JSON.stringify(productSpecWriter)}`);
+  assert(productSpecWriter.data.model === 'sonnet', `product spec writer model: ${productSpecWriter.data.model}`);
+  assert(productSpecWriter.data.profile === 'budget', `product spec writer profile: ${productSpecWriter.data.profile}`);
+  assert(productSpecWriter.data.source === 'profile', `product spec writer source: ${productSpecWriter.data.source}`);
+
+  const technicalSpecWriter = runInDir('resolve-model fixme-write-technical-spec', dir);
+  assert(technicalSpecWriter.ok, `exit: ${JSON.stringify(technicalSpecWriter)}`);
+  assert(technicalSpecWriter.data.model === 'sonnet', `technical spec writer model: ${technicalSpecWriter.data.model}`);
+  assert(technicalSpecWriter.data.profile === 'budget', `technical spec writer profile: ${technicalSpecWriter.data.profile}`);
+  assert(technicalSpecWriter.data.source === 'profile', `technical spec writer source: ${technicalSpecWriter.data.source}`);
 });
 
 test('resolve-model: spec review handler follows handler profile mapping', () => {

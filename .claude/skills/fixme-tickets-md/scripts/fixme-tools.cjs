@@ -12,6 +12,8 @@ const path = require('path');
 const MODEL_PROFILES = {
   quality: {
     'fixme-write-plan': 'opus',
+    'fixme-write-product-spec': 'opus',
+    'fixme-write-technical-spec': 'opus',
     'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
     'fixme-review-code': 'opus',
@@ -26,6 +28,8 @@ const MODEL_PROFILES = {
   },
   balanced: {
     'fixme-write-plan': 'opus',
+    'fixme-write-product-spec': 'opus',
+    'fixme-write-technical-spec': 'opus',
     'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
     'fixme-review-code': 'opus',
@@ -40,6 +44,8 @@ const MODEL_PROFILES = {
   },
   budget: {
     'fixme-write-plan': 'sonnet',
+    'fixme-write-product-spec': 'sonnet',
+    'fixme-write-technical-spec': 'sonnet',
     'fixme-review-spec': 'sonnet',
     'fixme-review-plan': 'sonnet',
     'fixme-review-code': 'sonnet',
