@@ -15,7 +15,7 @@ Resolve it BEFORE any operation that touches the fixme directory.
 - **When running standalone** (user invoked the skill directly via the Skill tool, with no orchestrator above): run
 
   ```bash
-  node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
   ```
 
   and use the `fixme_dir` field from the JSON output. The CLI walks up from the working directory looking for `.fixme/` and handles the multi-root workspace case (where `.fixme/` lives at a parent project root, not at CWD).

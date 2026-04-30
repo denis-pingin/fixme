@@ -4,7 +4,7 @@
       "Bash(./install.sh:*)",
       "Edit(.claude/skills/**)",
       "Edit(/.claude/skills/**)",
-      "Bash(node .claude/skills/fixme-tickets-md/scripts/fixme-tools.test.cjs)"
+      "Bash(node .claude/skills/fixme-tools/scripts/fixme-tools.test.cjs)"
     ],
     "additionalDirectories": [
       "/Users/denis/projects/denis/ai/fixme/.claude/skills",

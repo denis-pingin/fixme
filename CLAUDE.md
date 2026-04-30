@@ -15,7 +15,7 @@ Fixme is a suite of Claude Code skills for automated bug fixing and task executi
 ### Running Tests
 
 ```bash
-node .claude/skills/fixme-tickets-md/scripts/fixme-tools.test.cjs
+node .claude/skills/fixme-tools/scripts/fixme-tools.test.cjs
 ```
 
 There is no `package.json` - this is a pure skill repo with no build/lint steps. The only runnable code is `fixme-tools.cjs` (Node.js CLI) and its test file.
@@ -41,24 +41,24 @@ Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project c
 
 ### fixme-tools.cjs CLI
 
-The state management tool used by ticket backends. Key commands:
+The shared runtime CLI used for fixme root resolution, project context, model resolution, and markdown ticket/session state. Key commands:
 
 ```bash
 # Session management
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session create .fixme/sessions [--name <name>]
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session list .fixme/sessions
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session summary <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session create .fixme/sessions [--name <name>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session list .fixme/sessions
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session summary <session-dir>
 
 # Ticket management
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>]
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket next <session-dir>
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket list <session-dir>
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket next <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket list <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]
 
 # Project context
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context detect
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context load
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context save --data '<json>'
 ```
 
 ## Architecture
@@ -93,11 +93,12 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
   fixme-browser-verify/     # Browser verification after code changes (standalone)
   fixme-config/             # Interactive configuration management (standalone)
   fixme-ticket/             # Create Linear tickets from description or context (standalone)
+  fixme-tools/              # Shared runtime CLI (root, context, model, ticket/session state)
+    scripts/                # fixme-tools.cjs + tests
+    templates/              # ticket.md, session.md templates used by markdown state commands
   fixme-tickets/            # Abstract ticket interface (routes to backend)
   fixme-tickets-md/         # Markdown file ticket backend (wraps fixme-tools.cjs)
-    scripts/                # fixme-tools.cjs (state CLI) + tests
     references/             # state-machine.md
-    templates/              # ticket.md, session.md templates
   fixme-tickets-linear/     # Linear ticket backend (v2 stub)
 ```
 

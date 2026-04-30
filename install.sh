@@ -24,6 +24,7 @@ for dest in "${SKILL_DESTS[@]}"; do
     cp -R "$dir" "$dest/$name"
     echo "Installed $name -> $dest"
   done
+  rm -rf "$dest/fixme-tickets-md/scripts"
 done
 
 if [ -d "$RULES_SRC" ]; then

@@ -24,7 +24,7 @@ Parse the invocation argument to extract intent, pipeline name, task description
 
 ### Fixme Root Resolution (FIRST)
 
-Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
+Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
 
 When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 
@@ -366,8 +366,8 @@ The orchestrator may ONLY use these tools:
 - **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
 - **Write** - ONLY on `<fixme-dir>/decisions.md`
 - **Bash** - ONLY:
-  - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (the FIRST command, always)
-  - `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
@@ -486,7 +486,7 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 Step 1 - Resolve the model:
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model <agent-name>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>
 ```
 
 Returns JSON like `{"agent":"fixme-write-plan","model":"opus","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, do not skip the call.

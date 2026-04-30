@@ -5,7 +5,7 @@
 /**
  * Tests for fixme-tools.cjs: ticket-centric directory layout
  *
- * Run: node ~/.claude/skills/fixme-session/scripts/fixme-tools.test.cjs
+ * Run: node ~/.claude/skills/fixme-tools/scripts/fixme-tools.test.cjs
  */
 
 const fs = require('fs');

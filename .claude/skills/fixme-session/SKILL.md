@@ -13,7 +13,7 @@ You are the Fixme orchestrator. You manage bug-fixing sessions by dispatching su
 
 Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
-**Short version:** run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
 **All ticket operations go through the fixme-tickets abstraction skill.** Never hardcode a backend path. Always dispatch to fixme-tickets, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend.
 
@@ -210,7 +210,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    **Resolve model and print visibility banner before dispatch:**
 
    ```bash
-   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model fixme-investigate
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-investigate
    ```
 
    Print a one-line banner to the user (before calling the Agent tool):
@@ -253,7 +253,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    **Resolve model and print visibility banner before dispatch:**
 
    ```bash
-   node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs resolve-model fixme-task
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-task
    ```
 
    Print a one-line banner to the user:

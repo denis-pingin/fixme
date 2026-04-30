@@ -6,7 +6,7 @@ argument-hint: "<task description or path to spec>"
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
 
 # Write Plan
 
@@ -271,7 +271,7 @@ The Input Audit prevents premature confidence before exploration. This checkpoin
 
 ## Plan And Code Map Save Location
 
-Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
+Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
 
 Save the matching task code map to `<fixme-dir>/context/<plan-filename-stem>-code-map.md`. Create `<fixme-dir>/context/` if needed. Follow the structure in `fixme-howto-code-map`.
 

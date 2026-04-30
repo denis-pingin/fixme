@@ -13,7 +13,7 @@ argument-hint: "[init]"
 
 Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
-**Short version:** run `node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
 # Fixme Config
 
@@ -58,7 +58,7 @@ Parse current values (defaults if not present):
 If `project` section is absent or empty (all null values), run auto-detection:
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context detect
 ```
 
 Parse the JSON output. This becomes the starting values for the project section in the questions below.

@@ -15,7 +15,7 @@ Ticket and session management backed by markdown files with YAML frontmatter. Ea
 ## Tool Path
 
 ```
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 ```
 
 ## State Machine
@@ -29,7 +29,7 @@ See [references/state-machine.md](references/state-machine.md) for the full tran
 **create** - Create a new ticket in a session
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>] [--max-attempts <n>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>] [--max-attempts <n>]
 ```
 
 Creates a numbered ticket folder with `ticket.md`, plus `assets/`, `research/`, `plans/`, and `verifications/` subdirectories. Auto-increments the ticket number.
@@ -37,7 +37,7 @@ Creates a numbered ticket folder with `ticket.md`, plus `assets/`, `research/`, 
 **transition** - Change a ticket's state
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--reason <reason>] [--pipeline <name>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--reason <reason>] [--pipeline <name>]
 ```
 
 Validates the transition against the state machine (derived from pipeline config). Records the transition in the frontmatter log. Updates duration tracking. Backward transitions require `--reason` and increment `current_attempt`.
@@ -45,7 +45,7 @@ Validates the transition against the state machine (derived from pipeline config
 **list** - List all tickets in a session
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket list <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket list <session-dir>
 ```
 
 Returns JSON array of tickets with their number, slug, state, and path.
@@ -53,7 +53,7 @@ Returns JSON array of tickets with their number, slug, state, and path.
 **next** - Get the next queued ticket
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket next <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket next <session-dir>
 ```
 
 Returns the first ticket in `queued` state, or null if none.
@@ -61,7 +61,7 @@ Returns the first ticket in `queued` state, or null if none.
 **rename** - Rename a ticket's slug
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket rename <ticket.md> --slug <new-slug>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket rename <ticket.md> --slug <new-slug>
 ```
 
 Renames the ticket folder and updates the slug in frontmatter.
@@ -69,7 +69,7 @@ Renames the ticket folder and updates the slug in frontmatter.
 **summary** - Get ticket summary
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs ticket summary <ticket.md>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket summary <ticket.md>
 ```
 
 Returns ticket metadata and current state.
@@ -79,7 +79,7 @@ Returns ticket metadata and current state.
 **session create** - Create a new session directory
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session create <base-dir> [--name <name>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session create <base-dir> [--name <name>]
 ```
 
 Creates the session directory with a `session.md` file from the template. Auto-generates a timestamped name if `--name` is not provided.
@@ -87,7 +87,7 @@ Creates the session directory with a `session.md` file from the template. Auto-g
 **session list** - List all sessions
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session list <base-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session list <base-dir>
 ```
 
 Returns JSON array of sessions with name, status, and path.
@@ -95,7 +95,7 @@ Returns JSON array of sessions with name, status, and path.
 **session summary** - Get session summary
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs session summary <session-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session summary <session-dir>
 ```
 
 Returns session metadata with ticket counts by state.
@@ -105,7 +105,7 @@ Returns session metadata with ticket counts by state.
 **context detect** - Auto-detect project config
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context detect
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context detect
 ```
 
 Scans the project and outputs a JSON project config object (camelCase keys matching config.json project section).
@@ -113,7 +113,7 @@ Scans the project and outputs a JSON project config object (camelCase keys match
 **context load** - Load saved project config
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context load
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context load
 ```
 
 Reads `<fixme-dir>/config.json` and returns the project section.
@@ -121,7 +121,7 @@ Reads `<fixme-dir>/config.json` and returns the project section.
 **context save** - Save project config
 
 ```bash
-node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context save --data '<json>'
 ```
 
 Writes the provided JSON data to the project section of `<fixme-dir>/config.json`, preserving other config keys.
