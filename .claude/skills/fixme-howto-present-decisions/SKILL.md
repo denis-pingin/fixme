@@ -18,9 +18,10 @@ Use **top-down progressive disclosure**:
 1. State the decision.
 2. Add a short framing paragraph that explains where we are, what problem we are solving, and what tension creates the choice.
 3. State why the decision matters now.
-4. Give only the context, evidence, and option details needed to decide.
-5. State the recommendation after the reader has seen the evidence or options.
-6. Put deeper detail after the recommendation only when necessary.
+4. Give only the context and evidence needed to understand the recommendation.
+5. For option decisions, state the recommendation before options using the option name plus label.
+6. Present the options.
+7. Repeat the same recommendation after options, followed by rationale.
 
 ## Decision Types
 
@@ -119,6 +120,8 @@ Use this body when the decision is about fix approach:
 - {fact needed to understand the existing code path}
 - {clickable file reference with line number}
 
+**Recommendation**: Choose {option name} (Option A/B/C)
+
 **Options**:
 
 ### Option A: {option name}
@@ -176,9 +179,10 @@ Default budget:
 - Context: max 5 bullets.
 - Impact if not fixed: one sentence, only for reported issues.
 - Evidence: max 2 bullets for `For real issue` and max 2 bullets for `Against real issue`.
+- Pre-options recommendation: one sentence for `FIX_UNCLEAR`.
 - Options: max 4 options.
 - Option fields: one short `What` line, one short `How it solves the issue` line, 1-2 `Pros` bullets, 1-2 `Cons` bullets, and one `Effort` line.
-- Recommendation: one sentence after `Evidence` for `ASK_USER`, or after `Options` for `FIX_UNCLEAR`.
+- Post-options recommendation: one sentence after `Evidence` for `ASK_USER`, or after `Options` for `FIX_UNCLEAR`.
 - Rationale: one short paragraph or max 4 bullets.
 - Acceptance: one line.
 
@@ -196,9 +200,10 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ## Recommendation Rules
 
 - **Recommendation is mandatory.** Always. No exceptions.
-- **Recommendation comes after evidence or options by default.** Do not write `Recommendation: Option A` before Option A has been presented.
+- **Option decisions get two recommendation lines.** Put the same recommendation before options and after options.
 - **Spell out the recommendation before the option label.** Use `Choose Convex paginated result (Option A)`, not `Option A`.
-- **If a caller forces a recommendation into the opening block**, spell it out the same way: `Choose Convex paginated result (Option A)`. Never use only the option label before the options section.
+- **The pre-options recommendation must never be only an option label.** It must name the concrete choice and then include the label in parentheses.
+- **The pre-options and post-options recommendations must match exactly.** Do not recommend one option before the list and a different wording after the list.
 - **Research before recommending.** Read code, check docs, trace call paths. Never recommend based on general preference.
 - **Show only decisive work.** Include evidence that changes the recommendation. Omit non-decisive detail or move it to `Details`.
 - **Cross-reference the Options section.** Name which upsides are decisive and which downsides are acceptable. Do not just restate the option description.
@@ -233,6 +238,10 @@ The Agent gallery is moving from a static list to a mobile-friendly paginated fe
 - The spec defines `AgentGalleryQueryArgs` and `AgentGalleryItem`, but not the result container.
 - The current mobile Agent hook already consumes Convex pagination through `usePaginatedQuery`.
 - The gap is in [alp-183-agent-format-gallery.md:298](/absolute/path/alp-183-agent-format-gallery.md#L298).
+
+**Recommendation**: Choose Convex paginated result (Option A).
+
+**Options**:
 
 ### Option A: Convex paginated result
 
