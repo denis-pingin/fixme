@@ -92,13 +92,15 @@ Group related findings that would be addressed by the same fix. Order: FIX (HIGH
 
 **The full guidelines are preloaded from the `fixme-howto-present-decisions` skill.** Follow them exactly for all ASK_USER and FIX_UNCLEAR Question fields.
 
-Key requirements (see preloaded skill for complete spec):
+The shared skill is the only source of decision-card field names, order, and examples. Do not copy older local formats into the Question field.
 
-- The Question field must be the full decision card with `D1`, `Decision needed`, `Recommendation`, and `Why now`
-- Use the `ASK_USER` body for validity or scope decisions and the `FIX_UNCLEAR` body for approach choices
-- Use compact option bullets with Changes, Upside, Downside, and Effort; do not use markdown tables
-- Every file reference must be a clickable markdown link with absolute path and line numbers
-- Blank line between every section - no dense walls of text
+Operational requirements:
+
+- Use the `ASK_USER` body for validity or scope decisions.
+- Use the `FIX_UNCLEAR` body for approach choices.
+- Do not use legacy decision-card labels: `The question`, `Changes`, `Upside`, `Downside`, or `Approach/Pros/Cons/Impact/Effort`.
+- Every file reference must be a clickable markdown link with absolute path and line numbers.
+- Blank line between every section - no dense walls of text.
 
 ## Rules
 

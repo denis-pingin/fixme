@@ -623,13 +623,11 @@ show every item - not "and 15 more similar".
 
 Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a single structured write-up.
 
-**Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill** (read it at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md`). Each decision point uses the full structured decision block format:
+**Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill.** If it was not preloaded, read it at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md`.
 
-- `## Decision {N}: {short title}` heading
-- `**Context**:` establishing WHERE in the codebase and WHAT the code does, with clickable file references
-- `**The question**:` one clear statement of what needs deciding
-- `**Options**:` each with all 5 sub-fields: Approach, Pros, Cons, Impact, Effort
-- `**Recommendation**:` with research evidence - what was investigated, why this option wins, cross-referencing the tradeoffs from Options
+The PR comment analysis report has its own format, but embedded user decisions do not. Each `FIX_UNCLEAR` or `ASK_USER` item must be presented as a current decision card from `fixme-howto-present-decisions`.
+
+Do not use legacy decision-card labels: `Decision {N}`, `The question`, `Changes`, `Upside`, `Downside`, or `Approach/Pros/Cons/Impact/Effort`.
 
 **Presentation rules**:
 
@@ -637,7 +635,7 @@ Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a 
 - All file references must be clickable markdown links with absolute paths and line numbers
 - Options must be genuinely distinct approaches, not variations of the same thing
 - Pros/cons must be grounded in the actual codebase context, not generic platitudes
-- The recommendation must show what was researched and explain WHY for this specific situation
+- The recommendation must follow the current shared decision-card schema and explain why for this specific situation
 - Keep each decision point self-contained - the user should understand it without scrolling back
 - Blank line between every section - decisions separated by `---` horizontal rules
 

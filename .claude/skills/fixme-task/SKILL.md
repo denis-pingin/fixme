@@ -840,39 +840,7 @@ automatically, {Y} need(s) your input{, Z dismissed}.
 
 **Do NOT summarize, rephrase, or compress the handler's Question field.** The handler invested significant effort in making the question self-contained, properly structured, and concrete. Summarizing it destroys the context, clickable file references, option structure, and cross-references that make the decision possible.
 
-**Do NOT replace the handler's structured format with flat paragraphs.** If the handler produced:
-
-```
-## D1: {title}
-
-**Decision needed**: {one sentence}
-
-**Recommendation**: {Option A/B/C, yes/no, fix/reject/defer}
-
-**Why now**: {one sentence}
-
-**Context**: {established context with clickable file references}
-
-**Options**:
-
-- **A: {option name}**
-   - Changes: ...
-   - Upside: ...
-   - Downside: ...
-   - Effort: ...
-
-- **B: {option name}**
-   - Changes: ...
-   - Upside: ...
-   - Downside: ...
-   - Effort: ...
-
-**Rationale**: {reasoning}
-
-**Acceptance**: {how to reply}
-```
-
-...then that EXACT structure, with all its spacing and sub-fields, is what the user sees. Not a compressed paragraph. Not a flat list. The full structured block with blank lines between sections.
+**Do NOT replace the handler's structured format with flat paragraphs.** The current decision-card schema lives only in `fixme-howto-present-decisions`. Do not maintain a second copy here. If the handler's Question field appears stale, malformed, or inconsistent with the shared skill, re-dispatch the handler for a corrected Question field instead of rewriting the decision yourself.
 
 When presenting multiple decisions, separate them with `---` horizontal rules.
 
@@ -891,8 +859,9 @@ Before sending the output to the user, verify:
 - [ ] No routing metadata terms appear anywhere in the text
 - [ ] Every file reference is a clickable markdown link with line numbers
 - [ ] Every section is separated by a blank line
-- [ ] Each decision block has the full decision-card format (Decision needed, Recommendation, Why now, Context, and either Evidence or Options)
-- [ ] Options have Changes, Upside, Downside, and Effort sub-fields (not just a flat sentence)
+- [ ] Each decision block is copied verbatim from the handler's Question field
+- [ ] Each decision block follows the current `fixme-howto-present-decisions` schema
+- [ ] No legacy decision-card labels appear as schema fields: `The question`, `Changes`, `Upside`, `Downside`, or `Approach/Pros/Cons/Impact/Effort`
 - [ ] Context explains WHAT the affected code does and WHERE it lives before stating the problem
 
 ### 3. Process answers
