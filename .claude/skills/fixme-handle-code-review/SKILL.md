@@ -15,19 +15,22 @@ Validate code review findings against the plan, the spec, and the actual impleme
 ## Input Resolution
 
 Resolve inputs in this order:
-1. **Argument**: if file paths are passed as arguments, use them
-2. **Conversation context**: if findings, plan, and code are in the current conversation, use them
+1. **Argument**: if findings, file paths, or a review context packet are passed as arguments, use them
+2. **Conversation context**: if findings, plan, review context packet, and code are in the current conversation, use them
 3. **IDE context**: if the user has a file open/selected, use it
 4. **Ask**: prompt the user for the findings, plan, and implementation locations
 
 Before classifying anything, read all of these:
 - The review findings
+- The review context packet, if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
 - The implementation plan
 - The spec/task description (if referenced)
 - Every file the findings reference (full file, not just the cited lines)
 - The test files the findings reference (full file)
 - Neighboring files when the finding is about conventions or patterns
 - The decision log at `<fixme-dir>/decisions.md` (if it exists) and the plan's Locked Decisions section. These are settled user choices.
+
+If the packet and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 
 ## Classification
 

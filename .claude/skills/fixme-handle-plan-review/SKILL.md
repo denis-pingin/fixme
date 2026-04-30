@@ -15,14 +15,16 @@ Validate review findings against the codebase and classify each using the unifie
 ## Input Resolution
 
 Resolve inputs in this order:
-1. **Argument**: if file paths are passed as arguments, use them
-2. **Conversation context**: if findings and plan are in the current conversation, use them
+1. **Argument**: if findings, file paths, or a review context packet are passed as arguments, use them
+2. **Conversation context**: if findings, plan, and review context packet are in the current conversation, use them
 3. **IDE context**: if the user has a file open/selected, use it
 4. **Ask**: prompt the user for the findings and plan locations
 
-Read the plan, the findings, and the spec/context document (if referenced) before proceeding.
+Read the plan, the findings, and the spec/context document (if referenced) before proceeding. If a review context packet is provided, read it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
 
 If a decision log exists at `<fixme-dir>/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
+
+If the packet and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 
 ## Classification
 

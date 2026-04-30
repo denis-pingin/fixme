@@ -21,12 +21,13 @@ Review the code produced by plan execution. Find everything that's actually wron
 ## Input Resolution
 
 Resolve inputs in this order:
-1. **Argument**: if file paths are passed (plan, spec, diff/branch), use them
-2. **Conversation context**: if the plan and execution results are in the current conversation, use them
+1. **Argument**: if file paths are passed (plan, spec, diff/branch, review context packet), use them
+2. **Conversation context**: if the plan, execution summary, and review context packet are in the current conversation, use them
 3. **Git**: use `git diff` against the base branch to identify all changed files, and find the most recent plan in `<fixme-dir>/plans/`
 4. **Ask**: prompt the user for plan location and how to identify the changes
 
 Read all of these before writing the report:
+- The review context packet, if provided. Use it for current-run decisions, prior fixes, verification summaries, and source references. It is orientation, not authority.
 - The implementation plan
 - The spec/task description (if referenced in the plan)
 - Every file created or modified (full file, not just the diff - context matters)
@@ -42,6 +43,9 @@ Before evaluating anything, understand:
 3. **What was actually changed?** Read every diff. Map changes back to plan tasks.
 4. **What patterns does the codebase use?** Read neighboring files to understand conventions, not just the changed files.
 5. **What stable context does the plan provide?** Read the plan's `## Context` section. Stable Context provides architecture, patterns, conventions, and dependency information discovered during planning. Use this as a head start - no need to re-explore the full codebase for this information. Re-read changed files directly for current state.
+6. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, and `Verification Since Last Review` sections to orient the review. Verify all claims against the files and git diff before relying on them.
+
+`Fixes Since Last Review` does not limit review scope. Unless the packet explicitly says a future focused-review mode is active, review the full changed surface every time.
 
 This prevents the most common source of false findings: reviewing code without understanding why it was written that way.
 
@@ -401,7 +405,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 ### Report Structure
 
 1. **Summary**: 1-2 sentences. Is this implementation solid, or does it need revision? Be direct.
-2. **Scope**: list of files reviewed, plan referenced, base branch compared against
+2. **Scope**: list of files reviewed, plan referenced, base branch compared against, and review context packet used if provided
 3. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then TEST-QUALITY, STUB-DETECTION, and CORRECTNESS, then other categories.
 4. **Verified OK**: brief list of things that were checked and found correct - this builds trust in the review's thoroughness and helps the handler skip re-checking these areas
 5. **Questions**: things that couldn't be determined and need clarification

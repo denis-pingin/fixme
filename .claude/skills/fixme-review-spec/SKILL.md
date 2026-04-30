@@ -24,12 +24,12 @@ Review a specification before implementation planning. The goal is to decide whe
 
 Resolve the specification to review in this order:
 
-1. **Argument**: if a specification path is passed, use it
-2. **Conversation context**: if the user pasted or referenced a specification, use that
+1. **Argument**: if a specification path or review context packet is passed, use it
+2. **Conversation context**: if the user pasted or referenced a specification or review context packet, use that
 3. **Fixme context**: if dispatched from a ticket, inspect the ticket folder for an explicitly named specification or requirements document
 4. **Ask**: prompt the user for the specification location
 
-Read any directly referenced documents needed to understand the specification. Do not use branch names, commit messages, old tickets, or surrounding implementation as authority for private specification scope.
+Read any directly referenced documents needed to understand the specification. If a review context packet is provided, use it for current-run decisions, all fixes since last review, and source references. The packet is orientation, not authority; the specification and explicitly referenced documents remain authoritative. Do not use branch names, commit messages, old tickets, or surrounding implementation as authority for private specification scope.
 
 ## Review Process
 

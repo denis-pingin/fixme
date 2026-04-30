@@ -43,6 +43,7 @@ Required inputs:
 
 - **Original request**: unchanged source behavior or product specification
 - **Previous technical specification path**: the specification being revised
+- **Review context packet**: compact current-run decisions, fixes since last review, and source references
 - **FIX items**: classified findings from `fixme-handle-spec-review`
 - **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
 
@@ -79,12 +80,13 @@ Record source material inside the specification. Every codebase claim that affec
 ### Revision and Rewrite Context
 
 1. Read the full previous technical specification.
-2. Read the decision log if it exists.
-3. In revision mode, read every FIX item and the cited specification sections.
-4. Re-read any code referenced by the previous specification or FIX items when it affects the contract.
-5. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
-6. If a FIX item conflicts with a locked decision or product behavior, ask the user with a decision card.
-7. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
+2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
+3. Read the decision log if it exists.
+4. In revision mode, read every FIX item and the cited specification sections.
+5. Re-read any code referenced by the previous specification or FIX items when it affects the contract.
+6. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
+7. If a FIX item conflicts with a locked decision or product behavior, ask the user with a decision card.
+8. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
 
 ## Technical Decision Gate
 

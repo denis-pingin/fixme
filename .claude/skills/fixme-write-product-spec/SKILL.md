@@ -42,6 +42,7 @@ Required inputs:
 
 - **Original request**: unchanged product request or feature description
 - **Previous product specification path**: the specification being revised
+- **Review context packet**: compact current-run decisions, fixes since last review, and source references
 - **FIX items**: classified findings from `fixme-handle-spec-review`
 - **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
 
@@ -76,11 +77,12 @@ Use code only to understand observable behavior. Do not transfer code structure 
 ### Revision and Rewrite Context
 
 1. Read the full previous product specification.
-2. Read the decision log if it exists.
-3. In revision mode, read every FIX item and the cited specification sections.
-4. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
-5. If a FIX item conflicts with a locked decision, ask the user with a decision card.
-6. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
+2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
+3. Read the decision log if it exists.
+4. In revision mode, read every FIX item and the cited specification sections.
+5. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
+6. If a FIX item conflicts with a locked decision, ask the user with a decision card.
+7. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
 
 ## Product Decision Gate
 

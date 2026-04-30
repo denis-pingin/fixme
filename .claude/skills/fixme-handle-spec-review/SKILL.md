@@ -18,19 +18,22 @@ This handler enables a review loop for specifications when used in a pipeline ph
 
 Resolve inputs in this order:
 
-1. **Argument**: if findings and a specification path are passed, use them
-2. **Conversation context**: if findings and specification content are in the current conversation, use them
+1. **Argument**: if findings, a specification path, or a review context packet are passed, use them
+2. **Conversation context**: if findings, specification content, and review context packet are in the current conversation, use them
 3. **Fixme context**: if dispatched from a ticket, inspect the ticket folder for an explicitly named specification or requirements document
 4. **Ask**: prompt the user for the findings and specification location
 
 Before classifying anything, read all of these:
 
 - The specification review findings
+- The review context packet, if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
 - The full specification, not just cited sections
 - Directly referenced specification/context documents needed to verify a finding
 - The decision log at `<fixme-dir>/decisions.md` if it exists
 
 Do not use branch names, commit messages, old tickets, or surrounding implementation as authority for private specification scope. Read implementation only if the specification explicitly cites it as source material for the behavior being reviewed.
+
+If the packet and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current specification, treat that as context to verify, not as a locked decision.
 
 ## Classification
 

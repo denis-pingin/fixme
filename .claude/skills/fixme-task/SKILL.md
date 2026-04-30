@@ -1,17 +1,17 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, context accumulation, and ticket state transitions.
+description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, compact review context packets, and ticket state transitions.
 ---
 
 # Fixme Task - Config-Driven Pipeline Orchestrator
 
-Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage context accumulation, artifact handoff, decision persistence, loop control, and optional ticket state transitions.
+Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage compact context handoff, artifact paths, decision persistence, loop control, and optional ticket state transitions.
 
 ## Hard Constraints
 
 - **This skill is a dispatcher.** It never writes plans, reviews code, or classifies findings itself. It dispatches sub-skills as agents and routes their outputs.
 - **Never read source code.** The orchestrator reads ONLY specification files, plan files, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
-- **Never lose context.** Every piece of information (task, plans, findings, decisions, execution results) accumulates across iterations. Nothing is dropped.
+- **Never lose retrievable context.** Full artifacts stay available by path; dispatch prompts pass compact, task-scoped context packets. Do not paste full discussion history or unrelated decision-log entries into review cycles.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
@@ -130,7 +130,7 @@ Detect where to enter the selected pipeline based on what already exists **for t
 - **Plan exists + already executed** (execution results or code changes present): enter at the implement phase's **review** step (if it has one).
 - **Nothing exists**: start from the first phase of the pipeline (default).
 
-When entering mid-pipeline, still resolve the original task (for context accumulation) and check for an existing decision log at `<fixme-dir>/decisions.md`.
+When entering mid-pipeline, still resolve the original task (for context packet construction) and check for an existing decision log at `<fixme-dir>/decisions.md`.
 
 ### Artifact Handoff
 
@@ -582,38 +582,42 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description
-- Plan revision mode (review FIX loop): original task + path to previous plan + FIX items from handler + path to decision log
-- Code revision mode (outer loop from later phase): original task + path to previous plan + execution results + FIX items from handler + path to decision log
+- Plan revision mode (review FIX loop): original task + path to previous plan + current review context packet + FIX items from handler + path to decision log
+- Code revision mode (outer loop from later phase): original task + path to previous plan + current review context packet + execution results summary + FIX items from handler + path to decision log
 
 **fixme-write-product-spec** (when writing a product specification):
 - Fresh mode: original product request, ticket, or source material
-- Specification revision mode: original request + path to previous product specification + FIX items from `fixme-handle-spec-review` + path to decision log
+- Specification revision mode: original request + path to previous product specification + current review context packet + FIX items from `fixme-handle-spec-review` + path to decision log
 - Rewrite mode: original request if available + path to previous product specification + path to decision log
 - Must output `SPEC_PATH: <absolute path>`; capture it as `productSpecificationPath` and `currentSpecificationPath`
 
 **fixme-write-technical-spec** (when writing a technical specification):
 - Fresh mode: product specification path, original request, ticket, or source material
-- Specification revision mode: original request or product specification path + path to previous technical specification + FIX items from `fixme-handle-spec-review` + path to decision log
+- Specification revision mode: original request or product specification path + path to previous technical specification + current review context packet + FIX items from `fixme-handle-spec-review` + path to decision log
 - Rewrite mode: original request or product specification path if available + path to previous technical specification + path to decision log
 - Must output `SPEC_PATH: <absolute path>`; capture it as `technicalSpecificationPath` and `currentSpecificationPath`
 
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan
+- Current review context packet
 
 **fixme-review-spec** (when reviewing a specification):
 - Path to `currentSpecificationPath`
+- Current review context packet
 
 **fixme-handle-spec-review** (when handling specification review findings):
-- Review findings (full output from reviewer)
+- Review findings from reviewer
 - Path to `currentSpecificationPath`
+- Current review context packet
 - Path to decision log (if it exists)
 - The phase must have an execute skill capable of revising the specification when the handler returns FIX items
 
 Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fixme-review-spec`. `HAS_FIX` routes back to the phase's first execute skill; without a skill that writes or revises the specification there is nothing safe to re-run.
 
 **fixme-handle-plan-review** (in `plan` phase review):
-- Review findings (full output from reviewer)
+- Review findings from reviewer
 - Path to plan
+- Current review context packet
 - Path to decision log (if it exists)
 
 **fixme-execute-plan** (in `implement` phase):
@@ -621,11 +625,13 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 
 **fixme-review-code** (in `implement` phase review):
 - Path to plan
+- Current review context packet
 - Git diff information (base branch or commit range)
 
 **fixme-handle-code-review** (in `implement` phase review):
-- Review findings (full output from reviewer)
+- Review findings from reviewer
 - Path to plan
+- Current review context packet
 - Path to decision log (if it exists)
 
 **fixme-investigate** (in `investigate` phase):
@@ -635,9 +641,75 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 - Task description + investigation output from prior phase
 
 **fixme-browser-verify** (in `verify` phase):
-- Task description + plan path + execution results
+- Task description + plan path + current review context packet + execution results summary
 
-For custom skills not listed above: pass the task description and all accumulated context from prior phases.
+For custom skills not listed above: pass the task description, artifact paths, and the current review context packet. Do not pass full accumulated discussion by default.
+
+## Review Context Packets
+
+Before each review, handler, revision, or verification dispatch, construct a compact packet for the current `fixme-task` instance. The packet is summary context, not authority. The referenced plan, specification, decision log, review findings, git diff, and source files remain authoritative.
+
+### Scope
+
+- Include only decisions relevant to the current ticket, task, plan/specification, phase, or review loop.
+- If `decisions.md` contains unrelated prior runs, exclude them unless the current artifacts explicitly reference them.
+- If decision metadata is insufficient, include only decisions made during this `fixme-task` invocation or decisions already carried in the current plan/specification.
+- Include every fix applied since the previous review cycle, whether it came from automatic `FIX` routing or from a user decision that resolved `FIX_UNCLEAR` or `ASK_USER`.
+- For code review, `Fixes Since Last Review` is extra orientation, not a scope limiter. Unless an explicit future focused-review mode says otherwise, every code review still reviews the full changed surface.
+
+### Packet Shape
+
+Use this shape in dispatch prompts:
+
+```md
+## Review Context Packet
+
+**Task**: {one-sentence task goal}
+**Pipeline/phase**: {pipeline name} / {phase name}
+**Review cycle**: {phase review cycle number and outer loop number}
+**Review scope**: full changed surface | full specification | full plan
+
+### Artifacts
+
+- **Plan**: {absolute path, if any}
+- **Specification**: {absolute path, if any}
+- **Decision log**: {absolute path or "none yet"}
+- **Previous review findings**: {path or compact summary, if any}
+- **Execution summary**: {path or compact summary, if any}
+
+### User Decisions For This Run
+
+- **D{n}: {title}**
+  - **Answer**: {user answer}
+  - **Locked decision**: {one-line actionable decision}
+  - **Applied in fixes**: {fix IDs or "not yet applied"}
+
+### Fixes Since Last Review
+
+- **F{n}: {short title}**
+  - **Origin**: automatic FIX | user decision D{n}
+  - **What changed**: {one sentence}
+  - **Why**: {source finding or user decision}
+  - **Files changed**: {clickable file refs or paths from the executor summary}
+
+### Verification Since Last Review
+
+- **Commands**: {commands run}
+- **Result**: {pass/fail/blocked}
+- **Important output**: {short summary or output reference}
+
+### Prior Findings Not To Re-raise Without New Evidence
+
+- **{finding title}**: {rejected/already fixed/wont fix rationale and source}
+```
+
+### Packet Rules
+
+- Keep the packet compact. Prefer paths and one-line summaries over pasted artifacts.
+- Do not paste full conversation history, full agent output, or unrelated decision log entries.
+- Do not omit user decisions that affect the current task.
+- Do not omit user-decision-driven fixes from `Fixes Since Last Review`; list them alongside automatic fixes.
+- If a packet statement conflicts with an artifact, the artifact wins. The receiving agent must verify from source before making findings.
 
 ## Step Processing
 
@@ -695,20 +767,20 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 **Execute steps** (`[phase]` entries - phase skills like fixme-write-plan, fixme-execute-plan):
 
 1. Validate the directive if one is expected (executors produce `EXECUTOR_STATUS: COMPLETE`)
-2. Capture the agent's full output as accumulated context for subsequent steps
+2. Capture a compact execution summary for the next review context packet: what changed, why, files changed, verification commands/results, and any deviations from plan
 3. Extract artifact directives (`SPEC_PATH`, `PLAN_PATH`) and update the artifact handoff state
 4. Mark step `completed`, set next step to `in_progress`, dispatch next agent
 
 **Review steps** (`[phase/review]` entries - reviewers like fixme-review-plan, fixme-review-code):
 
-1. Capture the agent's full output (these are findings)
+1. Capture the review findings needed by the handler. Keep the dispatch context compact; do not append unrelated prior outputs.
 2. Mark step `completed`, set next step to `in_progress`
-3. Pass the findings as input to the handler dispatch (the next manifest step)
+3. Pass the findings and current review context packet as input to the handler dispatch (the next manifest step)
 
 **Handler steps** (`[phase/review]` entries - handlers like fixme-handle-plan-review, fixme-handle-code-review):
 
 1. Validate the routing directive: `HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`
-2. Capture the handler's full output
+2. Capture only the routing summary, classification counts, FIX items, decision cards, and rejection rationale needed for routing and the next review context packet
 3. Mark step `completed`, set next step to `in_progress` (the routing step)
 
 **Routing steps** (`[phase/route]` entries):

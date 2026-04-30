@@ -15,12 +15,12 @@ Review an implementation plan and produce high-quality, evidence-backed findings
 ## Input Resolution
 
 Resolve the plan to review in this order:
-1. **Argument**: if a file path is passed as an argument, use it
+1. **Argument**: if a plan path or review context packet is passed as an argument, use it
 2. **IDE context**: if the user has a file open/selected, use it
 3. **Convention**: check `<fixme-dir>/plans/` for the most recent plan
 4. **Ask**: prompt the user for the plan location
 
-Read the plan fully before proceeding. If a specification or context document is referenced in the plan, read that too.
+Read the plan fully before proceeding. If a specification or context document is referenced in the plan, read that too. If a review context packet is provided, read it for current-run decisions, prior fixes, and source references. The packet is orientation, not authority; verify against the plan, specs, and codebase before making findings.
 
 ## Two-Pass Review Process
 
@@ -48,7 +48,8 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 4. **Am I sure about the API/framework behavior I'm assuming?** If the finding depends on how a library works, verify against the actual dependency version in the project. Do not rely on general knowledge - APIs change.
 5. **Would fixing this actually improve the outcome?** Technically correct feedback that makes the plan worse (more complex, slower to ship, harder to maintain) is bad feedback.
 6. **Does this contradict a locked decision?** If the plan includes a Locked Decisions section in its Context, those are settled user choices. Do not flag findings that disagree with locked decisions. If a locked decision itself appears problematic (would cause a bug, break something), frame it as a question in the Questions section, not as a finding.
-7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
+7. **Does this contradict the review context packet?** If the packet records a current-run user decision or fix, verify it against the decision log or plan before flagging. If the packet and artifact conflict, the artifact wins.
+8. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
 
 ## Foundational Mindset: Do Not Trust
 
@@ -376,6 +377,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
 2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
+4. **Scope**: plan reviewed and review context packet used if provided.
 
 ## Rules
 

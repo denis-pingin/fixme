@@ -61,6 +61,7 @@ Triggered when the orchestrator provides: previous plan path + plan review FIX i
 Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan being revised
+- **Review context packet**: compact current-run decisions, fixes since last review, verification summaries, and source references
 - **FIX items**: classified findings from the plan review handler (markdown)
 - **Decision log path**: `<fixme-dir>/decisions.md` (may not exist on first iteration)
 
@@ -70,6 +71,7 @@ Triggered when the orchestrator provides: previous plan path + code review FIX i
 Required inputs (provided by orchestrator as arguments):
 - **Original task**: the unchanged task description
 - **Previous plan path**: the plan that was executed
+- **Review context packet**: compact current-run decisions, fixes since last review, verification summaries, and source references
 - **FIX items**: classified findings from the code review handler (markdown)
 - **Execution results**: summary from the executor's completion report (markdown)
 - **Decision log path**: `<fixme-dir>/decisions.md`
@@ -188,17 +190,18 @@ These are exactly the conditions under which silent overrides happen. The gate e
 ### Context Recovery (revision and rewrite modes - skip in fresh mode)
 
 1. Read the previous plan's `## Context` section for Stable Context (architecture, patterns, conventions, dependency versions, API shapes).
-2. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
-3. Read the FIX items. For each FIX item:
+2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
+3. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
+4. Read the FIX items. For each FIX item:
    - Re-read the specific files it references (targeted, not full codebase)
    - If it contradicts a Stable Context item, re-verify that item against the codebase
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
    - **Never silently drop a FIX item.** If you believe a FIX should not be implemented, that is not your call - flag it back to the user via the Input Audit as a new question with concrete evidence (what you read, what tradeoff changed your mind, what alternative you propose). "Drop it and add a clarifying comment" is only acceptable when the handler's Approach field explicitly specifies exactly that as the full resolution.
    - **Never substitute your own "lighter touch" for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems "simpler" is a silent override and the exact failure mode the handler's Multi-Option Discipline exists to prevent.
-4. In **code revision only**: re-read all files that were modified during execution (listed in execution results). The codebase has changed - file-level context is stale.
-5. Skip full codebase exploration. Only do targeted re-reads as described above.
-6. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
-7. **Rewrite mode only**: re-read the entire prior plan to understand its structure, task decomposition, and approach. Identify which aspects are quality issues (precision, completeness, delegation violations) vs. architectural choices (design decisions, scope, decomposition). Quality issues are in scope for improvement. Architectural choices are locked unless the user approved changes during the Input Audit.
+5. In **code revision only**: re-read all files that were modified during execution (listed in execution results or in the review context packet). The codebase has changed - file-level context is stale.
+6. Skip full codebase exploration. Only do targeted re-reads as described above.
+7. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results, review context packet, and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.
+8. **Rewrite mode only**: re-read the entire prior plan to understand its structure, task decomposition, and approach. Identify which aspects are quality issues (precision, completeness, delegation violations) vs. architectural choices (design decisions, scope, decomposition). Quality issues are in scope for improvement. Architectural choices are locked unless the user approved changes during the Input Audit.
 
 ### Understand the Codebase
 
@@ -304,6 +307,9 @@ Use the exact saved plan path. In revision mode, this is the existing plan path 
 
 ### Locked Decisions
 [User answers from ASK_USER and FIX_UNCLEAR questions. Each entry: the question, the answer, and the resulting decision. Empty on first pass. In revision mode, carry forward from previous plan and decision log.]
+
+### Fix History
+[Compact list of fixes applied in prior review cycles for this task. Include automatic FIX items and user-decision-driven fixes with what changed, why, source finding/decision, and files changed.]
 
 ---
 
