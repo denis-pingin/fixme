@@ -1,4 +1,4 @@
-# Spec review rules
+# Specification Review Rules
 
 These rules are also packaged as the reusable `fixme-howto-review-spec` skill. Use that skill when the rubric should be preloaded into another agent or applied standalone in a different context.
 
@@ -6,13 +6,13 @@ When the review asks the user to decide anything, present that question with `fi
 
 ## Goal
 
-A spec passes review when it makes exactly one valid behavior possible for every declared user action, API input, persisted state, background workflow, and migration path.
+A specification passes review when it makes exactly one valid behavior possible for every declared user action, API input, persisted state, background workflow, and migration path.
 
-The best possible review outcome is the smallest useful set of evidence-backed findings that, once fixed, makes the spec deterministic, testable, self-contained, and safe to implement.
+The best possible review outcome is the smallest useful set of evidence-backed findings that, once fixed, makes the specification deterministic, testable, self-contained, and safe to implement.
 
 ## Failure principle
 
-A spec is broken when an implementer can ask "what should happen here?" and answer it multiple defensible ways.
+A specification is broken when an implementer can ask "what should happen here?" and answer it multiple defensible ways.
 
 ## Review workflow
 
@@ -26,7 +26,7 @@ A spec is broken when an implementer can ask "what should happen here?" and answ
 
 ## Surface inventory
 
-Before writing findings, enumerate the spec's behavioral surfaces:
+Before writing findings, enumerate the specification's behavioral surfaces:
 
 - product entities and deleted or collapsed legacy concepts
 - user roles, ownership rules, and admin behavior
@@ -40,20 +40,20 @@ Before writing findings, enumerate the spec's behavioral surfaces:
 
 ## Verdict rules
 
-Use `BLOCK` when implementation would require the engineer to make a product, data, API, workflow, migration, or testing decision not made by the spec.
+Use `BLOCK` when implementation would require the engineer to make a product, data, API, workflow, migration, or testing decision not made by the specification.
 
-Use `FLAG` when the spec is implementable but likely incomplete, confusing, or risky in a non-blocking path.
+Use `FLAG` when the specification is implementable but likely incomplete, confusing, or risky in a non-blocking path.
 
-Use `NOTE` for out-of-scope concerns that should be preserved for later but do not affect this spec's implementability.
+Use `NOTE` for out-of-scope concerns that should be preserved for later but do not affect this specification's implementability.
 
 Use `PASS` only when every core path has one valid behavior, negative and legacy paths are specified, examples compile into exact outcomes, and acceptance criteria are testable.
 
-Block the spec if any of these are true:
+Block the specification if any of these are true:
 
 - one user action, API input, state transition, durable field, migration path, or failure mode has multiple defensible outcomes
 - entity identity, state ownership, source of truth, versioning, or migration behavior is underspecified
 - persisted data shape, derived projection behavior, or repair behavior can diverge without a specified resolution
-- examples introduce concepts not defined elsewhere in the spec
+- examples introduce concepts not defined elsewhere in the specification
 - acceptance criteria cannot be converted into tests
 - old concepts, routes, fields, or subsystems must be deleted or collapsed but the target action is unspecified
 
@@ -62,10 +62,10 @@ Block the spec if any of these are true:
 Classify every finding as exactly one of:
 
 - `Ambiguity`: multiple valid implementations are possible
-- `Conflict`: two spec statements cannot both be true
+- `Conflict`: two specification statements cannot both be true
 - `Gap`: required behavior is absent
 - `Untestable`: acceptance criteria cannot be verified
-- `Out of scope`: real concern, but not needed to implement this spec
+- `Out of scope`: real concern, but not needed to implement this specification
 
 ## Required finding format
 
@@ -74,21 +74,21 @@ Every finding or note must use this format:
 ```md
 Severity: BLOCK | FLAG | NOTE
 Classification: Ambiguity | Conflict | Gap | Untestable | Out of scope
-Spec location:
+Specification location:
 Problem:
 Competing valid behaviors:
 Required decision:
-Recommended spec text:
+Recommended specification text:
 Acceptance test implied:
 ```
 
-`Spec location` must cite the text that creates the issue. If the issue is an absence, cite the nearest section where the behavior should have been defined.
+`Specification location` must cite the text that creates the issue. If the issue is an absence, cite the nearest section where the behavior should have been defined.
 
-`Competing valid behaviors` must name the concrete alternatives an implementer could reasonably choose. For a pure gap, state the missing behavior and why the surrounding spec makes it required.
+`Competing valid behaviors` must name the concrete alternatives an implementer could reasonably choose. For a pure gap, state the missing behavior and why the surrounding specification makes it required.
 
-`Required decision` must describe the product, API, data, workflow, migration, or testability decision needed to remove ambiguity. For `NOTE`, state why no decision is required in this spec.
+`Required decision` must describe the product, API, data, workflow, migration, or testability decision needed to remove ambiguity. For `NOTE`, state why no decision is required in this specification.
 
-`Recommended spec text` must be concrete enough to paste into the spec or adapt directly.
+`Recommended specification text` must be concrete enough to paste into the specification or adapt directly.
 
 `Acceptance test implied` must describe the observable test shape using given state, actor or input, action, and expected result.
 
@@ -96,13 +96,13 @@ Acceptance test implied:
 
 Return the review in this order:
 
-1. `Summary`: one or two sentences stating whether the spec passes or needs revision.
+1. `Summary`: one or two sentences stating whether the specification passes or needs revision.
 2. `Surface inventory`: concise list of behavioral surfaces reviewed.
 3. `Findings`: one block per finding using the required finding format.
 4. `Verdict`: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the verdict rules.
 5. `Decisions`: only unresolved questions required to complete the review, formatted as decision cards from `fixme-howto-present-decisions`.
 
-If there are no findings, state that the spec passes and list the surfaces and acceptance criteria verified.
+If there are no findings, state that the specification passes and list the surfaces and acceptance criteria verified.
 
 ## Review checks
 
@@ -173,7 +173,7 @@ Then response, UI, durable state, logs, projections, or emitted work are:
 
 ### Self-containment
 
-The spec must have no undefined terms, no "if needed", no reliance on old tickets/specs/code, and no vague "existing behavior" unless the exact behavior is named.
+The specification must have no undefined terms, no "if needed", no reliance on old tickets/specifications/code, and no vague "existing behavior" unless the exact behavior is named.
 
 ## Reviewer anti-patterns
 
@@ -183,17 +183,17 @@ Do not:
 - batch unrelated ambiguities into one finding
 - request implementation details unless they affect observable behavior, data safety, migration safety, workflow semantics, or testability
 - emit free-form user questions instead of decision cards from `fixme-howto-present-decisions`
-- assume old behavior unless the spec names it
+- assume old behavior unless the specification names it
 - accept "existing behavior" unless the exact behavior is restated
 - raise speculative cases outside declared inputs, roles, states, workflows, or migrations
-- use branch names, commit messages, old tickets, or surrounding implementation as authority for private spec scope
+- use branch names, commit messages, old tickets, or surrounding implementation as authority for private specification scope
 - produce preference-only comments that do not change deterministic implementability
 
 ## Final consistency check
 
 Before returning the review, verify:
 
-- every finding has evidence, classification, required decision, recommended spec text, and an implied acceptance test
+- every finding has evidence, classification, required decision, recommended specification text, and an implied acceptance test
 - every `BLOCK` maps to a missing or conflicting decision required for implementation
 - every `FLAG` is implementable as written and clearly non-blocking
 - every `NOTE` is out of scope and does not affect the final verdict

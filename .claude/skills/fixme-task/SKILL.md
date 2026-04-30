@@ -49,7 +49,7 @@ Resolve the task description in this order - stop at the first match:
 
 1. **Argument with path**: if a file path is passed, use it directly
 2. **Argument referencing context** (e.g. "see plan", "the plan", "attached"): the plan/task is already in the conversation. Check the skill expansion content above (plans are often injected inline when the skill is invoked). Also check IDE selection context (`ide_selection` tags). Do NOT search the filesystem - the user is telling you it's already here.
-3. **IDE selection context**: if `ide_selection` tags contain a plan or spec, use it
+3. **IDE selection context**: if `ide_selection` tags contain a plan or specification, use it
 4. **Conversation context**: if the task was discussed earlier in conversation, use it
 5. **Ask**: prompt the user for what to build
 
@@ -405,16 +405,16 @@ For phases using the standard skills, these are the input contracts:
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan
 
-**fixme-review-spec** (in a spec review phase):
-- Path to spec
+**fixme-review-spec** (when reviewing a specification):
+- Path to specification
 
-**fixme-handle-spec-review** (in a spec phase review):
+**fixme-handle-spec-review** (when handling specification review findings):
 - Review findings (full output from reviewer)
-- Path to spec
+- Path to specification
 - Path to decision log (if it exists)
-- The phase must have an execute skill capable of revising the spec when the handler returns FIX items
+- The phase must have an execute skill capable of revising the specification when the handler returns FIX items
 
-Do not configure `fixme-handle-spec-review` as a review loop for a review-only phase whose only phase skill is `fixme-review-spec`. `HAS_FIX` routes back to the phase's first execute skill; without a spec-writing or spec-revision skill there is nothing safe to re-run.
+Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fixme-review-spec`. `HAS_FIX` routes back to the phase's first execute skill; without a skill that writes or revises the specification there is nothing safe to re-run.
 
 **fixme-handle-plan-review** (in `plan` phase review):
 - Review findings (full output from reviewer)
