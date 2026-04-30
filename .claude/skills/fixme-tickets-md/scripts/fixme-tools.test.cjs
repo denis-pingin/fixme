@@ -1382,6 +1382,20 @@ test('resolve-model: balanced profile returns per-agent mapping', () => {
   assert(planner.data.profile === 'balanced', `planner profile: ${planner.data.profile}`);
 });
 
+test('resolve-model: spec reviewer follows reviewer profile mapping', () => {
+  const dir = createTmpDir();
+  const fixmeDir = path.join(dir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    models: { profile: 'budget' }
+  }));
+  const res = runInDir('resolve-model fixme-review-spec', dir);
+  assert(res.ok, `exit: ${JSON.stringify(res)}`);
+  assert(res.data.model === 'sonnet', `model: ${res.data.model}`);
+  assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
+  assert(res.data.source === 'profile', `source: ${res.data.source}`);
+});
+
 test('resolve-model: budget profile', () => {
   const dir = createTmpDir();
   const fixmeDir = path.join(dir, '.fixme');

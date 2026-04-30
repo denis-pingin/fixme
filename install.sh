@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_SRC="$REPO_ROOT/.claude/skills"
 AGENTS_SRC="$REPO_ROOT/.claude/agents"
+RULES_SRC="$REPO_ROOT/.claude/rules"
 
 if [ ! -d "$SKILLS_SRC" ]; then
   echo "Error: source not found at $SKILLS_SRC" >&2
@@ -24,6 +25,23 @@ for dest in "${SKILL_DESTS[@]}"; do
     echo "Installed $name -> $dest"
   done
 done
+
+if [ -d "$RULES_SRC" ]; then
+  RULE_DESTS=(
+    "$HOME/.claude/rules"
+    "$HOME/.codex/rules"
+  )
+
+  for dest in "${RULE_DESTS[@]}"; do
+    mkdir -p "$dest"
+    for file in "$RULES_SRC"/*.md; do
+      [ -f "$file" ] || continue
+      name="$(basename "$file")"
+      cp "$file" "$dest/$name"
+      echo "Installed rule $name -> $dest"
+    done
+  done
+fi
 
 if [ -d "$AGENTS_SRC" ]; then
   AGENTS_DEST="$HOME/.claude/agents"

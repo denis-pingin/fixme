@@ -351,6 +351,7 @@ Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 | Agent | quality | balanced | budget |
 |-------|---------|----------|--------|
 | fixme-write-plan | opus | opus | sonnet |
+| fixme-review-spec | opus | opus | sonnet |
 | fixme-review-plan | opus | opus | sonnet |
 | fixme-review-code | opus | opus | sonnet |
 | fixme-investigate | opus | opus | sonnet |
@@ -402,6 +403,9 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-review-plan** (in `plan` phase review):
 - Path to plan
+
+**fixme-review-spec** (in a spec review phase):
+- Path to spec
 
 **fixme-handle-plan-review** (in `plan` phase review):
 - Review findings (full output from reviewer)

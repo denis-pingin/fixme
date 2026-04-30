@@ -12,6 +12,7 @@ const path = require('path');
 const MODEL_PROFILES = {
   quality: {
     'fixme-write-plan': 'opus',
+    'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
     'fixme-review-code': 'opus',
     'fixme-investigate': 'opus',
@@ -24,6 +25,7 @@ const MODEL_PROFILES = {
   },
   balanced: {
     'fixme-write-plan': 'opus',
+    'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
     'fixme-review-code': 'opus',
     'fixme-investigate': 'opus',
@@ -36,6 +38,7 @@ const MODEL_PROFILES = {
   },
   budget: {
     'fixme-write-plan': 'sonnet',
+    'fixme-review-spec': 'sonnet',
     'fixme-review-plan': 'sonnet',
     'fixme-review-code': 'sonnet',
     'fixme-investigate': 'sonnet',

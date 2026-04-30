@@ -73,6 +73,8 @@ node ~/.claude/skills/fixme-tickets-md/scripts/fixme-tools.cjs context save --da
     references/             # config-schema.md
     docs/                   # data-flow.md
   fixme-task/               # Config-driven pipeline executor
+  fixme-howto-review-spec/  # Shared spec review rubric for reviewer agents or standalone use
+  fixme-review-spec/        # Reviews specs for deterministic implementability
   fixme-write-plan/         # Writes implementation plans
   fixme-review-plan/        # Reviews plans for correctness/completeness/feasibility
   fixme-handle-plan-review/ # Triages plan review findings (unified taxonomy)
@@ -109,6 +111,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | Agent | Role | Key Constraint | Default Model |
 | ----- | ---- | -------------- | ------------- |
 | fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | sonnet |
+| fixme-review-spec | Spec reviewer | Read-only, structured findings | opus |
 | fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus |
 | fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | sonnet |
 | fixme-review-plan | Plan reviewer | Read-only, structured findings | opus |
@@ -119,7 +122,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-research | Codebase explorer | Writes research output, never fixes code | opus |
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | sonnet |
 
-Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config) and lightweight dispatchers (fixme-tickets) do NOT have agent definitions.
+Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
 Model selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget profiles. Default (no config): opus for all agents.
 
