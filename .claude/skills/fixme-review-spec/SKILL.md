@@ -17,6 +17,7 @@ Review a specification before implementation planning. The goal is to decide whe
 - **NO code or spec modifications.** This is a review. The only output is the findings report.
 - **Read the full spec before writing findings.** Partial reads produce false positives and missed ambiguity.
 - **Use the shared spec review rubric.** This agent preloads `fixme-howto-review-spec`; if running standalone, read `~/.claude/skills/fixme-howto-review-spec/SKILL.md` or `~/.codex/skills/fixme-howto-review-spec/SKILL.md` before evaluating the spec.
+- **Use the shared decision presentation rubric.** This agent preloads `fixme-howto-present-decisions`; if running standalone, read `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md` before asking the user to decide anything.
 - **Every finding must cite spec evidence.** If the issue is an absence, cite the nearest section where the behavior should have been defined.
 
 ## Input Resolution
@@ -62,7 +63,7 @@ Return the report in this structure:
 2. **Surface Inventory**: concise list of the behavioral surfaces reviewed.
 3. **Findings**: one block per finding using the required finding format from `fixme-howto-review-spec`.
 4. **Verdict**: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the shared verdict rules.
-5. **Questions**: only include questions that could not be resolved from the spec and are needed to complete review.
+5. **Decisions**: only include unresolved questions that are needed to complete review, formatted as decision cards from `fixme-howto-present-decisions`.
 
 If there are no findings, say the spec passes and list the surfaces and acceptance criteria you verified.
 
@@ -72,4 +73,5 @@ If there are no findings, say the spec passes and list the surfaces and acceptan
 - Never write "clarify" without naming the competing valid behaviors.
 - Never batch unrelated ambiguities into one finding.
 - Never request implementation details unless they affect observable behavior, data safety, migration safety, workflow semantics, or testability.
+- Never emit a free-form `Questions` section. If the user must decide something, emit a numbered decision card (`D1`, `D2`, etc.) using `fixme-howto-present-decisions`.
 - Every `BLOCK` must map to a missing or conflicting decision required for implementation.

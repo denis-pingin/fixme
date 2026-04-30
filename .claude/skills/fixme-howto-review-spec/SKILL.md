@@ -7,6 +7,8 @@ description: Shared spec review guidelines for the fixme pipeline. Defines the c
 
 These guidelines govern how specs are reviewed before implementation planning. Every skill or agent that reviews a spec should use this rubric.
 
+When the review asks the user to decide anything, present that question with `fixme-howto-present-decisions`. Do not emit free-form questions.
+
 ## Core Principle
 
 A spec passes review when it makes exactly one valid behavior possible for every declared user action, API input, persisted state, background workflow, and migration path.
@@ -101,7 +103,7 @@ Return the review in this order:
 2. `Surface inventory`: concise list of behavioral surfaces reviewed.
 3. `Findings`: one block per finding using the required finding format.
 4. `Verdict`: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the verdict rules.
-5. `Questions`: only unresolved questions required to complete the review.
+5. `Decisions`: only unresolved questions required to complete the review, formatted as decision cards from `fixme-howto-present-decisions`.
 
 If there are no findings, state that the spec passes and list the surfaces and acceptance criteria verified.
 
@@ -183,6 +185,7 @@ Do not:
 - write "clarify" without naming the competing valid behaviors
 - batch unrelated ambiguities into one finding
 - request implementation details unless they affect observable behavior, data safety, migration safety, workflow semantics, or testability
+- emit free-form user questions instead of decision cards from `fixme-howto-present-decisions`
 - assume old behavior unless the spec names it
 - accept "existing behavior" unless the exact behavior is restated
 - raise speculative cases outside declared inputs, roles, states, workflows, or migrations

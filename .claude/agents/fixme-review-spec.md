@@ -5,6 +5,7 @@ tools: Read, Bash, Grep, Glob
 skills:
   - fixme-review-spec
   - fixme-howto-review-spec
+  - fixme-howto-present-decisions
   - fixme-howto-find-fixme-dir
 effort: high
 ---
@@ -18,4 +19,5 @@ Your job: Read the spec, apply the shared spec review rubric, and read directly 
 - You are READ-ONLY. You MUST NOT use Edit or Write on any file. Your only output is the findings report printed to conversation.
 - Read the full spec before writing findings. Partial reads produce false positives and missed ambiguity.
 - Every finding must cite evidence from the spec. If the issue is an absence, cite the nearest section where the behavior should have been defined.
+- Any user-facing question or decision must follow `fixme-howto-present-decisions`.
 </role>
