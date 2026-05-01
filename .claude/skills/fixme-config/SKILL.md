@@ -42,8 +42,9 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get
 Use the `config` object from `config get` as the current config. Do not read and rewrite `config.json` manually.
 
 Parse current values (defaults if not present):
-- `models.profile` - model profile for agents (default: absent, meaning `quality`)
-- `models.overrides` - per-agent model overrides (default: `{}`)
+- `models.profile` - runtime profile for agents (default: absent, meaning `quality`)
+- `models.runtime` - optional CLI default runtime, `claude` or `codex` (default: absent, meaning `claude`)
+- `models.overrides` - Claude-only per-agent model tag overrides (default: `{}`)
 - `ticketBackend` - ticket backend (default: `fixme-tickets-md`)
 - `workflows` - named workflow definitions. Each workflow has `phases` and `outerMaxCycles` (default: absent, meaning standard workflows)
 - `project.devServer.url` - dev server URL (default: null)
@@ -81,10 +82,10 @@ AskUserQuestion([
     header: "Model",
     multiSelect: false,
     options: [
-      { label: "Quality", description: "Opus for all agents (highest cost, best results)" },
-      { label: "Balanced (Recommended)", description: "Opus for planning/review, Sonnet for execution" },
-      { label: "Budget", description: "Sonnet for writing, Haiku for execution (lowest cost)" },
-      { label: "Inherit", description: "Use current session model for all agents" }
+      { label: "Quality", description: "Claude: opus/high for all agents. Codex: extra-high effort for all agents." },
+      { label: "Balanced (Recommended)", description: "Claude: opus planning/review, sonnet execution. Codex: extra-high planning/review, high execution." },
+      { label: "Budget", description: "Claude: sonnet heavy agents, haiku task/verify. Codex: high heavy agents, medium task/execution/verify." },
+      { label: "Inherit", description: "Omit model and reasoning controls; use the runtime defaults." }
     ]
   },
   {
@@ -432,13 +433,14 @@ No other Linear fields are staged. `linear.defaultLabels` and `linear.defaultPro
 Before writing, validate the config:
 
 1. **Model profile** must be one of: `quality`, `balanced`, `budget`, `inherit`
-2. **Model overrides** values must be one of: `opus`, `sonnet`, `haiku`, `inherit`
-3. **Workflow phases** must have unique `name` values within each workflow
-4. **Workflow skills** should reference known fixme skill names (warn on unknown, don't block)
-5. **Review config** `maxCycles` must be a positive integer if present
-6. **Workflow outer loop** `workflows.<workflow>.outerMaxCycles` must be a positive integer if present
-7. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
-8. **Linear fields** (only if backend is `fixme-tickets-linear`):
+2. **Model runtime** must be one of: `claude`, `codex` if present
+3. **Model overrides** values must be one of: `opus`, `sonnet`, `haiku`, `inherit`
+4. **Workflow phases** must have unique `name` values within each workflow
+5. **Workflow skills** should reference known fixme skill names (warn on unknown, don't block)
+6. **Review config** `maxCycles` must be a positive integer if present
+7. **Workflow outer loop** `workflows.<workflow>.outerMaxCycles` must be a positive integer if present
+8. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
+9. **Linear fields** (only if backend is `fixme-tickets-linear`):
    - `linear.teamId` must be a non-empty string
    - `linear.teamName` must be a non-empty string
 

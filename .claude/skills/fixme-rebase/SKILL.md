@@ -1,7 +1,7 @@
 ---
 name: fixme-rebase
-description: Safely rebase current branch onto its base branch with conflict resolution, verification, and data protection. Detects base branch from PR target or merge-base, analyzes divergence, backs up when needed, resolves conflicts with intent awareness, and runs full verification before declaring done.
-argument-hint: "[base-branch]"
+description: Safely rebase current branch onto its base branch with conflict resolution, verification, data protection, and default push after clean verification. Detects base branch from PR target or merge-base, analyzes divergence, backs up when needed, resolves conflicts with intent awareness, runs full verification, and pushes unless --no-push is set.
+argument-hint: "[base-branch] [--no-push]"
 ---
 
 ## Fixme Directory
@@ -16,7 +16,7 @@ Rebase the current branch onto its base branch. Safety, clarity, and verificatio
 
 ## Hard Constraints
 
-- **Never push without explicit user confirmation.** Offer to push, then wait. Force-push implications must be stated.
+- **Push is default when `--no-push` is absent and verification passed.** Only skip the default push when final verification failed, the working tree is not clean, no upstream or push target can be resolved, or `--no-push` was requested. Use `--force-with-lease` when the branch was previously pushed and history was rewritten.
 - **Never rebase main, master, or develop.** If on a protected branch, stop immediately and tell the user.
 - **Never lose uncommitted work.** Stash before rebase, unstash after. Verify stash succeeded.
 - **Never proceed through ambiguity.** If the base branch is unclear, the user's intent is unclear, or a conflict resolution is uncertain - stop and ask.
@@ -29,6 +29,12 @@ Rebase the current branch onto its base branch. Safety, clarity, and verificatio
 ### Phase 0: Pre-Flight Safety
 
 Before anything else, capture the full current state. This is the recovery baseline.
+
+0. **Parse arguments:**
+   - Treat `--no-push` as a workflow flag, not a base branch.
+   - Set `AUTO_PUSH=false` when `--no-push` is present.
+   - Set `AUTO_PUSH=true` when `--no-push` is absent.
+   - Remove `--no-push` from the remaining arguments before resolving the optional base branch.
 
 1. **Check for in-progress rebase or merge:**
    ```bash
@@ -263,7 +269,15 @@ Understand the scope of what's about to happen.
    git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null
    git rev-list HEAD...@{upstream} --count --left-right 2>/dev/null
    ```
-   If the branch tracks a remote and has pushed commits: flag that push after rebase will require `--force-with-lease`.
+   If the branch tracks a remote and has pushed commits: flag that push after rebase will require `--force-with-lease`. Record:
+   - `BRANCH_WAS_PUSHED=true`
+   - `PUSH_REMOTE=origin` unless the upstream remote is different
+   - `PUSH_BRANCH=<current branch>`
+   - `PUSH_COMMAND=git push --force-with-lease <remote> <branch>`
+
+   If the branch tracks a remote and has not been rewritten by the rebase: record `PUSH_COMMAND=git push <remote> <branch>`.
+
+   If the branch has no upstream or push target: record `PUSH_COMMAND=null`. Do not auto-push later; ask the user for the remote and branch name after verification.
 
 6. **Check for already-rebased or cherry-picked commits:**
    ```bash
@@ -1130,23 +1144,47 @@ uncertain and what the reader should check to gain confidence.>
 <git log --oneline --graph -10, showing the new linear history>
 ```
 
-#### Part 5: Push Offer
+#### Part 5: Push
+
+Before any push, run:
+
+```bash
+git status --porcelain
+```
+
+- If output is non-empty: do not push. Report that verification passed but the working tree is not clean, list the files, and ask how to proceed.
+- If final verification failed: do not push. Report the failed command(s) and stop.
+- If `PUSH_COMMAND=null`: do not push. Ask the user for the remote and branch name.
 
 **If the branch was previously pushed:**
 "This branch was previously pushed to `origin/<branch>`. Updating the remote requires force-push. I'll use `--force-with-lease` which is safe against overwriting someone else's changes."
 
-**Always end with:**
-"Ready to push? I'll run: `git push --force-with-lease origin <branch>`"
+**Default path:**
+If `AUTO_PUSH=true`, verification passed, the working tree is clean, and `PUSH_COMMAND` is known, print the exact command and run it immediately:
 
-**Wait for explicit confirmation. Do not push.**
-
-If the user confirms push:
 ```bash
 git push --force-with-lease origin <branch>
 ```
 
+Use the recorded `PUSH_COMMAND`; the command above is the force-push shape for a previously pushed rebased branch. For a non-rewritten branch with a normal upstream, use `git push <remote> <branch>`.
+
+**No-push path:**
+If `--no-push` is present: do not push automatically. Present the exact push command and wait for confirmation.
+
+```
+Rebase and verification are complete. Push was skipped because `--no-push` was set.
+Ready to push? I'll run: `<PUSH_COMMAND>`
+```
+
+If the user confirms push, run the recorded `PUSH_COMMAND`.
+
 If push succeeds and a backup branch was created:
 "Push successful. Backup branch `backup/fixme-rebase/<branch>-<timestamp>` is no longer needed. Want me to delete it?"
+
+If the push fails:
+- Do not retry blindly.
+- If `--force-with-lease` failed, tell the user the remote changed since it was last fetched and ask before fetching/rechecking.
+- If authentication or network failed, report the exact failure and leave the branch local.
 
 ## Edge Cases
 

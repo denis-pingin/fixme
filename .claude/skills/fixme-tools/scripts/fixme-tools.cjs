@@ -62,6 +62,25 @@ const MODEL_PROFILES = {
 
 const DEFAULT_MODEL = 'opus';
 const DEFAULT_PROFILE = 'quality';
+const DEFAULT_RUNTIME = 'claude';
+const CLAUDE_REASONING_EFFORT = 'high';
+
+const CODEX_REASONING_PROFILES = {
+  quality: {
+    default: 'xhigh',
+  },
+  balanced: {
+    default: 'xhigh',
+    'fixme-execute-plan': 'high',
+    'fixme-browser-verify': 'high',
+  },
+  budget: {
+    default: 'high',
+    'fixme-execute-plan': 'medium',
+    'fixme-task': 'medium',
+    'fixme-browser-verify': 'medium',
+  },
+};
 
 const STANDARD_PIPELINES = {
   default: [
@@ -151,6 +170,7 @@ const STANDARD_OUTER_MAX_CYCLES = 2;
 const STANDARD_PIPELINE_NAMES = Object.keys(STANDARD_PIPELINES);
 const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
+const VALID_RUNTIME_VALUES = new Set(['claude', 'codex']);
 const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
 const FIXME_CODEX_MARKER = '# Fixme Agent Configuration - managed by fixme installer';
 const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
@@ -169,44 +189,93 @@ const KNOWN_FIXME_SKILLS = new Set([
   'fixme-review-code',
   'fixme-review-plan',
   'fixme-review-spec',
+  'fixme-task',
   'fixme-write-plan',
   'fixme-write-product-spec',
   'fixme-write-technical-spec',
 ]);
 
 /**
- * Resolve the model for a sub-agent based on config.
+ * Resolve runtime-specific agent settings based on config.
+ *
+ * Claude receives short model names plus high reasoning effort. Codex receives
+ * reasoning effort only so the user's selected Codex model remains in force.
+ *
  * Resolution order:
  *   1. models.overrides[agent] (source = 'override')
- *   2. MODEL_PROFILES[models.profile][agent] (source = 'profile')
- *   3. Default: opus (source = 'default')
+ *   2. profile table lookup (source = 'profile')
+ *   3. Default profile settings (source = 'default')
  * Profile is reported as-is from config even when the agent isn't in the table
  * (so the user's selection stays visible in the banner).
  */
-function resolveModel(agentName, fixmeRoot) {
-  const result = { agent: agentName, model: DEFAULT_MODEL, profile: DEFAULT_PROFILE, source: 'default' };
+function resolveRuntime(rawRuntime) {
+  return VALID_RUNTIME_VALUES.has(rawRuntime) ? rawRuntime : DEFAULT_RUNTIME;
+}
+
+function isKnownProfile(profile) {
+  return profile === 'inherit' || Object.prototype.hasOwnProperty.call(MODEL_PROFILES, profile);
+}
+
+function applyRuntimeSettings(result, agentName, modelOrNull) {
+  if (result.runtime === 'codex') {
+    result.model = null;
+    result.reasoning_effort = modelOrNull === 'inherit'
+      ? null
+      : codexReasoningEffortForAgent(result.profile, agentName);
+    return result;
+  }
+
+  result.model = modelOrNull || DEFAULT_MODEL;
+  result.reasoning_effort = result.model === 'inherit' ? null : CLAUDE_REASONING_EFFORT;
+  return result;
+}
+
+function codexReasoningEffortForAgent(profile, agentName) {
+  if (profile === 'inherit') return null;
+  const table = CODEX_REASONING_PROFILES[profile] || CODEX_REASONING_PROFILES[DEFAULT_PROFILE];
+  return table[agentName] || table.default;
+}
+
+function resolveModel(agentName, fixmeRoot, options = {}) {
+  const requestedRuntime = typeof options.runtime === 'string' ? options.runtime : null;
+  const result = {
+    agent: agentName,
+    runtime: resolveRuntime(requestedRuntime),
+    model: DEFAULT_MODEL,
+    reasoning_effort: CLAUDE_REASONING_EFFORT,
+    profile: DEFAULT_PROFILE,
+    source: 'default',
+  };
 
   const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
   let config = null;
   try {
     config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch {
-    return result;
+    return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
   }
 
   const models = (config && typeof config.models === 'object') ? config.models : null;
-  if (!models) return result;
+  if (!requestedRuntime && models && typeof models.runtime === 'string') {
+    result.runtime = resolveRuntime(models.runtime);
+  }
+  if (!models) return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
 
   const rawProfile = typeof models.profile === 'string' ? models.profile : null;
-  const profileKnown = rawProfile && Object.prototype.hasOwnProperty.call(MODEL_PROFILES, rawProfile);
+  const profileKnown = rawProfile && isKnownProfile(rawProfile);
   result.profile = profileKnown ? rawProfile : DEFAULT_PROFILE;
 
   const overrides = (models.overrides && typeof models.overrides === 'object') ? models.overrides : {};
-  if (Object.prototype.hasOwnProperty.call(overrides, agentName) && typeof overrides[agentName] === 'string') {
+  if (result.runtime === 'claude' && Object.prototype.hasOwnProperty.call(overrides, agentName) && typeof overrides[agentName] === 'string') {
     result.model = overrides[agentName];
     result.source = 'override';
     if (rawProfile) result.profile = rawProfile;
-    return result;
+    return applyRuntimeSettings(result, agentName, result.model);
+  }
+
+  if (profileKnown && rawProfile === 'inherit') {
+    result.source = 'profile';
+    return applyRuntimeSettings(result, agentName, 'inherit');
   }
 
   if (profileKnown) {
@@ -214,12 +283,12 @@ function resolveModel(agentName, fixmeRoot) {
     if (Object.prototype.hasOwnProperty.call(table, agentName)) {
       result.model = table[agentName];
       result.source = 'profile';
-      return result;
+      return applyRuntimeSettings(result, agentName, result.model);
     }
     result.profile = rawProfile;
   }
 
-  return result;
+  return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
 }
 
 // ============================================================================
@@ -1090,6 +1159,7 @@ function isSupportedConfigKey(parts) {
 
   if (top === 'models') {
     if (second === 'profile') return parts.length === 2;
+    if (second === 'runtime') return parts.length === 2;
     if (second === 'overrides' && parts.length === 3) return true;
     return false;
   }
@@ -1240,6 +1310,12 @@ function validateConfigSetValue(parts, value) {
   if (top === 'models' && second === 'profile') {
     if (!VALID_MODEL_PROFILES.has(value)) {
       throw new Error("models.profile must be one of: quality, balanced, budget, inherit");
+    }
+  }
+
+  if (top === 'models' && second === 'runtime') {
+    if (typeof value !== 'string' || !VALID_RUNTIME_VALUES.has(value)) {
+      throw new Error("models.runtime must be one of: claude, codex");
     }
   }
 
@@ -2258,8 +2334,9 @@ function getCodexSkillAdapterHeader(skillName) {
     '',
     '## Agent Dispatch',
     '',
-    '- When Fixme source instructions say `Agent(subagent_type="X", prompt="Y")`, use Codex `spawn_agent(agent_type="X", message="Y")`.',
-    '- Omit Claude model arguments in Codex dispatch calls. Fixme agent models stay visible through config and generated agent files.',
+    '- Before dispatching a Fixme agent, resolve its Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model X --runtime codex`.',
+    '- When Fixme source instructions say `Agent(subagent_type="X", prompt="Y")`, use Codex `spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")` when the resolver returns a `reasoning_effort` value.',
+    '- Omit `reasoning_effort` only when the resolver returns `null`. Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
     '',
     '## User Questions',
@@ -2332,7 +2409,8 @@ function codexDeveloperInstructions(agentContent) {
   const lines = [];
 
   lines.push('<codex_runtime>');
-  lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, use Codex `spawn_agent(agent_type=..., message=...)` with the same agent name and task prompt.');
+  lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, resolve Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex`, then use Codex `spawn_agent(agent_type=..., reasoning_effort=..., message=...)` with the same agent name and task prompt.');
+  lines.push('- Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails. Omit `reasoning_effort` only when the resolver returns `null`.');
   lines.push('- When Fixme source instructions say `Skill("name", ...)` and no Skill tool exists, load `$HOME/.codex/skills/name/SKILL.md` and run that skill workflow in the current agent.');
   lines.push('- Do not convert a required Fixme dispatch into direct implementation work.');
   lines.push('</codex_runtime>');
@@ -2359,6 +2437,10 @@ function tomlLiteral(key, value) {
   return `${key} = ${JSON.stringify(String(value))}`;
 }
 
+function codexDefaultReasoningEffortForAgent(agentName) {
+  return codexReasoningEffortForAgent(DEFAULT_PROFILE, agentName);
+}
+
 function generateCodexAgentToml(agentName, agentContent) {
   const { frontmatter } = parseFrontmatter(agentContent);
   const resolvedName = frontmatter.name || agentName;
@@ -2368,6 +2450,7 @@ function generateCodexAgentToml(agentName, agentContent) {
     `name = ${JSON.stringify(resolvedName)}`,
     `description = ${JSON.stringify(description)}`,
     `sandbox_mode = ${JSON.stringify(codexSandboxForAgent(frontmatter))}`,
+    `model_reasoning_effort = ${JSON.stringify(codexDefaultReasoningEffortForAgent(resolvedName))}`,
     tomlLiteral('developer_instructions', instructions),
   ].join('\n') + '\n';
 }
@@ -2717,7 +2800,7 @@ function main() {
         if (!agentName) {
           return error('Usage: fixme-tools.cjs resolve-model <agent-name>');
         }
-        return output(resolveModel(agentName, fixmeRoot));
+        return output(resolveModel(agentName, fixmeRoot, { runtime: flags.runtime }));
       }
 
       default:

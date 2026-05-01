@@ -41,7 +41,7 @@ Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project c
 
 ### fixme-tools.cjs CLI
 
-The shared runtime CLI used for fixme root resolution, project context, model resolution, and markdown ticket/session state. Key commands:
+The shared runtime CLI used for fixme root resolution, project context, agent runtime resolution, and markdown ticket/session state. Key commands:
 
 ```bash
 # Session management
@@ -103,7 +103,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
   fixme-browser-verify/     # Browser verification after code changes (standalone)
   fixme-config/             # Interactive configuration management (standalone)
   fixme-ticket/             # Create Linear tickets from description or context (standalone)
-  fixme-tools/              # Shared runtime CLI (root, context, model, ticket/session state)
+  fixme-tools/              # Shared runtime CLI (root, context, agent runtime, ticket/session state)
     scripts/                # fixme-tools.cjs + tests
     templates/              # ticket.md, session.md templates used by markdown state commands
   fixme-tickets/            # Abstract ticket interface (routes to backend)
@@ -124,26 +124,26 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 
 Skills dispatched as sub-agents have corresponding agent definitions in `.claude/agents/`. The agent definition binds role constraints (identity, boundaries, tool restrictions) at the system level via `subagent_type`, and preloads operational procedures via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
 
-| Agent | Role | Key Constraint | Default Model |
-| ----- | ---- | -------------- | ------------- |
-| fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | sonnet |
-| fixme-review-spec | Specification reviewer | Read-only, structured findings | opus |
-| fixme-handle-spec-review | Specification finding classifier | Read-only, outputs routing directives | opus |
-| fixme-write-product-spec | Product specification writer | Writes only product specification files | opus |
-| fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus |
-| fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus |
-| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | sonnet |
-| fixme-review-plan | Plan reviewer | Read-only, structured findings | opus |
-| fixme-review-code | Code reviewer | Read-only, structured findings | opus |
-| fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus |
-| fixme-handle-code-review | Finding classifier | Read-only, outputs routing directives | opus |
-| fixme-investigate | Bug investigator | Writes reports, never fixes code | opus |
-| fixme-research | Codebase explorer | Writes research output, never fixes code | opus |
-| fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | sonnet |
+| Agent | Role | Key Constraint | Default Claude Model | Default Codex Effort |
+| ----- | ---- | -------------- | -------------------- | -------------------- |
+| fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | opus | xhigh |
+| fixme-review-spec | Specification reviewer | Read-only, structured findings | opus | xhigh |
+| fixme-handle-spec-review | Specification finding classifier | Read-only, outputs routing directives | opus | xhigh |
+| fixme-write-product-spec | Product specification writer | Writes only product specification files | opus | xhigh |
+| fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus | xhigh |
+| fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus | xhigh |
+| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | xhigh |
+| fixme-review-plan | Plan reviewer | Read-only, structured findings | opus | xhigh |
+| fixme-review-code | Code reviewer | Read-only, structured findings | opus | xhigh |
+| fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh |
+| fixme-handle-code-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh |
+| fixme-investigate | Bug investigator | Writes reports, never fixes code | opus | xhigh |
+| fixme-research | Codebase explorer | Writes research output, never fixes code | opus | xhigh |
+| fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | xhigh |
 
 Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
-Model selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget profiles. Default (no config): opus for all agents.
+Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus high reasoning effort. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Claude `opus` and Codex `xhigh` for all agents.
 
 ### Ticket State Machine
 

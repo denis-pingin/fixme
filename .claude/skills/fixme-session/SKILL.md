@@ -175,7 +175,7 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 ## Dispatch Loop
 
-**Model inheritance:** Sub-agents inherit the orchestrator's model by default. Do not specify a model in Task dispatch prompts unless overriding for a specific reason.
+**Runtime settings:** Resolve every dispatched Fixme agent with `fixme-tools.cjs resolve-model` before calling Agent. Claude dispatch uses the resolved short model tag plus high reasoning effort. Codex-installed skills pass `--runtime codex`, omit model, and pass only the resolved reasoning effort so the user-selected Codex model remains in force.
 
 **Concurrent task limit (v1):** Only one background fixme-task at a time. Track the active task's ticket path in session.md frontmatter (`active_task` field). This prevents git state conflicts. Future: multiple concurrent tasks using git worktrees.
 
@@ -207,7 +207,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md investigating`
    If the transition fails, transition to failed and skip to next ticket (go to step 2).
 
-   **Resolve model and print visibility banner before dispatch:**
+   **Resolve runtime settings and print visibility banner before dispatch:**
 
    ```bash
    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-investigate
@@ -216,7 +216,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Print a one-line banner to the user (before calling the Agent tool):
 
    ```
-   → dispatching fixme-investigate (model: {model}, profile: {profile}, source: {source})
+   → dispatching fixme-investigate (runtime: {runtime}, model: {model}, reasoning: {reasoning_effort}, profile: {profile}, source: {source})
    ```
 
    Then dispatch:
@@ -225,6 +225,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Agent(
      subagent_type: "fixme-investigate",
      model: "{resolved-model}",
+     reasoning_effort: "{resolved-reasoning-effort}",
      prompt: |
        <task>
        Investigate this bug:
@@ -234,6 +235,8 @@ This is the core execution cycle. Repeat until the user stops the session or the
        </task>
    )
    ```
+
+   If the resolver returns `null` for `model` or `reasoning_effort`, omit that Agent field.
 
    After the investigation agent returns:
    - ALWAYS read ticket state from disk via fixme-tickets: `ticket list <session-dir>`
@@ -250,7 +253,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
 6. **Dispatch fixme-task in background:**
    Record `active_task` in session.md frontmatter (set to the ticket path). Use the Edit tool to update the frontmatter.
 
-   **Resolve model and print visibility banner before dispatch:**
+   **Resolve runtime settings and print visibility banner before dispatch:**
 
    ```bash
    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-task
@@ -259,7 +262,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    Print a one-line banner to the user:
 
    ```
-   → dispatching fixme-task in background (model: {model}, profile: {profile}, source: {source})
+   → dispatching fixme-task in background (runtime: {runtime}, model: {model}, reasoning: {reasoning_effort}, profile: {profile}, source: {source})
    ```
 
    Then dispatch:
@@ -270,6 +273,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
      run_in_background: true,
      subagent_type: "fixme-task",
      model: "{resolved-model}",
+     reasoning_effort: "{resolved-reasoning-effort}",
      prompt: |
        <task>
        Execute this task:
@@ -286,6 +290,8 @@ This is the core execution cycle. Repeat until the user stops the session or the
        </task>
    )
    ```
+
+   If the resolver returns `null` for `model` or `reasoning_effort`, omit that Agent field.
 
 7. **Return to conversation loop:**
    After dispatching fixme-task in background, the session is immediately responsive. It can:

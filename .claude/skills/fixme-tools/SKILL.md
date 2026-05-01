@@ -1,6 +1,6 @@
 ---
 name: fixme-tools
-description: Shared fixme runtime CLI package. Provides fixme-tools.cjs for fixme root resolution, config schema migration/writes, project context commands, model resolution, Codex skill and agent installation, markdown ticket/session state operations, and dynamic workflow state-machine helpers.
+description: Shared fixme runtime CLI package. Provides fixme-tools.cjs for fixme root resolution, config schema migration/writes, project context commands, agent runtime resolution, Codex skill and agent installation, markdown ticket/session state operations, and dynamic workflow state-machine helpers.
 disable-model-invocation: true
 ---
 
@@ -19,7 +19,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Resolve `<fixme-dir>` with `root`
 - Create, migrate, validate, and atomically write `<fixme-dir>/config.json`
 - Detect, load, and save project context
-- Resolve configured agent models
+- Resolve configured agent runtime settings
 - Install Codex-adapted Fixme skill copies under `~/.codex/skills`
 - Register Fixme agents in Codex `config.toml`
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
@@ -45,7 +45,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 
 `codex-skills install` copies source `fixme*` skills into `~/.codex/skills`, rewrites `.claude` paths to `.codex`, prepends a Codex runtime adapter to each installed `SKILL.md`, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
 
-`codex-agents install` generates `~/.codex/agents/fixme-*.toml`, copies converted `fixme-*.md` agent files, removes stale Fixme agent files, and updates `~/.codex/config.toml` with `[agents.fixme-*]` tables that point at absolute `config_file` paths. It deliberately does not emit `[[agents]]`.
+`codex-agents install` generates `~/.codex/agents/fixme-*.toml`, copies converted `fixme-*.md` agent files, removes stale Fixme agent files, and updates `~/.codex/config.toml` with `[agents.fixme-*]` tables that point at absolute `config_file` paths. Generated Codex agents set `model_reasoning_effort` but do not pin a model. It deliberately does not emit `[[agents]]`.
 
 ## Ownership
 

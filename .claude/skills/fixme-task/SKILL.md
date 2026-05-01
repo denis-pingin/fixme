@@ -430,7 +430,7 @@ The orchestrator may ONLY use these tools:
 - **Write** - ONLY on `<fixme-dir>/decisions.md`
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch; installed Codex skills pass `--runtime codex`)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
@@ -544,30 +544,39 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 
 **Never paste SKILL.md content into the agent prompt.** Never tell agents to "read your SKILL.md first." The agent definition handles both role binding and SKILL.md preloading.
 
-**Before every Agent dispatch, resolve the model via the CLI and print a visibility banner.** This is non-negotiable. The orchestrator must not dispatch without first asking the tool what model to use, and must not dispatch silently.
+**Before every Agent dispatch, resolve the runtime settings via the CLI and print a visibility banner.** This is non-negotiable. The orchestrator must not dispatch without first asking the tool what model or reasoning controls to use, and must not dispatch silently.
 
-Step 1 - Resolve the model:
+Step 1 - Resolve runtime settings:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>
 ```
 
-Returns JSON like `{"agent":"fixme-write-plan","model":"opus","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, do not skip the call.
+Returns JSON like `{"agent":"fixme-write-plan","runtime":"claude","model":"opus","reasoning_effort":"high","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, reasoning effort, or runtime behavior, and do not skip the call.
+
+Installed Codex skills resolve Codex settings with:
+
+```bash
+node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex
+```
+
+Codex results intentionally return `model: null`. Codex dispatch must preserve the user-selected Codex model and pass only `reasoning_effort` when the resolver returns one.
 
 Step 2 - Print the banner as a single line of user-visible text before the Agent tool call:
 
 ```
-→ dispatching fixme-write-plan (model: opus, profile: quality, source: profile)
+→ dispatching fixme-write-plan (runtime: claude, model: opus, reasoning: high, profile: quality, source: profile)
 ```
 
-The banner is the user's only window into model selection. If you dispatch without it, you are hiding state the user needs to audit runtime behavior.
+The banner is the user's only window into runtime selection. If you dispatch without it, you are hiding state the user needs to audit runtime behavior.
 
-Step 3 - Dispatch with the resolved model:
+Step 3 - Dispatch with the resolved runtime settings:
 
 ```
 Agent(
   subagent_type="{skill-name}",
   model="{resolved-model}",
+  reasoning_effort="{resolved-reasoning-effort}",
   prompt="
     <task>
     [operation description with specific inputs]
@@ -581,6 +590,8 @@ Agent(
 )
 ```
 
+When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
+
 The agent's role and operational procedures are already loaded by its agent definition. The dispatch prompt only contains task-specific inputs.
 
 ### Tool restrictions
@@ -589,14 +600,18 @@ Tool access for each sub-skill is enforced by its agent definition in `~/.claude
 
 ### Model Resolution
 
-Model resolution is performed by `fixme-tools.cjs resolve-model` (see the dispatch contract above). The CLI is the authoritative source for both the profile table and the `override > profile > default` resolution order. When `models.profile` is not set or the `models` section is missing, the CLI returns `opus` with `profile: quality` and `source: default`. When a configured profile is unknown (typo, future value), the CLI also falls back to `opus`/`quality`/`default` - so a malformed profile never silently picks a different model.
+Model and reasoning resolution is performed by `fixme-tools.cjs resolve-model` (see the dispatch contract above). The CLI is the authoritative source for the profile tables and the `override > profile > default` resolution order.
+
+Claude runtime receives short model tags only (`opus`, `sonnet`, `haiku`, `inherit`) plus `reasoning_effort: high` for every non-inherit model. No versioned Claude model IDs are emitted.
+
+Codex runtime receives no model value. It receives only `reasoning_effort`, so the user-selected Codex model remains in force. Inherit omits both model and reasoning controls.
 
 **`source` field values:**
 - `override` - came from `models.overrides[agent]`
 - `profile` - came from the profile table lookup
 - `default` - nothing applied (no config, unknown profile, or agent absent from the profile table)
 
-Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
+Claude profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 
 | Agent | quality | balanced | budget |
 |-------|---------|----------|--------|
@@ -615,6 +630,15 @@ Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 | fixme-task | opus | sonnet | haiku |
 | fixme-browser-verify | opus | sonnet | haiku |
 
+Codex reasoning quick reference:
+
+| Agent group | quality | balanced | budget |
+|-------------|---------|----------|--------|
+| planning, specs, review, handlers, research, investigation | xhigh | xhigh | high |
+| fixme-task | xhigh | xhigh | medium |
+| fixme-execute-plan | xhigh | high | medium |
+| fixme-browser-verify | xhigh | high | medium |
+
 **Config example:**
 
 ```json
@@ -628,7 +652,7 @@ Profile quick reference (authoritative table lives in `fixme-tools.cjs`):
 }
 ```
 
-Valid model values: `opus`, `sonnet`, `haiku`, `inherit`. The CLI does not validate the model string - it returns whatever is configured so malformed values surface at Agent dispatch time rather than being silently dropped.
+Valid model override values: `opus`, `sonnet`, `haiku`, `inherit`. Config writes validate override values; legacy malformed values may still surface from an existing hand-edited config, so the visibility banner must be checked before dispatch.
 
 ### Ticket transition dispatch
 
