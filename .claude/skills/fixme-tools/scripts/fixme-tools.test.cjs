@@ -1082,6 +1082,32 @@ test('context detect uses bun when bun.lockb exists', () => {
   assert(d.build === 'bun build', 'build should be bun build');
   assert(d.test.command === 'bun test', 'test.command should be bun test');
   assert(d.lint === 'bun lint', 'lint should be bun lint');
+  assert(d.install === 'bun install --frozen-lockfile', 'install should use bun locked install');
+});
+
+test('context detect emits locked install commands from lockfiles', () => {
+  const cases = [
+    ['bun.lock', 'bun install --frozen-lockfile'],
+    ['pnpm-lock.yaml', 'pnpm install --frozen-lockfile'],
+    ['yarn.lock', 'yarn install --frozen-lockfile'],
+    ['package-lock.json', 'npm ci'],
+  ];
+
+  for (const [lockfile, installCommand] of cases) {
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+      scripts: { test: 'vitest' },
+      devDependencies: { vitest: '^1.0.0' }
+    }));
+    fs.writeFileSync(path.join(tmp, lockfile), '');
+
+    const result = runInDir('context detect', tmp);
+    assert(result.ok, `context detect should succeed for ${lockfile}`);
+    assert(
+      result.data.install === installCommand,
+      `${lockfile} should produce ${installCommand}, got ${result.data.install}`
+    );
+  }
 });
 
 test('context detect falls back to npm run when no lockfile', () => {
@@ -1095,6 +1121,7 @@ test('context detect falls back to npm run when no lockfile', () => {
   const d = result.data;
   assert(d.build === 'npm run build', 'build should be npm run build');
   assert(d.test.command === 'npm run test', 'test.command should be npm run test');
+  assert(d.install === 'npm install', 'install should fall back to npm install without a lockfile');
 });
 
 test('context save writes to config.json project key', () => {

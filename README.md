@@ -106,7 +106,7 @@ Creates a Linear ticket from a description or the current conversation context. 
 /fixme-config
 ```
 
-Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget), project commands (build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
+Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget), project commands (install/build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
 
 `/fixme-config` writes through `fixme-tools.cjs config` commands, not by hand-editing JSON. The tool creates missing config files, backfills newly added standard workflows, validates workflow cycle limits, preserves custom config, and writes atomically.
 

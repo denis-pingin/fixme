@@ -66,6 +66,7 @@ The central shared artifact. Every agent reads it; several write to specific sec
 |-------|-----------|---------|
 | `project.devServer.url` | `context detect` + user confirmation | SKILL.md (browser setup, passed to agents), Investigation Agent, fixme-browser-verify |
 | `project.devServer.command` | `context detect` + user confirmation | SKILL.md (server start) |
+| `project.install` | `context detect` + user confirmation | fixme-rebase, verification baseline setup |
 | `project.build` | `context detect` + user confirmation | fixme-execute-plan |
 | `project.lint` | `context detect` + user confirmation | fixme-execute-plan |
 | `project.test` | `context detect` + user confirmation | fixme-execute-plan |

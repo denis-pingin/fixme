@@ -69,7 +69,7 @@ When sub-command is `start`:
    Invoke fixme-tickets: `context load`
    - If project config found: use it silently, do not prompt user.
    - If NOT found: invoke fixme-tickets: `context detect`
-     Parse the JSON output. **Output** the detected configuration as a formatted markdown table in text (framework, dev server URL, build/lint/test commands). Then call AskUserQuestion with a short plain-text prompt: "Does this project configuration look correct?" with options "Looks correct" and "I need to adjust something". If the user needs adjustments, ask follow-up questions to get the correct values, then manually adjust the JSON.
+     Parse the JSON output. **Output** the detected configuration as a formatted markdown table in text (framework, dev server URL, install/build/lint/test commands). Then call AskUserQuestion with a short plain-text prompt: "Does this project configuration look correct?" with options "Looks correct" and "I need to adjust something". If the user needs adjustments, ask follow-up questions to get the correct values, then manually adjust the JSON.
      After confirmation, invoke fixme-tickets: `context save --data '<JSON from detect output>'`
 
 3. **Set up browser environment:** Follow the Session Environment Setup procedure below.

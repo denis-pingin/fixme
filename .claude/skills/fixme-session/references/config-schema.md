@@ -16,6 +16,7 @@
       "command": "yarn dev",
       "hmr": true
     },
+    "install": "yarn install --frozen-lockfile",
     "build": "yarn build",
     "lint": "yarn lint",
     "test": {
@@ -252,6 +253,7 @@ The state machine is derived from the workflow phase list. Disabled phases (`"en
 | `project.devServer.url` | string | No | Dev server base URL |
 | `project.devServer.command` | string | No | Shell command to start dev server |
 | `project.devServer.hmr` | boolean | No | Whether HMR is supported |
+| `project.install` | string | No | Dependency install command used before verification baselines |
 | `project.build` | string | No | Build command |
 | `project.lint` | string | No | Lint command |
 | `project.test` | string\|object | No | Test command (string) or test config object |

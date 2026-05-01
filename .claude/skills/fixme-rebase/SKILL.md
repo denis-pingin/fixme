@@ -726,18 +726,48 @@ If no backup is needed (simple, clean, few commits, not pushed): skip this step.
 
 Run the project's full verification suite BEFORE the rebase. This establishes what "working" looks like.
 
-1. **Load project verification commands:**
+1. **Load project verification commands and install command:**
    - **First**, check `<fixme-dir>/config.json` field `project` for `build`, `lint`, and `test.command` (or `test` if it's a string). If present, use those.
+   - Also check `project.install`. If present, use it as the dependency install command.
    - **Fallback:** detect from CLAUDE.md, package.json, Makefile, or convention.
 
-2. **Run each and record results:**
+2. **Refresh dependency install state before baseline:**
+   Dependency install state is local and ignored by git. A clean lockfile diff does not prove installed packages are present. The baseline is invalid until dependency install state has been refreshed.
+
+   If `project.install` exists, run it. Otherwise infer the install command from lockfiles:
+   - `bun.lockb` or `bun.lock` -> `bun install --frozen-lockfile`
+   - `package-lock.json` -> `npm ci`
+   - `yarn.lock` -> `yarn install --frozen-lockfile`
+   - `pnpm-lock.yaml` -> `pnpm install --frozen-lockfile`
+   - `Gemfile.lock` -> `bundle install`
+   - `Cargo.lock` -> `cargo build`
+   - `go.sum` -> `go mod download`
+   - `poetry.lock` -> `poetry install`
+   - `composer.lock` -> `composer install`
+
+   Run the install command and confirm it succeeds before proceeding. If no install command can be determined, say so in the baseline notes before running verification.
+
+3. **Run each and record results:**
    ```bash
    <build-command> 2>&1 | tail -150
    <lint-command> 2>&1 | tail -150
    <test-command> 2>&1 | tail -150
    ```
 
-3. **Record baseline:**
+4. **Retry once on dependency-resolution failures before recording baseline:**
+   If any verification output contains dependency install-state signatures, run the install command once more and rerun the failed command before classifying the failure:
+   - `Cannot find module`
+   - `ERR_MODULE_NOT_FOUND`
+   - `Module not found`
+   - `Cannot resolve`
+   - `Could not resolve`
+   - `Failed to resolve import`
+   - `import-analysis` errors for bare package imports such as `effect/unstable/http`
+   - package-manager script binaries missing from `node_modules/.bin`
+
+   If the retry passes, record the original failure as stale dependency install state, not as a pre-existing baseline failure. If the retry still fails, record the exact remaining failure as baseline.
+
+5. **Record baseline:**
    - If all pass: baseline is clean. Any post-rebase failure is a regression from conflict resolution.
    - If some fail: record exactly which tests/checks fail. These are pre-existing and should not block completion.
 
@@ -883,21 +913,21 @@ Stop here. Do not retry without user guidance.
    ```
    If pop fails due to conflicts: `git stash drop` is NOT safe. Tell the user: "Stash couldn't be applied cleanly. Your stashed changes are still in `git stash list`. Apply manually with `git stash apply` after resolving."
 
-2. **Reinstall dependencies if lockfile changed:**
-   The rebase may have brought in commits that changed dependency lockfiles. Stale dependencies cause false verification failures that appear "pre-existing" but aren't.
+2. **Refresh dependency install state after rebase:**
+   Always refresh dependency install state before post-rebase verification. The rebase may have brought in dependency changes, and local install state can be stale even when tracked lockfiles did not change.
 
    ```bash
    git diff --name-only <ORIGINAL_HEAD> HEAD -- \
-     'bun.lockb' 'package-lock.json' 'yarn.lock' 'pnpm-lock.yaml' \
+     'bun.lockb' 'bun.lock' 'package-lock.json' 'yarn.lock' 'pnpm-lock.yaml' \
      'Gemfile.lock' 'Cargo.lock' 'go.sum' 'poetry.lock' 'composer.lock'
    ```
 
-   If any lockfile changed:
-   - Detect install command from lockfile: `bun.lockb` → `bun install`, `package-lock.json` → `npm install`, `yarn.lock` → `yarn install`, `pnpm-lock.yaml` → `pnpm install`, `Gemfile.lock` → `bundle install`, `Cargo.lock` → `cargo build`, `go.sum` → `go mod download`, `poetry.lock` → `poetry install`, `composer.lock` → `composer install`.
-   - Run the install command and confirm it succeeds before proceeding.
+   Run the same install command selected in Phase 5 step 2 and confirm it succeeds before proceeding. If no install command can be determined, say so before running verification.
 
 3. **Run full verification suite:**
    Same commands as Phase 5. Compare results with baseline.
+
+   Before comparing with baseline, apply the same dependency-resolution retry rule from Phase 5 step 4 to each newly failing command. A failure that disappears after install retry is stale dependency install state, not a rebase regression.
 
    - If results match baseline (same passes, same pre-existing failures): verification passes.
    - If NEW failures appear (failures not in baseline): these are regressions from conflict resolution.

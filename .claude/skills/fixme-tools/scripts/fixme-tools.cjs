@@ -2042,6 +2042,7 @@ function contextDetect(flags) {
 
   const project = {
     devServer: { command: null, url: null, hmr: false },
+    install: null,
     build: null,
     lint: null,
     test: { command: null, runner: null },
@@ -2050,16 +2051,18 @@ function contextDetect(flags) {
 
   // 1. Detect package manager from lockfile
   const pmDetect = [
-    ['bun.lockb', 'bun'],
-    ['bun.lock', 'bun'],
-    ['pnpm-lock.yaml', 'pnpm'],
-    ['yarn.lock', 'yarn'],
-    ['package-lock.json', 'npm'],
+    ['bun.lockb', 'bun', 'bun install --frozen-lockfile'],
+    ['bun.lock', 'bun', 'bun install --frozen-lockfile'],
+    ['pnpm-lock.yaml', 'pnpm', 'pnpm install --frozen-lockfile'],
+    ['yarn.lock', 'yarn', 'yarn install --frozen-lockfile'],
+    ['package-lock.json', 'npm', 'npm ci'],
   ];
   let pm = 'npm'; // fallback
-  for (const [lockfile, name] of pmDetect) {
+  let installCommand = null;
+  for (const [lockfile, name, lockedInstallCommand] of pmDetect) {
     if (fs.existsSync(path.join(projectDir, lockfile))) {
       pm = name;
+      installCommand = lockedInstallCommand;
       break;
     }
   }
@@ -2071,6 +2074,7 @@ function contextDetect(flags) {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       const scripts = pkg.scripts || {};
+      project.install = installCommand || 'npm install';
 
       if (scripts.dev) project.devServer.command = `${run} dev`;
       if (scripts.build) project.build = `${run} build`;

@@ -49,6 +49,7 @@ Parse current values (defaults if not present):
 - `project.devServer.url` - dev server URL (default: null)
 - `project.devServer.command` - dev server start command (default: null)
 - `project.devServer.hmr` - Hot Module Replacement support (default: false)
+- `project.install` - dependency install command (default: null)
 - `project.build` - build command (default: null)
 - `project.lint` - lint command (default: null)
 - `project.test` - test command or object (default: null)
@@ -262,6 +263,7 @@ Detected project settings:
 | Framework         | {framework or 'unknown'} |
 | Dev server URL    | {url or 'not set'}       |
 | Dev server cmd    | {command or 'not set'}   |
+| Install command   | {install or 'not set'}   |
 | Build command     | {build or 'not set'}     |
 | Test command      | {test cmd or 'not set'}  |
 | Test runner       | {runner or 'unknown'}    |
@@ -298,6 +300,7 @@ AskUserQuestion([
     options: [
       { label: "Dev server URL", description: "Currently: {url or 'not set'}" },
       { label: "Dev server command", description: "Currently: {command or 'not set'}" },
+      { label: "Install command", description: "Currently: {install or 'not set'}" },
       { label: "Build command", description: "Currently: {build or 'not set'}" },
       { label: "Hot Module Replacement", description: "Currently: {hmr}" }
     ]
