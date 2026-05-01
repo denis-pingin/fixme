@@ -1923,7 +1923,9 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('<codex_skill_adapter>'), 'installed skill should include Codex adapter');
   assert(installedTask.includes('spawn_agent(agent_type="X", message="Y")'), 'adapter should map Agent dispatch to spawn_agent');
   assert(installedTask.includes('Skill("name", args)'), 'adapter should map Skill invocation');
-  assert(installedTask.includes('request_user_input'), 'adapter should map AskUserQuestion');
+  assert(installedTask.includes('In Codex Plan mode'), 'adapter should limit request_user_input to Plan mode');
+  assert(installedTask.includes('do not call `request_user_input`'), 'adapter should forbid request_user_input outside Plan mode');
+  assert(installedTask.includes('ask in normal text'), 'adapter should require plain text fallback outside Plan mode');
   assert(installedTask.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'source skill body should rewrite Claude paths to Codex paths');
   assert(installedTask.includes('~/.codex/rules/spec-review-rules.md'), 'tilde Claude paths should rewrite to Codex paths');
   assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');

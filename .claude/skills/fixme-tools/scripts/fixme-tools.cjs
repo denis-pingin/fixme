@@ -2263,8 +2263,10 @@ function getCodexSkillAdapterHeader(skillName) {
     '',
     '## User Questions',
     '',
-    '- When Fixme source instructions say `AskUserQuestion`, use Codex `request_user_input` when available.',
-    '- If `request_user_input` is unavailable, present the decision with `$fixme-howto-present-decisions` and wait for the user.',
+    '- In Codex Plan mode, translate Fixme `AskUserQuestion` calls to Codex `request_user_input`.',
+    '- In Codex Default, Execute, or any non-Plan mode, do not call `request_user_input`; ask in normal text and wait for the user response.',
+    '- For decision blocks, present the question with `$fixme-howto-present-decisions` before asking in normal text.',
+    '- Do not choose a default after a question unless the source workflow explicitly marks the default as non-blocking.',
     FIXME_CODEX_SKILL_ADAPTER_CLOSE,
   ].join('\n');
 }
