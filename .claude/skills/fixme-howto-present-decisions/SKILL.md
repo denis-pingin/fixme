@@ -11,17 +11,16 @@ The output is a decision card: a compact, self-contained block optimized for fas
 
 ## Core Principle
 
-The Question field is what the user reads to make a decision. It must let the user understand the situation, compare the real choices, and respond without re-reading the finding, plan, or code.
+The Recommendation and Decision needed fields are what the user reads first. They must let the user understand the situation, compare the real choices, and respond without re-reading the finding, plan, or code.
 
 Use **top-down progressive disclosure**:
 
-1. State the decision.
-2. Add a short framing paragraph that explains where we are, what problem we are solving, and what tension creates the choice.
-3. State why the decision matters now.
+1. State the recommendation.
+2. State the decision.
+3. Add an at-a-glance block that explains where we are, what problem we are solving, what breaks if we do nothing, and why the decision matters now.
 4. Give only the context and evidence needed to understand the recommendation.
-5. For option decisions, state the recommendation before options using the option name plus label.
-6. Present the options.
-7. Repeat the same recommendation after options, followed by rationale.
+5. Present options as visually separated mini-cards.
+6. Repeat the same recommendation after options, followed by rationale.
 
 ## Decision Types
 
@@ -62,6 +61,28 @@ If an `ASK_USER` item is actually an approach choice, use the `FIX_UNCLEAR` shap
 
 `FIX_UNCLEAR` is not an `ASK_USER` classification, but it requires the same user-input route. Any handler output with one or more `FIX_UNCLEAR` items must route to user decision batching, never to clean/no-fix exit.
 
+## Visual Layout Contract
+
+Decision cards must read like designed cards, not logs.
+
+The first visible block must answer, in order:
+
+1. What do you recommend?
+2. What does the user need to decide?
+3. What context, problem, impact, and urgency make the decision necessary?
+
+Use this visual rhythm:
+
+- Blank line before every major section.
+- Bold label on its own line.
+- Blank line after the label when the content is more than one sentence.
+- One idea per line.
+- Horizontal rule (`---`) between separate decision cards.
+
+Do not place more than one sentence after a bold label. If a label needs more explanation, put the label on its own line, add a blank line, then write a short paragraph.
+
+Each option is a mini-card. Use an option heading, then the same field order for every option so the eye can compare them without re-parsing the structure.
+
 ## Decision Card Structure
 
 Every decision card starts with the same fast-orientation header:
@@ -69,13 +90,16 @@ Every decision card starts with the same fast-orientation header:
 ```md
 ## D{number}: {short descriptive title}
 
+**Recommendation**: {specific recommendation}
+
 **Decision needed**: {one sentence}
 
-**Decision frame**:
+**At a glance**:
 
-{2-4 short sentences. Start from the high-level product journey, system behavior, or workflow state. Narrow to the concrete issue. Explain the tension: what we gain, risk, or block depending on the answer. If this is about a reported issue, include the implication of not fixing it.}
-
-**Why now**: {one sentence explaining what this blocks or what risk it resolves}
+- **Context**: {where we are in the product, workflow, or system}
+- **Problem**: {the concrete issue or ambiguity}
+- **Impact**: {what breaks, degrades, or remains blocked if undecided}
+- **Why now**: {what this decision unlocks or prevents}
 ```
 
 Then add the body that fits the decision type.
@@ -128,23 +152,39 @@ Use this body when the decision is about fix approach:
 
 ### Option A: {option name}
 
-- **What**: {one sentence naming the change}
-- **How it solves the issue**: {one sentence connecting the change to the reported issue or requirement}
-- **Pros**:
-  - {specific advantage grounded in this codebase}
-- **Cons**:
-  - {specific cost or risk grounded in this codebase}
-- **Effort**: {trivial | small | moderate | significant}
+**What**: {one sentence naming the change}
+
+**How it solves the issue**: {one sentence connecting the change to the reported issue or requirement}
+
+**Pros**:
+
+- {specific advantage grounded in this codebase}
+
+**Cons**:
+
+- {specific cost or risk grounded in this codebase}
+
+**Tradeoff**: {the decisive cost or compromise of this option}
+
+**Effort**: {trivial | small | moderate | significant}
 
 ### Option B: {option name}
 
-- **What**: {one sentence naming the change}
-- **How it solves the issue**: {one sentence connecting the change to the reported issue or requirement}
-- **Pros**:
-  - {specific advantage grounded in this codebase}
-- **Cons**:
-  - {specific cost or risk grounded in this codebase}
-- **Effort**: {trivial | small | moderate | significant}
+**What**: {one sentence naming the change}
+
+**How it solves the issue**: {one sentence connecting the change to the reported issue or requirement}
+
+**Pros**:
+
+- {specific advantage grounded in this codebase}
+
+**Cons**:
+
+- {specific cost or risk grounded in this codebase}
+
+**Tradeoff**: {the decisive cost or compromise of this option}
+
+**Effort**: {trivial | small | moderate | significant}
 
 **Recommendation**: Choose {option name} (Option A/B/C)
 
@@ -167,7 +207,10 @@ All decision output must be visually scannable. Dense walls of text are never ac
 - **Use decision numbers** (`D1`, `D2`, etc.) in headings so multiple decisions can be referenced unambiguously.
 - **Use horizontal rules** (`---`) between independent decision blocks when presenting multiple decisions.
 - **Bold key labels** (`**Decision needed**:`, `**Recommendation**:`, etc.) and start each on its own line.
+- **Put `Recommendation` immediately after the decision title.** Do not make the user read the whole card before seeing the recommended path.
+- **Use `At a glance` for orientation.** It must contain Context, Problem, Impact, and Why now in that order.
 - **Use option headings** (`### Option A: ...`) for every option. Do not compress options into one dense bullet list.
+- **Make option fields visually repeatable.** Every option uses the same field order: What, How it solves the issue, Pros, Cons, Tradeoff, Effort.
 - **One idea per line/bullet.** Never combine two pieces of information into one bullet.
 - **Clickable file references everywhere.** Every file path is a markdown link with absolute path and line numbers: `[schema.test.ts:132-143](/absolute/path/schema.test.ts#L132-L143)`. No plain-text paths.
 - **No markdown tables.** Represent comparisons as option bullets.
@@ -176,14 +219,14 @@ All decision output must be visually scannable. Dense walls of text are never ac
 
 Default budget:
 
-- Opening block: exactly 3 fields after the title: `Decision needed`, `Decision frame`, `Why now`.
-- Decision frame: 2-4 short sentences, one paragraph.
+- Opening block: exactly 3 fields after the title: `Recommendation`, `Decision needed`, `At a glance`.
+- At a glance: exactly 4 bullets: Context, Problem, Impact, Why now.
 - Context: max 5 bullets.
 - Impact if not fixed: one sentence, only for reported issues.
 - Evidence: max 2 bullets for `For real issue` and max 2 bullets for `Against real issue`.
-- Pre-options recommendation: one sentence for `FIX_UNCLEAR`.
+- Top recommendation: one sentence.
 - Options: max 4 options.
-- Option fields: one short `What` line, one short `How it solves the issue` line, 1-2 `Pros` bullets, 1-2 `Cons` bullets, and one `Effort` line.
+- Option fields: one short `What` line, one short `How it solves the issue` line, 1-2 `Pros` bullets, 1-2 `Cons` bullets, one `Tradeoff` line, and one `Effort` line.
 - Post-options recommendation: one sentence after `Evidence` for `ASK_USER`, or after `Options` for `FIX_UNCLEAR`.
 - Rationale: one short paragraph or max 4 bullets.
 - Acceptance: one line.
@@ -192,7 +235,7 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 
 ## Option Rules
 
-- **All 5 option fields are mandatory** for every option: What, How it solves the issue, Pros, Cons, Effort.
+- **All 6 option fields are mandatory** for every option: What, How it solves the issue, Pros, Cons, Tradeoff, Effort.
 - **Options are mandatory** for `FIX_UNCLEAR`.
 - **Options are optional** for `ASK_USER`. Include them only when there are genuinely different directions.
 - **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
@@ -202,10 +245,11 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ## Recommendation Rules
 
 - **Recommendation is mandatory.** Always. No exceptions.
-- **Option decisions get two recommendation lines.** Put the same recommendation before options and after options.
+- **Every decision card starts with a recommendation.** Put it immediately after the title.
+- **Option decisions get two recommendation lines.** Put the same recommendation after the title and after options.
 - **Spell out the recommendation before the option label.** Use `Choose Convex paginated result (Option A)`, not `Option A`.
 - **The pre-options recommendation must never be only an option label.** It must name the concrete choice and then include the label in parentheses.
-- **The pre-options and post-options recommendations must match exactly.** Do not recommend one option before the list and a different wording after the list.
+- **The top recommendation and post-options recommendation must match exactly.** Do not recommend one option before the list and a different wording after the list.
 - **Research before recommending.** Read code, check docs, trace call paths. Never recommend based on general preference.
 - **Show only decisive work.** Include evidence that changes the recommendation. Omit non-decisive detail or move it to `Details`.
 - **Cross-reference the Options section.** Name which upsides are decisive and which downsides are acceptable. Do not just restate the option description.
@@ -214,7 +258,7 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ## Quality Bar
 
 - **Self-contained**: the reader understands the full situation from this block alone, without scrolling back or re-reading code.
-- **Top-down**: decision first, then the mental model, then the concrete tension, then the details. Never reference a concept before establishing it.
+- **Top-down**: recommendation first, then the decision, then the mental model, then the concrete tension, then the details. Never reference a concept before establishing it.
 - **Concrete**: actual file names, function names, line numbers, data volumes, error messages. "There's a size-related issue" is not acceptable - "the API returns 502 when payload exceeds 1MB" is.
 - **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
 - **Neutral**: present the tradeoffs honestly. Don't bias toward FIX or REJECT in how the question is framed.
@@ -227,13 +271,16 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ```md
 ## D1: Agent Gallery Result Shape
 
+**Recommendation**: Choose Convex paginated result (Option A).
+
 **Decision needed**: Choose the return shape for the Convex Agent gallery query.
 
-**Decision frame**:
+**At a glance**:
 
-The Agent gallery is moving from a static list to a mobile-friendly paginated feed. The product need is straightforward: users should be able to keep browsing agents without loading the full gallery at once. The technical tension is whether the specification should expose Convex's native pagination shape directly or hide it behind a custom domain-shaped result. If we leave this unresolved, the mobile hook and tests cannot agree on what the query returns.
-
-**Why now**: Mobile pagination cannot be implemented or tested until the query result contract is fixed.
+- **Context**: The Agent gallery is moving from a static list to a mobile-friendly paginated feed.
+- **Problem**: The specification does not define the result container the mobile hook should consume.
+- **Impact**: The mobile hook and tests cannot agree on what the query returns.
+- **Why now**: Mobile pagination cannot be implemented or tested until the query result contract is fixed.
 
 **Context**:
 
@@ -241,31 +288,45 @@ The Agent gallery is moving from a static list to a mobile-friendly paginated fe
 - The current mobile Agent hook already consumes Convex pagination through `usePaginatedQuery`.
 - The gap is in [alp-183-agent-format-gallery.md:298](/absolute/path/alp-183-agent-format-gallery.md#L298).
 
-**Recommendation**: Choose Convex paginated result (Option A).
-
 **Options**:
 
 ### Option A: Convex paginated result
 
-- **What**: Define the result as `{ page, isDone, continueCursor }`.
-- **How it solves the issue**: It gives the mobile hook the exact fields Convex pagination already returns.
-- **Pros**:
-  - Matches the current `usePaginatedQuery` integration.
-  - Avoids adapter code between the query and the hook.
-- **Cons**:
-  - Leaks Convex naming into the technical contract.
-- **Effort**: trivial
+**What**: Define the result as `{ page, isDone, continueCursor }`.
+
+**How it solves the issue**: It gives the mobile hook the exact fields Convex pagination already returns.
+
+**Pros**:
+
+- Matches the current `usePaginatedQuery` integration.
+- Avoids adapter code between the query and the hook.
+
+**Cons**:
+
+- Leaks Convex naming into the technical contract.
+
+**Tradeoff**: Accepts Convex-specific names to avoid unnecessary adapter code.
+
+**Effort**: trivial
 
 ### Option B: Custom API-like result
 
-- **What**: Define the result as `{ items, nextCursor }`.
-- **How it solves the issue**: It gives the gallery a domain-shaped contract independent of Convex naming.
-- **Pros**:
-  - Keeps the specification cleaner if the backing store changes later.
-- **Cons**:
-  - Requires adapter logic around Convex pagination.
-  - Avoids Option A's naming leak, but adds a translation layer the current hook does not need.
-- **Effort**: small
+**What**: Define the result as `{ items, nextCursor }`.
+
+**How it solves the issue**: It gives the gallery a domain-shaped contract independent of Convex naming.
+
+**Pros**:
+
+- Keeps the specification cleaner if the backing store changes later.
+
+**Cons**:
+
+- Requires adapter logic around Convex pagination.
+- Avoids Option A's naming leak, but adds a translation layer the current hook does not need.
+
+**Tradeoff**: Improves abstraction at the cost of extra code in a path that already uses Convex pagination.
+
+**Effort**: small
 
 **Recommendation**: Choose Convex paginated result (Option A).
 

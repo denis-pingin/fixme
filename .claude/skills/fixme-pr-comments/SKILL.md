@@ -348,92 +348,104 @@ and line numbers**, e.g. `[config.ts:42-58](/absolute/path/to/config.ts#L42-L58)
 to every file mentioned anywhere in the report - problem descriptions, fix descriptions, file
 lists, decision context, options, everything. No plain-text file paths.
 
-**Structure**: Group items by status, lead with what's already resolved, then what remains.
-For each individual item, describe it top-down: context, what's wrong, what breaks, what will be done.
+**Structure**: Start with the outcome, not the ledger. Do not start the report with a markdown table.
+Lead with what matters to the reader: what should be fixed now, what needs a decision, what is valid but deferred, and what can be ignored. Put exhaustive accounting at the end.
+For each expanded item, describe it top-down: problem, context, impact, recommended action, and why this route is the right tradeoff.
 
 ```
 ## PR Comment Analysis
 
-{EXACT counts with full accounting. Format:
-"N review items from 3 fetched surfaces (T inline review threads, I issue comments,
-R pull request reviews), grouped into G issue groups. Routes: N current PR fix groups,
-N decision groups, N follow-up groups, N already fixed groups, N not actionable groups
-(N false positive, N won't fix)."
-Every review_item must be accounted for - the numbers MUST sum to the total. If they
-don't, you miscounted - recount before presenting. No vague quantifiers.}
+{One sentence with the outcome: "N review items from 3 fetched surfaces were grouped into G issues: X current PR fixes, Y decisions, Z follow-ups, A already fixed, B no-action."}
 
----
+**Recommended next action**: {one sentence naming exactly what should happen next, such as "Proceed with B1 and B2 only."}
 
-### Triage Table
+**Why**: {one sentence explaining the main risk/cost tradeoff behind the recommendation.}
 
-ID | Items | Verdict | Severity | Complexity | Confidence | Route | Scope | Files
----|---|---|---|---|---|---|---|---
-{One row per deduplicated issue group. Every source item ID appears in exactly one row.}
+### Highest Priority First
+
+- **Current PR fixes**: {X groups. Name the BLOCKER and MAJOR items first, then opportunistic MINOR items.}
+- **Decisions needed**: {Y groups. One line per decision, with the title and why user input is needed.}
+- **Follow-up only**: {Z groups. One line explaining why they are valid but deferred.}
+- **No action**: {A+B groups. One line explaining already-fixed or rejected categories.}
+
+### Current PR Fixes
+
+{List only groups with `ROUTE: CURRENT_PR_FIX`, sorted by severity, then complexity, then dependency order.}
+
+**G{N}. {Issue title}** [`{VERDICT}`] [`{SEVERITY}`] [`{COMPLEXITY}`] [`{CONFIDENCE}`] [`{ROUTE_SCOPE}`]
+
+**Problem**: {The actual problem in one sentence. Do not start with a file path or implementation detail.}
+
+**Context**: {2-3 sentences explaining where we are in the product/system flow and what the affected code is responsible for.}
+
+**Impact if not fixed**: {Concrete user-visible or system-visible impact. If latent, state the exact condition that triggers it.}
+
+**Recommended action**: {The intended fix behavior, including test/codegen/verification expectation when relevant.}
+
+**Why this route**: {Why this is CURRENT_PR_FIX, and why the scope is IMPLEMENT_ONLY or PLAN_REQUIRED. Include the complexity tradeoff when relevant.}
+
+**Sources**: {N source items: T1 reviewer, I2 claude[bot], R1 chatgpt-codex-connector[bot]. Include clickable file references.}
+
+### Decisions Needed
+
+{If there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` groups, write "None."}
+
+{For each decision group, use `fixme-howto-present-decisions` exactly. Do not restate, summarize, or locally redefine its decision-card fields in this skill.}
 
 ### Execution Batches
 
-{List only groups with `ROUTE: CURRENT_PR_FIX`. Batch by implementation dependency cluster, not by comment source.}
+{List only groups with `ROUTE: CURRENT_PR_FIX`. Batch by implementation dependency cluster, not by comment source. Use bullets, not a table.}
 
-**B{N}. {batch title}** [`{ROUTE_SCOPE}`]
+**B{N}. {batch title}**
+
 - **Groups**: {G1, G2, ...}
-- **Why batched together**: {shared files, shared behavior, or same root cause}
 - **Execution shape**: {implementation repair | plan-required change}
 - **Review shape**: {focused re-review | full review}
+- **Why batched together**: {shared files, shared behavior, or same root cause}
 
-Expand full evidence cards only for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups. For lower-risk groups, keep the table row plus one concise planned-action line.
-
-### Already Fixed (resolve immediately)
-{List items confirmed fixed in the current code. For each:}
-- **{ID}. {concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
-  {One sentence: what was wrong and how it was fixed.}
+Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups. For lower-risk groups, keep one concise planned-action line.
 
 ### Follow-Up Only ({N} groups)
 {List valid but deferred groups. These are not rejections. For each:}
 
-**{ID}. {issue name}** [`FOLLOWUP_ONLY`] [`{severity}`] [`{complexity}`]
-- **What was reported**: {What the reviewer flagged.}
-- **Why not in this PR**: {Why the valid concern is disproportionate for the current PR fix loop. Tie this to severity, complexity, PR goal, and blast radius.}
+**G{N}. {Issue title}** [`FOLLOWUP_ONLY`] [`{SEVERITY}`] [`{COMPLEXITY}`]
+
+**Problem**: {The valid concern in one sentence.}
+
+**Impact if not fixed now**: {The concrete risk of deferring it.}
+
+**Why not in this PR**: {Why the valid concern is disproportionate for the current PR fix loop. Tie this to severity, complexity, PR goal, and blast radius.}
+
 - **Follow-up action**: {Concrete follow-up title or "No durable follow-up artifact created" if the project has no follow-up backend in this workflow.}
 
 ### Not Actionable ({N} items)
 {List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
 
-**{ID}. {issue name}** [`{category}`]
-- **What was reported**: {What the reviewer flagged and why they think it's a problem.
-  Establish what code area this is about - the reader needs domain context to evaluate
-  the dismissal.}
-- **Why this is not an issue**: {For FALSE_POSITIVE: what the code actually does and why
-  the reviewer's concern doesn't apply. For WONT_FIX: what the actual risk is, why it's
-  acceptable now, and when/where it should be addressed (if ever). Be specific - name the
-  code construct and explain the behavior.}
+**G{N}. {Issue title}** [`{VERDICT}`] [`{SEVERITY}`]
 
-### Actionable Items ({N} distinct issues)
+**What was reported**: {What the reviewer flagged and why they thought it was a problem.}
 
-{For each deduplicated issue, present ALL of these fields:}
+**Why no action**: {For FALSE_POSITIVE: what the code actually does and why the concern does not apply. For WONT_FIX: what the real risk is, why it is acceptable now, and where it should be addressed if ever.}
 
-**{ID}. {Issue title}** [`{category}`] [`{severity}`] [`{complexity}`] [`{confidence}`]
-- **Route**: `{ROUTE}` / `{ROUTE_SCOPE}`
-- **What was reported**: {What the reviewer flagged - their exact concern, which file/line
-  they pointed at, what they suggested. The reader needs to know the input before evaluating
-  the analysis.}
-- **Context**: {What area of the codebase this touches and what it does. The reader must
-  understand the domain before evaluating the problem. Name the feature, subsystem, or flow
-  this code belongs to, and what role the affected file/function plays in it.}
-- **What's actually happening**: {Your independent analysis of the code. What the code does,
-  why it's wrong, how you verified. May confirm the reviewer's concern, refine it, or identify
-  a different root cause. Describe as behavior, not code mechanics.}
-- **Impact if not fixed**: {What breaks, degrades, or is at risk. User-visible or system-visible
-  consequences. Include severity signal: is this causing failures now, or is it a latent risk
-  under specific conditions?}
-- **Recommended fix**: {Describe the resulting behavior so the reader can independently judge
-  whether the fix is correct. For non-trivial fixes, explain why this approach over alternatives.
-  For FIX_UNCLEAR: "Requires approach decision - see below."
-  For ASK_USER: "Requires validity determination - see below."}
-- **Effort**: {LOW | MEDIUM | HIGH, matching `COMPLEXITY`}
-- **Files**: {[file.ts:line](/absolute/path/file.ts#Lline), [file2.ts:line](/absolute/path/file2.ts#Lline)}
-- **Review items**: {N} ({list IDs and authors: T1 reviewer-login, I2 claude[bot], R1 chatgpt-codex-connector[bot]})
+### Already Fixed ({N} groups)
+{List items confirmed fixed in the current code. For each:}
 
-{Repeat for every actionable item.}
+**G{N}. {Issue title}** [`REJECT_ALREADY_FIXED`]
+
+**Fixed in**: `{commit_sha}`
+
+**Verification**: {One sentence: what was wrong and how the current code proves it is fixed.}
+
+### Accounting Ledger
+
+{Use bullets, not a markdown table. Every review_item must appear exactly once. Counts must sum to the total.}
+
+- **Total**: {N review items from 3 fetched surfaces: T inline review threads, I issue comments, R pull request reviews}
+- **Current PR fixes**: {G1 (...source IDs...), G2 (...source IDs...)}
+- **Decisions needed**: {G3 (...source IDs...) or None}
+- **Follow-up only**: {G4 (...source IDs...) or None}
+- **Already fixed**: {G5 (...source IDs...) or None}
+- **Not actionable**: {G6 (...source IDs...) or None}
 ```
 
 ##### Presentation Rules (NON-NEGOTIABLE)
