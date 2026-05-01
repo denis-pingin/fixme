@@ -1,6 +1,6 @@
 ---
 name: fixme-config
-description: "Interactive configuration for fixme pipelines, model profiles, project settings, and Linear integration. Creates or updates <fixme-dir>/config.json."
+description: "Interactive configuration for fixme workflows, workflow skills, loop limits, model profiles, project settings, and Linear integration. Creates or updates <fixme-dir>/config.json."
 allowed-tools:
   - Read
   - Write
@@ -17,7 +17,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Fixme Config
 
-Interactive configuration of fixme settings: model profile, pipeline selection, ticket backend, project commands, and Linear integration. Updates `<fixme-dir>/config.json`.
+Interactive configuration of fixme settings: model profile, workflow selection, workflow skills, loop limits, ticket backend, project commands, and Linear integration. Updates `<fixme-dir>/config.json`.
 
 ## Prerequisites
 
@@ -42,6 +42,7 @@ Parse current values (defaults if not present):
 - `models.overrides` - per-agent model overrides (default: `{}`)
 - `ticketBackend` - ticket backend (default: `fixme-tickets-md`)
 - `pipelines` - named pipeline definitions (default: absent, meaning hardcoded `default` pipeline)
+- `workflowControls` - workflow-scoped loop controls keyed by pipeline name (default: absent, meaning standard workflow controls)
 - `project.devServer.url` - dev server URL (default: null)
 - `project.devServer.command` - dev server start command (default: null)
 - `project.devServer.hmr` - Hot Module Replacement support (default: false)
@@ -65,7 +66,7 @@ Parse the JSON output. This becomes the starting values for the project section 
 
 If `project` section already has values, skip detection - use existing values as defaults.
 
-### Step 3: Present settings (Round 1 - Pipeline & Models)
+### Step 3: Present settings (Round 1 - Global settings and workflow selection)
 
 Use AskUserQuestion with current values pre-selected:
 
@@ -83,16 +84,6 @@ AskUserQuestion([
     ]
   },
   {
-    question: "Which pipeline to use by default?",
-    header: "Pipeline",
-    multiSelect: false,
-    options: [
-      { label: "Default (Recommended)", description: "Plan with review -> Implement with review" },
-      { label: "Full", description: "Investigate -> Research -> Plan -> Implement -> Browser Verify" },
-      { label: "Quick", description: "Plan -> Implement (no review loops)" }
-    ]
-  },
-  {
     question: "Ticket backend?",
     header: "Backend",
     multiSelect: false,
@@ -100,16 +91,164 @@ AskUserQuestion([
       { label: "Markdown (Recommended)", description: "Local markdown files in <fixme-dir>/sessions/" },
       { label: "Linear", description: "Linear issue tracker (requires Linear MCP)" }
     ]
+  },
+  {
+    question: "Which workflow do you want to configure?",
+    header: "Workflow",
+    multiSelect: false,
+    options: [
+      { label: "{current/default workflow} (Recommended)", description: "{phase summary, skills, review cycle summary}" },
+      { label: "{next configured or standard workflow}", description: "{phase summary}" },
+      { label: "{next configured or standard workflow}", description: "{phase summary}" }
+    ]
   }
 ])
 ```
 
 Map answers:
 - Model: "Quality" -> `"quality"`, "Balanced" -> `"balanced"`, "Budget" -> `"budget"`, "Inherit" -> `"inherit"`
-- Pipeline: "Default" -> ensure `default` pipeline in config, "Full" -> ensure `full` pipeline, "Quick" -> ensure `quick` pipeline
 - Backend: "Markdown" -> `"fixme-tickets-md"`, "Linear" -> `"fixme-tickets-linear"`
+- Workflow: selected label -> `selectedWorkflow`
 
-### Step 4: Present settings (Round 2 - Project commands)
+Workflow option rules:
+
+- A workflow is one named pipeline under `pipelines`, for example `default`, `product-spec`, or `idea-to-production`.
+- Present configured workflows first, preserving config order.
+- Then present standard workflows not already configured: `default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, `idea-to-production`.
+- Put the recommended workflow first. If the user did not name a workflow, recommend `default` when present; otherwise recommend the first configured workflow; otherwise recommend `default`.
+- Every option description must summarize the workflow shape: `phase -> phase`, execute skills, review skills, per-phase review cycles, and outer workflow cycles.
+- If more workflows exist than fit comfortably in AskUserQuestion, print the full numbered workflow list before the question, show the three most likely choices in AskUserQuestion, and use Other/free-text for a workflow name or number from the printed list.
+- This question only selects the workflow to configure now. It does not configure all workflows in one run.
+
+### Step 4: Configure the selected workflow
+
+Use the selected workflow from Step 3. Start from the current configured workflow when it exists. If it is missing and the selected name is a standard workflow, seed it from the standard definition in Pipeline Definitions. If it is missing and not standard, ask the user for phase names and skill names instead of inventing a workflow.
+
+Print the current workflow before asking questions:
+
+```
+Workflow selected: {selectedWorkflow}
+
+Phases:
+- {phase.name}
+  - Execute skills: {phase.skills}
+  - Review skills: {phase.review.skills or "none"}
+  - Review max cycles: {phase.review.maxCycles or default 3}
+
+Workflow controls:
+- Outer max cycles: {workflowControls[selectedWorkflow].outerMaxCycles or 2}
+```
+
+Then configure this workflow only.
+
+#### Step 4a: Configure execute and review skills
+
+Ask one question per phase for execute skills. The first option must always preserve the current value. If the workflow or phase is newly seeded and has no current configured value yet, the first option is `Use standard default (Recommended)` instead.
+
+```
+AskUserQuestion([
+  {
+    question: "Execute skills for {selectedWorkflow}/{phase.name}?",
+    header: "Execute Skills",
+    multiSelect: false,
+    options: [
+      { label: "Keep current (Recommended)", description: "{current phase.skills}" },
+      { label: "Use standard default", description: "{standard phase.skills if available}" },
+      { label: "Disable phase", description: "Set enabled=false for this phase" }
+    ]
+  }
+])
+```
+
+Use the platform-provided Other/free-text answer for custom skills:
+
+- Accept comma-separated skill names, for example `fixme-write-plan, fixme-custom-review`.
+- Trim whitespace and preserve order.
+- Empty free-text means "Keep current".
+- Warn on unknown skill names during validation, but do not block.
+
+For each phase that currently has a review loop or has one in the standard workflow, ask one question for review skills. The first option must preserve the current value when one exists; otherwise the first option must use the standard default.
+
+```
+AskUserQuestion([
+  {
+    question: "Review skills for {selectedWorkflow}/{phase.name}?",
+    header: "Review Skills",
+    multiSelect: false,
+    options: [
+      { label: "Keep current (Recommended)", description: "{current review.skills or 'no review loop'}" },
+      { label: "Use standard default", description: "{standard review.skills if available}" },
+      { label: "No review loop", description: "Remove the review block for this phase" }
+    ]
+  }
+])
+```
+
+Use Other/free-text for custom review skills with the same comma-separated parsing rules. If the user chooses "No review loop", remove the entire `review` object for that phase.
+
+#### Step 4b: Configure cycle limits
+
+Ask for each review loop's `maxCycles` separately. There can be several review cycle limits in a single workflow because each phase can have its own review loop. The first option keeps the current value when one exists; otherwise it uses the standard suggestion.
+
+For every phase with a review loop after Step 4a:
+
+```
+AskUserQuestion([
+  {
+    question: "Review cycles for {selectedWorkflow}/{phase.name}?",
+    header: "Review Cycles",
+    multiSelect: false,
+    options: [
+      { label: "Keep current (Recommended)", description: "Currently {current maxCycles or default 3}" },
+      { label: "{standard suggestion}", description: "Use the standard value for this workflow phase" },
+      { label: "1", description: "One review pass before escalation" },
+      { label: "2", description: "Two review passes before escalation" },
+      { label: "3", description: "Three review passes before escalation" }
+    ]
+  }
+])
+```
+
+Standard suggestions:
+
+- Product specification review: `3`
+- Technical specification review: `3`
+- Plan review: `3`
+- Code review / implement review: `2`
+- Custom review phase: `3`
+
+Use Other/free-text for any positive integer. Empty free-text means "Keep current".
+
+Then ask for the workflow outer loop limit. The first option keeps the current value when one exists; otherwise it uses the standard `2` suggestion.
+
+```
+AskUserQuestion([
+  {
+    question: "Outer workflow cycles for {selectedWorkflow}?",
+    header: "Outer Cycles",
+    multiSelect: false,
+    options: [
+      { label: "Keep current (Recommended)", description: "Currently {workflowControls[selectedWorkflow].outerMaxCycles or 2}" },
+      { label: "2", description: "Standard default: two cross-phase retries before escalation" },
+      { label: "1", description: "Escalate after one cross-phase retry" },
+      { label: "3", description: "Allow three cross-phase retries before escalation" }
+    ]
+  }
+])
+```
+
+Use Other/free-text for any positive integer. Empty free-text means "Keep current". Store the result at `workflowControls[selectedWorkflow].outerMaxCycles`.
+
+#### Step 4c: Stage workflow update
+
+Stage only the selected workflow:
+
+- `pipelines[selectedWorkflow] = staged workflow phases`
+- `workflowControls[selectedWorkflow].outerMaxCycles = staged outer cycle limit`
+
+Preserve all other workflows and all other workflow controls exactly as they were.
+
+### Step 5: Present settings (Round 2 - Project commands)
 
 Display the auto-detected or existing values in a table first:
 
@@ -145,7 +284,7 @@ AskUserQuestion([
 
 If "I need to adjust": collect corrections in two steps.
 
-**Step 4a - Identify which settings to change.** All 8 settings listed explicitly across 2 multi-select questions. Test command and test runner are ALWAYS separate items:
+**Step 5a - Identify which settings to change.** All 8 settings listed explicitly across 2 multi-select questions. Test command and test runner are ALWAYS separate items:
 
 ```
 AskUserQuestion([
@@ -174,7 +313,7 @@ AskUserQuestion([
 ])
 ```
 
-**Step 4b - Collect new values.** Present AskUserQuestion calls (up to 4 questions each) with one question per setting selected in Step 4a. Each selected setting gets its own dedicated question - never merge multiple settings into one question.
+**Step 5b - Collect new values.** Present AskUserQuestion calls (up to 4 questions each) with one question per setting selected in Step 5a. Each selected setting gets its own dedicated question - never merge multiple settings into one question.
 
 Text settings (all except Hot Module Replacement) show the current value as first option plus "Not set" to clear:
 
@@ -204,13 +343,13 @@ Hot Module Replacement uses Yes/No:
 }
 ```
 
-### Step 5: Linear discovery round (conditional)
+### Step 6: Linear discovery round (conditional)
 
-**Run this round ONLY if the Backend answer in Round 1 was "Linear" (`fixme-tickets-linear`). Skip entirely otherwise.**
+**Run this round ONLY if the Backend answer in Step 3 was "Linear" (`fixme-tickets-linear`). Skip entirely otherwise.**
 
 This round configures ONLY `linear.teamId` and `linear.teamName`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
 
-#### Step 5a: Discover and select team (Decision 13 hybrid flow)
+#### Step 6a: Discover and select team (Decision 13 hybrid flow)
 
 Call `mcp__claude_ai_Linear__list_teams` with no filters.
 
@@ -230,7 +369,7 @@ Branch on team count:
 
 Do NOT proceed. Do NOT write any Linear fields.
 
-**Exactly one team returned:** Use it automatically. Set `selectedTeam = teams[0]`. Print `Using Linear team: {name} ({key})`. Proceed to Step 5b.
+**Exactly one team returned:** Use it automatically. Set `selectedTeam = teams[0]`. Print `Using Linear team: {name} ({key})`. Proceed to Step 6b.
 
 **Two or more teams returned:** Use the hybrid flow below.
 
@@ -273,16 +412,16 @@ Do NOT proceed. Do NOT write any Linear fields.
 
 4. **Set the resolved values:** `selectedTeam = <the matched team object>`. Print `Selected Linear team: {selectedTeam.name} ({selectedTeam.key})`.
 
-#### Step 5b: Stage Linear values
+#### Step 6b: Stage Linear values
 
-After Step 5a resolves `selectedTeam`, hold these values in memory for the merge in Step 7:
+After Step 6a resolves `selectedTeam`, hold these values in memory for the merge in Step 8:
 
 - `linear.teamId` = `selectedTeam.id`
 - `linear.teamName` = `selectedTeam.name`
 
 No other Linear fields are staged. `linear.defaultLabels` and `linear.defaultProject` are NOT configured by this skill (Decision 13).
 
-### Step 6: Validate
+### Step 7: Validate
 
 Before writing, validate the config:
 
@@ -291,16 +430,17 @@ Before writing, validate the config:
 3. **Pipeline phases** must have unique `name` values within each pipeline
 4. **Pipeline skills** should reference known fixme skill names (warn on unknown, don't block)
 5. **Review config** `maxCycles` must be a positive integer if present
-6. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
-7. **Linear fields** (only if backend is `fixme-tickets-linear`):
+6. **Workflow controls** `workflowControls.<workflow>.outerMaxCycles` must be a positive integer if present
+7. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
+8. **Linear fields** (only if backend is `fixme-tickets-linear`):
    - `linear.teamId` must be a non-empty string
    - `linear.teamName` must be a non-empty string
 
 If validation fails, display errors and re-prompt for the specific invalid settings.
 
-### Step 7: Write config
+### Step 8: Write config
 
-Merge new settings into existing config.json (preserving any keys not covered by this skill). Include the `linear` object only when the backend is `fixme-tickets-linear`:
+Merge new settings into existing config.json (preserving any keys not covered by this skill). Update only the selected workflow under `pipelines` and `workflowControls`; preserve every other workflow exactly. Include the `linear` object only when the backend is `fixme-tickets-linear`:
 
 ```json
 {
@@ -317,7 +457,16 @@ Merge new settings into existing config.json (preserving any keys not covered by
     "profile": "<value>",
     "overrides": { ...existing_overrides }
   },
-  "pipelines": { ...pipeline_definitions },
+  "pipelines": {
+    ...existing_pipelines,
+    "<selectedWorkflow>": [ ...staged_workflow_phases ]
+  },
+  "workflowControls": {
+    ...existing_workflowControls,
+    "<selectedWorkflow>": {
+      "outerMaxCycles": <positive integer>
+    }
+  },
   "linear": {
     "teamId": "<value>",
     "teamName": "<value>"
@@ -327,6 +476,12 @@ Merge new settings into existing config.json (preserving any keys not covered by
 
 When backend is `fixme-tickets-md`, leave the existing `linear` object (if any) untouched - do not delete or overwrite it.
 
+Workflow write rules:
+
+- Do not rewrite all standard workflow definitions just because one workflow was configured.
+- Do not delete unknown workflow control fields under other workflow names.
+- If the selected workflow has only standard defaults and the user kept every default, it is still valid to write that selected workflow explicitly so future `/fixme-config` runs can show it as configured.
+
 Write to `<fixme-dir>/config.json`:
 
 ```bash
@@ -335,7 +490,7 @@ mkdir -p <fixme-dir>
 
 Write the config file using the Write tool.
 
-### Step 8: Confirm
+### Step 9: Confirm
 
 Display:
 
@@ -347,7 +502,8 @@ Display:
 | Setting              | Value                    |
 |----------------------|--------------------------|
 | Model Profile        | {quality/balanced/budget/inherit} |
-| Default Pipeline     | {default/full/quick}     |
+| Configured Workflow  | {selectedWorkflow}       |
+| Outer Max Cycles     | {workflowControls[selectedWorkflow].outerMaxCycles} |
 | Ticket Backend       | {fixme-tickets-md/linear}|
 | Framework            | {value}                  |
 | Dev Server URL       | {value}                  |
@@ -355,6 +511,13 @@ Display:
 | Build Command        | {value}                  |
 | Test Command         | {value}                  |
 | Lint Command         | {value}                  |
+```
+
+Then print the selected workflow detail:
+
+```
+Workflow phases:
+- {phase.name}: execute={phase.skills}; review={phase.review.skills or "none"}; maxCycles={phase.review.maxCycles or "n/a"}
 ```
 
 If the backend is `fixme-tickets-linear`, append a Linear block to the table:
@@ -371,7 +534,11 @@ Config saved to <fixme-dir>/config.json
 
 ## Pipeline Definitions
 
-When writing pipelines to config, use these definitions:
+When seeding a missing standard workflow or offering "Use standard default", use these definitions. Each standard workflow also has standard workflow controls:
+
+```json
+{ "outerMaxCycles": 2 }
+```
 
 **default:**
 ```json

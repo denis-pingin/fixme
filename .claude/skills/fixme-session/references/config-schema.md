@@ -143,6 +143,16 @@
       }
     ]
   },
+  "workflowControls": {
+    "default": { "outerMaxCycles": 2 },
+    "full": { "outerMaxCycles": 2 },
+    "quick": { "outerMaxCycles": 2 },
+    "product-spec": { "outerMaxCycles": 2 },
+    "technical-spec": { "outerMaxCycles": 2 },
+    "plan": { "outerMaxCycles": 2 },
+    "execute": { "outerMaxCycles": 2 },
+    "idea-to-production": { "outerMaxCycles": 2 }
+  },
   "linear": {
     "teamId": "abc123-team-id",
     "teamName": "Engineering",
@@ -185,6 +195,14 @@ Each phase in a pipeline array has these fields:
 | `review.skills` | string[] | Yes (if review) | - | Review skill chain. Run sequentially after phase skills complete. |
 | `review.maxCycles` | number | No | `3` | Max review loop iterations before escalating to user. |
 
+## Workflow Control Object
+
+`workflowControls` stores workflow-scoped loop limits keyed by pipeline name. A workflow is one named entry under `pipelines`, for example `default`, `product-spec`, or `idea-to-production`.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `workflowControls.<pipelineName>.outerMaxCycles` | number | No | `2` | Max cross-phase cycles for the selected workflow. This controls how many times a later phase, such as code review, can send work back to an earlier phase before escalating to the user. |
+
 ## State Machine Derivation
 
 The state machine is derived from the pipeline definition. Disabled phases (`"enabled": false`) are excluded. Given a pipeline with enabled phases `[A, B, C]`:
@@ -226,6 +244,8 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 | `project.framework` | string | No | Detected framework: `next.js`, `nuxt`, `angular`, `svelte`, `vue`, `react` |
 | `ticketBackend` | string | No | Ticket backend skill name. Default: `"fixme-tickets-md"` |
 | `pipelines` | object | No | Named pipeline definitions. Default pipelines provided if absent. |
+| `workflowControls` | object | No | Workflow-scoped loop controls keyed by pipeline name. Missing entries use defaults. |
+| `workflowControls.<pipelineName>.outerMaxCycles` | number | No | Max cross-phase workflow cycles before escalation. Default: `2`. |
 | `linear` | object | No | Linear integration settings. Used by `fixme-ticket` skill. |
 | `linear.teamId` | string | No | Default Linear team ID. If set, skips team selection prompt. |
 | `linear.teamName` | string | No | Default Linear team name. Resolved to team ID via `list_teams` if `teamId` is not set. |
@@ -242,6 +262,8 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 
 If `config.json` doesn't exist or `pipelines` is absent, fixme-task uses the `"default"` pipeline hardcoded in the skill (identical to the `"default"` above).
 
-Standard intent pipelines (`product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`) are also hardcoded in `fixme-task`. Projects may override them in config.
+If `workflowControls` or `workflowControls.<pipelineName>.outerMaxCycles` is absent, fixme-task uses `outerMaxCycles: 2` for that workflow.
+
+Standard workflows (`default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`) are also hardcoded in `fixme-task`. Projects may override them in config.
 
 If `project` is absent, run `/fixme-config` to auto-detect and configure project settings.

@@ -106,7 +106,7 @@ Creates a Linear ticket from a description or the current conversation context. 
 /fixme-config
 ```
 
-Interactive setup for `.fixme/config.json` - pipelines, model profiles (quality/balanced/budget), project commands (build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
+Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget), project commands (build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
 
 ## Architecture
 
@@ -156,6 +156,16 @@ Pipelines are defined in `.fixme/config.json`:
       { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
       { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
     ]
+  },
+  "workflowControls": {
+    "default": { "outerMaxCycles": 2 },
+    "full": { "outerMaxCycles": 2 },
+    "quick": { "outerMaxCycles": 2 },
+    "product-spec": { "outerMaxCycles": 2 },
+    "technical-spec": { "outerMaxCycles": 2 },
+    "plan": { "outerMaxCycles": 2 },
+    "execute": { "outerMaxCycles": 2 },
+    "idea-to-production": { "outerMaxCycles": 2 }
   }
 }
 ```

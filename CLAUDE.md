@@ -33,11 +33,11 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 ### Configuring fixme
 
 ```bash
-# Interactive setup of pipelines, models, project commands, and Linear backend
+# Interactive setup of workflows, workflow skills, loop controls, models, project commands, and Linear backend
 /fixme-config
 ```
 
-Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. The Linear configuration round runs only when the user selects the Linear backend and requires Linear MCP to be available.
+Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. The Linear configuration round runs only when the user selects the Linear backend and requires Linear MCP to be available.
 
 ### fixme-tools.cjs CLI
 
@@ -147,7 +147,7 @@ Terminal states: `done`, `failed`, `skipped`. Backward transitions (any phase to
 
 ### fixme-task Pipeline Flow
 
-Config-driven: reads pipeline phases from `.fixme/config.json`. Each phase can have skills and optional review loops:
+Config-driven: reads pipeline phases and workflow controls from `.fixme/config.json`. Each phase can have skills and optional review loops:
 
 ```
 for each phase:
@@ -159,7 +159,7 @@ Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER,
 ### Runtime State Locations
 
 - `.fixme/sessions/` - Session directories with ticket folders
-- `.fixme/config.json` - Pipeline definitions and project settings
+- `.fixme/config.json` - Pipeline definitions, workflow controls, and project settings
 - `.fixme/specs/` - Product and technical specifications
 - `.fixme/plans/` - Implementation plans (written by fixme-write-plan)
 - `.fixme/decisions.md` - Accumulated user decisions across pipeline iterations
