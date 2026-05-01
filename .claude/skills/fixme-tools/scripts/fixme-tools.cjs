@@ -152,6 +152,9 @@ const STANDARD_PIPELINE_NAMES = Object.keys(STANDARD_PIPELINES);
 const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
 const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
+const FIXME_CODEX_MARKER = '# Fixme Agent Configuration - managed by fixme installer';
+const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
+const GSD_CODEX_MARKER_PREFIX = '# GSD Agent Configuration';
 
 const KNOWN_FIXME_SKILLS = new Set([
   'fixme-browser-verify',
@@ -2183,6 +2186,253 @@ function contextLoad(flags, fixmeRoot) {
 }
 
 // ============================================================================
+// Subcommands: codex-agents
+// ============================================================================
+
+function toSingleLine(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeTomlPath(filePath) {
+  return path.resolve(filePath).replace(/\\/g, '/');
+}
+
+function normalizeAgentList(value) {
+  if (Array.isArray(value)) {
+    return value.map(String).map(v => v.trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(v => v.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function codexPathContent(content) {
+  return content
+    .replace(/\$HOME\/\.claude\//g, '$HOME/.codex/')
+    .replace(/~\/\.claude\//g, '~/.codex/')
+    .replace(/\.claude\//g, '.codex/');
+}
+
+function codexSandboxForAgent(frontmatter) {
+  const tools = normalizeAgentList(frontmatter.tools);
+  const writeTools = new Set(['Write', 'Edit', 'Agent', 'TodoWrite']);
+  return tools.some(tool => writeTools.has(tool)) ? 'workspace-write' : 'read-only';
+}
+
+function codexDeveloperInstructions(agentContent) {
+  const { frontmatter, body } = parseFrontmatter(agentContent);
+  const skills = normalizeAgentList(frontmatter.skills);
+  const lines = [];
+
+  lines.push('<codex_runtime>');
+  lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, use Codex `spawn_agent(agent_type=..., message=...)` with the same agent name and task prompt.');
+  lines.push('- When Fixme source instructions say `Skill("name", ...)` and no Skill tool exists, load `$HOME/.codex/skills/name/SKILL.md` and run that skill workflow in the current agent.');
+  lines.push('- Do not convert a required Fixme dispatch into direct implementation work.');
+  lines.push('</codex_runtime>');
+  lines.push('');
+
+  if (skills.length > 0) {
+    lines.push('<required_skills>');
+    lines.push('Before doing task-specific work, read and follow these installed skill files:');
+    for (const skill of skills) {
+      lines.push(`- $HOME/.codex/skills/${skill}/SKILL.md`);
+    }
+    lines.push('</required_skills>');
+    lines.push('');
+  }
+
+  lines.push(body.trim());
+  return lines.join('\n').trim();
+}
+
+function tomlLiteral(key, value) {
+  if (!String(value).includes("'''")) {
+    return `${key} = '''\n${value}\n'''`;
+  }
+  return `${key} = ${JSON.stringify(String(value))}`;
+}
+
+function generateCodexAgentToml(agentName, agentContent) {
+  const { frontmatter } = parseFrontmatter(agentContent);
+  const resolvedName = frontmatter.name || agentName;
+  const description = toSingleLine(frontmatter.description || `Fixme agent ${resolvedName}`);
+  const instructions = codexDeveloperInstructions(agentContent);
+  return [
+    `name = ${JSON.stringify(resolvedName)}`,
+    `description = ${JSON.stringify(description)}`,
+    `sandbox_mode = ${JSON.stringify(codexSandboxForAgent(frontmatter))}`,
+    tomlLiteral('developer_instructions', instructions),
+  ].join('\n') + '\n';
+}
+
+function getTomlTableSections(content) {
+  const sections = [];
+  const regex = /^[ \t]*(\[\[?)([A-Za-z0-9_.-]+)(\]\]?)[ \t]*(?:#.*)?$/gm;
+  let match;
+
+  while ((match = regex.exec(content)) !== null) {
+    const open = match[1];
+    const close = match[3];
+    if ((open === '[[' && close !== ']]') || (open === '[' && close !== ']')) continue;
+    sections.push({
+      start: match.index,
+      headerEnd: regex.lastIndex,
+      end: content.length,
+      path: match[2],
+      array: open === '[[',
+    });
+  }
+
+  for (let i = 0; i < sections.length - 1; i++) {
+    sections[i].end = sections[i + 1].start;
+  }
+
+  return sections;
+}
+
+function removeContentRanges(content, ranges) {
+  let result = content;
+  const sorted = [...ranges].sort((a, b) => b.start - a.start);
+  for (const range of sorted) {
+    result = result.slice(0, range.start) + result.slice(range.end);
+  }
+  return result;
+}
+
+function stripManagedFixmeCodexBlock(content) {
+  let result = content;
+  while (true) {
+    const start = result.indexOf(FIXME_CODEX_MARKER);
+    if (start === -1) return result;
+
+    const close = result.indexOf(FIXME_CODEX_CLOSE_MARKER, start);
+    let end;
+    if (close === -1) {
+      end = result.length;
+    } else {
+      const afterCloseLine = result.indexOf('\n', close + FIXME_CODEX_CLOSE_MARKER.length);
+      end = afterCloseLine === -1 ? result.length : afterCloseLine + 1;
+    }
+
+    result = result.slice(0, start) + result.slice(end);
+  }
+}
+
+function stripFixmeCodexAgentSections(content) {
+  const sections = getTomlTableSections(content).filter(section => {
+    if (!section.array && section.path.startsWith('agents.fixme-')) return true;
+    if (section.array && section.path === 'agents') {
+      const body = content.slice(section.headerEnd, section.end);
+      const nameMatch = body.match(/^[ \t]*name[ \t]*=[ \t]*["']([^"']+)["']/m);
+      return Boolean(nameMatch && nameMatch[1].startsWith('fixme-'));
+    }
+    return false;
+  });
+
+  return removeContentRanges(
+    content,
+    sections.map(({ start, end }) => ({ start, end }))
+  );
+}
+
+function hasAgentsRootTable(content) {
+  return getTomlTableSections(content).some(section => !section.array && section.path === 'agents');
+}
+
+function buildFixmeCodexConfigBlock(agents, codexDir) {
+  const lines = [FIXME_CODEX_MARKER, ''];
+  for (const agent of agents) {
+    lines.push(`[agents.${agent.name}]`);
+    lines.push(`description = ${JSON.stringify(agent.description)}`);
+    lines.push(`config_file = ${JSON.stringify(normalizeTomlPath(path.join(codexDir, 'agents', `${agent.name}.toml`)))}`);
+    lines.push('');
+  }
+  lines.push(FIXME_CODEX_CLOSE_MARKER);
+  return lines.join('\n');
+}
+
+function mergeFixmeCodexConfig(existingContent, agents, codexDir) {
+  let content = stripManagedFixmeCodexBlock(existingContent || '');
+  content = stripFixmeCodexAgentSections(content);
+  content = content.replace(/\n{3,}/g, '\n\n').trimEnd();
+
+  if (!hasAgentsRootTable(content)) {
+    const root = '[agents]\nmax_threads = 12\nmax_depth = 3';
+    content = content ? `${content}\n\n${root}` : root;
+  }
+
+  const block = buildFixmeCodexConfigBlock(agents, codexDir);
+  const gsdMarkerIndex = content.indexOf(GSD_CODEX_MARKER_PREFIX);
+  if (gsdMarkerIndex !== -1) {
+    const before = content.slice(0, gsdMarkerIndex).trimEnd();
+    const after = content.slice(gsdMarkerIndex).trimStart();
+    return `${before}\n\n${block}\n\n${after}\n`;
+  }
+
+  return `${content}\n\n${block}\n`;
+}
+
+function installCodexAgents(options) {
+  const agentsSrc = options.agentsSrc;
+  const codexDir = options.codexDir;
+  if (!agentsSrc) throw new Error('--agents-src is required');
+  if (!codexDir) throw new Error('--codex-dir is required');
+  if (!fs.existsSync(agentsSrc) || !fs.statSync(agentsSrc).isDirectory()) {
+    throw new Error(`Agents source not found: ${agentsSrc}`);
+  }
+
+  const agentsDir = path.join(codexDir, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+
+  let removed = 0;
+  for (const file of fs.readdirSync(agentsDir)) {
+    if (file.startsWith('fixme-') && (file.endsWith('.toml') || file.endsWith('.md'))) {
+      fs.rmSync(path.join(agentsDir, file), { force: true });
+      removed++;
+    }
+  }
+
+  const sourceFiles = fs.readdirSync(agentsSrc)
+    .filter(file => file.startsWith('fixme-') && file.endsWith('.md'))
+    .sort();
+  const agents = [];
+
+  for (const file of sourceFiles) {
+    const sourcePath = path.join(agentsSrc, file);
+    const convertedContent = codexPathContent(fs.readFileSync(sourcePath, 'utf8'));
+    const { frontmatter } = parseFrontmatter(convertedContent);
+    const name = frontmatter.name || file.replace(/\.md$/, '');
+    const description = toSingleLine(frontmatter.description || `Fixme agent ${name}`);
+
+    agents.push({ name, description });
+    fs.writeFileSync(path.join(agentsDir, `${name}.md`), convertedContent);
+    fs.writeFileSync(path.join(agentsDir, `${name}.toml`), generateCodexAgentToml(name, convertedContent));
+  }
+
+  const configPath = path.join(codexDir, 'config.toml');
+  const existingConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(configPath, mergeFixmeCodexConfig(existingConfig, agents, codexDir));
+
+  return {
+    codexDir: path.resolve(codexDir),
+    agentsDir: path.resolve(agentsDir),
+    configPath: path.resolve(configPath),
+    installed: agents.length,
+    removed,
+    agents: agents.map(agent => agent.name),
+  };
+}
+
+function codexAgentsInstall(flags) {
+  return output(installCodexAgents({
+    agentsSrc: flags['agents-src'],
+    codexDir: flags['codex-dir'],
+  }));
+}
+
+// ============================================================================
 // Output Helpers
 // ============================================================================
 
@@ -2289,6 +2539,14 @@ function main() {
             return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow`);
         }
 
+      case 'codex-agents':
+        switch (subcommand) {
+          case 'install':
+            return codexAgentsInstall(flags);
+          default:
+            return error(`Unknown codex-agents subcommand: '${subcommand}'. Valid: install`);
+        }
+
       case 'root':
         return rootCommand();
 
@@ -2302,7 +2560,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, root, resolve-model`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, root, resolve-model`);
     }
   } catch (e) {
     return error(e.message);
@@ -2323,4 +2581,7 @@ module.exports = {
   MODEL_PROFILES,
   STANDARD_PIPELINES,
   applyConfigMigration,
+  generateCodexAgentToml,
+  mergeFixmeCodexConfig,
+  installCodexAgents,
 };

@@ -26,7 +26,7 @@ There is no `package.json` - this is a pure skill repo with no build/lint steps.
 ./install.sh
 ```
 
-Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/`.
+Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/` and `~/.codex/skills/`. It also installs `.claude/agents/fixme-*.md` into `~/.claude/agents/`, generates Codex agent TOML files in `~/.codex/agents/`, and registers them in `~/.codex/config.toml` using `[agents.fixme-*]` tables.
 
 **CRITICAL: Always edit source files in `.claude/skills/`, NEVER edit `~/.claude/skills/` directly.** The installed copies at `~/.claude/skills/` are overwritten by `install.sh`. Edits made there will be lost on next install and won't be tracked in git. Workflow: edit in `.claude/skills/` -> run `./install.sh` to deploy.
 
@@ -65,6 +65,9 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
+
+# Codex agent registration
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```
 
 ## Architecture

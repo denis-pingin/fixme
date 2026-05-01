@@ -53,4 +53,9 @@ if [ -d "$AGENTS_SRC" ]; then
     cp "$file" "$AGENTS_DEST/$name"
     echo "Installed agent $name -> $AGENTS_DEST"
   done
+
+  node "$SKILLS_SRC/fixme-tools/scripts/fixme-tools.cjs" codex-agents install \
+    --agents-src "$AGENTS_SRC" \
+    --codex-dir "$HOME/.codex"
+  echo "Installed Codex agent registry -> $HOME/.codex/config.toml"
 fi

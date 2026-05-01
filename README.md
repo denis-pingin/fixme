@@ -162,6 +162,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```
 
 ### Dynamic State Machine
@@ -227,7 +228,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 ./install.sh
 ```
 
-Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/`.
+Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/` and `~/.codex/skills/`. It also installs Claude agent definitions and registers Codex agents through `~/.codex/config.toml` with `[agents.fixme-*]` tables.
 
 ## Requirements
 

@@ -74,6 +74,21 @@ function createTmpDir() {
   return dir;
 }
 
+function createAgentFile(agentsDir, name, description, body) {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(path.join(agentsDir, `${name}.md`), `---
+name: ${name}
+description: ${description}
+tools: Read, Write, Bash
+skills:
+  - ${name}
+effort: high
+---
+
+${body}
+`);
+}
+
 function createPipelineConfig(baseDir) {
   const fixmeDir = path.join(baseDir, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
@@ -1758,6 +1773,100 @@ test('resolve-model: malformed config falls back gracefully', () => {
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
+});
+
+// ============================================================================
+// Codex agent install tests
+// ============================================================================
+
+test('codex-agents install: registers agents with working [agents.name] config shape', () => {
+  const dir = createTmpDir();
+  const agentsSrc = path.join(dir, 'source-agents');
+  const codexDir = path.join(dir, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), `[agents]
+max_threads = 12
+max_depth = 3
+
+# GSD Agent Configuration - managed by get-shit-done installer
+
+[agents.gsd-executor]
+description = "Keep existing GSD registration"
+config_file = "/Users/denis/.codex/agents/gsd-executor.toml"
+`);
+
+  createAgentFile(
+    agentsSrc,
+    'fixme-task',
+    'Config-driven pipeline orchestrator.',
+    '<role>\nRead $HOME/.claude/skills/fixme-task/SKILL.md before dispatching.\n</role>'
+  );
+  createAgentFile(
+    agentsSrc,
+    'fixme-review-code',
+    'Read-only code reviewer.',
+    '<role>\nRead ~/.claude/skills/fixme-review-code/SKILL.md before reviewing.\n</role>'
+  );
+
+  const result = run(`codex-agents install --agents-src "${agentsSrc}" --codex-dir "${codexDir}"`);
+  assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
+  assert(result.data.installed === 2, `installed count: ${result.data.installed}`);
+
+  const config = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
+  assert(config.includes('[agents.gsd-executor]'), 'existing GSD agent registration should be preserved');
+  assert(config.includes('[agents.fixme-task]'), 'fixme-task should use [agents.fixme-task]');
+  assert(config.includes('[agents.fixme-review-code]'), 'fixme-review-code should use [agents.fixme-review-code]');
+  assert(!config.includes('[[agents]]'), 'Codex config must not use [[agents]] array tables');
+  assert(config.includes(`config_file = "${path.join(codexDir, 'agents', 'fixme-task.toml').replace(/\\/g, '/')}"`), 'config_file should be absolute');
+  assert(config.indexOf('# Fixme Agent Configuration') < config.indexOf('# GSD Agent Configuration'), 'Fixme block should be inserted before GSD-managed tail block');
+
+  const taskToml = fs.readFileSync(path.join(codexDir, 'agents', 'fixme-task.toml'), 'utf8');
+  assert(taskToml.includes('name = "fixme-task"'), 'agent TOML should include name');
+  assert(taskToml.includes('description = "Config-driven pipeline orchestrator."'), 'agent TOML should include description');
+  assert(taskToml.includes('sandbox_mode = "workspace-write"'), 'fixme-task should get workspace-write sandbox');
+  assert(taskToml.includes('spawn_agent(agent_type=..., message=...)'), 'agent TOML should include Codex dispatch adapter');
+  assert(taskToml.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'agent TOML should rewrite Claude skill paths to Codex paths');
+});
+
+test('codex-agents install: removes stale Fixme agent registrations and TOML files', () => {
+  const dir = createTmpDir();
+  const agentsSrc = path.join(dir, 'source-agents');
+  const codexDir = path.join(dir, '.codex');
+  const codexAgentsDir = path.join(codexDir, 'agents');
+  fs.mkdirSync(codexAgentsDir, { recursive: true });
+  fs.writeFileSync(path.join(codexAgentsDir, 'fixme-stale.toml'), 'name = "fixme-stale"\n');
+  fs.writeFileSync(path.join(codexAgentsDir, 'fixme-stale.md'), 'stale\n');
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), `# user config
+
+[agents.fixme-stale]
+description = "Old stale agent"
+config_file = "/tmp/fixme-stale.toml"
+
+# Fixme Agent Configuration - managed by fixme installer
+
+[agents.fixme-old]
+description = "Old managed agent"
+config_file = "/tmp/fixme-old.toml"
+# /Fixme Agent Configuration
+`);
+
+  createAgentFile(
+    agentsSrc,
+    'fixme-task',
+    'Config-driven pipeline orchestrator.',
+    '<role>\nCurrent task agent.\n</role>'
+  );
+
+  const result = run(`codex-agents install --agents-src "${agentsSrc}" --codex-dir "${codexDir}"`);
+  assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
+
+  const config = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
+  assert(!config.includes('[agents.fixme-stale]'), 'leaked stale Fixme registration should be removed');
+  assert(!config.includes('[agents.fixme-old]'), 'old managed Fixme registration should be removed');
+  assert(config.includes('[agents.fixme-task]'), 'current Fixme registration should be present');
+  assert(!fs.existsSync(path.join(codexAgentsDir, 'fixme-stale.toml')), 'stale Fixme TOML should be removed');
+  assert(!fs.existsSync(path.join(codexAgentsDir, 'fixme-stale.md')), 'stale Fixme markdown should be removed');
+  assert(fs.existsSync(path.join(codexAgentsDir, 'fixme-task.toml')), 'current Fixme TOML should be written');
 });
 
 // ============================================================================
