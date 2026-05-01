@@ -11,10 +11,10 @@ This skill does not interact with `<fixme-dir>` directly. All pipeline state (de
 1. Fetching PR comments
 2. Analyzing each comment
 3. Consulting the user on ambiguous fixes
-4. Invoking `Skill("fixme-task", ...)` with the resolved FIX list as a text argument
+4. Invoking `Skill("fixme-task", ...)` with the routed `CURRENT_PR_FIX` groups as a text argument
 5. Verifying, committing, replying to comments, resolving threads
 
-**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the FIX list as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all state.
+**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all state.
 
 When `fixme-task`'s SKILL.md says "the orchestrator writes to the decision log", **the orchestrator means `fixme-task` itself**, not the caller of `Skill("fixme-task")`. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
 
@@ -58,11 +58,11 @@ Step 1   [fetch]            Fetch three GitHub API surfaces with mandatory pagin
 Step 2   [fetch/display]    Normalize into review_item records and display all fetched items
 Step 3   [analyze]          Analyze every item individually; classify with verdict
 Step 4   [analyze/present]  Present `## PR Comment Analysis` to user
-Step 5   [analyze/route]    Route: any FIX_UNCLEAR or ASK_USER -> 6, otherwise -> 7
+Step 5   [analyze/route]    Route: any FIX_UNCLEAR, ASK_USER, or ROUTE: DECISION -> 6, otherwise -> 7
 Step 6   [consult]          Run consultation loop until all decisions are resolved
-Step 7   [consult/route]    Route: zero FIX items remain -> 14, --pause -> 8, otherwise -> 9
+Step 7   [consult/route]    Route: zero CURRENT_PR_FIX groups remain -> 14, --pause -> 8, otherwise -> 9
 Step 8   [confirm]          Present `## Ready to Execute` and wait for user response
-Step 9   [dispatch]         Dispatch Skill("fixme-task") with the resolved FIX list
+Step 9   [dispatch]         Dispatch Skill("fixme-task") with routed CURRENT_PR_FIX groups
 Step 10  [verify]           Run build/lint/test using project-documented commands
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
 Step 12  [commit]           Commit changes (and push unless --skip-push is set)
@@ -73,8 +73,8 @@ Step 15  [done]             Run summary
 
 ### Routing Rules
 
-- **Step 5 (analyze/route)**: If at least one item was classified `FIX_UNCLEAR` or `ASK_USER`, advance to Step 6. Otherwise jump directly to Step 7.
-- **Step 7 (consult/route)**: If after consultation zero `FIX` items remain (every item was rejected or already-fixed), jump to Step 14 to post replies and skip the dispatch path entirely. Otherwise: if `--pause` is set advance to Step 8; if not set, jump to Step 9.
+- **Step 5 (analyze/route)**: If at least one item was classified `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION`, advance to Step 6. Otherwise jump directly to Step 7.
+- **Step 7 (consult/route)**: If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely. Otherwise: if `--pause` is set advance to Step 8; if not set, jump to Step 9.
 - **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
 - **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
 
@@ -82,7 +82,7 @@ Step 15  [done]             Run summary
 
 **Dispatching Step 9 (fixme-task) is forbidden until Step 4 (Present `## PR Comment Analysis`) is marked `completed` in TodoWrite.** Even if `--pause` is not set, the analysis presentation is mandatory - `--pause` only controls whether Step 8 (Ready to Execute confirmation) waits for the user. The analysis report is always shown.
 
-If you find yourself with FIX items resolved and Step 4 is still `pending` or `in_progress`, you have skipped the gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed.
+If you find yourself with CURRENT_PR_FIX groups resolved and Step 4 is still `pending` or `in_progress`, you have skipped the gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed.
 
 ### Creating the Manifest with TodoWrite
 
@@ -96,9 +96,9 @@ TodoWrite([
   { content: "Step 4 [analyze/present] Present `## PR Comment Analysis`", status: "pending", activeForm: "Presenting analysis" },
   { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
   { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
-  { content: "Step 7 [consult/route] Route on remaining FIX count and --pause", status: "pending", activeForm: "Routing on confirmation" },
+  { content: "Step 7 [consult/route] Route on remaining CURRENT_PR_FIX groups and --pause", status: "pending", activeForm: "Routing on confirmation" },
   { content: "Step 8 [confirm] Present `## Ready to Execute` and wait", status: "pending", activeForm: "Awaiting confirmation" },
-  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with FIX list", status: "pending", activeForm: "Dispatching fixme-task" },
+  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups", status: "pending", activeForm: "Dispatching fixme-task" },
   { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
@@ -257,7 +257,7 @@ Display all surfaces in format:
   > extracted finding or non-actionable body summary
 ```
 
-**Skip if no actionable comments**: If every `review_item` has verdict `REJECT_FALSE_POSITIVE`, `REJECT_ALREADY_FIXED`, or `REJECT_WONT_FIX`, report "No unresolved comments to address" and proceed to Step 14 if replies are needed.
+**Do not skip analysis based on source or author.** `ROUTE` is assigned only after Step 3 analysis. After Step 3, if every `review_item` has route `FOLLOWUP` or `NO_ACTION`, report "No current PR fixes to dispatch" and proceed to Step 14 if replies are needed.
 
 ### 2. Analyze Each Unresolved Comment
 
@@ -275,6 +275,49 @@ For each unresolved `review_item`:
    - `REJECT_FALSE_POSITIVE`: Comment is incorrect or doesn't apply - the code is correct
    - `REJECT_ALREADY_FIXED`: Issue was already addressed
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
+   - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal
+
+4. **Assign triage metadata** to every `review_item` and deduplicated issue group:
+   - `VERDICT: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_ALREADY_FIXED | REJECT_WONT_FIX | FOLLOWUP_ONLY`
+   - `SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
+   - `COMPLEXITY: LOW | MEDIUM | HIGH`
+   - `CONFIDENCE: HIGH | MEDIUM | LOW`
+   - `ROUTE: CURRENT_PR_FIX | DECISION | FOLLOWUP | NO_ACTION`
+   - `ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | NONE`
+
+Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance.
+
+**Severity definitions**:
+- `BLOCKER`: Correctness, data loss, security, privacy, crash, migration, or public API risk that can break the PR goal or production behavior.
+- `MAJOR`: Real behavioral, compatibility, reliability, test, or maintainability issue that should be fixed before this PR is accepted.
+- `MINOR`: Real issue with limited blast radius, mostly local cleanup, narrow readability, small test hardening, or low-risk consistency.
+- `INFO`: Educational note, optional observation, or future improvement that should not block or drive a fix loop.
+
+**Complexity definitions**:
+- `LOW`: One local file or mechanical change, no design choice, no cross-module contract change.
+- `MEDIUM`: Multiple files, moderate test changes, or a contained design choice.
+- `HIGH`: Cross-cutting change, new abstraction, migration, public contract change, or significant refactor.
+
+**Confidence definitions**:
+- `HIGH`: The referenced code and current state clearly confirm validity and the implementation path.
+- `MEDIUM`: The issue is probably valid after code inspection, but some impact or implementation detail needs confirmation.
+- `LOW`: Validity is uncertain. Route to `ASK_USER` instead of guessing.
+
+**Routing matrix**:
+- BLOCKER findings always route to CURRENT_PR_FIX.
+- MAJOR + LOW or MEDIUM complexity + HIGH confidence routes to CURRENT_PR_FIX.
+- MAJOR + HIGH complexity routes to CURRENT_PR_FIX with `ROUTE_SCOPE: PLAN_REQUIRED`.
+- MINOR + LOW complexity + same touched area may be opportunistic CURRENT_PR_FIX.
+- MINOR + MEDIUM or HIGH complexity routes to FOLLOWUP unless the user explicitly asks to include it.
+- INFO never triggers fixme-task dispatch.
+- LOW confidence on validity routes to ASK_USER.
+- Valid issues with multiple defensible approaches route to FIX_UNCLEAR and DECISION.
+- Duplicate comments about the same root cause become one issue group with all source IDs preserved.
+
+`ROUTE_SCOPE` rules:
+- Use `IMPLEMENT_ONLY` when the current plan remains correct and the fix is local implementation repair.
+- Use `PLAN_REQUIRED` when the fix changes the plan, architecture, public contract, persistence, migration, or acceptance criteria.
+- Use `NONE` for `FOLLOWUP`, `NO_ACTION`, and unresolved `DECISION` items.
 
 **Distinguishing FIX vs FIX_UNCLEAR**: A fix is `FIX` when there is exactly one
 reasonable way to address it (e.g., "add missing null check", "fix typo in variable name",
@@ -313,17 +356,44 @@ For each individual item, describe it top-down: context, what's wrong, what brea
 
 {EXACT counts with full accounting. Format:
 "N review items from 3 fetched surfaces (T inline review threads, I issue comments,
-R pull request reviews). Verdict: N to fix, N already fixed, N not actionable
-(N false positive, N won't fix), N need user input."
+R pull request reviews), grouped into G issue groups. Routes: N current PR fix groups,
+N decision groups, N follow-up groups, N already fixed groups, N not actionable groups
+(N false positive, N won't fix)."
 Every review_item must be accounted for - the numbers MUST sum to the total. If they
 don't, you miscounted - recount before presenting. No vague quantifiers.}
 
 ---
 
+### Triage Table
+
+ID | Items | Verdict | Severity | Complexity | Confidence | Route | Scope | Files
+---|---|---|---|---|---|---|---|---
+{One row per deduplicated issue group. Every source item ID appears in exactly one row.}
+
+### Execution Batches
+
+{List only groups with `ROUTE: CURRENT_PR_FIX`. Batch by implementation dependency cluster, not by comment source.}
+
+**B{N}. {batch title}** [`{ROUTE_SCOPE}`]
+- **Groups**: {G1, G2, ...}
+- **Why batched together**: {shared files, shared behavior, or same root cause}
+- **Execution shape**: {implementation repair | plan-required change}
+- **Review shape**: {focused re-review | full review}
+
+Expand full evidence cards only for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups. For lower-risk groups, keep the table row plus one concise planned-action line.
+
 ### Already Fixed (resolve immediately)
 {List items confirmed fixed in the current code. For each:}
 - **{ID}. {concrete issue name}** ({N} threads) - Fixed in `{commit_sha}`.
   {One sentence: what was wrong and how it was fixed.}
+
+### Follow-Up Only ({N} groups)
+{List valid but deferred groups. These are not rejections. For each:}
+
+**{ID}. {issue name}** [`FOLLOWUP_ONLY`] [`{severity}`] [`{complexity}`]
+- **What was reported**: {What the reviewer flagged.}
+- **Why not in this PR**: {Why the valid concern is disproportionate for the current PR fix loop. Tie this to severity, complexity, PR goal, and blast radius.}
+- **Follow-up action**: {Concrete follow-up title or "No durable follow-up artifact created" if the project has no follow-up backend in this workflow.}
 
 ### Not Actionable ({N} items)
 {List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
@@ -341,7 +411,8 @@ don't, you miscounted - recount before presenting. No vague quantifiers.}
 
 {For each deduplicated issue, present ALL of these fields:}
 
-**{ID}. {Issue title}** [`{category}`]
+**{ID}. {Issue title}** [`{category}`] [`{severity}`] [`{complexity}`] [`{confidence}`]
+- **Route**: `{ROUTE}` / `{ROUTE_SCOPE}`
 - **What was reported**: {What the reviewer flagged - their exact concern, which file/line
   they pointed at, what they suggested. The reader needs to know the input before evaluating
   the analysis.}
@@ -358,7 +429,7 @@ don't, you miscounted - recount before presenting. No vague quantifiers.}
   whether the fix is correct. For non-trivial fixes, explain why this approach over alternatives.
   For FIX_UNCLEAR: "Requires approach decision - see below."
   For ASK_USER: "Requires validity determination - see below."}
-- **Effort**: {low | medium | high}
+- **Effort**: {LOW | MEDIUM | HIGH, matching `COMPLEXITY`}
 - **Files**: {[file.ts:line](/absolute/path/file.ts#Lline), [file2.ts:line](/absolute/path/file2.ts#Lline)}
 - **Review items**: {N} ({list IDs and authors: T1 reviewer-login, I2 claude[bot], R1 chatgpt-codex-connector[bot]})
 
@@ -435,11 +506,11 @@ needs to see both to judge whether your analysis actually addresses the reviewer
   schema-based alternative would produce a typed validation error with the field path that
   failed, making error monitoring actionable."
 
-**9. Ground effort estimates in scope, not gut feel.**
-The "Effort" field (low/medium/high) must reflect the actual scope of the change. Low: single
-file, mechanical change, no design decisions. Medium: multiple files or a design choice involved.
-High: cross-cutting change, new abstractions, or significant refactoring. If you can't determine
-effort without deeper investigation, say "medium (needs investigation)" rather than guessing.
+**9. Ground complexity estimates in scope, not gut feel.**
+The `COMPLEXITY` field must reflect the actual scope of the change. LOW: single
+file, mechanical change, no design decisions. MEDIUM: multiple files or a design choice involved.
+HIGH: cross-cutting change, new abstractions, or significant refactoring. If you cannot determine
+complexity without deeper investigation, classify confidence as `LOW` and route to `ASK_USER` rather than guessing.
 
 **10. Absolute precision in all quantification (NON-NEGOTIABLE).**
 Never use vague quantifiers: "most", "many", "some", "several", "likely", "probably",
@@ -483,9 +554,9 @@ show every item - not "and 15 more similar".
 
 ### 2.5. User Consultation for Ambiguous Fixes
 
-**Skip this step if there are no `FIX_UNCLEAR` or `ASK_USER` items.** Proceed directly to Step 3.
+**Skip this step if there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` items.** Proceed directly to Step 3.
 
-Gather ALL `FIX_UNCLEAR` and `ASK_USER` items and present them to the user in a single structured write-up.
+Gather ALL `FIX_UNCLEAR`, `ASK_USER`, and `ROUTE: DECISION` items and present them to the user in a single structured write-up.
 
 **Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill.** If it was not preloaded, read it at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md`.
 
@@ -522,9 +593,8 @@ After presenting ALL decision points, ask the user a SINGLE question:
 - User said "go with recommendations" or equivalent (use recommended option for all unanswered)
 - User said "up to you" / "your call" / equivalent for specific items (use recommendation for those)
 
-Once all decisions are resolved, merge them into the fix list: each `FIX_UNCLEAR` becomes
-a resolved fix item with the chosen approach noted. Each `ASK_USER` item becomes FIX (with approach), REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, or REJECT_ALREADY_FIXED based on the user's answer. These join the `FIX` items for
-Step 3.
+Once all decisions are resolved, merge them into the routed issue groups: each `FIX_UNCLEAR` becomes
+a resolved `CURRENT_PR_FIX` or `FOLLOWUP` group with the chosen approach noted. Each `ASK_USER` item becomes `CURRENT_PR_FIX`, `FOLLOWUP`, `REJECT_FALSE_POSITIVE`, `REJECT_WONT_FIX`, or `REJECT_ALREADY_FIXED` based on the user's answer. Only `CURRENT_PR_FIX` groups proceed to Step 3.
 
 ### 2.7. Pre-Execution Confirmation (when `--pause` is set)
 
@@ -534,12 +604,12 @@ After all analysis is complete and all decisions are resolved, present a final e
 and wait for explicit user confirmation before proceeding.
 
 ```
-## Ready to Execute ({N} fixes via fixme-task pipeline)
+## Ready to Execute ({N} CURRENT_PR_FIX groups via fixme-task pipeline)
 
-{For each fix item, one line:}
-{N}. **{Issue title}** - {the planned fix action} -> [{files affected}]
+{For each current PR fix group, one line:}
+{N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] - {the planned fix action} -> [{files affected}]
 
-All fixes will be dispatched to fixme-task (plan -> execute -> review). Proceed? (yes / no / modify)
+Only CURRENT_PR_FIX groups will be dispatched to fixme-task (plan -> execute -> review). Follow-up groups will be replied to but will not consume this pipeline. Proceed? (yes / no / modify)
 ```
 
 **User responses:**
@@ -550,7 +620,11 @@ All fixes will be dispatched to fixme-task (plan -> execute -> review). Proceed?
 
 ### 3. Address Valid Issues
 
-For all resolved fix items (`FIX` + resolved `FIX_UNCLEAR` + `ASK_USER` items classified as FIX by user), invoke fixme-task to handle the full plan-execute-review pipeline.
+For all routed current PR fix groups (`ROUTE: CURRENT_PR_FIX`, including resolved `FIX_UNCLEAR` and `ASK_USER` items classified as current fixes by the user), invoke fixme-task to handle the plan-execute-review pipeline. Do not dispatch `FOLLOWUP`, `NO_ACTION`, `INFO`, or `FOLLOWUP_ONLY` groups.
+
+Batch CURRENT_PR_FIX groups by implementation dependency cluster, not by comment source. Keep source IDs only as provenance.
+
+Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQUIRED` fix touches an unrelated subsystem, would block low-risk implementation-only fixes, or requires a materially different verification strategy. Otherwise prefer one dispatch with all current PR fix groups.
 
 **PIPELINE GATE (self-check before proceeding):** Your next action MUST be a `Skill("fixme-task")` invocation. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The Skill tool is the ONLY tool you use in this step.
 
@@ -565,9 +639,11 @@ Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-wr
       args="Fix these PR comment issues. This is a PR comment fix task.
 
       Fix items:
-      - [full list of fix items with file paths, line numbers, and comment text]
+      - [full list of CURRENT_PR_FIX groups with file paths, line numbers, comment text, and source IDs]
+      - [for each group: VERDICT, SEVERITY, COMPLEXITY, CONFIDENCE, ROUTE, ROUTE_SCOPE]
       - [for FIX items: the analysis from Step 2]
-      - [for resolved FIX_UNCLEAR items: the chosen approach and rationale from Step 2.5]
+      - [for resolved FIX_UNCLEAR or ASK_USER items: the chosen approach and rationale from Step 2.5]
+      - [list FOLLOWUP_ONLY and INFO groups separately as non-dispatch context for the run summary]
 
       Project root: [path]"
     )
@@ -782,6 +858,7 @@ reviewer who leaves actionable findings in the review body instead of inline thr
 | Valid bug, obvious fix [`FIX`] | Fix autonomously, reply with commit SHA | Yes |
 | Valid bug, ambiguous fix [`FIX_UNCLEAR`] | Consult user (Step 2.5), then fix per chosen approach | Yes |
 | Uncertain validity [`ASK_USER`] | Consult user (Step 2.5) for validity determination | Depends |
+| Valid but deferred [`FOLLOWUP_ONLY`] | Reply with follow-up rationale; do not dispatch fixme-task | Bot: Yes, Human: No |
 | Not a bug (code is correct) [`REJECT_FALSE_POSITIVE`] | Reply explaining why | Bot: Yes, Human: No |
 | Already fixed in prior commit [`REJECT_ALREADY_FIXED`] | Reply noting it's fixed | Yes |
 | Out of scope / intentional [`REJECT_WONT_FIX`] | Reply explaining rationale | Bot: Yes, Human: No |
@@ -797,9 +874,9 @@ reviewer who leaves actionable findings in the review body instead of inline thr
 - **Greptile summary parsing**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login and replied to with `@greptileai`.
 - **Human issue comments and review bodies**: Each body may contain multiple findings. Parse every finding individually and post a reply issue comment addressing the reviewer by login when a response is needed.
 - **Skip already-replied findings**: If a later reply already addresses the same finding (references a commit SHA or says "Fixed"), mark that item `REJECT_ALREADY_FIXED`.
-- **FIX vs FIX_UNCLEAR vs ASK_USER**: FIX items proceed without user input. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid.
+- **FIX vs FIX_UNCLEAR vs ASK_USER vs FOLLOWUP_ONLY**: FIX items proceed without user input only when routed as `CURRENT_PR_FIX`. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid. FOLLOWUP_ONLY items are valid but do not consume the current PR fix pipeline.
 - **`--pause` flag**: When set, the workflow pauses after analysis (Step 2/2.5) and presents a final execution plan before dispatching fixme-task. The user can approve, cancel, or modify the fix list. Without `--pause`, execution proceeds automatically after analysis.
-- If no actionable comments exist from any surface, report "No unresolved comments to address" and exit
+- If no current PR fixes exist from any surface, report "No current PR fixes to dispatch" and proceed to replies/resolution
 - Always verify before committing
 - One commit for all fixes (unless logically separate)
 - Be specific in replies - reference exact lines/commits

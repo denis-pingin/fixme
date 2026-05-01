@@ -488,6 +488,21 @@ Handler route actions use this contract: `NEXT_ACTION: DONE | PLAN_REVISION | IM
 - **HAS_NONBLOCKING_FINDINGS**: print the review classification, record follow-up-only items in the run summary, and advance without re-running the producer. MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.
 - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 
+### PR Comment Triage Inputs
+
+When invoked by `fixme-pr-comments`, the task input may already contain risk-aware PR comment triage. Incoming PR comment fix items may include VERDICT, SEVERITY, COMPLEXITY, CONFIDENCE, ROUTE, and ROUTE_SCOPE metadata.
+
+Use that metadata as intake routing context, not as a substitute for normal plan and code review:
+
+- Only items with ROUTE: CURRENT_PR_FIX enter the producer/review loop.
+- FOLLOWUP_ONLY and INFO items are recorded in the run summary and never trigger planning, execution, or loop counters.
+- Batch CURRENT_PR_FIX items by dependency cluster, not by comment source.
+- Split dispatch only when a high-complexity PLAN_REQUIRED fix touches an unrelated subsystem or blocks low-risk fixes.
+- Prefer repair mode for CURRENT_PR_FIX items with ROUTE_SCOPE: IMPLEMENT_ONLY and no PLAN_REQUIRED items.
+- Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.
+
+The planner and executor still validate the requested route. If a supposedly implementation-only PR fix actually requires plan, contract, persistence, migration, or acceptance-criteria changes, promote it to `PLAN_REQUIRED` before execution. If a current PR fix is found to be valid but disproportionate for this PR after deeper inspection, demote it to `FOLLOWUP_ONLY`, record the reason, and do not spend a revision cycle on it.
+
 ### Creating the Manifest with TodoWrite
 
 After building the manifest, create it using TodoWrite. One todo per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry:
@@ -679,6 +694,7 @@ For phases using the standard skills, these are the input contracts:
 
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description
+- PR comment task mode: original task description + only `ROUTE: CURRENT_PR_FIX` groups + their `VERDICT`, `SEVERITY`, `COMPLEXITY`, `CONFIDENCE`, `ROUTE`, and `ROUTE_SCOPE` metadata + separate non-dispatch summary of `FOLLOWUP_ONLY` and `INFO` groups
 - Plan revision mode (review FIX loop): original task + path to previous plan + current code map path if available + current review context packet + FIX items from handler + path to decision log
 - Code revision mode (PLAN_REQUIRED outer loop from later phase): original task + path to previous plan + current code map path if available + current review context packet + execution results summary + PLAN_REQUIRED FIX items from handler + path to decision log
 - Must output `PLAN_PATH: <absolute path>` and `CODE_MAP_PATH: <absolute path>`; capture them as `planPath` and `codeMapPath`

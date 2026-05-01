@@ -2090,6 +2090,41 @@ test('fixme-pr-comments skill: fetches three GitHub surfaces and normalizes revi
   assert(!skill.includes('Fetch Sources A-E'), 'manifest should not use source-letter fetching');
 });
 
+test('fixme-pr-comments skill: triages comments by risk, complexity, confidence, and route', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('VERDICT: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_ALREADY_FIXED | REJECT_WONT_FIX | FOLLOWUP_ONLY'), 'PR comments should include follow-up-only verdicts');
+  assert(skill.includes('SEVERITY: BLOCKER | MAJOR | MINOR | INFO'), 'PR comments should classify severity');
+  assert(skill.includes('COMPLEXITY: LOW | MEDIUM | HIGH'), 'PR comments should classify implementation complexity');
+  assert(skill.includes('CONFIDENCE: HIGH | MEDIUM | LOW'), 'PR comments should classify analysis confidence');
+  assert(skill.includes('ROUTE: CURRENT_PR_FIX | DECISION | FOLLOWUP | NO_ACTION'), 'PR comments should classify execution route');
+  assert(skill.includes('ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | NONE'), 'PR comments should classify route scope');
+  assert(skill.includes('severity decides importance, complexity decides execution shape, confidence decides autonomy'), 'triage dimensions should have separate responsibilities');
+  assert(skill.includes('BLOCKER findings always route to CURRENT_PR_FIX.'), 'blockers should always enter current PR fix scope');
+  assert(skill.includes('MAJOR + LOW or MEDIUM complexity + HIGH confidence routes to CURRENT_PR_FIX.'), 'low-cost high-confidence major fixes should run now');
+  assert(skill.includes('MINOR + MEDIUM or HIGH complexity routes to FOLLOWUP unless the user explicitly asks to include it.'), 'high-cost minor items should not consume the PR fix loop by default');
+  assert(skill.includes('INFO never triggers fixme-task dispatch.'), 'info items should never dispatch fixme-task');
+  assert(skill.includes('LOW confidence on validity routes to ASK_USER.'), 'low-confidence validity should require user input');
+  assert(skill.includes('## Execution Batches'), 'presentation should include execution batches');
+  assert(skill.includes('ID | Items | Verdict | Severity | Complexity | Confidence | Route | Scope | Files'), 'presentation should include compact triage table');
+  assert(skill.includes('Expand full evidence cards only for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups.'), 'presentation should avoid expanding every low-risk item');
+  assert(skill.includes('If after consultation zero `CURRENT_PR_FIX` groups remain'), 'routing should dispatch only current PR fixes');
+});
+
+test('fixme-task skill: consumes PR comment triage metadata to reduce unnecessary cycles', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Incoming PR comment fix items may include VERDICT, SEVERITY, COMPLEXITY, CONFIDENCE, ROUTE, and ROUTE_SCOPE metadata.'), 'fixme-task should accept PR triage metadata');
+  assert(skill.includes('Only items with ROUTE: CURRENT_PR_FIX enter the producer/review loop.'), 'fixme-task should ignore follow-up-only items for producer loops');
+  assert(skill.includes('FOLLOWUP_ONLY and INFO items are recorded in the run summary and never trigger planning, execution, or loop counters.'), 'follow-up and info should not consume loops');
+  assert(skill.includes('Batch CURRENT_PR_FIX items by dependency cluster, not by comment source.'), 'fixme-task should batch by implementation dependency rather than reviewer source');
+  assert(skill.includes('Split dispatch only when a high-complexity PLAN_REQUIRED fix touches an unrelated subsystem or blocks low-risk fixes.'), 'fixme-task should split only for meaningful risk isolation');
+  assert(skill.includes('Prefer repair mode for CURRENT_PR_FIX items with ROUTE_SCOPE: IMPLEMENT_ONLY and no PLAN_REQUIRED items.'), 'implementation-only PR fixes should avoid replanning');
+  assert(skill.includes('Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.'), 'review intensity should follow risk and complexity');
+});
+
 test('fixme review handlers: classify blocking severity and route scope separately', () => {
   const planHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md');
   const codeHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md');
