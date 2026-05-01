@@ -89,6 +89,19 @@ ${body}
 `);
 }
 
+function createSkillFile(skillsDir, name, body) {
+  const skillDir = path.join(skillsDir, name);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---
+name: ${name}
+description: Test ${name}
+---
+
+${body}
+`);
+  return skillDir;
+}
+
 function createPipelineConfig(baseDir) {
   const fixmeDir = path.join(baseDir, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
@@ -1867,6 +1880,65 @@ config_file = "/tmp/fixme-old.toml"
   assert(!fs.existsSync(path.join(codexAgentsDir, 'fixme-stale.toml')), 'stale Fixme TOML should be removed');
   assert(!fs.existsSync(path.join(codexAgentsDir, 'fixme-stale.md')), 'stale Fixme markdown should be removed');
   assert(fs.existsSync(path.join(codexAgentsDir, 'fixme-task.toml')), 'current Fixme TOML should be written');
+});
+
+// ============================================================================
+// Codex skill install tests
+// ============================================================================
+
+test('codex-skills install: writes Codex-adapted skills and cleans stale copies', () => {
+  const dir = createTmpDir();
+  const skillsSrc = path.join(dir, 'source-skills');
+  const codexDir = path.join(dir, '.codex');
+  const codexSkillsDir = path.join(codexDir, 'skills');
+  fs.mkdirSync(path.join(codexSkillsDir, 'fixme-stale'), { recursive: true });
+  fs.writeFileSync(path.join(codexSkillsDir, 'fixme-stale', 'SKILL.md'), 'stale\n');
+
+  const taskDir = createSkillFile(
+    skillsSrc,
+    'fixme-task',
+    [
+      'Dispatch with Agent(subagent_type="fixme-write-plan", prompt="write plan").',
+      'Then call Skill("fixme-review-plan", args="review").',
+      'Read $HOME/.claude/skills/fixme-task/SKILL.md and ~/.claude/rules/spec-review-rules.md.',
+    ].join('\n')
+  );
+  fs.mkdirSync(path.join(taskDir, 'references'), { recursive: true });
+  fs.writeFileSync(path.join(taskDir, 'references', 'dispatch.md'), 'Use .claude/skills/fixme-task/SKILL.md\n');
+
+  const ticketsDir = createSkillFile(
+    skillsSrc,
+    'fixme-tickets-md',
+    'Ticket backend skill.'
+  );
+  fs.mkdirSync(path.join(ticketsDir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'scripts', 'private.cjs'), 'console.log("do not install");\n');
+
+  const result = run(`codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`);
+  assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
+  assert(result.data.installed === 2, `installed count: ${result.data.installed}`);
+  assert(result.data.removed === 1, `removed count: ${result.data.removed}`);
+
+  const installedTask = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
+  assert(installedTask.includes('<codex_skill_adapter>'), 'installed skill should include Codex adapter');
+  assert(installedTask.includes('spawn_agent(agent_type="X", message="Y")'), 'adapter should map Agent dispatch to spawn_agent');
+  assert(installedTask.includes('Skill("name", args)'), 'adapter should map Skill invocation');
+  assert(installedTask.includes('request_user_input'), 'adapter should map AskUserQuestion');
+  assert(installedTask.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'source skill body should rewrite Claude paths to Codex paths');
+  assert(installedTask.includes('~/.codex/rules/spec-review-rules.md'), 'tilde Claude paths should rewrite to Codex paths');
+  assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');
+
+  const installedReference = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'references', 'dispatch.md'), 'utf8');
+  assert(installedReference.includes('.codex/skills/fixme-task/SKILL.md'), 'markdown references should be path-converted');
+
+  assert(!fs.existsSync(path.join(codexSkillsDir, 'fixme-stale')), 'stale Fixme skill copy should be removed');
+  assert(!fs.existsSync(path.join(codexSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not be installed into Codex skills');
+
+  const reinstall = run(`codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`);
+  assert(reinstall.ok, `reinstall should succeed, got: ${JSON.stringify(reinstall)}`);
+  const reinstalledTask = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
+  const adapterCount = (reinstalledTask.match(/<codex_skill_adapter>/g) || []).length;
+  assert(adapterCount === 1, `adapter should be idempotent, got ${adapterCount}`);
 });
 
 // ============================================================================

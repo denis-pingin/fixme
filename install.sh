@@ -11,21 +11,20 @@ if [ ! -d "$SKILLS_SRC" ]; then
   exit 1
 fi
 
-SKILL_DESTS=(
-  "$HOME/.claude/skills"
-  "$HOME/.codex/skills"
-)
-
-for dest in "${SKILL_DESTS[@]}"; do
-  mkdir -p "$dest"
-  for dir in "$SKILLS_SRC"/fixme*; do
-    name="$(basename "$dir")"
-    rm -rf "$dest/$name"
-    cp -R "$dir" "$dest/$name"
-    echo "Installed $name -> $dest"
-  done
-  rm -rf "$dest/fixme-tickets-md/scripts"
+CLAUDE_SKILLS_DEST="$HOME/.claude/skills"
+mkdir -p "$CLAUDE_SKILLS_DEST"
+for dir in "$SKILLS_SRC"/fixme*; do
+  name="$(basename "$dir")"
+  rm -rf "$CLAUDE_SKILLS_DEST/$name"
+  cp -R "$dir" "$CLAUDE_SKILLS_DEST/$name"
+  echo "Installed $name -> $CLAUDE_SKILLS_DEST"
 done
+rm -rf "$CLAUDE_SKILLS_DEST/fixme-tickets-md/scripts"
+
+node "$SKILLS_SRC/fixme-tools/scripts/fixme-tools.cjs" codex-skills install \
+  --skills-src "$SKILLS_SRC" \
+  --codex-dir "$HOME/.codex"
+echo "Installed Codex skills -> $HOME/.codex/skills"
 
 if [ -d "$RULES_SRC" ]; then
   RULE_DESTS=(
