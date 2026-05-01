@@ -25,134 +25,148 @@
     "framework": "next.js"
   },
   "ticketBackend": "fixme-tickets-md",
-  "pipelines": {
-    "default": [
-      {
-        "name": "plan",
-        "skills": ["fixme-write-plan"],
-        "review": {
-          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-          "maxCycles": 3
+  "workflows": {
+    "default": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "plan",
+          "skills": ["fixme-write-plan"],
+          "review": {
+            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+            "maxCycles": 3
+          }
+        },
+        {
+          "name": "implement",
+          "skills": ["fixme-execute-plan"],
+          "review": {
+            "skills": ["fixme-review-code", "fixme-handle-code-review"],
+            "maxCycles": 2
+          }
         }
-      },
-      {
-        "name": "implement",
-        "skills": ["fixme-execute-plan"],
-        "review": {
-          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-          "maxCycles": 2
+      ]
+    },
+    "full": {
+      "outerMaxCycles": 2,
+      "phases": [
+        { "name": "investigate", "skills": ["fixme-investigate"] },
+        { "name": "research", "skills": ["fixme-research"] },
+        {
+          "name": "plan",
+          "skills": ["fixme-write-plan"],
+          "review": {
+            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+            "maxCycles": 3
+          }
+        },
+        {
+          "name": "implement",
+          "skills": ["fixme-execute-plan"],
+          "review": {
+            "skills": ["fixme-review-code", "fixme-handle-code-review"],
+            "maxCycles": 2
+          }
+        },
+        { "name": "verify", "skills": ["fixme-browser-verify"] }
+      ]
+    },
+    "quick": {
+      "outerMaxCycles": 2,
+      "phases": [
+        { "name": "plan", "skills": ["fixme-write-plan"] },
+        { "name": "implement", "skills": ["fixme-execute-plan"] }
+      ]
+    },
+    "product-spec": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "product-spec",
+          "skills": ["fixme-write-product-spec"],
+          "review": {
+            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+            "maxCycles": 3
+          }
         }
-      }
-    ],
-    "full": [
-      { "name": "investigate", "skills": ["fixme-investigate"] },
-      { "name": "research", "skills": ["fixme-research"] },
-      {
-        "name": "plan",
-        "skills": ["fixme-write-plan"],
-        "review": {
-          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-          "maxCycles": 3
+      ]
+    },
+    "technical-spec": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "technical-spec",
+          "skills": ["fixme-write-technical-spec"],
+          "review": {
+            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+            "maxCycles": 3
+          }
         }
-      },
-      {
-        "name": "implement",
-        "skills": ["fixme-execute-plan"],
-        "review": {
-          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-          "maxCycles": 2
+      ]
+    },
+    "plan": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "plan",
+          "skills": ["fixme-write-plan"],
+          "review": {
+            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+            "maxCycles": 3
+          }
         }
-      },
-      { "name": "verify", "skills": ["fixme-browser-verify"] }
-    ],
-    "quick": [
-      { "name": "plan", "skills": ["fixme-write-plan"] },
-      { "name": "implement", "skills": ["fixme-execute-plan"] }
-    ],
-    "product-spec": [
-      {
-        "name": "product-spec",
-        "skills": ["fixme-write-product-spec"],
-        "review": {
-          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-          "maxCycles": 3
+      ]
+    },
+    "execute": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "implement",
+          "skills": ["fixme-execute-plan"],
+          "review": {
+            "skills": ["fixme-review-code", "fixme-handle-code-review"],
+            "maxCycles": 2
+          }
         }
-      }
-    ],
-    "technical-spec": [
-      {
-        "name": "technical-spec",
-        "skills": ["fixme-write-technical-spec"],
-        "review": {
-          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-          "maxCycles": 3
+      ]
+    },
+    "idea-to-production": {
+      "outerMaxCycles": 2,
+      "phases": [
+        {
+          "name": "product-spec",
+          "skills": ["fixme-write-product-spec"],
+          "review": {
+            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+            "maxCycles": 3
+          }
+        },
+        {
+          "name": "technical-spec",
+          "skills": ["fixme-write-technical-spec"],
+          "review": {
+            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+            "maxCycles": 3
+          }
+        },
+        {
+          "name": "plan",
+          "skills": ["fixme-write-plan"],
+          "review": {
+            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+            "maxCycles": 3
+          }
+        },
+        {
+          "name": "implement",
+          "skills": ["fixme-execute-plan"],
+          "review": {
+            "skills": ["fixme-review-code", "fixme-handle-code-review"],
+            "maxCycles": 2
+          }
         }
-      }
-    ],
-    "plan": [
-      {
-        "name": "plan",
-        "skills": ["fixme-write-plan"],
-        "review": {
-          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-          "maxCycles": 3
-        }
-      }
-    ],
-    "execute": [
-      {
-        "name": "implement",
-        "skills": ["fixme-execute-plan"],
-        "review": {
-          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-          "maxCycles": 2
-        }
-      }
-    ],
-    "idea-to-production": [
-      {
-        "name": "product-spec",
-        "skills": ["fixme-write-product-spec"],
-        "review": {
-          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-          "maxCycles": 3
-        }
-      },
-      {
-        "name": "technical-spec",
-        "skills": ["fixme-write-technical-spec"],
-        "review": {
-          "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-          "maxCycles": 3
-        }
-      },
-      {
-        "name": "plan",
-        "skills": ["fixme-write-plan"],
-        "review": {
-          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-          "maxCycles": 3
-        }
-      },
-      {
-        "name": "implement",
-        "skills": ["fixme-execute-plan"],
-        "review": {
-          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-          "maxCycles": 2
-        }
-      }
-    ]
-  },
-  "workflowControls": {
-    "default": { "outerMaxCycles": 2 },
-    "full": { "outerMaxCycles": 2 },
-    "quick": { "outerMaxCycles": 2 },
-    "product-spec": { "outerMaxCycles": 2 },
-    "technical-spec": { "outerMaxCycles": 2 },
-    "plan": { "outerMaxCycles": 2 },
-    "execute": { "outerMaxCycles": 2 },
-    "idea-to-production": { "outerMaxCycles": 2 }
+      ]
+    }
   },
   "linear": {
     "teamId": "abc123-team-id",
@@ -182,13 +196,22 @@
 }
 ```
 
-## Pipeline Phase Object
+## Workflow Object
 
-Each phase in a pipeline array has these fields:
+Each entry under `workflows` is one named workflow. The workflow object owns both the ordered phase list and the workflow-level loop limit.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | - | Phase name. Becomes the ticket state when this phase is active. Must be unique within the pipeline. |
+| `workflows.<workflowName>.phases` | array | Yes | - | Ordered list of phase objects for this workflow. |
+| `workflows.<workflowName>.outerMaxCycles` | number | No | `2` | Max cross-phase cycles for the selected workflow. This controls how many times a later phase, such as code review, can send work back to an earlier phase before escalating to the user. |
+
+## Workflow Phase Object
+
+Each phase in `workflows.<workflowName>.phases` has these fields:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | - | Phase name. Becomes the ticket state when this phase is active. Must be unique within the workflow. |
 | `enabled` | boolean | No | `true` | When `false`, the phase is skipped by the executor and excluded from state machine derivation. Allows toggling phases without removing config. |
 | `skills` | string[] | Yes | - | Ordered list of skill names to execute for this phase. Run sequentially. |
 | `review` | object | No | - | Review loop configuration. When present and enabled, the phase has an internal review loop: execute skills, then run review chain, route on handler result (CLEAN/HAS_FIX/HAS_ASK_USER). FIX loops back to re-execute skills. HAS_ASK_USER triggers on both FIX_UNCLEAR (approach questions) and ASK_USER (validity questions). |
@@ -196,20 +219,12 @@ Each phase in a pipeline array has these fields:
 | `review.skills` | string[] | Yes (if review) | - | Review skill chain. Run sequentially after phase skills complete. |
 | `review.maxCycles` | number | No | `3` | Max review loop iterations before escalating to user. |
 
-## Workflow Control Object
-
-`workflowControls` stores workflow-scoped loop limits keyed by pipeline name. A workflow is one named entry under `pipelines`, for example `default`, `product-spec`, or `idea-to-production`.
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `workflowControls.<pipelineName>.outerMaxCycles` | number | No | `2` | Max cross-phase cycles for the selected workflow. This controls how many times a later phase, such as code review, can send work back to an earlier phase before escalating to the user. |
-
 ## State Machine Derivation
 
-The state machine is derived from the pipeline definition. Disabled phases (`"enabled": false`) are excluded. Given a pipeline with enabled phases `[A, B, C]`:
+The state machine is derived from the workflow phase list. Disabled phases (`"enabled": false`) are excluded. Given a workflow with enabled phases `[A, B, C]`:
 
 - **Structural states** (always exist): `queued`, `done`, `failed`, `skipped`
-- **Phase states**: `A`, `B`, `C` (from enabled phases in the pipeline)
+- **Phase states**: `A`, `B`, `C` (from enabled phases in the workflow)
 
 **Valid transitions:**
 
@@ -244,9 +259,9 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 | `project.test.runner` | string | No | Test runner: `vitest`, `jest`, `mocha`, or null |
 | `project.framework` | string | No | Detected framework: `next.js`, `nuxt`, `angular`, `svelte`, `vue`, `react` |
 | `ticketBackend` | string | No | Ticket backend skill name. Default: `"fixme-tickets-md"` |
-| `pipelines` | object | No | Named pipeline definitions. Default pipelines provided if absent. |
-| `workflowControls` | object | No | Workflow-scoped loop controls keyed by pipeline name. Missing entries use defaults. |
-| `workflowControls.<pipelineName>.outerMaxCycles` | number | No | Max cross-phase workflow cycles before escalation. Default: `2`. |
+| `workflows` | object | No | Named workflow definitions. Standard workflows provided if absent. |
+| `workflows.<workflowName>.phases` | array | No | Ordered phase objects for the workflow. |
+| `workflows.<workflowName>.outerMaxCycles` | number | No | Max cross-phase workflow cycles before escalation. Default: `2`. |
 | `linear` | object | No | Linear integration settings. Used by `fixme-ticket` skill. |
 | `linear.teamId` | string | No | Default Linear team ID. If set, skips team selection prompt. |
 | `linear.teamName` | string | No | Default Linear team name. Resolved to team ID via `list_teams` if `teamId` is not set. |
@@ -261,10 +276,12 @@ The state machine is derived from the pipeline definition. Disabled phases (`"en
 
 ## Defaults
 
-If `config.json` doesn't exist or `pipelines` is absent, fixme-task uses the `"default"` pipeline hardcoded in the skill (identical to the `"default"` above).
+If `config.json` doesn't exist or `workflows` is absent, fixme-task uses the `"default"` workflow hardcoded in the skill.
 
-If `workflowControls` or `workflowControls.<pipelineName>.outerMaxCycles` is absent, fixme-task uses `outerMaxCycles: 2` for that workflow.
+If `workflows.<workflowName>.outerMaxCycles` is absent, fixme-task uses `outerMaxCycles: 2` for that workflow.
 
 Standard workflows (`default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`) are also hardcoded in `fixme-task`. Projects may override them in config.
+
+Legacy config files with `pipelines.<workflowName>` and `workflowControls.<workflowName>.outerMaxCycles` are readable for backward compatibility. `fixme-tools.cjs config migrate` converts them into `workflows.<workflowName>` and removes the legacy keys from the saved config.
 
 If `project` is absent, run `/fixme-config` to auto-detect and configure project settings.

@@ -8,7 +8,7 @@ Fixme is a suite of Claude Code skills for automated bug fixing and task executi
 
 1. **fixme-session** - A long-lived bug fix session orchestrator. Accepts bug reports, creates tickets, and dispatches fixme-task in the background per ticket. Stays responsive for intake and status queries while tasks execute.
 
-2. **fixme-task** - A config-driven pipeline executor. Reads pipeline definitions from `.fixme/config.json`, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries.
+2. **fixme-task** - A config-driven workflow executor. Reads workflow definitions from `.fixme/config.json`, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries.
 
 ## Commands
 
@@ -78,7 +78,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
     agents/                 # intake-agent.md, investigation-agent.md
     references/             # config-schema.md
     docs/                   # data-flow.md
-  fixme-task/               # Config-driven pipeline executor
+  fixme-task/               # Config-driven workflow executor
   fixme-howto-write-product-spec/   # Shared product specification writing rubric
   fixme-howto-write-technical-spec/ # Shared technical specification writing rubric
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use
@@ -113,7 +113,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 - **Ticket files are the state.** Each bug gets a numbered markdown file with YAML frontmatter. Ticket operations go through the fixme-tickets abstraction which routes to the configured backend.
 - **Lean orchestrators, fresh subagents.** Orchestrators (fixme-session, fixme-task) are dispatchers only. They never investigate, write code, or read source files. All real work happens in subagents spawned via the Agent tool with fresh context windows.
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
-- **Dynamic state machine.** The state machine is derived from pipeline config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the pipeline definition.
+- **Dynamic state machine.** The state machine is derived from workflow config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the workflow definition.
 - **Background dispatch.** fixme-session dispatches fixme-task in the background per ticket, staying responsive for new intake and status queries.
 
 ### Agent Definitions
@@ -143,7 +143,7 @@ Model selection is configurable via `.fixme/config.json` `models` section with q
 
 ### Ticket State Machine
 
-The state machine is derived from the pipeline configuration in `.fixme/config.json`. Given a pipeline with phases `[A, B, C]`:
+The state machine is derived from the workflow configuration in `.fixme/config.json`. Given a workflow with phases `[A, B, C]`:
 
 ```
 queued -> A -> B -> C -> done
@@ -153,7 +153,7 @@ Terminal states: `done`, `failed`, `skipped`. Backward transitions (any phase to
 
 ### fixme-task Pipeline Flow
 
-Config-driven: reads pipeline phases and workflow controls from `.fixme/config.json`. Each phase can have skills and optional review loops:
+Config-driven: reads workflow phases from `.fixme/config.json`. Each phase can have skills and optional review loops:
 
 ```
 for each phase:
@@ -165,7 +165,7 @@ Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER,
 ### Runtime State Locations
 
 - `.fixme/sessions/` - Session directories with ticket folders
-- `.fixme/config.json` - Pipeline definitions, workflow controls, and project settings
+- `.fixme/config.json` - Workflow definitions and project settings
 - `.fixme/specs/` - Product and technical specifications
 - `.fixme/plans/` - Implementation plans (written by fixme-write-plan)
 - `.fixme/decisions.md` - Accumulated user decisions across pipeline iterations

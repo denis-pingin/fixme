@@ -1,15 +1,15 @@
 # Fixme
 
-A Claude Code skill suite for automated task execution. Turn a task description into a verified fix through config-driven pipelines with plan/review/execute/review cycles, ticket state management, and PR comment resolution.
+A Claude Code skill suite for automated task execution. Turn a task description into a verified fix through config-driven workflows with plan/review/execute/review cycles, ticket state management, and PR comment resolution.
 
 Primary entry points:
 
 - **`/fixme-task`** - Single-task pipeline executor. Plan, review, execute, review code - with configurable phases and review loops.
-- **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background pipelines to investigate, fix, and verify each bug.
+- **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background workflows to investigate, fix, and verify each bug.
 - **`/fixme-pr-comments`** - Fetch and address unresolved PR review comments through the full plan/execute cycle.
 - **`/fixme-rebase`** - Safe branch rebasing with conflict resolution and verification.
 - **`/fixme-ticket`** - Create Linear tickets from a description or conversation context.
-- **`/fixme-config`** - Interactive configuration for pipelines, model profiles, and project settings.
+- **`/fixme-config`** - Interactive configuration for workflows, model profiles, and project settings.
 
 ## Quick Start
 
@@ -100,7 +100,7 @@ Safely rebases the current branch onto its base branch (auto-detected from PR ta
 
 Creates a Linear ticket from a description or the current conversation context. Auto-discovers team, project, and label metadata upfront. Supports templates, assignment, status, due dates, and attachments.
 
-### Configure pipelines and models
+### Configure workflows and models
 
 ```text
 /fixme-config
@@ -116,63 +116,44 @@ Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-pha
 
 **fixme-session** manages the session lifecycle: intake, queuing, browser setup, and dispatching fixme-task in the background per ticket. It owns terminal transitions (done, failed, skipped) because those require cleanup (git commit/revert).
 
-**fixme-task** executes pipelines. It reads phase definitions from `.fixme/config.json`, dispatches each phase's skills as isolated agents, manages review loops within phases, and optionally updates ticket state at phase boundaries.
+**fixme-task** executes workflows. It reads phase definitions from `.fixme/config.json`, dispatches each phase's skills as isolated agents, manages review loops within phases, and optionally updates ticket state at phase boundaries.
 
-### Config-Driven Pipelines
+### Config-Driven Workflows
 
-Pipelines are defined in `.fixme/config.json`:
+Workflows are defined in `.fixme/config.json`:
 
 ```json
 {
-  "pipelines": {
-    "default": [
-      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
-    ],
-    "full": [
-      { "name": "investigate", "skills": ["fixme-investigate"] },
-      { "name": "research", "skills": ["fixme-research"] },
-      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"] } },
-      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"] } },
-      { "name": "verify", "skills": ["fixme-browser-verify"] }
-    ],
-    "quick": [
-      { "name": "plan", "skills": ["fixme-write-plan"] },
-      { "name": "implement", "skills": ["fixme-execute-plan"] }
-    ],
-    "product-spec": [
-      { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
-    ],
-    "technical-spec": [
-      { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
-    ],
-    "plan": [
-      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } }
-    ],
-    "execute": [
-      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
-    ],
-    "idea-to-production": [
-      { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
-      { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
-      { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-      { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
-    ]
-  },
-  "workflowControls": {
-    "default": { "outerMaxCycles": 2 },
-    "full": { "outerMaxCycles": 2 },
-    "quick": { "outerMaxCycles": 2 },
-    "product-spec": { "outerMaxCycles": 2 },
-    "technical-spec": { "outerMaxCycles": 2 },
-    "plan": { "outerMaxCycles": 2 },
-    "execute": { "outerMaxCycles": 2 },
-    "idea-to-production": { "outerMaxCycles": 2 }
+  "workflows": {
+    "default": {
+      "outerMaxCycles": 2,
+      "phases": [
+        { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+      ]
+    },
+    "product-spec": {
+      "outerMaxCycles": 2,
+      "phases": [
+        { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
+      ]
+    },
+    "idea-to-production": {
+      "outerMaxCycles": 2,
+      "phases": [
+        { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+        { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+        { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+      ]
+    }
   }
 }
 ```
 
-No config file? Falls back to standard pipelines built into `fixme-task`. Plain `/fixme-task ...` uses the default pipeline unless the input clearly contains a product specification, technical specification, or implementation plan.
+No config file? Falls back to standard workflows built into `fixme-task`. Plain `/fixme-task ...` uses the default workflow unless the input clearly contains a product specification, technical specification, or implementation plan.
+
+Legacy configs using `pipelines` plus `workflowControls` are migrated to `workflows` by `fixme-tools.cjs config migrate`.
 
 Config CLI:
 
@@ -185,7 +166,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 
 ### Dynamic State Machine
 
-The ticket state machine is derived from the pipeline config. Phase names become ticket states. Given phases `[plan, implement]`:
+The ticket state machine is derived from the selected workflow. Phase names become ticket states. Given phases `[plan, implement]`:
 
 ```text
 queued -> plan -> implement -> done
@@ -225,7 +206,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-ticket` | Create Linear tickets from description or conversation context |
-| `fixme-config` | Interactive configuration for pipelines, models, and project settings |
+| `fixme-config` | Interactive configuration for workflows, models, and project settings |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |
 | `fixme-tickets-linear` | Linear ticket backend (v2 stub) |

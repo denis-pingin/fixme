@@ -37,7 +37,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get
 ```
 
-`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, backfills newly added standard workflows, backfills `workflowControls`, and preserves existing custom workflows and unknown keys.
+`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, migrates legacy `pipelines` plus `workflowControls` into unified `workflows`, backfills newly added standard workflows, and preserves existing custom workflows and unknown keys.
 
 Use the `config` object from `config get` as the current config. Do not read and rewrite `config.json` manually.
 
@@ -45,8 +45,7 @@ Parse current values (defaults if not present):
 - `models.profile` - model profile for agents (default: absent, meaning `quality`)
 - `models.overrides` - per-agent model overrides (default: `{}`)
 - `ticketBackend` - ticket backend (default: `fixme-tickets-md`)
-- `pipelines` - named pipeline definitions (default: absent, meaning hardcoded `default` pipeline)
-- `workflowControls` - workflow-scoped loop controls keyed by pipeline name (default: absent, meaning standard workflow controls)
+- `workflows` - named workflow definitions. Each workflow has `phases` and `outerMaxCycles` (default: absent, meaning standard workflows)
 - `project.devServer.url` - dev server URL (default: null)
 - `project.devServer.command` - dev server start command (default: null)
 - `project.devServer.hmr` - Hot Module Replacement support (default: false)
@@ -116,7 +115,7 @@ Map answers:
 
 Workflow option rules:
 
-- A workflow is one named pipeline under `pipelines`, for example `default`, `product-spec`, or `idea-to-production`.
+- A workflow is one named object under `workflows`, for example `default`, `product-spec`, or `idea-to-production`.
 - Present configured workflows first, preserving config order.
 - Then present standard workflows not already configured: `default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, `idea-to-production`.
 - Put the recommended workflow first. If the user did not name a workflow, recommend `default` when present; otherwise recommend the first configured workflow; otherwise recommend `default`.
@@ -140,7 +139,7 @@ Phases:
   - Review max cycles: {phase.review.maxCycles or default 3}
 
 Workflow controls:
-- Outer max cycles: {workflowControls[selectedWorkflow].outerMaxCycles or 2}
+- Outer max cycles: {workflows[selectedWorkflow].outerMaxCycles or 2}
 ```
 
 Then configure this workflow only.
@@ -232,7 +231,7 @@ AskUserQuestion([
     header: "Outer Cycles",
     multiSelect: false,
     options: [
-      { label: "Keep current (Recommended)", description: "Currently {workflowControls[selectedWorkflow].outerMaxCycles or 2}" },
+      { label: "Keep current (Recommended)", description: "Currently {workflows[selectedWorkflow].outerMaxCycles or 2}" },
       { label: "2", description: "Standard default: two cross-phase retries before escalation" },
       { label: "1", description: "Escalate after one cross-phase retry" },
       { label: "3", description: "Allow three cross-phase retries before escalation" }
@@ -241,16 +240,16 @@ AskUserQuestion([
 ])
 ```
 
-Use Other/free-text for any positive integer. Empty free-text means "Keep current". Store the result at `workflowControls[selectedWorkflow].outerMaxCycles`.
+Use Other/free-text for any positive integer. Empty free-text means "Keep current". Store the result at `workflows[selectedWorkflow].outerMaxCycles`.
 
 #### Step 4c: Stage workflow update
 
 Stage only the selected workflow:
 
-- `pipelines[selectedWorkflow] = staged workflow phases`
-- `workflowControls[selectedWorkflow].outerMaxCycles = staged outer cycle limit`
+- `workflows[selectedWorkflow].phases = staged workflow phases`
+- `workflows[selectedWorkflow].outerMaxCycles = staged outer cycle limit`
 
-Preserve all other workflows and all other workflow controls exactly as they were.
+Preserve all other workflows exactly as they were.
 
 ### Step 5: Present settings (Round 2 - Project commands)
 
@@ -431,10 +430,10 @@ Before writing, validate the config:
 
 1. **Model profile** must be one of: `quality`, `balanced`, `budget`, `inherit`
 2. **Model overrides** values must be one of: `opus`, `sonnet`, `haiku`, `inherit`
-3. **Pipeline phases** must have unique `name` values within each pipeline
-4. **Pipeline skills** should reference known fixme skill names (warn on unknown, don't block)
+3. **Workflow phases** must have unique `name` values within each workflow
+4. **Workflow skills** should reference known fixme skill names (warn on unknown, don't block)
 5. **Review config** `maxCycles` must be a positive integer if present
-6. **Workflow controls** `workflowControls.<workflow>.outerMaxCycles` must be a positive integer if present
+6. **Workflow outer loop** `workflows.<workflow>.outerMaxCycles` must be a positive integer if present
 7. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
 8. **Linear fields** (only if backend is `fixme-tickets-linear`):
    - `linear.teamId` must be a non-empty string
@@ -489,7 +488,7 @@ Write rules:
 
 - Run `config migrate` before writing if it was not already run in Step 1.
 - Do not rewrite all standard workflow definitions just because one workflow was configured.
-- Do not delete unknown workflow control fields under other workflow names.
+- Do not delete unknown fields under other workflow names.
 - If the selected workflow has only standard defaults and the user kept every default, still call `config workflow configure` for that selected workflow so future `/fixme-config` runs can show it as configured.
 - If any CLI write returns JSON with an `error` field or exits non-zero, stop and show that exact error. Do not continue with partial settings.
 
@@ -506,7 +505,7 @@ Display:
 |----------------------|--------------------------|
 | Model Profile        | {quality/balanced/budget/inherit} |
 | Configured Workflow  | {selectedWorkflow}       |
-| Outer Max Cycles     | {workflowControls[selectedWorkflow].outerMaxCycles} |
+| Outer Max Cycles     | {workflows[selectedWorkflow].outerMaxCycles} |
 | Ticket Backend       | {fixme-tickets-md/linear}|
 | Framework            | {value}                  |
 | Dev Server URL       | {value}                  |
@@ -537,7 +536,7 @@ Config saved to <fixme-dir>/config.json
 
 ## Pipeline Definitions
 
-When seeding a missing standard workflow or offering "Use standard default", use these definitions. Each standard workflow also has standard workflow controls:
+When seeding a missing standard workflow or offering "Use standard default", use these definitions. Each standard workflow also has this workflow-level default:
 
 ```json
 { "outerMaxCycles": 2 }

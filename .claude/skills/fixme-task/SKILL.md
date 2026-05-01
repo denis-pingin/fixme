@@ -1,11 +1,11 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven pipelines with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads pipeline definitions from <fixme-dir>/config.json (or uses hardcoded standard pipelines), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, task code map paths, compact review context packets, and ticket state transitions.
+description: End-to-end orchestrator that executes config-driven workflows with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads workflow definitions from <fixme-dir>/config.json (or uses hardcoded standard workflows), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, task code map paths, compact review context packets, and ticket state transitions.
 ---
 
-# Fixme Task - Config-Driven Pipeline Orchestrator
+# Fixme Task - Config-Driven Workflow Orchestrator
 
-Execute a named or intent-selected pipeline from `<fixme-dir>/config.json`. Each pipeline is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage compact context handoff, artifact paths, task code map paths, decision persistence, loop control, and optional ticket state transitions.
+Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each workflow is an ordered list of phases, each phase has skills to dispatch and an optional review loop. Manage compact context handoff, artifact paths, task code map paths, decision persistence, loop control, and optional ticket state transitions.
 
 ## Hard Constraints
 
@@ -186,17 +186,18 @@ If the task asks "why", "what causes", "debug", or describes unexpected behavior
 
 ## Config Loading
 
-Load the pipeline definition, workflow controls, and project settings (using `<fixme-dir>` resolved in Input Resolution):
+Load the workflow definition and project settings (using `<fixme-dir>` resolved in Input Resolution):
 
 1. **Read `<fixme-dir>/config.json`** if it exists
-2. **Extract the selected pipeline** from `pipelines`
-3. **If the selected pipeline is missing from config but is one of the standard pipelines below**, use the hardcoded standard pipeline.
-4. **If no config or no `pipelines` key and no explicit pipeline was selected**, use the hardcoded `default` pipeline.
-5. **Extract selected workflow controls** from `workflowControls.<pipelineName>` if present. A workflow is one named pipeline. Missing controls use the standard defaults below.
+2. **Extract the selected workflow** from `workflows.<pipelineName>.phases`
+3. **If `workflows.<pipelineName>` is missing but legacy `pipelines.<pipelineName>` exists**, read that legacy array as the phase list and read `workflowControls.<pipelineName>.outerMaxCycles` as the legacy outer loop limit.
+4. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
+5. **If no config or no workflow/pipeline key and no explicit pipeline was selected**, use the hardcoded `default` workflow.
+6. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
 
-### Standard Workflow Controls
+### Standard Workflow Metadata
 
-Every workflow has workflow-scoped loop controls. These controls are independent of per-phase `review.maxCycles`.
+Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of per-phase `review.maxCycles`.
 
 ```json
 {
@@ -372,10 +373,10 @@ Every workflow has workflow-scoped loop controls. These controls are independent
    ]
    ```
 
-6. **If the selected pipeline is not configured and is not a standard pipeline**, ask the user to choose a configured pipeline or one of the standard intent flags.
-7. **Filter out disabled phases** (`enabled === false`)
-8. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
-9. **Store `outerMaxCycles`** from the selected workflow controls. Use `2` if absent or invalid.
+7. **If the selected pipeline is not configured and is not a standard pipeline**, ask the user to choose a configured pipeline or one of the standard intent flags.
+8. **Filter out disabled phases** (`enabled === false`)
+9. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
+10. **Store `outerMaxCycles`** from the selected workflow. Use `2` if absent or invalid.
 
 ## Ticket Integration (Optional)
 
@@ -468,7 +469,7 @@ Step 4  [plan/route]        Route: CLEAN->5, HAS_FIX->1 (max 3), HAS_ASK_USER->a
 Step 5  [implement]         Dispatch fixme-execute-plan
 Step 6  [implement/review]  Dispatch fixme-review-code
 Step 7  [implement/review]  Dispatch fixme-handle-code-review
-Step 8  [implement/route]   Route: CLEAN->9, HAS_FIX->1 (outer, max workflowControls.<pipeline>.outerMaxCycles), HAS_ASK_USER->ask then re-run 7
+Step 8  [implement/route]   Route: CLEAN->9, HAS_FIX->1 (outer, max workflows.<pipeline>.outerMaxCycles), HAS_ASK_USER->ask then re-run 7
 Step 9  [done]              Run Summary
 ```
 
@@ -480,7 +481,7 @@ Each routing entry specifies explicit jump targets:
 
 - **CLEAN**: advance to the next numbered step
 - **HAS_FIX (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
-- **HAS_FIX (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. If counter > `workflowControls.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
+- **HAS_FIX (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
 - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN or HAS_FIX.
 
 ### Creating the Manifest with TodoWrite
@@ -1035,7 +1036,7 @@ If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: 
 ## Loop Guards
 
 - **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). If FIX items remain after max cycles, escalate to user using the format below.
-- **Outer loop**: max `workflowControls.<pipelineName>.outerMaxCycles` iterations (default 2). If FIX items remain after the configured number of full cycles, escalate to user using the format below.
+- **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). If FIX items remain after the configured number of full cycles, escalate to user using the format below.
 
 ### Loop Guard Escalation Format
 

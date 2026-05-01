@@ -868,11 +868,10 @@ function loadPipelinePhases(pipelineName, fixmeRoot) {
 
   try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    if (!config.pipelines || !config.pipelines[pipelineName]) return null;
-    const pipeline = config.pipelines[pipelineName];
-    if (!Array.isArray(pipeline)) return null;
+    const workflow = getWorkflowDefinition(config, pipelineName);
+    if (!workflow || !Array.isArray(workflow.phases)) return null;
     // Filter out disabled phases (enabled defaults to true)
-    return pipeline
+    return workflow.phases
       .filter(phase => phase.enabled !== false)
       .map(phase => phase.name)
       .filter(Boolean);
@@ -899,6 +898,41 @@ function isPositiveInteger(value) {
 
 function configPathForRoot(fixmeRoot) {
   return path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
+}
+
+function makeStandardWorkflow(name) {
+  return {
+    outerMaxCycles: STANDARD_OUTER_MAX_CYCLES,
+    phases: cloneJson(STANDARD_PIPELINES[name]),
+  };
+}
+
+function getLegacyOuterMaxCycles(config, workflowName) {
+  if (!isPlainObject(config.workflowControls)) return null;
+  const controls = config.workflowControls[workflowName];
+  if (!isPlainObject(controls)) return null;
+  return isPositiveInteger(controls.outerMaxCycles) ? controls.outerMaxCycles : null;
+}
+
+function hasWorkflowPhases(workflow) {
+  return isPlainObject(workflow) && Array.isArray(workflow.phases);
+}
+
+function getWorkflowDefinition(config, workflowName) {
+  if (isPlainObject(config.workflows) && hasWorkflowPhases(config.workflows[workflowName])) {
+    return config.workflows[workflowName];
+  }
+
+  // Legacy read support: old configs stored phases under pipelines.<name>
+  // and workflow-level controls under workflowControls.<name>.
+  if (isPlainObject(config.pipelines) && Array.isArray(config.pipelines[workflowName])) {
+    return {
+      outerMaxCycles: getLegacyOuterMaxCycles(config, workflowName) || STANDARD_OUTER_MAX_CYCLES,
+      phases: config.pipelines[workflowName],
+    };
+  }
+
+  return null;
 }
 
 function readConfigForWrite(fixmeRoot) {
@@ -958,41 +992,63 @@ function applyConfigMigration(config) {
   const result = {
     migrated: false,
     addedWorkflows: [],
-    addedWorkflowControls: [],
+    migratedLegacyWorkflows: [],
+    removedLegacyKeys: [],
   };
 
-  if (!isPlainObject(config.pipelines)) {
-    config.pipelines = {};
+  if (!isPlainObject(config.workflows)) {
+    config.workflows = {};
     result.migrated = true;
   }
 
+  if (isPlainObject(config.pipelines)) {
+    for (const [name, phases] of Object.entries(config.pipelines)) {
+      if (!Array.isArray(phases) || hasWorkflowPhases(config.workflows[name])) continue;
+      config.workflows[name] = {
+        outerMaxCycles: getLegacyOuterMaxCycles(config, name) || STANDARD_OUTER_MAX_CYCLES,
+        phases: cloneJson(phases),
+      };
+      result.migrated = true;
+      result.migratedLegacyWorkflows.push(name);
+    }
+  }
+
+  if (isPlainObject(config.workflowControls)) {
+    for (const [name, controls] of Object.entries(config.workflowControls)) {
+      if (!hasWorkflowPhases(config.workflows[name])) continue;
+      if (isPositiveInteger(config.workflows[name].outerMaxCycles)) continue;
+      if (isPlainObject(controls) && isPositiveInteger(controls.outerMaxCycles)) {
+        config.workflows[name].outerMaxCycles = controls.outerMaxCycles;
+        result.migrated = true;
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'pipelines')) {
+    delete config.pipelines;
+    result.migrated = true;
+    result.removedLegacyKeys.push('pipelines');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, 'workflowControls')) {
+    delete config.workflowControls;
+    result.migrated = true;
+    result.removedLegacyKeys.push('workflowControls');
+  }
+
   for (const name of STANDARD_PIPELINE_NAMES) {
-    if (!Array.isArray(config.pipelines[name])) {
-      config.pipelines[name] = cloneJson(STANDARD_PIPELINES[name]);
+    if (!hasWorkflowPhases(config.workflows[name])) {
+      config.workflows[name] = makeStandardWorkflow(name);
       result.migrated = true;
       result.addedWorkflows.push(name);
     }
   }
 
-  if (!isPlainObject(config.workflowControls)) {
-    config.workflowControls = {};
-    result.migrated = true;
-  }
-
-  const workflowNames = new Set([
-    ...STANDARD_PIPELINE_NAMES,
-    ...Object.keys(config.pipelines),
-  ]);
-
-  for (const name of workflowNames) {
-    if (!isPlainObject(config.workflowControls[name])) {
-      config.workflowControls[name] = {};
+  for (const [name, workflow] of Object.entries(config.workflows)) {
+    if (!hasWorkflowPhases(workflow)) continue;
+    if (!isPositiveInteger(workflow.outerMaxCycles)) {
+      workflow.outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
       result.migrated = true;
-    }
-    if (!isPositiveInteger(config.workflowControls[name].outerMaxCycles)) {
-      config.workflowControls[name].outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
-      result.migrated = true;
-      result.addedWorkflowControls.push(name);
     }
   }
 
@@ -1033,12 +1089,11 @@ function isSupportedConfigKey(parts) {
     return false;
   }
 
-  if (top === 'pipelines') {
-    return parts.length === 2 && isWorkflowName(second);
-  }
-
-  if (top === 'workflowControls') {
-    return parts.length === 3 && isWorkflowName(second) && third === 'outerMaxCycles';
+  if (top === 'workflows') {
+    if (!isWorkflowName(second)) return false;
+    if (parts.length === 2) return true;
+    if (parts.length === 3) return ['phases', 'outerMaxCycles'].includes(third);
+    return false;
   }
 
   if (top === 'linear') {
@@ -1093,13 +1148,13 @@ function defaultReviewCyclesForPhase(phaseName) {
 
 function validatePipeline(pipeline, workflowName) {
   if (!Array.isArray(pipeline) || pipeline.length === 0) {
-    throw new Error(`pipelines.${workflowName} must be a non-empty array of phase objects`);
+    throw new Error(`workflows.${workflowName}.phases must be a non-empty array of phase objects`);
   }
 
   const seenPhaseNames = new Set();
   const warnings = [];
   const normalized = pipeline.map((phase, index) => {
-    const fieldPrefix = `pipelines.${workflowName}[${index}]`;
+    const fieldPrefix = `workflows.${workflowName}.phases[${index}]`;
     if (!isPlainObject(phase)) {
       throw new Error(`${fieldPrefix} must be an object`);
     }
@@ -1146,6 +1201,24 @@ function validatePipeline(pipeline, workflowName) {
   return { pipeline: normalized, warnings };
 }
 
+function validateWorkflow(workflow, workflowName) {
+  if (!isPlainObject(workflow)) {
+    throw new Error(`workflows.${workflowName} must be an object`);
+  }
+
+  const validation = validatePipeline(workflow.phases, workflowName);
+  const normalized = cloneJson(workflow);
+  normalized.phases = validation.pipeline;
+  if (normalized.outerMaxCycles === undefined) {
+    normalized.outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
+  }
+  if (!isPositiveInteger(normalized.outerMaxCycles)) {
+    throw new Error(`workflows.${workflowName}.outerMaxCycles must be a positive integer`);
+  }
+
+  return { workflow: normalized, warnings: validation.warnings };
+}
+
 function validateConfigSetValue(parts, value) {
   const [top, second, third] = parts;
 
@@ -1171,12 +1244,16 @@ function validateConfigSetValue(parts, value) {
     }
   }
 
-  if (top === 'pipelines') {
-    return validatePipeline(value, second);
-  }
-
-  if (top === 'workflowControls' && !isPositiveInteger(value)) {
-    throw new Error(`workflowControls.${second}.outerMaxCycles must be a positive integer`);
+  if (top === 'workflows') {
+    if (parts.length === 2) {
+      return validateWorkflow(value, second);
+    }
+    if (third === 'phases') {
+      return validatePipeline(value, second);
+    }
+    if (third === 'outerMaxCycles' && !isPositiveInteger(value)) {
+      throw new Error(`workflows.${second}.outerMaxCycles must be a positive integer`);
+    }
   }
 
   if (top === 'linear') {
@@ -1227,7 +1304,8 @@ function configMigrate(fixmeRoot) {
     created: !existed,
     migrated: migration.migrated || !existed,
     addedWorkflows: migration.addedWorkflows,
-    addedWorkflowControls: migration.addedWorkflowControls,
+    migratedLegacyWorkflows: migration.migratedLegacyWorkflows,
+    removedLegacyKeys: migration.removedLegacyKeys,
   });
 }
 
@@ -1261,7 +1339,13 @@ function configSet(keyPath, rawValue, fixmeRoot) {
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
   const migration = applyConfigMigration(config);
 
-  deepSet(config, parts, value);
+  let valueToWrite = value;
+  if (parts[0] === 'workflows' && parts.length === 2) {
+    valueToWrite = validation.workflow;
+  } else if (parts[0] === 'workflows' && parts[2] === 'phases') {
+    valueToWrite = validation.pipeline;
+  }
+  deepSet(config, parts, valueToWrite);
   writeConfigAtomic(configPath, config);
 
   return output({
@@ -1269,7 +1353,7 @@ function configSet(keyPath, rawValue, fixmeRoot) {
     created: !existed,
     migrated: migration.migrated,
     key: keyPath,
-    value,
+    value: valueToWrite,
     warnings: validation.warnings || [],
   });
 }
@@ -1302,16 +1386,14 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
   const migration = applyConfigMigration(config);
 
-  config.pipelines[workflowName] = validation.pipeline;
-
-  if (!isPlainObject(config.workflowControls[workflowName])) {
-    config.workflowControls[workflowName] = {};
-  }
+  const existingWorkflow = isPlainObject(config.workflows[workflowName]) ? config.workflows[workflowName] : {};
   if (hasOuterMaxCycles) {
-    config.workflowControls[workflowName].outerMaxCycles = data.outerMaxCycles;
-  } else if (!isPositiveInteger(config.workflowControls[workflowName].outerMaxCycles)) {
-    config.workflowControls[workflowName].outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
+    existingWorkflow.outerMaxCycles = data.outerMaxCycles;
+  } else if (!isPositiveInteger(existingWorkflow.outerMaxCycles)) {
+    existingWorkflow.outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
   }
+  existingWorkflow.phases = validation.pipeline;
+  config.workflows[workflowName] = existingWorkflow;
 
   writeConfigAtomic(configPath, config);
 
@@ -1321,7 +1403,7 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
     migrated: migration.migrated,
     workflow: workflowName,
     phases: validation.pipeline.length,
-    outerMaxCycles: config.workflowControls[workflowName].outerMaxCycles,
+    outerMaxCycles: config.workflows[workflowName].outerMaxCycles,
     warnings: validation.warnings,
   });
 }

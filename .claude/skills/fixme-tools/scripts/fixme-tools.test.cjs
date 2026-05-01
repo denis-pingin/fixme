@@ -78,6 +78,33 @@ function createPipelineConfig(baseDir) {
   const fixmeDir = path.join(baseDir, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    workflows: {
+      default: {
+        outerMaxCycles: 2,
+        phases: [
+          { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } }
+        ]
+      },
+      full: {
+        outerMaxCycles: 2,
+        phases: [
+          { name: 'investigate', skills: ['fixme-investigate'] },
+          { name: 'research', skills: ['fixme-research'] },
+          { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } },
+          { name: 'verify', skills: ['fixme-browser-verify'] }
+        ]
+      }
+    }
+  }, null, 2));
+  return fixmeDir;
+}
+
+function createLegacyPipelineConfig(baseDir) {
+  const fixmeDir = path.join(baseDir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
     pipelines: {
       default: [
         { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
@@ -90,6 +117,10 @@ function createPipelineConfig(baseDir) {
         { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } },
         { name: 'verify', skills: ['fixme-browser-verify'] }
       ]
+    },
+    workflowControls: {
+      default: { outerMaxCycles: 2 },
+      full: { outerMaxCycles: 2 }
     }
   }, null, 2));
   return fixmeDir;
@@ -984,6 +1015,20 @@ test('pipeline: backward transition requires reason and increments attempt', () 
   assert(content.includes('current_attempt: 1'), 'current_attempt should be 1 after backward transition');
 });
 
+test('pipeline: legacy pipelines config remains readable before migration', () => {
+  const base = createTmpDir();
+  createLegacyPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name legacy-pipeline-session`, base);
+  const sessionDir = sessionResult.data.path;
+
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug legacy-pipeline-test`, base);
+  const ticketPath = createResult.data.path;
+
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
+  assert(t1.ok, `Legacy pipeline transition should succeed: ${JSON.stringify(t1.data)}`);
+  assert(t1.data.to === 'plan', `to should be plan, got ${t1.data.to}`);
+});
+
 test('fallback: legacy transitions when no --pipeline and no pipeline in frontmatter', () => {
   const base = createTmpDir();
   // No createPipelineConfig -- no config.json exists
@@ -1080,11 +1125,11 @@ test('context save preserves existing config keys', () => {
   const tmp = createTmpDir();
   const fixmeDir = path.join(tmp, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
-  // Write existing config with pipelines and models
+  // Write existing config with workflows and models
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
     ticketBackend: 'fixme-tickets-md',
     models: { profile: 'balanced' },
-    pipelines: { default: [{ name: 'plan', skills: ['fixme-write-plan'] }] }
+    workflows: { default: { outerMaxCycles: 2, phases: [{ name: 'plan', skills: ['fixme-write-plan'] }] } }
   }, null, 2));
   const projectData = JSON.stringify({
     devServer: { url: 'http://localhost:5173', command: 'yarn dev', hmr: true },
@@ -1095,7 +1140,7 @@ test('context save preserves existing config keys', () => {
   const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
   assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend preserved');
   assert(config.models.profile === 'balanced', 'models preserved');
-  assert(config.pipelines.default.length === 1, 'pipelines preserved');
+  assert(config.workflows.default.phases.length === 1, 'workflows preserved');
   assert(config.project.devServer.url === 'http://localhost:5173', 'project updated');
 });
 
@@ -1142,7 +1187,7 @@ test('context load fails when config.json has no project key', () => {
 // ── config commands ─────────────────────────────────────────────────
 console.log('\n── config commands ──');
 
-test('config migrate creates config.json with standard workflows and controls', () => {
+test('config migrate creates config.json with unified standard workflows', () => {
   const tmp = createTmpDir();
   const result = runInDir('config migrate', tmp);
   assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
@@ -1151,16 +1196,18 @@ test('config migrate creates config.json with standard workflows and controls', 
   assert(fs.existsSync(configPath), 'config.json should exist after migration');
 
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  assert(Array.isArray(config.pipelines.default), 'default workflow should exist');
-  assert(Array.isArray(config.pipelines['product-spec']), 'product-spec workflow should exist');
-  assert(Array.isArray(config.pipelines['technical-spec']), 'technical-spec workflow should exist');
-  assert(Array.isArray(config.pipelines['idea-to-production']), 'idea-to-production workflow should exist');
-  assert(config.workflowControls.default.outerMaxCycles === 2, 'default outerMaxCycles should be 2');
-  assert(config.workflowControls['product-spec'].outerMaxCycles === 2, 'product-spec outerMaxCycles should be 2');
+  assert(Array.isArray(config.workflows.default.phases), 'default workflow phases should exist');
+  assert(Array.isArray(config.workflows['product-spec'].phases), 'product-spec workflow phases should exist');
+  assert(Array.isArray(config.workflows['technical-spec'].phases), 'technical-spec workflow phases should exist');
+  assert(Array.isArray(config.workflows['idea-to-production'].phases), 'idea-to-production workflow phases should exist');
+  assert(config.workflows.default.outerMaxCycles === 2, 'default outerMaxCycles should be 2');
+  assert(config.workflows['product-spec'].outerMaxCycles === 2, 'product-spec outerMaxCycles should be 2');
+  assert(config.pipelines === undefined, 'new config must not write legacy pipelines');
+  assert(config.workflowControls === undefined, 'new config must not write legacy workflowControls');
   assert(result.data.migrated === true, 'result should report migration');
 });
 
-test('config migrate preserves customized workflows and unknown keys while backfilling standards', () => {
+test('config migrate converts legacy pipelines and controls into unified workflows', () => {
   const tmp = createTmpDir();
   const fixmeDir = path.join(tmp, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
@@ -1172,6 +1219,9 @@ test('config migrate preserves customized workflows and unknown keys while backf
       default: [
         { name: 'custom-plan', skills: ['custom-plan-skill'] }
       ]
+    },
+    workflowControls: {
+      default: { outerMaxCycles: 7 }
     }
   }, null, 2));
 
@@ -1182,11 +1232,13 @@ test('config migrate preserves customized workflows and unknown keys while backf
   assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
   assert(config.unknownTopLevel.keep === true, 'unknown top-level keys should be preserved');
   assert(config.models.profile === 'balanced', 'models profile should be preserved');
-  assert(config.pipelines.default[0].name === 'custom-plan', 'custom default workflow should be preserved');
-  assert(config.pipelines.default[0].skills[0] === 'custom-plan-skill', 'custom workflow skills should be preserved');
-  assert(Array.isArray(config.pipelines.full), 'missing full workflow should be backfilled');
-  assert(Array.isArray(config.pipelines['product-spec']), 'missing product-spec workflow should be backfilled');
-  assert(config.workflowControls.default.outerMaxCycles === 2, 'default workflow control should be backfilled');
+  assert(config.workflows.default.phases[0].name === 'custom-plan', 'custom default workflow should be preserved');
+  assert(config.workflows.default.phases[0].skills[0] === 'custom-plan-skill', 'custom workflow skills should be preserved');
+  assert(config.workflows.default.outerMaxCycles === 7, 'legacy workflow control should move into workflow');
+  assert(Array.isArray(config.workflows.full.phases), 'missing full workflow should be backfilled');
+  assert(Array.isArray(config.workflows['product-spec'].phases), 'missing product-spec workflow should be backfilled');
+  assert(config.pipelines === undefined, 'legacy pipelines should be removed after migration');
+  assert(config.workflowControls === undefined, 'legacy workflowControls should be removed after migration');
 });
 
 test('config workflow configure updates selected workflow and preserves unrelated config', () => {
@@ -1196,10 +1248,14 @@ test('config workflow configure updates selected workflow and preserves unrelate
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
     ticketBackend: 'fixme-tickets-md',
     models: { profile: 'budget' },
-    pipelines: {
-      default: [
-        { name: 'old', skills: ['old-skill'] }
-      ]
+    workflows: {
+      default: {
+        outerMaxCycles: 2,
+        phases: [
+          { name: 'old', skills: ['old-skill'] }
+        ],
+        customWorkflowKey: 'keep'
+      }
     }
   }, null, 2));
 
@@ -1231,11 +1287,14 @@ test('config workflow configure updates selected workflow and preserves unrelate
   const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
   assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
   assert(config.models.profile === 'budget', 'models should be preserved');
-  assert(config.pipelines.default.length === 2, 'default workflow should be replaced');
-  assert(config.pipelines.default[0].review.maxCycles === 4, 'plan review cycles should be updated');
-  assert(config.pipelines.default[1].review.maxCycles === 3, 'implementation review cycles should be updated');
-  assert(config.workflowControls.default.outerMaxCycles === 5, 'outerMaxCycles should be updated');
-  assert(Array.isArray(config.pipelines['product-spec']), 'standard missing workflow should be backfilled');
+  assert(config.workflows.default.phases.length === 2, 'default workflow phases should be replaced');
+  assert(config.workflows.default.phases[0].review.maxCycles === 4, 'plan review cycles should be updated');
+  assert(config.workflows.default.phases[1].review.maxCycles === 3, 'implementation review cycles should be updated');
+  assert(config.workflows.default.outerMaxCycles === 5, 'outerMaxCycles should be updated');
+  assert(config.workflows.default.customWorkflowKey === 'keep', 'unknown workflow keys should be preserved');
+  assert(Array.isArray(config.workflows['product-spec'].phases), 'standard missing workflow should be backfilled');
+  assert(config.pipelines === undefined, 'workflow configure must not write legacy pipelines');
+  assert(config.workflowControls === undefined, 'workflow configure must not write legacy workflowControls');
 });
 
 test('config workflow configure rejects invalid cycle counts', () => {
@@ -1260,14 +1319,15 @@ test('config workflow configure rejects invalid cycle counts', () => {
   assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
 });
 
-test('config set validates and writes workflowControls outerMaxCycles', () => {
+test('config set validates and writes workflow outerMaxCycles', () => {
   const tmp = createTmpDir();
-  const result = runInDir('config set workflowControls.default.outerMaxCycles 6', tmp);
+  const result = runInDir('config set workflows.default.outerMaxCycles 6', tmp);
   assert(result.ok, `config set should succeed: ${JSON.stringify(result.data)}`);
 
   const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
-  assert(config.workflowControls.default.outerMaxCycles === 6, 'outerMaxCycles should be written');
-  assert(Array.isArray(config.pipelines.default), 'config set should migrate standard workflows');
+  assert(config.workflows.default.outerMaxCycles === 6, 'outerMaxCycles should be written');
+  assert(Array.isArray(config.workflows.default.phases), 'config set should migrate standard workflows');
+  assert(config.workflowControls === undefined, 'config set must not write legacy workflowControls');
 });
 
 test('config set rejects unknown config keys', () => {
