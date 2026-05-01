@@ -15,7 +15,7 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
-- **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. The orchestrator never shows findings to the user and asks "want me to fix this directly?" or "should we skip the loop?" If your next message to the user is a summary of findings with options, STOP - you are about to bypass the pipeline.
+- **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
 
 ## Input Resolution
@@ -894,11 +894,12 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - `HANDLER_RESULT: HAS_FIX` is valid only when `FIX_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
    - `FIX_UNCLEAR` never means no-fix and never allows the loop to exit. It means the finding is real and the user must choose the approach.
 3. If the directive and counts conflict, do not advance the loop. Re-dispatch the same handler with a correction prompt that quotes the inconsistent routing block and asks for a corrected routing directive.
-4. Follow the routing rules specified in the manifest entry:
+4. Print the Review Classification block (see Review Classification Visibility). This happens for every handler output: CLEAN, HAS_FIX, and HAS_ASK_USER.
+5. Follow the routing rules specified in the manifest entry:
    - **CLEAN**: mark step `completed`, advance to the next numbered step
    - **HAS_FIX**: mark step `completed`, jump back to the target step specified in the manifest. Check loop guards before jumping (see Loop Guards). When jumping back, reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`. This ensures the full loop (including review steps) runs again - resetting only the target would leave intermediate steps as `completed` and they'd be skipped.
    - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN or HAS_FIX.
-5. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
+6. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
 
 **Run Summary step** (`[done]` entry):
 
@@ -946,6 +947,64 @@ Rules:
 - The "Locked Decision" line is what downstream skills match against. It must be a clear, actionable statement (e.g., "Use WebSocket for real-time updates, not SSE" not "User prefers WebSocket").
 - When a locked decision is revisited via ASK_USER (because new evidence emerged), append a new entry that references and supersedes the old one: "Supersedes Decision N: [new decision]".
 
+## Review Classification Visibility
+
+Every review handler classification must be printed to the main conversation before routing continues. This is informational output, not a permission gate and not an invitation to bypass the pipeline.
+
+### When To Print
+
+Print one Review Classification block after every handler output is validated and before following the route:
+
+- `CLEAN`: print the block, then continue to the next manifest step.
+- `HAS_FIX`: print the block, then loop through the configured revision path automatically.
+- `HAS_ASK_USER`: print the block, then wait for the user decisions contained in that same block.
+
+Do not print raw reviewer findings before the handler runs. Raw reviewer findings may contain false positives; the handler-classified output is the user-visible source of truth.
+
+### Output Shape
+
+Use the same structure for all handler outcomes. Omit sections that have no items, except always include the closing route sentence.
+
+```markdown
+## Review Classification: {plan | code | specification} review
+
+The {plan | code | specification} review found {N} issue(s): {X} confirmed fix(es), {Y} decision(s) needed, {Z} dismissed.
+
+### Confirmed Fixes
+
+1. **{finding title}** - {one sentence: what is wrong and what the next workflow step will change.}
+   Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
+
+### Decisions Needed
+
+{Copy each ASK_USER or FIX_UNCLEAR Question field verbatim, separated by `---`.}
+
+### Dismissed Findings
+
+1. **{finding title}** - {one sentence explaining why it was rejected or already covered.}
+
+No decisions needed. The pipeline will continue through the configured {revision | next} step.
+```
+
+When decisions exist, replace the closing route sentence with the standard consolidated prompt from ASK_USER Batching:
+
+```text
+Please provide your decisions for the above. You can answer by number (e.g., "1: A, 2: B")
+or describe your preferred approach. Reply "go with recommendations" to accept all
+recommended options.
+```
+
+### Visibility Rules
+
+- Use handler-classified findings only. Do not invent classifications or reclassify findings in the orchestrator.
+- Use human-language labels in the visible block: "confirmed fixes", "decisions needed", and "dismissed findings".
+- Never expose internal routing metadata in the visible block.
+- Include `REJECT_FALSE_POSITIVE`, `REJECT_WONT_FIX`, and `REJECT_ALREADY_FIXED` items under "Dismissed Findings".
+- If there are zero findings, say: `The {plan | code | specification} review found no issues. No decisions needed. The pipeline will continue.`
+- If there are confirmed fixes but no decisions, print the confirmed fixes and continue automatically.
+- If there are decisions, the exact same block is printed, but the route waits after the consolidated prompt.
+- The block must not include bypass options. It may describe the route the pipeline will take, but it must not ask whether to take that route.
+
 ## ASK_USER Batching
 
 When a handler produces FIX_UNCLEAR or ASK_USER items:
@@ -962,7 +1021,7 @@ Gather all items from the handler output:
 
 ### 2. Present to user
 
-**The user reads this output directly. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
+**The user reads the Review Classification block directly. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
 
 #### Formatting Rules (NON-NEGOTIABLE)
 
@@ -989,12 +1048,12 @@ Use human language instead. "The code review found 3 issues" not "Handler return
 
 #### Output Structure
 
-Present the output in this exact order, with proper spacing between all sections:
+The Review Classification block already defines the shared output structure for both decision and non-decision outcomes. For ASK_USER and FIX_UNCLEAR routes, apply these additional requirements:
 
 **1. Summary line** - One sentence in plain language. Exact counts, no routing metadata.
 
 ```
-The {plan/code} review found {N} issues: {X} confirmed fix(es) that will be applied
+The {plan/code/specification} review found {N} issues: {X} confirmed fix(es) that will be applied
 automatically, {Y} need(s) your input{, Z dismissed}.
 ```
 
