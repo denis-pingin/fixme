@@ -67,7 +67,7 @@ Step 10  [verify]           Run build/lint/test using project-documented command
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
 Step 12  [commit]           Commit changes (and push unless --skip-push is set)
 Step 13  [resolve/route]    Route: --skip-resolve -> 15, otherwise -> 14
-Step 14  [resolve]          Reply and resolve threads per source/author rules
+Step 14  [resolve]          Build reply execution table, preflight reply bodies, then reply/resolve per source/author rules
 Step 15  [done]             Run summary
 ```
 
@@ -103,7 +103,7 @@ TodoWrite([
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
   { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
-  { content: "Step 14 [resolve] Reply and resolve threads per source/author rules", status: "pending", activeForm: "Resolving threads" },
+  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
   { content: "Step 15 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
 ])
 ```
@@ -241,6 +241,10 @@ Claude comment B. Each issue in each comment must be independently checked.
 
 Greptile posts a single summary comment per PR that gets updated on each review. This comment
 contains actionable findings in two sections that must be extracted.
+
+**Identity rule:** fetch and filter the source comment by GitHub login `greptile-apps[bot]`.
+When posting any PR reply for Source C findings, address Greptile as `@greptileai`.
+The fetch login is not the reply mention.
 
 ```bash
 # Fetch the greptile-apps[bot] issue comment.
@@ -755,6 +759,38 @@ git push
 
 **Skip all replies if `--skip-response` is set** (both fix explanations and not-a-bug replies). Thread resolution still happens unless `--skip-resolve` is also set.
 
+#### Reply Execution Table (REQUIRED)
+
+Before posting any reply or resolving any thread, materialize a reply execution table with one
+row per source item or grouped source comment. Do not run `gh api` or `gh pr comment` until
+every row has all required fields.
+
+Required columns:
+
+```
+ID | source | verdict | reply target | required body prefix | resolve action | command type
+```
+
+Use these source-specific values:
+
+- Source A review thread: reply target is the inline review comment; required body prefix is
+  `Fixed in {commit_sha}.` for addressed fixes or the rejection explanation for rejected
+  findings; resolve action depends on author type.
+- Source B Claude bot issue comment: reply target is the PR issue comment stream; required
+  body prefix is `Addressed in {commit_sha}:` or `Reviewed findings:`.
+- Source C Greptile summary findings: reply target is the PR issue comment stream; required
+  body prefix is exactly `@greptileai Addressed Greptile findings in {commit_sha}:` for fixed
+  findings or exactly `@greptileai Reviewed Greptile findings:` for rejected findings; resolve
+  action is `none`.
+- Source D human issue comment: reply target is the PR issue comment stream; required body
+  prefix is `@{reviewer_login} Addressed review findings from your comment in {commit_sha}:`
+  or `@{reviewer_login} Reviewed findings from your comment:`; resolve action is `none`.
+
+**Preflight gate:** immediately before each reply command, compare the actual body against the
+row's required body prefix. If it does not match, do not post. Rewrite the body and re-run the
+preflight. Source C bodies that start with `Greptile follow-up`, `Greptile findings`,
+`Reviewed Greptile findings` without `@greptileai`, or any other unmentioned prefix are invalid.
+
 #### For review thread comments (Source A):
 
 **If addressed (fix that was implemented)**:
@@ -829,6 +865,10 @@ git push
 
 #### For Greptile summary findings (Source C):
 
+**Mandatory addressing:** Source C replies MUST start with `@greptileai`. This is the
+human-readable PR mention. `greptile-apps[bot]` is only the GitHub API login used to fetch and
+identify the summary comment.
+
 **If addressed (fix that was implemented)**:
 1. Reply to the Greptile issue comment explaining which findings were fixed:
    ```bash
@@ -881,6 +921,10 @@ in one notification. Do not split into two separate reply comments.
 **No thread resolve**: There is NO `resolveReviewThread` call for Source D. Regular
 issue comments remain visible on the PR timeline - they do not have a "resolved"
 state. The reply comment IS the resolution signal.
+
+**Source C completion check:** If any Source C finding was included in this run and
+`--skip-response` is not set, Step 14 is incomplete until the posted issue comment body starts
+with `@greptileai Addressed Greptile findings in` or `@greptileai Reviewed Greptile findings:`.
 
 ## Decision Guide
 
