@@ -1,6 +1,6 @@
 ---
 name: fixme-tools
-description: Shared fixme runtime CLI package. Provides fixme-tools.cjs for fixme root resolution, project context commands, model resolution, markdown ticket/session state operations, and dynamic pipeline state-machine helpers.
+description: Shared fixme runtime CLI package. Provides fixme-tools.cjs for fixme root resolution, config schema migration/writes, project context commands, model resolution, markdown ticket/session state operations, and dynamic pipeline state-machine helpers.
 disable-model-invocation: true
 ---
 
@@ -17,10 +17,22 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 ## Responsibilities
 
 - Resolve `<fixme-dir>` with `root`
+- Create, migrate, validate, and atomically write `<fixme-dir>/config.json`
 - Detect, load, and save project context
 - Resolve configured agent models
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from pipeline config
+
+## Config Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json-object>'
+```
+
+`config migrate` creates missing config, backfills standard workflows, and backfills `workflowControls` while preserving custom workflows and unknown keys. Workflow writes must use `config workflow configure` so phase shapes and cycle limits are validated before JSON is saved.
 
 ## Ownership
 

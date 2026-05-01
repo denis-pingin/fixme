@@ -59,6 +59,12 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <tic
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context detect
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context load
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context save --data '<json>'
+
+# Config management
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
 ```
 
 ## Architecture

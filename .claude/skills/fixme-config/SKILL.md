@@ -3,7 +3,6 @@ name: fixme-config
 description: "Interactive configuration for fixme workflows, workflow skills, loop limits, model profiles, project settings, and Linear integration. Creates or updates <fixme-dir>/config.json."
 allowed-tools:
   - Read
-  - Write
   - Bash
   - AskUserQuestion
 argument-hint: "[init]"
@@ -34,8 +33,13 @@ If the user selects the markdown backend, Linear MCP is not required and the Lin
 ### Step 1: Load current config
 
 ```bash
-cat <fixme-dir>/config.json 2>/dev/null || echo '{}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get
 ```
+
+`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, backfills newly added standard workflows, backfills `workflowControls`, and preserves existing custom workflows and unknown keys.
+
+Use the `config` object from `config get` as the current config. Do not read and rewrite `config.json` manually.
 
 Parse current values (defaults if not present):
 - `models.profile` - model profile for agents (default: absent, meaning `quality`)
@@ -440,55 +444,54 @@ If validation fails, display errors and re-prompt for the specific invalid setti
 
 ### Step 8: Write config
 
-Merge new settings into existing config.json (preserving any keys not covered by this skill). Update only the selected workflow under `pipelines` and `workflowControls`; preserve every other workflow exactly. Include the `linear` object only when the backend is `fixme-tickets-linear`:
+All writes to `<fixme-dir>/config.json` must go through `fixme-tools.cjs`. Do not use the Write tool for config JSON. The CLI is the schema gate, migration owner, merge owner, and atomic writer.
+
+Write global settings:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set models.profile '<json-string>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set ticketBackend '<json-string>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context save --data '<project-json-object>'
+```
+
+Use JSON-encoded values inside the shell quotes. Examples:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set models.profile '"balanced"'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set ticketBackend '"fixme-tickets-md"'
+```
+
+Write the selected workflow only:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <selectedWorkflow> --data '<workflow-json-object>'
+```
+
+`<workflow-json-object>` must have this shape:
 
 ```json
 {
-  ...existing_config,
-  "project": {
-    "devServer": { "url": "<value>", "command": "<value>", "hmr": <bool> },
-    "build": "<value>",
-    "lint": "<value>",
-    "test": { "command": "<value>", "runner": "<value>" },
-    "framework": "<value>"
-  },
-  "ticketBackend": "<value>",
-  "models": {
-    "profile": "<value>",
-    "overrides": { ...existing_overrides }
-  },
-  "pipelines": {
-    ...existing_pipelines,
-    "<selectedWorkflow>": [ ...staged_workflow_phases ]
-  },
-  "workflowControls": {
-    ...existing_workflowControls,
-    "<selectedWorkflow>": {
-      "outerMaxCycles": <positive integer>
-    }
-  },
-  "linear": {
-    "teamId": "<value>",
-    "teamName": "<value>"
-  }
+  "phases": [ ...staged_workflow_phases ],
+  "outerMaxCycles": <positive integer>
 }
 ```
 
-When backend is `fixme-tickets-md`, leave the existing `linear` object (if any) untouched - do not delete or overwrite it.
-
-Workflow write rules:
-
-- Do not rewrite all standard workflow definitions just because one workflow was configured.
-- Do not delete unknown workflow control fields under other workflow names.
-- If the selected workflow has only standard defaults and the user kept every default, it is still valid to write that selected workflow explicitly so future `/fixme-config` runs can show it as configured.
-
-Write to `<fixme-dir>/config.json`:
+When backend is `fixme-tickets-linear`, write the resolved Linear team:
 
 ```bash
-mkdir -p <fixme-dir>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.teamId '<json-string>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.teamName '<json-string>'
 ```
 
-Write the config file using the Write tool.
+When backend is `fixme-tickets-md`, leave the existing `linear` object untouched - do not delete or overwrite it.
+
+Write rules:
+
+- Run `config migrate` before writing if it was not already run in Step 1.
+- Do not rewrite all standard workflow definitions just because one workflow was configured.
+- Do not delete unknown workflow control fields under other workflow names.
+- If the selected workflow has only standard defaults and the user kept every default, still call `config workflow configure` for that selected workflow so future `/fixme-config` runs can show it as configured.
+- If any CLI write returns JSON with an `error` field or exits non-zero, stop and show that exact error. Do not continue with partial settings.
 
 ### Step 9: Confirm
 

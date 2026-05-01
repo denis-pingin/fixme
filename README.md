@@ -108,6 +108,8 @@ Creates a Linear ticket from a description or the current conversation context. 
 
 Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget), project commands (build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
 
+`/fixme-config` writes through `fixme-tools.cjs config` commands, not by hand-editing JSON. The tool creates missing config files, backfills newly added standard workflows, validates workflow cycle limits, preserves custom config, and writes atomically.
+
 ## Architecture
 
 ### Two Orchestrators
@@ -171,6 +173,15 @@ Pipelines are defined in `.fixme/config.json`:
 ```
 
 No config file? Falls back to standard pipelines built into `fixme-task`. Plain `/fixme-task ...` uses the default pipeline unless the input clearly contains a product specification, technical specification, or implementation plan.
+
+Config CLI:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
+```
 
 ### Dynamic State Machine
 

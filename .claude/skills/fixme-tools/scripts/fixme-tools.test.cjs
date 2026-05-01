@@ -1139,6 +1139,161 @@ test('context load fails when config.json has no project key', () => {
   );
 });
 
+// ── config commands ─────────────────────────────────────────────────
+console.log('\n── config commands ──');
+
+test('config migrate creates config.json with standard workflows and controls', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
+
+  const configPath = path.join(tmp, '.fixme', 'config.json');
+  assert(fs.existsSync(configPath), 'config.json should exist after migration');
+
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  assert(Array.isArray(config.pipelines.default), 'default workflow should exist');
+  assert(Array.isArray(config.pipelines['product-spec']), 'product-spec workflow should exist');
+  assert(Array.isArray(config.pipelines['technical-spec']), 'technical-spec workflow should exist');
+  assert(Array.isArray(config.pipelines['idea-to-production']), 'idea-to-production workflow should exist');
+  assert(config.workflowControls.default.outerMaxCycles === 2, 'default outerMaxCycles should be 2');
+  assert(config.workflowControls['product-spec'].outerMaxCycles === 2, 'product-spec outerMaxCycles should be 2');
+  assert(result.data.migrated === true, 'result should report migration');
+});
+
+test('config migrate preserves customized workflows and unknown keys while backfilling standards', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    ticketBackend: 'fixme-tickets-md',
+    unknownTopLevel: { keep: true },
+    models: { profile: 'balanced' },
+    pipelines: {
+      default: [
+        { name: 'custom-plan', skills: ['custom-plan-skill'] }
+      ]
+    }
+  }, null, 2));
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
+
+  const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
+  assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
+  assert(config.unknownTopLevel.keep === true, 'unknown top-level keys should be preserved');
+  assert(config.models.profile === 'balanced', 'models profile should be preserved');
+  assert(config.pipelines.default[0].name === 'custom-plan', 'custom default workflow should be preserved');
+  assert(config.pipelines.default[0].skills[0] === 'custom-plan-skill', 'custom workflow skills should be preserved');
+  assert(Array.isArray(config.pipelines.full), 'missing full workflow should be backfilled');
+  assert(Array.isArray(config.pipelines['product-spec']), 'missing product-spec workflow should be backfilled');
+  assert(config.workflowControls.default.outerMaxCycles === 2, 'default workflow control should be backfilled');
+});
+
+test('config workflow configure updates selected workflow and preserves unrelated config', () => {
+  const tmp = createTmpDir();
+  const fixmeDir = path.join(tmp, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    ticketBackend: 'fixme-tickets-md',
+    models: { profile: 'budget' },
+    pipelines: {
+      default: [
+        { name: 'old', skills: ['old-skill'] }
+      ]
+    }
+  }, null, 2));
+
+  const workflow = JSON.stringify({
+    phases: [
+      {
+        name: 'plan',
+        skills: ['fixme-write-plan'],
+        review: {
+          skills: ['fixme-review-plan', 'fixme-handle-plan-review'],
+          maxCycles: 4
+        }
+      },
+      {
+        name: 'implement',
+        skills: ['fixme-execute-plan'],
+        review: {
+          skills: ['fixme-review-code', 'fixme-handle-code-review'],
+          maxCycles: 3
+        }
+      }
+    ],
+    outerMaxCycles: 5
+  });
+
+  const result = runInDir(`config workflow configure default --data '${workflow}'`, tmp);
+  assert(result.ok, `workflow configure should succeed: ${JSON.stringify(result.data)}`);
+
+  const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
+  assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
+  assert(config.models.profile === 'budget', 'models should be preserved');
+  assert(config.pipelines.default.length === 2, 'default workflow should be replaced');
+  assert(config.pipelines.default[0].review.maxCycles === 4, 'plan review cycles should be updated');
+  assert(config.pipelines.default[1].review.maxCycles === 3, 'implementation review cycles should be updated');
+  assert(config.workflowControls.default.outerMaxCycles === 5, 'outerMaxCycles should be updated');
+  assert(Array.isArray(config.pipelines['product-spec']), 'standard missing workflow should be backfilled');
+});
+
+test('config workflow configure rejects invalid cycle counts', () => {
+  const tmp = createTmpDir();
+  const workflow = JSON.stringify({
+    phases: [
+      {
+        name: 'plan',
+        skills: ['fixme-write-plan'],
+        review: {
+          skills: ['fixme-review-plan'],
+          maxCycles: 0
+        }
+      }
+    ],
+    outerMaxCycles: 2
+  });
+
+  const result = runInDir(`config workflow configure default --data '${workflow}'`, tmp);
+  assert(!result.ok, 'invalid review maxCycles should fail');
+  assert(result.data && result.data.error, 'error should be returned');
+  assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
+});
+
+test('config set validates and writes workflowControls outerMaxCycles', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config set workflowControls.default.outerMaxCycles 6', tmp);
+  assert(result.ok, `config set should succeed: ${JSON.stringify(result.data)}`);
+
+  const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
+  assert(config.workflowControls.default.outerMaxCycles === 6, 'outerMaxCycles should be written');
+  assert(Array.isArray(config.pipelines.default), 'config set should migrate standard workflows');
+});
+
+test('config set rejects unknown config keys', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config set nope.someKey true', tmp);
+  assert(!result.ok, 'unknown config key should fail');
+  assert(result.data && result.data.error, 'error should be returned');
+  assert(result.data.error.includes('Unsupported config key'), `error should mention unsupported key: ${result.data.error}`);
+});
+
+test('config set rejects unsupported ticket backend', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config set ticketBackend "made-up-backend"', tmp);
+  assert(!result.ok, 'unsupported ticket backend should fail');
+  assert(result.data && result.data.error, 'error should be returned');
+  assert(result.data.error.includes('ticketBackend'), `error should mention ticketBackend: ${result.data.error}`);
+});
+
+test('config set rejects unsupported model override', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config set models.overrides.fixme-task "made-up-model"', tmp);
+  assert(!result.ok, 'unsupported model override should fail');
+  assert(result.data && result.data.error, 'error should be returned');
+  assert(result.data.error.includes('models.overrides.fixme-task'), `error should mention override key: ${result.data.error}`);
+});
+
 // ============================================================================
 // Test Suite: findFixmeRoot resolution
 // ============================================================================

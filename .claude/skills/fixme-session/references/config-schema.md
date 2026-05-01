@@ -4,6 +4,7 @@
 
 - **File:** `<fixme-dir>/config.json`
 - **Scope:** Per-project (shared across all sessions)
+- **Writer:** `fixme-tools.cjs config ...` commands are the authoritative writer for workflow and config updates. `/fixme-config` must use the CLI instead of rewriting JSON directly so schema validation, migrations, and atomic writes stay centralized.
 
 ## Schema
 

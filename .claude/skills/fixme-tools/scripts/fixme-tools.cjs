@@ -63,6 +63,112 @@ const MODEL_PROFILES = {
 const DEFAULT_MODEL = 'opus';
 const DEFAULT_PROFILE = 'quality';
 
+const STANDARD_PIPELINES = {
+  default: [
+    {
+      name: 'plan',
+      skills: ['fixme-write-plan'],
+      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+    },
+    {
+      name: 'implement',
+      skills: ['fixme-execute-plan'],
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+    },
+  ],
+  full: [
+    { name: 'investigate', skills: ['fixme-investigate'] },
+    { name: 'research', skills: ['fixme-research'] },
+    {
+      name: 'plan',
+      skills: ['fixme-write-plan'],
+      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+    },
+    {
+      name: 'implement',
+      skills: ['fixme-execute-plan'],
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+    },
+    { name: 'verify', skills: ['fixme-browser-verify'] },
+  ],
+  quick: [
+    { name: 'plan', skills: ['fixme-write-plan'] },
+    { name: 'implement', skills: ['fixme-execute-plan'] },
+  ],
+  'product-spec': [
+    {
+      name: 'product-spec',
+      skills: ['fixme-write-product-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+  ],
+  'technical-spec': [
+    {
+      name: 'technical-spec',
+      skills: ['fixme-write-technical-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+  ],
+  plan: [
+    {
+      name: 'plan',
+      skills: ['fixme-write-plan'],
+      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+    },
+  ],
+  execute: [
+    {
+      name: 'implement',
+      skills: ['fixme-execute-plan'],
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+    },
+  ],
+  'idea-to-production': [
+    {
+      name: 'product-spec',
+      skills: ['fixme-write-product-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+    {
+      name: 'technical-spec',
+      skills: ['fixme-write-technical-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+    {
+      name: 'plan',
+      skills: ['fixme-write-plan'],
+      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+    },
+    {
+      name: 'implement',
+      skills: ['fixme-execute-plan'],
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+    },
+  ],
+};
+
+const STANDARD_OUTER_MAX_CYCLES = 2;
+const STANDARD_PIPELINE_NAMES = Object.keys(STANDARD_PIPELINES);
+const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
+const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
+const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
+
+const KNOWN_FIXME_SKILLS = new Set([
+  'fixme-browser-verify',
+  'fixme-execute-plan',
+  'fixme-handle-code-review',
+  'fixme-handle-plan-review',
+  'fixme-handle-spec-review',
+  'fixme-investigate',
+  'fixme-research',
+  'fixme-review-code',
+  'fixme-review-plan',
+  'fixme-review-spec',
+  'fixme-write-plan',
+  'fixme-write-product-spec',
+  'fixme-write-technical-spec',
+]);
+
 /**
  * Resolve the model for a sub-agent based on config.
  * Resolution order:
@@ -773,6 +879,451 @@ function loadPipelinePhases(pipelineName, fixmeRoot) {
   } catch (e) {
     return null;
   }
+}
+
+// ============================================================================
+// Config Helpers
+// ============================================================================
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
+}
+
+function configPathForRoot(fixmeRoot) {
+  return path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
+}
+
+function readConfigForWrite(fixmeRoot) {
+  const configPath = configPathForRoot(fixmeRoot);
+  const fixmeDir = path.dirname(configPath);
+  const existed = fs.existsSync(configPath);
+
+  if (!fs.existsSync(fixmeDir)) {
+    fs.mkdirSync(fixmeDir, { recursive: true });
+  }
+
+  if (!existed) {
+    return { config: {}, configPath, existed };
+  }
+
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Invalid config.json: ${e.message}`);
+  }
+
+  if (!isPlainObject(config)) {
+    throw new Error('Invalid config.json: top-level value must be an object');
+  }
+
+  return { config, configPath, existed };
+}
+
+function readConfigForGet(fixmeRoot) {
+  const configPath = configPathForRoot(fixmeRoot);
+  if (!fs.existsSync(configPath)) {
+    throw new Error("No config.json found. Run '/fixme-config' or `config migrate` first.");
+  }
+
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Invalid config.json: ${e.message}`);
+  }
+
+  if (!isPlainObject(config)) {
+    throw new Error('Invalid config.json: top-level value must be an object');
+  }
+
+  return { config, configPath };
+}
+
+function writeConfigAtomic(configPath, config) {
+  const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n');
+  fs.renameSync(tmpPath, configPath);
+}
+
+function applyConfigMigration(config) {
+  const result = {
+    migrated: false,
+    addedWorkflows: [],
+    addedWorkflowControls: [],
+  };
+
+  if (!isPlainObject(config.pipelines)) {
+    config.pipelines = {};
+    result.migrated = true;
+  }
+
+  for (const name of STANDARD_PIPELINE_NAMES) {
+    if (!Array.isArray(config.pipelines[name])) {
+      config.pipelines[name] = cloneJson(STANDARD_PIPELINES[name]);
+      result.migrated = true;
+      result.addedWorkflows.push(name);
+    }
+  }
+
+  if (!isPlainObject(config.workflowControls)) {
+    config.workflowControls = {};
+    result.migrated = true;
+  }
+
+  const workflowNames = new Set([
+    ...STANDARD_PIPELINE_NAMES,
+    ...Object.keys(config.pipelines),
+  ]);
+
+  for (const name of workflowNames) {
+    if (!isPlainObject(config.workflowControls[name])) {
+      config.workflowControls[name] = {};
+      result.migrated = true;
+    }
+    if (!isPositiveInteger(config.workflowControls[name].outerMaxCycles)) {
+      config.workflowControls[name].outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
+      result.migrated = true;
+      result.addedWorkflowControls.push(name);
+    }
+  }
+
+  return result;
+}
+
+function splitConfigKey(keyPath) {
+  if (!keyPath || typeof keyPath !== 'string') {
+    throw new Error('Config key path is required');
+  }
+
+  const parts = keyPath.split('.');
+  for (const part of parts) {
+    if (!/^[A-Za-z0-9_-]+$/.test(part)) {
+      throw new Error(`Invalid config key segment: '${part}'`);
+    }
+    if (part === '__proto__' || part === 'prototype' || part === 'constructor') {
+      throw new Error(`Invalid config key segment: '${part}'`);
+    }
+  }
+  return parts;
+}
+
+function isWorkflowName(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function isSupportedConfigKey(parts) {
+  const [top, second, third] = parts;
+
+  if (top === 'ticketBackend') return parts.length === 1;
+  if (top === 'sub_repos') return parts.length === 1;
+  if (top === 'project') return parts.length >= 1;
+
+  if (top === 'models') {
+    if (second === 'profile') return parts.length === 2;
+    if (second === 'overrides' && parts.length === 3) return true;
+    return false;
+  }
+
+  if (top === 'pipelines') {
+    return parts.length === 2 && isWorkflowName(second);
+  }
+
+  if (top === 'workflowControls') {
+    return parts.length === 3 && isWorkflowName(second) && third === 'outerMaxCycles';
+  }
+
+  if (top === 'linear') {
+    return ['teamId', 'teamName', 'defaultLabels', 'defaultProject'].includes(second) && parts.length === 2;
+  }
+
+  if (top === 'ticketTemplate') {
+    return parts.length >= 2;
+  }
+
+  return false;
+}
+
+function parseConfigValue(rawValue) {
+  if (rawValue === undefined) {
+    throw new Error('Config value is required');
+  }
+
+  try {
+    return JSON.parse(rawValue);
+  } catch {
+    return rawValue;
+  }
+}
+
+function validateStringArray(value, fieldName, allowEmpty = false) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings`);
+  }
+  if (!allowEmpty && value.length === 0) {
+    throw new Error(`${fieldName} must contain at least one skill`);
+  }
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new Error(`${fieldName} must be an array of non-empty strings`);
+    }
+  }
+}
+
+function collectUnknownSkillWarnings(skills, warnings, fieldName) {
+  for (const skill of skills) {
+    if (!KNOWN_FIXME_SKILLS.has(skill)) {
+      warnings.push(`Unknown skill '${skill}' in ${fieldName}; saved because custom skills are allowed`);
+    }
+  }
+}
+
+function defaultReviewCyclesForPhase(phaseName) {
+  if (phaseName === 'implement') return 2;
+  return 3;
+}
+
+function validatePipeline(pipeline, workflowName) {
+  if (!Array.isArray(pipeline) || pipeline.length === 0) {
+    throw new Error(`pipelines.${workflowName} must be a non-empty array of phase objects`);
+  }
+
+  const seenPhaseNames = new Set();
+  const warnings = [];
+  const normalized = pipeline.map((phase, index) => {
+    const fieldPrefix = `pipelines.${workflowName}[${index}]`;
+    if (!isPlainObject(phase)) {
+      throw new Error(`${fieldPrefix} must be an object`);
+    }
+    if (typeof phase.name !== 'string' || phase.name.trim() === '') {
+      throw new Error(`${fieldPrefix}.name must be a non-empty string`);
+    }
+    if (seenPhaseNames.has(phase.name)) {
+      throw new Error(`pipelines.${workflowName} has duplicate phase name '${phase.name}'`);
+    }
+    seenPhaseNames.add(phase.name);
+
+    if (phase.enabled !== undefined && typeof phase.enabled !== 'boolean') {
+      throw new Error(`${fieldPrefix}.enabled must be a boolean when present`);
+    }
+
+    validateStringArray(phase.skills, `${fieldPrefix}.skills`);
+    collectUnknownSkillWarnings(phase.skills, warnings, `${fieldPrefix}.skills`);
+
+    const normalizedPhase = cloneJson(phase);
+    if (normalizedPhase.review !== undefined) {
+      if (!isPlainObject(normalizedPhase.review)) {
+        throw new Error(`${fieldPrefix}.review must be an object when present`);
+      }
+      if (normalizedPhase.review.enabled !== undefined && typeof normalizedPhase.review.enabled !== 'boolean') {
+        throw new Error(`${fieldPrefix}.review.enabled must be a boolean when present`);
+      }
+      if (normalizedPhase.review.skills !== undefined) {
+        validateStringArray(normalizedPhase.review.skills, `${fieldPrefix}.review.skills`);
+        collectUnknownSkillWarnings(normalizedPhase.review.skills, warnings, `${fieldPrefix}.review.skills`);
+      } else if (normalizedPhase.review.enabled !== false) {
+        throw new Error(`${fieldPrefix}.review.skills must be an array of strings`);
+      }
+      if (normalizedPhase.review.maxCycles === undefined) {
+        normalizedPhase.review.maxCycles = defaultReviewCyclesForPhase(phase.name);
+      }
+      if (!isPositiveInteger(normalizedPhase.review.maxCycles)) {
+        throw new Error(`${fieldPrefix}.review.maxCycles must be a positive integer`);
+      }
+    }
+
+    return normalizedPhase;
+  });
+
+  return { pipeline: normalized, warnings };
+}
+
+function validateConfigSetValue(parts, value) {
+  const [top, second, third] = parts;
+
+  if (top === 'ticketBackend') {
+    if (typeof value !== 'string' || !VALID_TICKET_BACKENDS.has(value)) {
+      throw new Error("ticketBackend must be one of: fixme-tickets-md, fixme-tickets-linear");
+    }
+  }
+
+  if (top === 'sub_repos') {
+    validateStringArray(value, 'sub_repos', true);
+  }
+
+  if (top === 'models' && second === 'profile') {
+    if (!VALID_MODEL_PROFILES.has(value)) {
+      throw new Error("models.profile must be one of: quality, balanced, budget, inherit");
+    }
+  }
+
+  if (top === 'models' && second === 'overrides') {
+    if (typeof value !== 'string' || !VALID_MODEL_VALUES.has(value)) {
+      throw new Error(`models.overrides.${third} must be one of: opus, sonnet, haiku, inherit`);
+    }
+  }
+
+  if (top === 'pipelines') {
+    return validatePipeline(value, second);
+  }
+
+  if (top === 'workflowControls' && !isPositiveInteger(value)) {
+    throw new Error(`workflowControls.${second}.outerMaxCycles must be a positive integer`);
+  }
+
+  if (top === 'linear') {
+    if (second === 'defaultLabels') {
+      validateStringArray(value, 'linear.defaultLabels', true);
+    } else if (value !== null && typeof value !== 'string') {
+      throw new Error(`linear.${second} must be a string or null`);
+    }
+  }
+
+  if (top === 'ticketTemplate' && parts.length === 2 && second === 'default' && typeof value !== 'string') {
+    throw new Error('ticketTemplate.default must be a string');
+  }
+
+  return { warnings: [] };
+}
+
+function deepGet(value, parts) {
+  let current = value;
+  for (const part of parts) {
+    if (!isPlainObject(current) && !Array.isArray(current)) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function deepSet(target, parts, value) {
+  let current = target;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (!isPlainObject(current[part])) {
+      current[part] = {};
+    }
+    current = current[part];
+  }
+  current[parts[parts.length - 1]] = value;
+}
+
+function configMigrate(fixmeRoot) {
+  const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
+  const migration = applyConfigMigration(config);
+  if (migration.migrated || !existed) {
+    writeConfigAtomic(configPath, config);
+  }
+  return output({
+    path: configPath,
+    created: !existed,
+    migrated: migration.migrated || !existed,
+    addedWorkflows: migration.addedWorkflows,
+    addedWorkflowControls: migration.addedWorkflowControls,
+  });
+}
+
+function configGet(keyPath, fixmeRoot) {
+  const { config, configPath } = readConfigForGet(fixmeRoot);
+  if (!keyPath) {
+    return output({ path: configPath, config });
+  }
+
+  const parts = splitConfigKey(keyPath);
+  if (!isSupportedConfigKey(parts)) {
+    throw new Error(`Unsupported config key: ${keyPath}`);
+  }
+
+  const value = deepGet(config, parts);
+  return output({
+    path: configPath,
+    key: keyPath,
+    value: value === undefined ? null : value,
+  });
+}
+
+function configSet(keyPath, rawValue, fixmeRoot) {
+  const parts = splitConfigKey(keyPath);
+  if (!isSupportedConfigKey(parts)) {
+    throw new Error(`Unsupported config key: ${keyPath}`);
+  }
+
+  const value = parseConfigValue(rawValue);
+  const validation = validateConfigSetValue(parts, value);
+  const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
+  const migration = applyConfigMigration(config);
+
+  deepSet(config, parts, value);
+  writeConfigAtomic(configPath, config);
+
+  return output({
+    path: configPath,
+    created: !existed,
+    migrated: migration.migrated,
+    key: keyPath,
+    value,
+    warnings: validation.warnings || [],
+  });
+}
+
+function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
+  if (!isWorkflowName(workflowName)) {
+    throw new Error('Workflow name is required and must contain only letters, numbers, underscores, or hyphens');
+  }
+  if (!flags.data) {
+    throw new Error('--data is required for config workflow configure');
+  }
+
+  let data;
+  try {
+    data = JSON.parse(flags.data);
+  } catch (e) {
+    throw new Error(`Invalid JSON in --data: ${e.message}`);
+  }
+  if (!isPlainObject(data)) {
+    throw new Error('--data must be a JSON object');
+  }
+
+  const phases = data.phases || data.pipeline;
+  const validation = validatePipeline(phases, workflowName);
+  const hasOuterMaxCycles = Object.prototype.hasOwnProperty.call(data, 'outerMaxCycles');
+  if (hasOuterMaxCycles && !isPositiveInteger(data.outerMaxCycles)) {
+    throw new Error('outerMaxCycles must be a positive integer');
+  }
+
+  const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
+  const migration = applyConfigMigration(config);
+
+  config.pipelines[workflowName] = validation.pipeline;
+
+  if (!isPlainObject(config.workflowControls[workflowName])) {
+    config.workflowControls[workflowName] = {};
+  }
+  if (hasOuterMaxCycles) {
+    config.workflowControls[workflowName].outerMaxCycles = data.outerMaxCycles;
+  } else if (!isPositiveInteger(config.workflowControls[workflowName].outerMaxCycles)) {
+    config.workflowControls[workflowName].outerMaxCycles = STANDARD_OUTER_MAX_CYCLES;
+  }
+
+  writeConfigAtomic(configPath, config);
+
+  return output({
+    path: configPath,
+    created: !existed,
+    migrated: migration.migrated,
+    workflow: workflowName,
+    phases: validation.pipeline.length,
+    outerMaxCycles: config.workflowControls[workflowName].outerMaxCycles,
+    warnings: validation.warnings,
+  });
 }
 
 /**
@@ -1515,26 +2066,10 @@ function contextSave(flags, fixmeRoot) {
     return error(`Invalid JSON in --data: ${e.message}`);
   }
 
-  // Ensure .fixme/ directory
-  const fixmeDir = path.join(projectDir, '.fixme');
-  if (!fs.existsSync(fixmeDir)) {
-    fs.mkdirSync(fixmeDir, { recursive: true });
-  }
-
-  // Read existing config.json if it exists, merge project into it
-  const configPath = path.join(fixmeDir, 'config.json');
-  let config = {};
-  if (fs.existsSync(configPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    } catch (e) {
-      // Corrupted config.json - start fresh but warn
-      config = {};
-    }
-  }
-
+  const { config, configPath } = readConfigForWrite(projectDir);
+  applyConfigMigration(config);
   config.project = data;
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  writeConfigAtomic(configPath, config);
 
   return output({ path: configPath, saved: true });
 }
@@ -1648,6 +2183,26 @@ function main() {
             return error(`Unknown context subcommand: '${subcommand}'. Valid: detect, save, load`);
         }
 
+      case 'config':
+        switch (subcommand) {
+          case 'ensure':
+          case 'migrate':
+            return configMigrate(fixmeRoot);
+          case 'get':
+            return configGet(args[0], fixmeRoot);
+          case 'set':
+            return configSet(args[0], args[1], fixmeRoot);
+          case 'workflow':
+            switch (args[0]) {
+              case 'configure':
+                return configWorkflowConfigure(args[1], flags, fixmeRoot);
+              default:
+                return error(`Unknown config workflow subcommand: '${args[0] || ''}'. Valid: configure`);
+            }
+          default:
+            return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow`);
+        }
+
       case 'root':
         return rootCommand();
 
@@ -1661,7 +2216,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, root, resolve-model`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, root, resolve-model`);
     }
   } catch (e) {
     return error(e.message);
@@ -1674,4 +2229,12 @@ if (require.main === module) {
 }
 
 // Exports for testing
-module.exports = { buildTransitionsFromPhases, parseFrontmatter, findFixmeRoot, resolveModel, MODEL_PROFILES };
+module.exports = {
+  buildTransitionsFromPhases,
+  parseFrontmatter,
+  findFixmeRoot,
+  resolveModel,
+  MODEL_PROFILES,
+  STANDARD_PIPELINES,
+  applyConfigMigration,
+};
