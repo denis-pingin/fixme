@@ -205,7 +205,7 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
 }
 ```
 
-- `outerMaxCycles`: max cross-phase cycles for this workflow before escalating to the user. Example: code review sends work back to plan, then implementation and review run again. Default: `2`.
+- `outerMaxCycles`: max blocking `PLAN_REQUIRED` cross-phase cycles for this workflow before escalating to the user. Example: code review proves the plan is wrong, sends work back to plan, then implementation and review run again. `IMPLEMENT_ONLY` repair loops do not count against this limit. Default: `2`.
 
 ### Standard Pipelines
 
@@ -465,11 +465,11 @@ For the hardcoded default pipeline (no ticket):
 Step 1  [plan]              Dispatch fixme-write-plan
 Step 2  [plan/review]       Dispatch fixme-review-plan
 Step 3  [plan/review]       Dispatch fixme-handle-plan-review
-Step 4  [plan/route]        Route: CLEAN->5, HAS_FIX->1 (max 3), HAS_ASK_USER->ask then re-run 3
+Step 4  [plan/route]        Route: CLEAN->5, PLAN_REQUIRED->1 (max 3), FOLLOWUP_ONLY->5, HAS_ASK_USER->ask then re-run 3
 Step 5  [implement]         Dispatch fixme-execute-plan
 Step 6  [implement/review]  Dispatch fixme-review-code
 Step 7  [implement/review]  Dispatch fixme-handle-code-review
-Step 8  [implement/route]   Route: CLEAN->9, HAS_FIX->1 (outer, max workflows.<pipeline>.outerMaxCycles), HAS_ASK_USER->ask then re-run 7
+Step 8  [implement/route]   Route: CLEAN->9, PLAN_REQUIRED->1 (outer, max workflows.<pipeline>.outerMaxCycles), IMPLEMENT_ONLY->5 repair mode, HAS_ASK_USER->ask then re-run 7
 Step 9  [done]              Run Summary
 ```
 
@@ -479,10 +479,14 @@ The manifest always contains ALL steps. When entering mid-pipeline (e.g., plan a
 
 Each routing entry specifies explicit jump targets:
 
+Handler route actions use this contract: `NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY`.
+
 - **CLEAN**: advance to the next numbered step
-- **HAS_FIX (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
-- **HAS_FIX (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
-- **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN or HAS_FIX.
+- **HAS_BLOCKING_FIX with PLAN_REQUIRED (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
+- **HAS_BLOCKING_FIX with PLAN_REQUIRED (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
+- **HAS_BLOCKING_FIX with IMPLEMENT_ONLY**: jump back to the current implementation phase's execute step in repair mode. IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.
+- **HAS_NONBLOCKING_FINDINGS**: print the review classification, record follow-up-only items in the run summary, and advance without re-running the producer. MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.
+- **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 
 ### Creating the Manifest with TodoWrite
 
@@ -530,7 +534,7 @@ Execute steps in order. After each dispatch:
 If ticket path is provided, dispatch ticket transitions before each phase's first execute step:
 
 - First phase: include `--pipeline <pipeline-name>`
-- Backward re-entry (HAS_FIX cross-phase jump): include `--reason <reason>`
+- Backward re-entry for blocking PLAN_REQUIRED cross-phase jump: include `--reason <reason>`
 
 Ticket transitions are dispatched inline before the execute step - they are not separate manifest entries. They do not produce output that affects routing.
 
@@ -676,7 +680,7 @@ For phases using the standard skills, these are the input contracts:
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description
 - Plan revision mode (review FIX loop): original task + path to previous plan + current code map path if available + current review context packet + FIX items from handler + path to decision log
-- Code revision mode (outer loop from later phase): original task + path to previous plan + current code map path if available + current review context packet + execution results summary + FIX items from handler + path to decision log
+- Code revision mode (PLAN_REQUIRED outer loop from later phase): original task + path to previous plan + current code map path if available + current review context packet + execution results summary + PLAN_REQUIRED FIX items from handler + path to decision log
 - Must output `PLAN_PATH: <absolute path>` and `CODE_MAP_PATH: <absolute path>`; capture them as `planPath` and `codeMapPath`
 
 **fixme-write-product-spec** (when writing a product specification):
@@ -719,12 +723,14 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 **fixme-execute-plan** (in `implement` phase):
 - Path to plan
 - Path to task code map if available
+- Repair mode: path to plan + current review context packet + IMPLEMENT_ONLY code review FIX items + execution results summary. Do not rewrite the plan for this route.
 
 **fixme-review-code** (in `implement` phase review):
 - Path to plan
 - Path to task code map if available
 - Current review context packet
 - Git diff information (base branch or commit range)
+- Focused re-review flag when the previous step was implementation repair. Focused re-review mode reviews fixes since last review plus directly affected call sites.
 
 **fixme-handle-code-review** (in `implement` phase review):
 - Review findings from reviewer
@@ -755,7 +761,7 @@ Before each review, handler, revision, or verification dispatch, construct a com
 - If decision metadata is insufficient, include only decisions made during this `fixme-task` invocation or decisions already carried in the current plan/specification.
 - Include every fix applied since the previous review cycle, whether it came from automatic `FIX` routing or from a user decision that resolved `FIX_UNCLEAR` or `ASK_USER`.
 - Include the task code map path when one exists. Do not paste the full code map into the packet.
-- For code review, `Fixes Since Last Review` is extra orientation, not a scope limiter. Unless an explicit future focused-review mode says otherwise, every code review still reviews the full changed surface.
+- For code review, `Fixes Since Last Review` is extra orientation, not a scope limiter unless focused re-review mode is active. Focused re-review mode reviews fixes since last review plus directly affected call sites.
 
 ### Packet Shape
 
@@ -826,7 +832,8 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
 | Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
 | Plan writer | `PLAN_PATH: <absolute path>` + `CODE_MAP_PATH: <absolute path>` | End of fixme-write-plan output |
-| Review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-*-review output |
+| Plan/code review handler | `HANDLER_RESULT: CLEAN\|HAS_BLOCKING_FIX\|HAS_NONBLOCKING_FINDINGS\|HAS_ASK_USER` | End of fixme-handle-plan-review or fixme-handle-code-review output |
+| Specification review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-spec-review output |
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
 
@@ -881,25 +888,32 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 **Handler steps** (`[phase/review]` entries - handlers like fixme-handle-plan-review, fixme-handle-code-review):
 
-1. Validate the routing directive: `HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`
-2. Capture only the routing summary, classification counts, FIX items, decision cards, and rejection rationale needed for routing and the next review context packet
+1. Validate the routing directive. Plan/code handlers use `HANDLER_RESULT: CLEAN|HAS_BLOCKING_FIX|HAS_NONBLOCKING_FINDINGS|HAS_ASK_USER`. Specification handlers still use `HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`.
+2. Capture only the routing summary, classification counts, severity counts, route-scope counts, FIX items, decision cards, follow-up-only items, and rejection rationale needed for routing and the next review context packet
 3. Mark step `completed`, set next step to `in_progress` (the routing step)
 
 **Routing steps** (`[phase/route]` entries):
 
 1. Read the HANDLER_RESULT from the previous handler's output
 2. Validate the handler's classification counts before following the route:
+   - For specification handlers, use the specification handler's legacy routing contract: `CLEAN`, `HAS_FIX`, or `HAS_ASK_USER` with `NEXT_ACTION: SPEC_LOOP_EXIT | SPEC_REVISION | ASK_USER_BATCH`. The remaining bullets in this list apply to plan/code handlers.
    - `FIX_UNCLEAR_COUNT > 0` or `ASK_USER_COUNT > 0` requires `HANDLER_RESULT: HAS_ASK_USER` and `NEXT_ACTION: ASK_USER_BATCH`
    - `HANDLER_RESULT: CLEAN` is valid only when `FIX_COUNT`, `FIX_UNCLEAR_COUNT`, and `ASK_USER_COUNT` are all `0`
-   - `HANDLER_RESULT: HAS_FIX` is valid only when `FIX_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
+   - `HANDLER_RESULT: HAS_BLOCKING_FIX` is valid only when `BLOCKING_FIX_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
+   - `HANDLER_RESULT: HAS_NONBLOCKING_FINDINGS` is valid only when `BLOCKING_FIX_COUNT = 0`, `NONBLOCKING_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
+   - `NEXT_ACTION: PLAN_REVISION` requires `PLAN_REQUIRED_COUNT > 0`
+   - `NEXT_ACTION: IMPLEMENT_REPAIR` requires `IMPLEMENT_ONLY_COUNT > 0` and `PLAN_REQUIRED_COUNT = 0`
+   - `NEXT_ACTION: FOLLOWUP_ONLY` requires `BLOCKING_FIX_COUNT = 0` and `NONBLOCKING_COUNT > 0`
    - `FIX_UNCLEAR` never means no-fix and never allows the loop to exit. It means the finding is real and the user must choose the approach.
 3. If the directive and counts conflict, do not advance the loop. Re-dispatch the same handler with a correction prompt that quotes the inconsistent routing block and asks for a corrected routing directive.
-4. Print the Review Classification block (see Review Classification Visibility). This happens for every handler output: CLEAN, HAS_FIX, and HAS_ASK_USER.
+4. Print the Review Classification block (see Review Classification Visibility). This happens for every handler output: CLEAN, HAS_BLOCKING_FIX, HAS_NONBLOCKING_FINDINGS, and HAS_ASK_USER.
 5. Follow the routing rules specified in the manifest entry:
    - **CLEAN**: mark step `completed`, advance to the next numbered step
-   - **HAS_FIX**: mark step `completed`, jump back to the target step specified in the manifest. Check loop guards before jumping (see Loop Guards). When jumping back, reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`. This ensures the full loop (including review steps) runs again - resetting only the target would leave intermediate steps as `completed` and they'd be skipped.
-   - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN or HAS_FIX.
-6. Do NOT apply fixes yourself. Do NOT proceed without dispatching.
+   - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
+   - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, focused code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
+   - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.
+   - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
+6. Do NOT apply fixes yourself. Do NOT proceed past blocking fixes without dispatching the required producer. Follow-up-only items may proceed without a producer dispatch.
 
 **Run Summary step** (`[done]` entry):
 
@@ -909,7 +923,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 ## Never Apply Fixes Directly
 
-When a review handler returns FIX items, **always route through the proper loop** - either intra-phase (re-run phase skills + review) or cross-phase (backward transition to earlier phase).
+When a review handler returns blocking FIX items, **always route through the proper producer** - plan-required fixes go through the plan loop, implementation-only fixes go through execute-plan repair mode, and nonblocking follow-up items are reported without a loop.
 
 **Never apply FIX items inline in the orchestrator**, no matter how small or obvious they seem. "It's just a 2-line fix" is exactly when bugs slip through - a guard clause that accidentally exits render and violates Rules of Hooks, an init value that creates a hidden coupling to another module's internal ordering. The review loop exists to catch what you can't predict. Skipping it because you're confident is the definition of the problem the pipeline solves.
 
@@ -956,7 +970,8 @@ Every review handler classification must be printed to the main conversation bef
 Print one Review Classification block after every handler output is validated and before following the route:
 
 - `CLEAN`: print the block, then continue to the next manifest step.
-- `HAS_FIX`: print the block, then loop through the configured revision path automatically.
+- `HAS_BLOCKING_FIX`: print the block, then loop through the configured route automatically.
+- `HAS_NONBLOCKING_FINDINGS`: print the block, then continue without a revision loop.
 - `HAS_ASK_USER`: print the block, then wait for the user decisions contained in that same block.
 
 Do not print raw reviewer findings before the handler runs. Raw reviewer findings may contain false positives; the handler-classified output is the user-visible source of truth.
@@ -968,12 +983,16 @@ Use the same structure for all handler outcomes. Omit sections that have no item
 ```markdown
 ## Review Classification: {plan | code | specification} review
 
-The {plan | code | specification} review found {N} issue(s): {X} confirmed fix(es), {Y} decision(s) needed, {Z} dismissed.
+The {plan | code | specification} review found {N} issue(s): {X} blocking fix(es), {Y} follow-up item(s), {Z} decision(s) needed, {W} dismissed.
 
-### Confirmed Fixes
+### Blocking Fixes
 
 1. **{finding title}** - {one sentence: what is wrong and what the next workflow step will change.}
    Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
+
+### Follow-Up Items
+
+1. **{finding title}** - {one sentence: why this is nonblocking and where it is recorded.}
 
 ### Decisions Needed
 
@@ -983,7 +1002,7 @@ The {plan | code | specification} review found {N} issue(s): {X} confirmed fix(e
 
 1. **{finding title}** - {one sentence explaining why it was rejected or already covered.}
 
-No decisions needed. The pipeline will continue through the configured {revision | next} step.
+No decisions needed. The pipeline will continue through the configured {repair | revision | next} step.
 ```
 
 When decisions exist, replace the closing route sentence with the standard consolidated prompt from ASK_USER Batching:
@@ -997,11 +1016,12 @@ recommended options.
 ### Visibility Rules
 
 - Use handler-classified findings only. Do not invent classifications or reclassify findings in the orchestrator.
-- Use human-language labels in the visible block: "confirmed fixes", "decisions needed", and "dismissed findings".
+- Use human-language labels in the visible block: "blocking fixes", "follow-up items", "decisions needed", and "dismissed findings".
 - Never expose internal routing metadata in the visible block.
 - Include `REJECT_FALSE_POSITIVE`, `REJECT_WONT_FIX`, and `REJECT_ALREADY_FIXED` items under "Dismissed Findings".
 - If there are zero findings, say: `The {plan | code | specification} review found no issues. No decisions needed. The pipeline will continue.`
-- If there are confirmed fixes but no decisions, print the confirmed fixes and continue automatically.
+- If there are blocking fixes but no decisions, print the blocking fixes and continue automatically.
+- If there are follow-up-only items but no blocking fixes or decisions, print them and continue without looping.
 - If there are decisions, the exact same block is printed, but the route waits after the consolidated prompt.
 - The block must not include bypass options. It may describe the route the pipeline will take, but it must not ask whether to take that route.
 
@@ -1028,7 +1048,7 @@ Gather all items from the handler output:
 All user-facing output from the orchestrator must be visually scannable:
 
 - **Blank line between every section, heading, and paragraph.** No two content blocks should be adjacent without a separator. Dense walls of text are never acceptable.
-- **Use headings** (`##`, `###`) to separate major sections (summary, confirmed fixes, decisions, closing prompt). The user must be able to skim headings to find what they need.
+- **Use headings** (`##`, `###`) to separate major sections (summary, blocking fixes, follow-up items, decisions, closing prompt). The user must be able to skim headings to find what they need.
 - **Use bullet lists** for multiple items within a section. Never pack multiple items into a single paragraph.
 - **Use horizontal rules** (`---`) between independent decision blocks when presenting multiple decisions. Each decision is visually distinct.
 - **Bold key labels** (`**Decision needed**:`, `**Recommendation**:`, etc.) and start each on its own line.
@@ -1042,6 +1062,8 @@ All user-facing output from the orchestrator must be visually scannable:
 - `HAS_FIX`, `HAS_ASK_USER`, `HANDLER_RESULT`, `CLEAN`
 - `FIX_COUNT`, `FIX_UNCLEAR_COUNT`, `ASK_USER_COUNT`
 - `NEXT_ACTION`, `OUTER_LOOP`, `ASK_USER_BATCH`
+- `HAS_BLOCKING_FIX`, `HAS_NONBLOCKING_FINDINGS`, `BLOCKING_FIX_COUNT`, `NONBLOCKING_COUNT`
+- `PLAN_REQUIRED_COUNT`, `IMPLEMENT_ONLY_COUNT`, `PLAN_REVISION`, `IMPLEMENT_REPAIR`, `FOLLOWUP_ONLY`
 - `EXECUTOR_STATUS`, `NEXT_PIPELINE_STEP`
 
 Use human language instead. "The code review found 3 issues" not "Handler returned HAS_ASK_USER + HAS_FIX."
@@ -1053,14 +1075,14 @@ The Review Classification block already defines the shared output structure for 
 **1. Summary line** - One sentence in plain language. Exact counts, no routing metadata.
 
 ```
-The {plan/code/specification} review found {N} issues: {X} confirmed fix(es) that will be applied
-automatically, {Y} need(s) your input{, Z dismissed}.
+The {plan/code/specification} review found {N} issues: {X} blocking fix(es) that will be applied
+automatically, {Y} follow-up item(s), {Z} need(s) your input{, W dismissed}.
 ```
 
-**2. Confirmed fixes** (only when FIX items coexist with questions) - Brief list so the user knows what will be applied automatically after their decisions. Keep each item to one sentence.
+**2. Blocking fixes** (only when blocking FIX items coexist with questions) - Brief list so the user knows what will be applied automatically after their decisions. Keep each item to one sentence.
 
 ```markdown
-### Confirmed Fixes (will be applied after your decisions)
+### Blocking Fixes (will be applied after your decisions)
 
 1. **{short title}** - {one sentence: what's wrong and what the fix will do.}
    Files: [{file.ts:line}](/absolute/path/file.ts#Lline)
@@ -1118,8 +1140,12 @@ If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: 
 
 ## Loop Guards
 
-- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). If FIX items remain after max cycles, escalate to user using the format below.
-- **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). If FIX items remain after the configured number of full cycles, escalate to user using the format below.
+- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). Count only blocking revision loops. If blocking FIX items remain after max cycles, escalate to user using the format below.
+- **Implementation repair loop**: max `phase.review.maxCycles` iterations for the implement phase (default 2). Count only blocking `IMPLEMENT_ONLY` repair loops. If blocking implementation-only FIX items remain after max cycles, escalate to user using the format below.
+- **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). Count only blocking `PLAN_REQUIRED` cross-phase loops. If blocking plan-required FIX items remain after the configured number of full cycles, escalate to user using the format below.
+- **Stall detection**: track unresolved blocking issue count for each comparable loop route (`PLAN_REQUIRED` and `IMPLEMENT_ONLY`). If the unresolved blocking issue count is not lower than the previous comparable cycle, stop the loop and escalate as stalled.
+
+Do not increment any loop counter for `MINOR`, `INFO`, or `FOLLOWUP_ONLY` items.
 
 ### Loop Guard Escalation Format
 

@@ -1,7 +1,7 @@
 ---
 name: fixme-execute-plan
 description: Execute an implementation plan with maximum reliability. Follows plan steps exactly, verifies after every task, and enforces a non-negotiable final verification gate where build, lint, and ALL tests must pass before work is considered complete. Pre-existing failure claims require proof.
-argument-hint: "<path to plan file>"
+argument-hint: "<path to plan file> [--repair]"
 ---
 
 ## Fixme Directory
@@ -29,6 +29,21 @@ Resolve the plan in this order:
 4. **Ask**: prompt the user for the plan location
 
 ## Process
+
+### Repair Mode
+
+Repair Mode is used only when `fixme-task` routes blocking code review findings with `ROUTE_SCOPE: IMPLEMENT_ONLY` back to the executor. Repair items come from implementation-only code review findings. The existing plan remains authoritative.
+
+In repair mode:
+
+1. Read the plan, task code map, execution summary, review context packet, and repair items.
+2. Confirm every repair item is implementation-only. If any item requires changing task scope, architecture, ordering, locked decisions, or the plan itself, stop and report it as plan-required.
+3. Apply the smallest code and test changes that satisfy the repair items.
+4. Preserve all unrelated code and all plan decisions.
+5. Run the same final verification gate as normal execution.
+6. End with the normal executor directive.
+
+Do not redesign the plan in repair mode. Do not implement follow-up-only `MINOR` or `INFO` items unless they are directly adjacent to the repair and add no extra risk.
 
 ### Phase 1: Load and Review
 

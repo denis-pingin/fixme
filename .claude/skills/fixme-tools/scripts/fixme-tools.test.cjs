@@ -2074,6 +2074,67 @@ test('fixme-rebase skill: same-or-worse merge fallback continues rebase without 
   assert(!skill.includes('3. **Present options to user:**'), 'old unconditional route prompt should be removed');
 });
 
+test('fixme-pr-comments skill: fetches three GitHub surfaces and normalizes review items', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Fetch three GitHub API surfaces'), 'skill should define GitHub storage surfaces generically');
+  assert(skill.includes('inline_review_threads'), 'skill should include inline review thread surface');
+  assert(skill.includes('issue_comments'), 'skill should include PR issue comment surface');
+  assert(skill.includes('pull_request_reviews'), 'skill should include top-level PR review body surface');
+  assert(skill.includes('gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate'), 'skill should fetch PR reviews endpoint with pagination');
+  assert(skill.includes('Normalize every fetched container into `review_item` records'), 'skill should normalize fetched containers before analysis');
+  assert(skill.includes('chatgpt-codex-connector[bot]'), 'Codex connector reviews should be explicitly covered');
+  assert(skill.includes('pull_request_review: reply target is the PR issue comment stream'), 'reply table should include PR review body handling');
+  assert(!skill.includes('Source E:'), 'skill should not grow the old source taxonomy');
+  assert(!skill.includes('Fetch Sources A-E'), 'manifest should not use source-letter fetching');
+});
+
+test('fixme review handlers: classify blocking severity and route scope separately', () => {
+  const planHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md');
+  const codeHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md');
+  const planHandler = fs.readFileSync(planHandlerPath, 'utf8');
+  const codeHandler = fs.readFileSync(codeHandlerPath, 'utf8');
+
+  for (const skill of [planHandler, codeHandler]) {
+    assert(skill.includes('SEVERITY: BLOCKER | MAJOR | MINOR | INFO'), 'handler should require severity in each finding');
+    assert(skill.includes('ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | FOLLOWUP | NONE'), 'handler should require route scope in each finding');
+    assert(skill.includes('HANDLER_RESULT: CLEAN | HAS_BLOCKING_FIX | HAS_NONBLOCKING_FINDINGS | HAS_ASK_USER'), 'handler routing should separate blocking and nonblocking outcomes');
+    assert(skill.includes('BLOCKING_FIX_COUNT: <number>'), 'handler should count blocking fixes');
+    assert(skill.includes('NONBLOCKING_COUNT: <number>'), 'handler should count nonblocking findings');
+    assert(skill.includes('PLAN_REQUIRED_COUNT: <number>'), 'handler should count plan-required fixes');
+    assert(skill.includes('IMPLEMENT_ONLY_COUNT: <number>'), 'handler should count implementation-only fixes');
+    assert(skill.includes('MINOR and INFO findings never trigger a revision loop by themselves'), 'handler should keep nonblocking findings out of loops');
+  }
+});
+
+test('fixme-task skill: routes implementation-only code review fixes without outer plan loop', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('HAS_BLOCKING_FIX'), 'orchestrator should understand blocking fix handler result');
+  assert(skill.includes('NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY'), 'orchestrator should support implement repair and follow-up routes');
+  assert(skill.includes('PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles.'), 'plan-required findings should still use outer loop');
+  assert(skill.includes('IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.'), 'implementation-only findings should avoid plan loop');
+  assert(skill.includes('MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.'), 'nonblocking findings should not trigger loops');
+  assert(skill.includes('If the unresolved blocking issue count is not lower than the previous comparable cycle, stop the loop and escalate as stalled.'), 'loop should stop when issue count does not improve');
+  assert(skill.includes('Focused re-review mode reviews fixes since last review plus directly affected call sites.'), 'code review should support focused re-review after repair');
+});
+
+test('fixme execute/review skills: support repair mode and focused re-review', () => {
+  const executePath = path.resolve(__dirname, '..', '..', 'fixme-execute-plan', 'SKILL.md');
+  const reviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const execute = fs.readFileSync(executePath, 'utf8');
+  const review = fs.readFileSync(reviewPath, 'utf8');
+
+  assert(execute.includes('Repair Mode'), 'executor should document repair mode');
+  assert(execute.includes('Repair items come from implementation-only code review findings'), 'repair mode should be limited to implementation-only findings');
+  assert(execute.includes('Do not redesign the plan in repair mode.'), 'executor should not replan implementation-only repairs');
+  assert(review.includes('Focused Re-Review Mode'), 'code reviewer should document focused re-review mode');
+  assert(review.includes('Focused re-review mode reviews fixes since last review plus directly affected call sites.'), 'focused review scope should be explicit');
+  assert(review.includes('A focused re-review may still widen scope when the repair changes shared contracts or high-risk behavior.'), 'focused review should widen scope for risky changes');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

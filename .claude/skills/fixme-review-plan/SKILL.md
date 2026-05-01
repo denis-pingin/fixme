@@ -50,7 +50,7 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 6. **Does this contradict a locked decision?** If the plan includes a Locked Decisions section in its Context, those are settled user choices. Do not flag findings that disagree with locked decisions. If a locked decision itself appears problematic (would cause a bug, break something), frame it as a question in the Questions section, not as a finding.
 7. **Does this contradict the review context packet?** If the packet records a current-run user decision or fix, verify it against the decision log or plan before flagging. If the packet and artifact conflict, the artifact wins.
 8. **Does this contradict or depend on the code map?** Re-read the cited source lines before relying on the map. If the map is stale or incomplete, verify directly and mention the stale map only when it creates a concrete plan risk.
-9. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not IMPORTANT.
+9. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "minor cosmetic", or "not blocking", the finding cannot be MAJOR or BLOCKER. Either downgrade to MINOR or INFO, or drop it entirely. A finding whose suggestion starts with "Minor" or "Consider" is almost certainly not MAJOR.
 
 ## Foundational Mindset: Do Not Trust
 
@@ -234,7 +234,7 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 **Process:**
 1. Read the plan's Locked Decisions section and the decision log at `<fixme-dir>/decisions.md` (if it exists)
 2. For each `[confirmed]` decision: verify the plan implements it as stated. Do not flag findings that merely disagree with confirmed decisions.
-3. For each `[assumed]` decision: check whether a realistic alternative exists that would materially change the plan. If yes, flag it (severity: IMPORTANT) - the plan writer should have surfaced this during the Design Decision Checkpoint.
+3. For each `[assumed]` decision: check whether a realistic alternative exists that would materially change the plan. If yes, flag it (severity: MAJOR) - the plan writer should have surfaced this during the Design Decision Checkpoint.
 4. Check whether the plan includes work that was explicitly deferred or marked out of scope in previous iterations
 5. Read the plan's Questions section (if present). Each item should be purely informational context. Promote to a finding any item that is actually: a correctness concern, a feasibility risk, an unresolved design decision, or a known flaw being deferred to the executor.
 
@@ -338,7 +338,7 @@ For each suspected case, write down what the plan tells the executor about the n
 
 The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions.
 
-**Severity:** BLOCKING by default. A plan that asks the executor to write duplication is a defective plan and must be revised before execution. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly anticipates would be cleaned up in a follow-up step.
+**Severity:** BLOCKER by default. A plan that asks the executor to write duplication is a defective plan and must be revised before execution. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly anticipates would be cleaned up in a follow-up step.
 
 ## What NOT to Flag
 
@@ -370,23 +370,23 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 |-------|-------------|
 | **Location** | Which plan step(s) this relates to |
 | **Category** | DRY-AND-SIMPLICITY / GOAL-ACHIEVEMENT / REQUIREMENT-COVERAGE / CLAIM-VERIFICATION / STEP-CORRECTNESS / ARTIFACT-WIRING / EXECUTABILITY / SCOPE-SANITY / ORDERING-AND-DEPENDENCIES / DECISION-COMPLIANCE / COMPLETENESS |
-| **Severity** | BLOCKING (plan will fail) / IMPORTANT (plan will work but with significant issues) / MINOR (improvement opportunity) |
+| **Severity** | BLOCKER (plan will fail or must not execute) / MAJOR (plan will work but with significant issues) / MINOR (nonblocking improvement) / INFO (observation only) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
 | **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
-| **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKING severity |
+| **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKER severity |
 
 ### Final Output Structure
 
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
-2. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
+2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 4. **Scope**: plan reviewed, code map used if provided, and review context packet used if provided.
 
 ## Rules
 
 - Fewer high-quality findings >>> many low-quality ones. 5 real issues beats 20 maybes.
-- DRY-AND-SIMPLICITY findings where the plan asks the executor to introduce duplication, repeated logic, repeated literals, unjustified wrappers, single-call helpers, type aliases without domain difference, or two named entities without a specified behavioral delta are BLOCKING severity. Plans plant the duplication that ships in code. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly schedules its cleanup. Loose phrasing like "introduce named predicates" or "split for clarity" without a behavioral contract for each new entity is itself the finding - the plan is incomplete and will produce duplication.
+- DRY-AND-SIMPLICITY findings where the plan asks the executor to introduce duplication, repeated logic, repeated literals, unjustified wrappers, single-call helpers, type aliases without domain difference, or two named entities without a specified behavioral delta are BLOCKER severity. Plans plant the duplication that ships in code. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly schedules its cleanup. Loose phrasing like "introduce named predicates" or "split for clarity" without a behavioral contract for each new entity is itself the finding - the plan is incomplete and will produce duplication.
 - NEVER critique what hasn't been verified against the codebase. "I think this API doesn't support X" is not a finding. Read the code, confirm, then report.
 - If unsure whether something is an issue, frame it as a question: "Does X handle Y? I couldn't confirm from reading [file]." Questions are cheaper than wrong findings.
 - Separate "the plan won't work" (correctness) from "the plan could be better" (suggestions). Don't mix them.

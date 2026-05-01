@@ -42,6 +42,26 @@ If the packet/code map and an artifact disagree, trust the artifact after verify
 - **REJECT_WONT_FIX** - finding is technically valid but implementing it would make things worse, contradicts the plan's approach (which is not demonstrably broken), contradicts a locked decision, or adds regression risk for marginal benefit.
 - **REJECT_ALREADY_FIXED** - the issue described is already addressed in the current implementation or was fixed in a prior iteration.
 
+## Severity and Route Scope
+
+Every finding must include both severity and route scope. Classification answers whether the finding is real. Severity answers whether it should block the workflow. Route scope answers which producer must handle it.
+
+`SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
+
+- **BLOCKER** - the implementation is wrong, incomplete, unsafe, unverifiable, silently failing, missing required tests, or introduces duplication/complexity that must not ship.
+- **MAJOR** - the implementation works on the happy path but has significant maintainability, performance, test-quality, or regression risk that should be fixed before completion.
+- **MINOR** - improvement opportunity, cleanup, naming, small maintainability issue, or localized duplication with low blast radius. It is worth reporting but does not block completion.
+- **INFO** - observation, context note, optional improvement, or reviewer preference. It never blocks.
+
+`ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | FOLLOWUP | NONE`
+
+- **PLAN_REQUIRED** - the plan, specification interpretation, task scope, architecture, or locked decision must change before a correct implementation can be produced.
+- **IMPLEMENT_ONLY** - the plan is still correct and the executor can repair the implementation directly against the current plan.
+- **FOLLOWUP** - real but nonblocking work that should be reported or optionally bundled, not looped.
+- **NONE** - no workflow action is needed because the finding was rejected or already addressed.
+
+MINOR and INFO findings never trigger a revision loop by themselves. Most valid code review fixes should be `IMPLEMENT_ONLY`; use `PLAN_REQUIRED` only when the implementation exposes a plan-level defect, ambiguous scope, or architecture problem that the executor should not decide alone.
+
 ## Pre-Classification Gate
 
 For each finding, before classifying:
@@ -102,6 +122,8 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 |-------|-------------|
 | **Finding** | One-line summary of the reviewer's concern |
 | **Classification** | FIX / FIX_UNCLEAR / ASK_USER / REJECT_FALSE_POSITIVE / REJECT_WONT_FIX / REJECT_ALREADY_FIXED |
+| **Severity** | BLOCKER / MAJOR / MINOR / INFO |
+| **Route Scope** | PLAN_REQUIRED / IMPLEMENT_ONLY / FOLLOWUP / NONE |
 | **Confidence** | HIGH / MEDIUM / LOW |
 | **Why** | 1-2 sentences. For FIX: what's actually wrong and why fixing it improves things. For FIX_UNCLEAR: what's wrong AND what makes the fix approach ambiguous (name the competing approaches). For REJECT_*: why the finding is wrong, irrelevant, or harmful to apply. For ASK_USER: what's unknown and why it matters |
 | **Question** | (ASK_USER and FIX_UNCLEAR only) For ASK_USER: a self-contained briefing on whether this is a real issue. For FIX_UNCLEAR: a self-contained briefing presenting the competing fix approaches. See Question Guidelines below |
@@ -151,20 +173,29 @@ End your output with a structured routing block that tells the orchestrator exac
 
 ```
 ---
-HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
+HANDLER_RESULT: CLEAN | HAS_BLOCKING_FIX | HAS_NONBLOCKING_FINDINGS | HAS_ASK_USER
 FIX_COUNT: <number>
 FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
-NEXT_ACTION: DONE | OUTER_LOOP | ASK_USER_BATCH
+BLOCKING_FIX_COUNT: <number>
+NONBLOCKING_COUNT: <number>
+PLAN_REQUIRED_COUNT: <number>
+IMPLEMENT_ONLY_COUNT: <number>
+NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY
 ```
 
 - `CLEAN` (0 FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator outputs Run Summary, pipeline ends
-- `HAS_FIX` (1+ FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator dispatches fixme-write-plan in code revision mode with the FIX items, entering the next outer loop iteration. The orchestrator MUST NOT apply fixes itself.
+- `HAS_BLOCKING_FIX` (1+ BLOCKER or MAJOR FIX, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator dispatches the route indicated by `NEXT_ACTION`. `IMPLEMENT_ONLY` fixes go to fixme-execute-plan repair mode; `PLAN_REQUIRED` fixes go to plan revision and count against the outer loop.
+- `HAS_NONBLOCKING_FINDINGS` (only MINOR or INFO FIX items, 0 FIX_UNCLEAR, 0 ASK_USER): orchestrator reports follow-up items and completes without another loop.
 - `HAS_ASK_USER` (1+ FIX_UNCLEAR or ASK_USER): orchestrator batches questions to user before routing FIX items. FIX_UNCLEAR questions ask about approach. ASK_USER questions ask about validity.
 
 Routing consistency is mandatory:
 
 - If `FIX_UNCLEAR_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
 - If `ASK_USER_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
-- Never output `CLEAN` or `HAS_FIX` while any `FIX_UNCLEAR` item exists.
+- If `BLOCKING_FIX_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_BLOCKING_FIX`.
+- If `BLOCKING_FIX_COUNT = 0` and `NONBLOCKING_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_NONBLOCKING_FINDINGS` and `NEXT_ACTION` MUST be `FOLLOWUP_ONLY`.
+- If `PLAN_REQUIRED_COUNT > 0`, `NEXT_ACTION` MUST be `PLAN_REVISION`.
+- If `IMPLEMENT_ONLY_COUNT > 0` and `PLAN_REQUIRED_COUNT = 0`, `NEXT_ACTION` MUST be `IMPLEMENT_REPAIR`.
+- Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists.
 - `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the approach.

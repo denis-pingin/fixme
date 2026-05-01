@@ -1,6 +1,6 @@
 ---
 name: fixme-pr-comments
-description: Fetch unresolved PR comments from review threads, Claude bot, Greptile, and regular human issue comments, analyze EVERY comment individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
+description: Fetch PR feedback from the three GitHub API surfaces, normalize every fetched container into review_item records, analyze EVERY item individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
 argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
@@ -20,7 +20,7 @@ When `fixme-task`'s SKILL.md says "the orchestrator writes to the decision log",
 
 # Address PR Comments
 
-Automatically fetch, analyze, and address **unresolved** PR review comments, actionable Claude bot issue comments, Greptile summary findings, AND regular human issue comments posted as full reviews.
+Automatically fetch, normalize, analyze, and address PR feedback from inline review threads, PR issue comments, and top-level PR review bodies.
 
 ## Hard Constraints
 
@@ -54,8 +54,8 @@ Always build the full 15-step manifest, regardless of which flags are set. Condi
 ### The Manifest
 
 ```
-Step 1   [fetch]            Fetch Sources A, B, C, D with mandatory pagination
-Step 2   [fetch/display]    Assign source IDs (A1, B1, C1, D1...) and display all fetched items
+Step 1   [fetch]            Fetch three GitHub API surfaces with mandatory pagination
+Step 2   [fetch/display]    Normalize into review_item records and display all fetched items
 Step 3   [analyze]          Analyze every item individually; classify with verdict
 Step 4   [analyze/present]  Present `## PR Comment Analysis` to user
 Step 5   [analyze/route]    Route: any FIX_UNCLEAR or ASK_USER -> 6, otherwise -> 7
@@ -67,7 +67,7 @@ Step 10  [verify]           Run build/lint/test using project-documented command
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
 Step 12  [commit]           Commit changes (and push unless --skip-push is set)
 Step 13  [resolve/route]    Route: --skip-resolve -> 15, otherwise -> 14
-Step 14  [resolve]          Build reply execution table, preflight reply bodies, then reply/resolve per source/author rules
+Step 14  [resolve]          Build reply execution table, preflight reply bodies, then reply/resolve per surface/author rules
 Step 15  [done]             Run summary
 ```
 
@@ -90,8 +90,8 @@ After deriving the manifest, create it via TodoWrite. Step 1 starts `in_progress
 
 ```
 TodoWrite([
-  { content: "Step 1 [fetch] Fetch Sources A-D with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
-  { content: "Step 2 [fetch/display] Display fetched items with source IDs", status: "pending", activeForm: "Displaying fetched items" },
+  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
+  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
   { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
   { content: "Step 4 [analyze/present] Present `## PR Comment Analysis`", status: "pending", activeForm: "Presenting analysis" },
   { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
@@ -123,24 +123,27 @@ Execute steps in order. After each step (whether a Bash command, an analysis, a 
 
 ## Workflow
 
-### 1. Fetch Unresolved PR Comments
+### 1. Fetch PR Feedback
 
-There are **four sources** of actionable comments to check:
+Fetch three GitHub API surfaces. These are API storage surfaces, not reviewer identities:
 
-#### Source A: Review Threads (inline PR review comments)
+| Surface | GitHub API | What it contains |
+|---------|------------|------------------|
+| `inline_review_threads` | GraphQL `pullRequest.reviewThreads` | Inline review conversations with `isResolved` state |
+| `issue_comments` | REST `/issues/{number}/comments` | Top-level PR timeline comments, including Claude, Greptile, humans, and prior replies |
+| `pull_request_reviews` | REST `/pulls/{number}/reviews` | Top-level review bodies from submitted PR reviews, including `chatgpt-codex-connector[bot]` |
 
-Get PR info and only unresolved review threads using GraphQL:
+Reviewer identities like Claude, Greptile, Codex, Copilot, and humans are parser and reply-strategy hints after normalization. Do not model each reviewer as a separate fetch source.
+
+#### Surface 1: `inline_review_threads`
+
+Get PR info and all review threads with GraphQL cursor pagination. Analyze only unresolved threads, but fetch enough metadata to know which threads are already resolved.
 
 ```bash
-# Get PR number and repo info
+# Get PR number and repo info.
 gh pr view --json number,headRefName,headRepository
 
-# Get ONLY unresolved review threads with full context.
-# IMPORTANT: This query uses cursor-based pagination. The GitHub GraphQL API
-# returns at most 100 nodes per request. You MUST loop until hasNextPage is false.
-# On each iteration, pass the endCursor from the previous response as $after.
-
-# First request (no cursor):
+# First page.
 gh api graphql -f query='
 query {
   repository(owner: "{owner}", name: "{repo}") {
@@ -167,241 +170,98 @@ query {
   }
 }' --jq '.data.repository.pullRequest.reviewThreads'
 
-# If pageInfo.hasNextPage is true, fetch the next page:
-gh api graphql -f query='
-query {
-  repository(owner: "{owner}", name: "{repo}") {
-    pullRequest(number: {number}) {
-      reviewThreads(first: 100, after: "{endCursor}") {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          isResolved
-          path
-          line
-          comments(first: 10) {
-            nodes {
-              id
-              databaseId
-              author { login }
-              body
-              diffHunk
-            }
-          }
-        }
-      }
-    }
-  }
-}'
-
-# Repeat until hasNextPage is false. Collect all nodes across pages,
-# then filter: select only nodes where isResolved == false.
+# Repeat with reviewThreads(first: 100, after: "{endCursor}") until hasNextPage is false.
 ```
 
-**Pagination is mandatory.** PRs with many review comments will span multiple pages.
-If you only fetch the first page, you will silently miss comments on later pages.
-Always check `pageInfo.hasNextPage` and loop with `after: "{endCursor}"` until all
-pages are consumed.
+#### Surface 2: `issue_comments`
 
-#### Source B: Claude bot issue comments (regular PR comments)
-
-The Claude Code GitHub Action currently posts code review findings as regular PR comments
-instead of inline review threads. These must also be checked for actionable issues.
+Fetch all PR issue comments once. Do not filter by author at fetch time; parser hints are assigned during normalization.
 
 ```bash
-# Fetch ALL issue comments from claude[bot] - no content filtering at fetch time.
-# Claude bot reviews use varied formats so any pattern-based filter WILL miss comments.
-# IMPORTANT: Use --paginate to fetch ALL pages. Without it, only the first page
-# (default 30 items) is returned, silently missing comments on later pages.
 gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
-  --jq '[.[] | select(.user.login == "claude[bot]") | {id, body}]'
+  --jq '[.[] | {
+    id,
+    user: .user.login,
+    user_type: .user.type,
+    created_at,
+    body
+  }]'
 ```
 
-**Reading Claude bot comments**: Read the FULL body of every claude[bot] comment.
-Discard only comments that clearly contain no actionable findings (e.g. just
-"No issues found"). For everything else, extract each finding and treat it the
-same as a review thread comment for analysis.
+Known parser hints for this surface:
 
-**CRITICAL: Always read the FULL body of every Claude bot comment.** Claude bot comments often
-have wrapper text like `**Claude finished @user's task in Xm Ys**` at the top - this is NOT
-an indicator that findings were addressed. It is just a status prefix. The actual review content
-with actionable issues is below the `---` separator. NEVER skip a comment based on its prefix.
+- `claude[bot]`: read the full body. Wrapper text like `**Claude finished @user's task in Xm Ys**` is only status text; actual findings may appear below a separator.
+- `greptile-apps[bot]`: extract findings from `<!-- greptile_failed_comments -->`, confidence-score file references, and any "Remaining findings:" section. Replies must mention `@greptileai`; the fetch login is not the reply mention.
+- Human or other non-AI author: read the full body and extract each actionable finding from prose, numbered lists, bullets, or quoted code blocks.
+- Prior resolution comments: keep them as records. They may prove a later finding is already addressed, but they are not silently dropped.
 
-**Skip already-addressed issues**: For each specific issue extracted from a Claude bot comment,
-check if a reply comment exists that SPECIFICALLY references that issue. A reply is only
-considered to address an issue if:
-1. It was posted AFTER the Claude bot comment (higher comment ID)
-2. It explicitly references the specific issue (by title, file path, or description)
-3. It references a commit SHA or says "Fixed" in relation to that specific issue
+#### Surface 3: `pull_request_reviews`
 
-A reply addressing issue X from Claude comment A does NOT count as addressing issue Y from
-Claude comment B. Each issue in each comment must be independently checked.
-
-#### Source C: Greptile summary comment (permanent PR comment)
-
-Greptile posts a single summary comment per PR that gets updated on each review. This comment
-contains actionable findings in two sections that must be extracted.
-
-**Identity rule:** fetch and filter the source comment by GitHub login `greptile-apps[bot]`.
-When posting any PR reply for Source C findings, address Greptile as `@greptileai`.
-The fetch login is not the reply mention.
+Fetch top-level PR review bodies. These are separate from review threads and issue comments; this is where Codex connector review summaries can appear.
 
 ```bash
-# Fetch the greptile-apps[bot] issue comment.
-# IMPORTANT: Use --paginate to fetch ALL pages of issue comments.
-gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
-  --jq '[.[] | select(.user.login == "greptile-apps[bot]") | {id, body}]'
+gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate \
+  --jq '[.[] | select(.body != null and (.body | length) > 0) | {
+    id,
+    user: .user.login,
+    user_type: .user.type,
+    state,
+    submitted_at,
+    body,
+    html_url
+  }]'
 ```
 
-**Extract findings from three sections:**
+Known parser hints for this surface:
 
-1. **Comments Outside Diff** - wrapped in `<!-- greptile_failed_comments -->` markers:
-   ```html
-   <!-- greptile_failed_comments -->
-   <details open><summary><h3>Comments Outside Diff (N)</h3></summary>
+- `chatgpt-codex-connector[bot]`: read the full review body. Codex review summaries can contain actionable P0/P1/P2 findings even when there are zero unresolved review threads.
+- Any other reviewer: read the full review body and extract each actionable finding the same way as top-level issue comments.
 
-   1. `file/path.ts`, line X-Y ([link](...))
-      **Issue title in bold**
-      Detailed description...
+#### Normalize fetched containers
 
-   </details>
-   <!-- /greptile_failed_comments -->
-   ```
-   Each numbered item is a separate finding with: file path, line range, bold title, and description.
+Normalize every fetched container into `review_item` records before analysis:
 
-2. **Confidence Score section** - contains file-specific findings after the score heading:
-   ```html
-   <h3>Confidence Score: N/5</h3>
-   {assessment paragraphs}
-   {file references like:}
-   apps/api/src/pipeline/generate-story.ts (line 459) - still uses legacy contentKey...
-   apps/api/scripts/generate-topic-images.sh - missing `image.usedPrompt` write.
-   ```
-   Lines that reference a specific file path with a description are individual findings.
+| Field | Meaning |
+|-------|---------|
+| `id` | Stable item ID: `T1`, `T2` for threads; `I1`, `I2` for issue-comment findings; `R1`, `R2` for PR-review findings |
+| `surface` | `inline_review_thread`, `issue_comment`, or `pull_request_review` |
+| `container_id` | GitHub thread ID, issue comment ID, or PR review ID |
+| `author_login` | GitHub login that wrote the source container |
+| `author_type` | GitHub user type, e.g. `Bot` or `User` |
+| `body` | The exact finding text being analyzed |
+| `parser_hint` | `inline_thread`, `claude_bot`, `greptile_summary`, `codex_review`, `generic_ai_review`, or `generic_human_review` |
+| `reply_strategy` | `inline_thread_reply` or `issue_comment_reply` |
+| `resolve_strategy` | `resolve_review_thread` or `none` |
 
-3. **Remaining findings section** - plain-markdown list between the summary and confidence
-   score, with priority-labeled items:
-   ```
-   Remaining findings:
+One fetched container may yield multiple `review_item` records when its body contains multiple findings. Every fetched container must either produce finding records or produce one `REJECT_FALSE_POSITIVE` record that explains why the body contains no actionable finding.
 
-   {Priority} -- {Issue title}: {detailed description with file paths and behavior}
-   ```
-   Each priority-labeled paragraph is a separate finding. Extract: title (text before the
-   colon after the dash), description (text after the colon), and any file paths mentioned.
+For each specific `review_item`, check whether a later issue comment already addresses it. A later reply counts only if it was posted after the source container and explicitly references the same title, file path, or description plus a commit SHA or fixed/resolved wording. A reply for item X never addresses item Y by implication.
 
-   **NOTE:** Greptile's format varies across reviews. Headers may use `<h3>` HTML tags or
-   plain markdown. The "Remaining findings:" section may or may not be present. Always check
-   for all three sections regardless of which format the current comment uses.
+#### Display all normalized items
 
-**Parsing rules:**
-- If the "Comments Outside Diff" section has `(0)` or is absent, skip it
-- If the Confidence Score is 5/5 with no file-specific findings listed, skip it
-- For each extracted finding, record: file path, line range (if given), title/description
-- Treat extracted findings the same as Claude bot findings for analysis in Step 2
+Display all surfaces in format:
 
-**Skip already-addressed issues**: Same logic as Source B - check if a reply comment exists
-that specifically references the finding by file path or description.
-
-#### Source D: Regular human issue comments (non-bot PR comments)
-
-Human reviewers sometimes post their entire review as a single regular PR issue comment
-instead of a formal review with inline threads. These comments are NOT review threads (so
-Source A misses them) and are NOT from a bot allowlisted login (so Sources B and C miss
-them). They MUST still be analyzed.
-
-```bash
-# Fetch ALL issue comments from non-bot authors.
-# Filter: exclude anyone whose user.type is "Bot", anyone whose login ends with "[bot]",
-# and the explicit known-AI allowlist (claude[bot], greptile-apps[bot],
-# copilot-pull-request-reviewer). This is the exact inverse of the AI author detection
-# rule in the Notes section - Source D is "everyone who is NOT an AI reviewer".
-#
-# IMPORTANT: Use --paginate. Without it, only the first page (default 30 items) is
-# returned and later comments are silently missed.
-gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
-  --jq '[.[]
-    | select(.user.type != "Bot")
-    | select((.user.login | endswith("[bot]")) | not)
-    | select(.user.login != "claude[bot]")
-    | select(.user.login != "greptile-apps[bot]")
-    | select(.user.login != "copilot-pull-request-reviewer")
-    | {id, user: .user.login, created_at, body}]'
-```
-
-**Why the filter is redundant**: `user.type != "Bot"` catches GitHub App bots and the
-`endswith("[bot]")` check catches bots whose `type` is mislabelled. The explicit
-allowlist checks are a belt-and-braces guard against GitHub API inconsistencies and
-keep Source D in strict parity with the Sources B/C allowlist. Do not remove any of the
-three filter layers.
-
-**Double-count avoidance**: Source B already claims `claude[bot]`, Source C already
-claims `greptile-apps[bot]`, and Source A already claims any comment that is part of a
-review thread. The jq filter above excludes the two known bot logins. GitHub review
-thread comments are returned by a DIFFERENT endpoint (`reviewThreads` in GraphQL) and
-do NOT appear in `/issues/{number}/comments`, so there is no overlap with Source A. A
-single comment can belong to at most one source.
-
-**Reading Source D comments**: Read the FULL body of every Source D comment. A human
-review posted as a single issue comment can contain multiple distinct findings in
-prose, numbered lists, bullet points, or inline-quoted code blocks. Extract each
-finding as a separate item the same way Source B (Claude bot) findings are extracted.
-For each extracted finding, record: the originating comment's `id` (needed for the
-resolution reply in Step 6), the author's login (for the report), the finding title
-or first-sentence summary, the description, and any file paths / line ranges mentioned
-in the prose.
-
-If a Source D comment body contains no actionable findings (e.g. it is just a
-"LGTM", a "thanks!", or a question for the author), skip it with verdict
-`REJECT_FALSE_POSITIVE` and record "no actionable finding in comment body" as the
-reasoning. Do NOT silently drop it - every comment must appear in the final report
-with a verdict (see presentation rule 11).
-
-**Skip already-addressed findings**: For each specific finding extracted from a
-Source D comment, check if a LATER issue comment exists that specifically references
-that finding. A reply is only considered to address a finding if:
-
-1. It was posted AFTER the Source D comment (higher comment ID or later `created_at`)
-2. It explicitly references the specific finding (by title, file path, or description)
-3. It references a commit SHA or says "Fixed" in relation to that specific finding
-
-This is the same rule used for Sources B and C. A reply addressing finding X from
-comment A does NOT count as addressing finding Y from comment B. Each finding in each
-comment must be independently checked.
-
-#### Display all comments
-
-Assign each comment a **source-prefixed ID** at fetch time: A1, A2, ... for review threads; B1, B2, ... for Claude bot findings; C1, C2, ... for Greptile findings; D1, D2, ... for regular human issue comments. These IDs are permanent - they follow the item through analysis and into the final report regardless of verdict.
-
-Display all sources in format:
 ```
 ## PR Comments ({count} total)
 
-### Review Threads ({count})
-- **A1.** @author file.ts#line (thread_id: {id}):
-  > comment text
-- **A2.** @author file.ts#line (thread_id: {id}):
+### Inline Review Threads ({count})
+- **T1.** @author file.ts#line (thread_id: {id}):
   > comment text
 
-### Claude Bot Review Comments ({count})
-- **B1.** [comment_id: {id}] file.ts#line:
-  > issue description
+### PR Issue Comments ({count})
+- **I1.** [comment_id: {id}] @author file.ts#line (parser: claude_bot|greptile_summary|generic_human_review):
+  > extracted finding or non-actionable body summary
 
-### Greptile Summary Findings ({count})
-- **C1.** [comment_id: {id}] file.ts#line (source: outside-diff|confidence):
-  > issue description
-
-### Human Review Comments ({count})
-- **D1.** [comment_id: {id}] @author file.ts#line:
-  > issue description (one finding extracted from the comment body)
-- **D2.** [comment_id: {id}] @author:
-  > another finding from a different comment
+### Top-Level PR Review Bodies ({count})
+- **R1.** [review_id: {id}] @author (state: COMMENTED, parser: codex_review|generic_ai_review|generic_human_review):
+  > extracted finding or non-actionable body summary
 ```
 
-**Skip if no actionable comments**: If all review threads are resolved AND no unaddressed Claude bot findings exist AND no unaddressed Greptile findings exist AND no unaddressed human issue-comment findings exist, report "No unresolved comments" and exit.
+**Skip if no actionable comments**: If every `review_item` has verdict `REJECT_FALSE_POSITIVE`, `REJECT_ALREADY_FIXED`, or `REJECT_WONT_FIX`, report "No unresolved comments to address" and proceed to Step 14 if replies are needed.
 
 ### 2. Analyze Each Unresolved Comment
 
-For each unresolved review comment:
+For each unresolved `review_item`:
 
 1. **Read the referenced code** to understand the context
 2. **Determine if it's a valid issue**:
@@ -452,10 +312,10 @@ For each individual item, describe it top-down: context, what's wrong, what brea
 ## PR Comment Analysis
 
 {EXACT counts with full accounting. Format:
-"N comments from M sources (N review threads, N Claude bot findings,
-N Greptile findings, N human issue comment findings). Verdict: N to fix, N already fixed, N not actionable
+"N review items from 3 fetched surfaces (T inline review threads, I issue comments,
+R pull request reviews). Verdict: N to fix, N already fixed, N not actionable
 (N false positive, N won't fix), N need user input."
-Every comment must be accounted for - the numbers MUST sum to the total. If they
+Every review_item must be accounted for - the numbers MUST sum to the total. If they
 don't, you miscounted - recount before presenting. No vague quantifiers.}
 
 ---
@@ -500,7 +360,7 @@ don't, you miscounted - recount before presenting. No vague quantifiers.}
   For ASK_USER: "Requires validity determination - see below."}
 - **Effort**: {low | medium | high}
 - **Files**: {[file.ts:line](/absolute/path/file.ts#Lline), [file2.ts:line](/absolute/path/file2.ts#Lline)}
-- **Threads**: {N} ({list source names: reviewer-login, claude, greptile})
+- **Review items**: {N} ({list IDs and authors: T1 reviewer-login, I2 claude[bot], R1 chatgpt-codex-connector[bot]})
 
 {Repeat for every actionable item.}
 ```
@@ -591,14 +451,14 @@ in the report must be verifiable by counting the items listed.
 - GOOD: "12 comments total: 8 fixed (commits abc123, def456), 3 false positives, 1 out of scope."
 
 - BAD: "~65 bot threads - no individual replies needed, most addressed by subsequent commits."
-- GOOD: "65 bot threads: 41 fixed (commit abc123 addressed items A1-A30, commit def456
-  addressed items A31-A41), 18 false positives (each listed below with reasoning), 6 out
+- GOOD: "65 bot threads: 41 fixed (commit abc123 addressed items T1-T30, commit def456
+  addressed items T31-T41), 18 false positives (each listed below with reasoning), 6 out
   of scope (each listed below with reasoning)."
 
 - BAD: "The remaining issues are likely already fixed."
-- GOOD: "3 remaining issues: A4 confirmed fixed in commit def456 (verified: function
-  now returns Result<T>), B7 confirmed fixed in commit ghi789 (verified: null check
-  added at line 42), C2 not fixed (still returns raw string at line 88)."
+- GOOD: "3 remaining issues: T4 confirmed fixed in commit def456 (verified: function
+  now returns Result<T>), I7 confirmed fixed in commit ghi789 (verified: null check
+  added at line 42), R2 not fixed (still returns raw string at line 88)."
 
 If you cannot determine a definitive status for a comment, the status is "undetermined -
 needs investigation". Never hedge with "probably" or "likely" as a substitute for checking.
@@ -762,36 +622,47 @@ git push
 #### Reply Execution Table (REQUIRED)
 
 Before posting any reply or resolving any thread, materialize a reply execution table with one
-row per source item or grouped source comment. Do not run `gh api` or `gh pr comment` until
+row per `review_item` or grouped container. Do not run `gh api` or `gh pr comment` until
 every row has all required fields.
 
 Required columns:
 
 ```
-ID | source | verdict | reply target | required body prefix | resolve action | command type
+ID | surface | parser_hint | verdict | reply target | required body prefix | resolve action | command type
 ```
 
-Use these source-specific values:
+Use these surface-specific values:
 
-- Source A review thread: reply target is the inline review comment; required body prefix is
+- `inline_review_thread`: reply target is the inline review comment; required body prefix is
   `Fixed in {commit_sha}.` for addressed fixes or the rejection explanation for rejected
   findings; resolve action depends on author type.
-- Source B Claude bot issue comment: reply target is the PR issue comment stream; required
-  body prefix is `Addressed in {commit_sha}:` or `Reviewed findings:`.
-- Source C Greptile summary findings: reply target is the PR issue comment stream; required
-  body prefix is exactly `@greptileai Addressed Greptile findings in {commit_sha}:` for fixed
-  findings or exactly `@greptileai Reviewed Greptile findings:` for rejected findings; resolve
-  action is `none`.
-- Source D human issue comment: reply target is the PR issue comment stream; required body
-  prefix is `@{reviewer_login} Addressed review findings from your comment in {commit_sha}:`
-  or `@{reviewer_login} Reviewed findings from your comment:`; resolve action is `none`.
+- `issue_comment`: reply target is the PR issue comment stream; required body prefix depends on
+  `parser_hint`; resolve action is `none`.
+- `pull_request_review`: reply target is the PR issue comment stream; required body prefix
+  references the review ID or reviewer; resolve action is `none`.
+
+Parser-specific issue-comment prefixes:
+
+- `claude_bot` or `generic_ai_review`: `Addressed in {commit_sha}:` for fixed findings or
+  `Reviewed findings:` for rejected findings.
+- `greptile_summary`: exactly `@greptileai Addressed Greptile findings in {commit_sha}:` for fixed
+  findings or exactly `@greptileai Reviewed Greptile findings:` for rejected findings.
+- `generic_human_review`: `@{reviewer_login} Addressed review findings from your comment in {commit_sha}:`
+  for fixed findings or `@{reviewer_login} Reviewed findings from your comment:` for rejected findings.
+
+Parser-specific pull-request-review prefixes:
+
+- `codex_review` or `generic_ai_review`: `Addressed review {review_id} in {commit_sha}:` for fixed
+  findings or `Reviewed review {review_id}:` for rejected findings.
+- `generic_human_review`: `@{reviewer_login} Addressed review {review_id} in {commit_sha}:` for fixed
+  findings or `@{reviewer_login} Reviewed review {review_id}:` for rejected findings.
 
 **Preflight gate:** immediately before each reply command, compare the actual body against the
 row's required body prefix. If it does not match, do not post. Rewrite the body and re-run the
-preflight. Source C bodies that start with `Greptile follow-up`, `Greptile findings`,
+preflight. Greptile bodies that start with `Greptile follow-up`, `Greptile findings`,
 `Reviewed Greptile findings` without `@greptileai`, or any other unmentioned prefix are invalid.
 
-#### For review thread comments (Source A):
+#### For `inline_review_thread` items:
 
 **If addressed (fix that was implemented)**:
 1. Reply explaining the fix:
@@ -833,7 +704,7 @@ preflight. Source C bodies that start with `Greptile follow-up`, `Greptile findi
      -X POST -f body="{explanation why not fixing}"
    ```
 2. **If the comment author is an AI** (see AI author detection in Notes), resolve
-   the thread — there is no human reviewer to defer to:
+   the thread - there is no human reviewer to defer to:
    ```bash
    gh api graphql -f query='
    mutation {
@@ -842,15 +713,23 @@ preflight. Source C bodies that start with `Greptile follow-up`, `Greptile findi
      }
    }'
    ```
-   **If the author is human**, do NOT resolve — the reviewer should have the final say.
+   **If the author is human**, do NOT resolve - the reviewer should have the final say.
 
-#### For Claude bot issue comments (Source B):
+#### For `issue_comment` items:
+
+Regular issue comments cannot be resolved via the GraphQL `resolveReviewThread`
+mutation. The resolution pattern is a new PR issue comment that references the original
+container and summarizes which findings were addressed or rejected.
+
+Group multiple findings from the same original issue comment into one reply when they share
+the same reply prefix. For mixed outcomes, post one reply that lists every finding with its
+individual outcome, so the reviewer sees the full accounting in one notification.
 
 **If addressed (fix that was implemented)**:
-1. Reply to the issue comment explaining which findings were fixed:
+1. Reply to the PR with the parser-specific prefix:
    ```bash
    gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="Addressed in {commit_sha}:
+     -X POST -f body="{required addressed prefix}
    - **{issue title}**: {brief explanation of fix}
    - ..."
    ```
@@ -859,72 +738,42 @@ preflight. Source C bodies that start with `Greptile follow-up`, `Greptile findi
 1. Reply explaining why each finding was not addressed:
    ```bash
    gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="Reviewed findings:
+     -X POST -f body="{required reviewed prefix}
    - **{issue title}**: {explanation why not fixing}"
    ```
 
-#### For Greptile summary findings (Source C):
-
-**Mandatory addressing:** Source C replies MUST start with `@greptileai`. This is the
-human-readable PR mention. `greptile-apps[bot]` is only the GitHub API login used to fetch and
-identify the summary comment.
-
-**If addressed (fix that was implemented)**:
-1. Reply to the Greptile issue comment explaining which findings were fixed:
-   ```bash
-   gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="@greptileai Addressed Greptile findings in {commit_sha}:
-   - **{finding title}**: {brief explanation of fix}
-   - ..."
-   ```
-
-**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
-1. Reply explaining why each finding was not addressed:
-   ```bash
-   gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="@greptileai Reviewed Greptile findings:
-   - **{finding title}**: {explanation why not fixing}"
-   ```
-
-#### For human review issue comments (Source D):
-
-Regular issue comments cannot be "resolved" via the GraphQL `resolveReviewThread`
-mutation - that mutation only applies to review threads. The resolution pattern for
-Source D is therefore identical to Sources B and C: post a new issue comment that
-references the original reviewer and summarizes which findings were addressed or
-rejected. Thread resolution is not applicable.
-
-**If addressed (fix that was implemented)**:
-1. Reply to the PR with a new issue comment explaining which findings were fixed,
-   addressing the original reviewer by login:
-   ```bash
-   gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="@{reviewer_login} Addressed review findings from your comment in {commit_sha}:
-   - **{finding title}**: {brief explanation of fix}
-   - ..."
-   ```
-
-**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
-1. Reply with a new issue comment explaining why each finding was not addressed,
-   addressing the original reviewer by login:
-   ```bash
-   gh api /repos/{owner}/{repo}/issues/{number}/comments \
-     -X POST -f body="@{reviewer_login} Reviewed findings from your comment:
-   - **{finding title}**: {explanation why not fixing}"
-   ```
-
-**Mixed outcomes**: If the original Source D comment contains multiple findings with
-different verdicts (some addressed, some rejected), post a SINGLE reply that lists
-every finding with its individual outcome, so the reviewer sees the full accounting
-in one notification. Do not split into two separate reply comments.
-
-**No thread resolve**: There is NO `resolveReviewThread` call for Source D. Regular
-issue comments remain visible on the PR timeline - they do not have a "resolved"
-state. The reply comment IS the resolution signal.
-
-**Source C completion check:** If any Source C finding was included in this run and
+**Greptile completion check:** If any `greptile_summary` item was included in this run and
 `--skip-response` is not set, Step 14 is incomplete until the posted issue comment body starts
 with `@greptileai Addressed Greptile findings in` or `@greptileai Reviewed Greptile findings:`.
+
+#### For `pull_request_review` items:
+
+Top-level PR reviews cannot be resolved via `resolveReviewThread` and do not have an inline
+reply endpoint for the whole review body. The reply target is the PR issue comment stream.
+This covers Codex connector review bodies from `chatgpt-codex-connector[bot]` and any other
+reviewer who leaves actionable findings in the review body instead of inline threads.
+
+`pull_request_review: reply target is the PR issue comment stream`
+
+**If addressed (fix that was implemented)**:
+1. Reply to the PR with a new issue comment explaining which review findings were fixed:
+   ```bash
+   gh api /repos/{owner}/{repo}/issues/{number}/comments \
+     -X POST -f body="{required addressed prefix}
+   - **{finding title}**: {brief explanation of fix}
+   - ..."
+   ```
+
+**If NOT addressed (REJECT_FALSE_POSITIVE, REJECT_ALREADY_FIXED, REJECT_WONT_FIX)**:
+1. Reply with a new issue comment explaining why each review finding was not addressed:
+   ```bash
+   gh api /repos/{owner}/{repo}/issues/{number}/comments \
+     -X POST -f body="{required reviewed prefix}
+   - **{finding title}**: {explanation why not fixing}"
+   ```
+
+**No thread resolve**: There is no `resolveReviewThread` call for `issue_comment` or
+`pull_request_review` items. The reply comment is the resolution signal.
 
 ## Decision Guide
 
@@ -941,23 +790,24 @@ with `@greptileai Addressed Greptile findings in` or `@greptileai Reviewed Grept
 
 ## Notes
 
-- **Four sources of comments**: Review threads (inline), Claude bot issue comments (regular), Greptile summary findings (permanent PR comment), AND regular human issue comments (non-bot PR issue comments posted as full reviews)
-- **Only unresolved review threads are fetched** - resolved threads are skipped entirely
-- **All claude[bot] comments are fetched and read in full** - no pattern-based filtering
-- **Greptile summary comment**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login.
-- **Human issue comments (Source D)**: Fetched from the same `/issues/{number}/comments` REST endpoint as Sources B and C, filtered to `user.type != "Bot"` AND login not ending in `[bot]` AND login not in the known-AI allowlist (claude[bot], greptile-apps[bot], copilot-pull-request-reviewer). Each comment body may contain multiple findings, parsed and analyzed like Source B. Resolution posts a reply issue comment addressing the reviewer by login - no GraphQL thread resolve (not applicable to regular issue comments).
-- **Skip already-replied findings**: If a reply already addresses a Claude bot or Greptile finding (references a commit SHA or says "Fixed"), skip it
+- **Three GitHub API surfaces**: Fetch `inline_review_threads`, `issue_comments`, and `pull_request_reviews`. Reviewer identities are parser hints, not fetch sources.
+- **Only unresolved review threads are analyzed** - resolved threads are fetched for accounting and skipped from actionable analysis.
+- **All issue comments are fetched and read in full** - no pattern-based filtering at fetch time.
+- **Top-level PR review bodies are fetched and read in full** - this covers Codex connector findings from `chatgpt-codex-connector[bot]` that are not review threads or issue comments.
+- **Greptile summary parsing**: Extract findings from both "Comments Outside Diff" section (between `<!-- greptile_failed_comments -->` markers) and "Confidence Score" section (file-specific findings). Identified by `greptile-apps[bot]` user login and replied to with `@greptileai`.
+- **Human issue comments and review bodies**: Each body may contain multiple findings. Parse every finding individually and post a reply issue comment addressing the reviewer by login when a response is needed.
+- **Skip already-replied findings**: If a later reply already addresses the same finding (references a commit SHA or says "Fixed"), mark that item `REJECT_ALREADY_FIXED`.
 - **FIX vs FIX_UNCLEAR vs ASK_USER**: FIX items proceed without user input. FIX_UNCLEAR items pause for user consultation on fix approach. ASK_USER items pause for user consultation on whether the issue is valid.
 - **`--pause` flag**: When set, the workflow pauses after analysis (Step 2/2.5) and presents a final execution plan before dispatching fixme-task. The user can approve, cancel, or modify the fix list. Without `--pause`, execution proceeds automatically after analysis.
-- If no actionable comments exist from any source, report "No unresolved comments to address" and exit
+- If no actionable comments exist from any surface, report "No unresolved comments to address" and exit
 - Always verify before committing
 - One commit for all fixes (unless logically separate)
 - Be specific in replies - reference exact lines/commits
 - Don't resolve review thread conversations you can't fully address (unless the author is an AI - see below)
-- **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`) OR matches a known AI reviewer login (e.g. `copilot-pull-request-reviewer`). When in doubt, check the author's `type` field from the GitHub API - bots have `type: "Bot"`. AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
+- **AI author detection**: A comment author is considered AI if their login ends with `[bot]` (e.g. `claude[bot]`, `greptile-apps[bot]`, `chatgpt-codex-connector[bot]`) OR matches a known AI reviewer login (e.g. `copilot-pull-request-reviewer`). When in doubt, check the author's `type` field from the GitHub API - bots have `type: "Bot"`. AI-authored threads are resolved even on REJECT categories because there is no human reviewer to defer to. Human-authored threads are left unresolved on REJECT so the reviewer can have the final say.
 - The thread_id from GraphQL query is needed for resolving review threads - save it when fetching
-- **Pagination is mandatory for all API calls.** REST endpoints (issue comments) must use `--paginate` to fetch all pages. GraphQL endpoints (review threads) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
-- **Source-prefixed item IDs**: Every comment gets a permanent ID at fetch time (A1, A2 for review threads; B1, B2 for Claude bot; C1, C2 for Greptile; D1, D2 for regular human issue comments). IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
+- **Pagination is mandatory for all API calls.** REST endpoints (`issue_comments`, `pull_request_reviews`) must use `--paginate` to fetch all pages. GraphQL endpoints (`inline_review_threads`) must use cursor-based pagination (`pageInfo { hasNextPage endCursor }` + `after` parameter) and loop until `hasNextPage` is false. Without pagination, comments beyond the first page are silently missed.
+- **Surface item IDs**: Every `review_item` gets a permanent ID at normalization time: `T1`, `T2` for inline review threads; `I1`, `I2` for issue-comment findings; `R1`, `R2` for PR-review findings. IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
 - **fixme-task invocation**: uses `Skill("fixme-task")` to run the pipeline inline in the current session. fixme-task dispatches its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) via the Agent tool at depth 1. This avoids the platform constraint that agents cannot dispatch other agents.

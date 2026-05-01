@@ -47,9 +47,31 @@ Before evaluating anything, understand:
 6. **What stable context does the plan provide?** Read the plan's `## Context` section. Stable Context provides architecture, patterns, conventions, and dependency information discovered during planning. Use this as a head start - no need to re-explore the full codebase for this information. Re-read changed files directly for current state.
 7. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, and `Verification Since Last Review` sections to orient the review. Verify all claims against the files and git diff before relying on them.
 
-`Fixes Since Last Review` does not limit review scope. Unless the packet explicitly says a future focused-review mode is active, review the full changed surface every time.
+`Fixes Since Last Review` does not limit review scope unless focused re-review mode is active. Focused re-review mode reviews fixes since last review plus directly affected call sites.
 
 This prevents the most common source of false findings: reviewing code without understanding why it was written that way.
+
+## Focused Re-Review Mode
+
+Focused Re-Review Mode is used after `fixme-execute-plan` repair mode handles implementation-only code review findings.
+
+Focused re-review mode reviews fixes since last review plus directly affected call sites. Start with:
+
+1. The repair items from the previous handler.
+2. Files changed by the repair.
+3. Tests changed or added by the repair.
+4. Callers, imports, generated outputs, and configuration touched by the repaired code.
+5. Verification results since the repair.
+
+A focused re-review may still widen scope when the repair changes shared contracts or high-risk behavior. Widen to the full changed surface when any of these are true:
+
+- The repair changes public APIs, exported types, database schema, request/response contracts, auth, permissions, payment/billing, migration behavior, concurrency, caching, or error-handling semantics.
+- The repair modifies shared helpers used outside the repaired feature.
+- The repair changes tests in a way that could hide production behavior.
+- The repair contradicts or reinterprets the plan.
+- You cannot confidently bound the blast radius from the repair diff.
+
+Focused mode is a scope optimization, not a lower quality bar. Every finding still needs evidence, severity, and a concrete suggestion.
 
 ## Foundational Mindset: Do Not Trust
 
@@ -79,7 +101,7 @@ The duplication this principle covers is not limited to byte-identical functions
 
 The question is never "could these legitimately diverge later?" - it is "do they differ today?" Speculative future divergence is not a license to ship duplication. Split when divergence actually arrives, not before.
 
-**Dimension 9: DRY and Simplicity** operationalizes this principle. Despite its position in the list, it is checked first - the Findings ordering rule places `DRY-AND-SIMPLICITY` ahead of every other category, and the Rules section makes its findings BLOCKING by default.
+**Dimension 9: DRY and Simplicity** operationalizes this principle. Despite its position in the list, it is checked first - the Findings ordering rule places `DRY-AND-SIMPLICITY` ahead of every other category, and the Rules section makes its findings BLOCKER by default.
 
 ## Verification Dimensions
 
@@ -160,7 +182,7 @@ For every new file created by the plan, verify at four levels:
 4. Check test coverage: are all plan-specified tests written? Are behavioral changes covered? Are error paths tested?
 5. Check test independence: does each test mock only external dependencies, never the code under test?
 
-**Reimplemented logic patterns (always BLOCKING):**
+**Reimplemented logic patterns (always BLOCKER):**
 - Test defines its own version of a helper/utility that exists in production
 - Test hardcodes a computation result instead of calling the production function
 - Test reimplements a state machine, parser, or transformer to "verify" it matches
@@ -340,7 +362,7 @@ For each suspected duplicate, line up the two pieces of code side-by-side. Norma
 
 The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions.
 
-**Severity:** BLOCKING by default. A duplicate or unjustified complexity introduced by the patch must be fixed before merge - once it has callers, the fix becomes more expensive. The only exception is a MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later.
+**Severity:** BLOCKER by default. A duplicate or unjustified complexity introduced by the patch must be fixed before merge - once it has callers, the fix becomes more expensive. The only exception is a MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later.
 
 ## Two-Pass Review Process
 
@@ -368,7 +390,7 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 4. **Is this a real convention in this codebase?** Read neighboring files before flagging style issues. The convention might be different from what you'd expect.
 5. **Does fixing this actually improve the outcome?** If the change would make code more complex for marginal benefit, drop it.
 6. **Does this contradict a locked decision?** If the plan includes Locked Decisions in its Context section, those are settled user choices. Do not flag code that implements a locked decision. If the locked decision itself appears to cause a problem in practice, frame it as a question, not a finding.
-7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "cosmetic", or "not blocking", the finding cannot be IMPORTANT or BLOCKING. Either downgrade to MINOR or drop it entirely.
+7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "cosmetic", or "not blocking", the finding cannot be MAJOR or BLOCKER. Either downgrade to MINOR or INFO, or drop it entirely.
 
 ## What NOT to Flag
 
@@ -398,7 +420,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 |-------|-------------|
 | **Location** | Exact file path and line range |
 | **Category** | DRY-AND-SIMPLICITY / PLAN-COMPLIANCE / ARTIFACT-VERIFICATION / STUB-DETECTION / TEST-QUALITY / SILENT-FAILURE-SCAN / CORRECTNESS / BEHAVIORAL-SPOT-CHECK / ANTI-PATTERN-SCAN |
-| **Severity** | BLOCKING (broken/wrong behavior) / IMPORTANT (works but with significant issues) / MINOR (improvement) |
+| **Severity** | BLOCKER (broken/wrong behavior or must not ship) / MAJOR (works but with significant issues) / MINOR (nonblocking improvement) / INFO (observation only) |
 | **Issue** | What's wrong - specific, referencing actual code |
 | **Evidence** | The code that demonstrates the problem. For test issues: show both the test code and the production code it should be exercising |
 | **Suggestion** | How to fix it. Concrete: name the file, the function, what to change. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
@@ -408,7 +430,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 
 1. **Summary**: 1-2 sentences. Is this implementation solid, or does it need revision? Be direct.
 2. **Scope**: list of files reviewed, plan referenced, code map used if provided, base branch compared against, and review context packet used if provided
-3. **Findings**: ordered by severity (BLOCKING first, then IMPORTANT, then MINOR). Within severity, **DRY-AND-SIMPLICITY first**, then TEST-QUALITY, STUB-DETECTION, and CORRECTNESS, then other categories.
+3. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then TEST-QUALITY, STUB-DETECTION, and CORRECTNESS, then other categories.
 4. **Verified OK**: brief list of things that were checked and found correct - this builds trust in the review's thoroughness and helps the handler skip re-checking these areas
 5. **Questions**: things that couldn't be determined and need clarification
 
@@ -417,8 +439,8 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 - Fewer high-quality findings over many low-quality ones. Every finding that gets classified REJECT_* is noise that wastes time.
 - NEVER flag what hasn't been verified against the code AND the plan AND the codebase conventions.
 - If unsure, frame as a question, not a finding.
-- DRY-AND-SIMPLICITY findings where the patch introduces duplication, unjustified complexity, repeated logic, repeated literals, unjustified wrappers, or two names for one rule are BLOCKING severity. Behavior-correct code that should not exist is still wrong. Identical logic at two sites is one bug waiting to diverge. The only exception is MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later. "Tests pass and behavior is unchanged" is never a justification - that is exactly how this defect ships.
-- TEST-QUALITY findings about reimplemented business logic are always BLOCKING severity. There are no exceptions. A test that doesn't exercise production code is not a test.
-- STUB-DETECTION findings for artifacts that the plan claimed to fully implement are BLOCKING severity. A stub masquerading as a complete implementation is a missed deliverable.
+- DRY-AND-SIMPLICITY findings where the patch introduces duplication, unjustified complexity, repeated logic, repeated literals, unjustified wrappers, or two names for one rule are BLOCKER severity. Behavior-correct code that should not exist is still wrong. Identical logic at two sites is one bug waiting to diverge. The only exception is MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later. "Tests pass and behavior is unchanged" is never a justification - that is exactly how this defect ships.
+- TEST-QUALITY findings about reimplemented business logic are always BLOCKER severity. There are no exceptions. A test that doesn't exercise production code is not a test.
+- STUB-DETECTION findings for artifacts that the plan claimed to fully implement are BLOCKER severity. A stub masquerading as a complete implementation is a missed deliverable.
 - The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough.
 - When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
