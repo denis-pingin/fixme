@@ -825,7 +825,23 @@ Leave the rebase paused. Do NOT abort.
    - Exit 0: merge would be clean
    - Exit 1: merge would also conflict (parse stdout for conflict list)
 
-3. **Present options to user:**
+3. **Compare rebase and merge conflict complexity:**
+
+   Compare the rebase conflict set with the merge alternative before asking the user.
+
+   - `REBASE_CONFLICT_FILES` = files from `git diff --name-only --diff-filter=U`
+   - `MERGE_CONFLICT_FILES` = files parsed from `git merge-tree --write-tree`
+   - `MERGE_IS_MATERIALLY_CLEANER=true` only when merge is clean or `MERGE_CONFLICT_FILES` is a strict subset of `REBASE_CONFLICT_FILES`
+
+   If the merge conflict set is identical to or more complex than the rebase conflict set, do not ask for a route choice. Continue with rebase conflict resolution.
+
+   Print a brief status line and proceed directly to Step 5:
+
+   ```
+   Rebase paused on N conflicted file(s). Merge fallback is not cleaner (<merge assessment>). Continuing with rebase conflict resolution.
+   ```
+
+4. **Present route options only when merge is materially cleaner than rebase.**
 
    ```
    Rebase paused - N conflicted files.
@@ -841,7 +857,7 @@ Leave the rebase paused. Do NOT abort.
 
    **Wait for user choice.**
 
-4. **If user chooses option 1 (resolve and continue):**
+5. **Resolve and continue rebase:**
 
    For each conflicted file, understand intent before resolving:
 
@@ -892,14 +908,14 @@ Leave the rebase paused. Do NOT abort.
 
    i. Repeat for each conflicted commit until rebase completes.
 
-5. **If user chooses option 2 (merge instead):**
+6. **If user chooses option 2 (merge instead):**
    ```bash
    git rebase --abort
    git merge <BASE_BRANCH>
    ```
    If merge has conflicts, resolve them using the same intent-based approach above. After resolving all conflicts, stage files with `git add` but **DO NOT run `git commit` yet.** The merge stays uncommitted. Proceed to Phase 7 - verification runs first, commit happens only after verification passes.
 
-6. **If user chooses option 3 (abort):**
+7. **If user chooses option 3 (abort):**
    ```bash
    git rebase --abort
    ```

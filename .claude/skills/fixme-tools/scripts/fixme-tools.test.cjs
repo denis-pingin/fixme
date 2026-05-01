@@ -2064,6 +2064,16 @@ test('fixme-rebase skill: clean verified rebase pushes by default unless --no-pu
   assert(!skill.includes('**Wait for explicit confirmation. Do not push.**'), 'old default confirmation gate should be removed');
 });
 
+test('fixme-rebase skill: same-or-worse merge fallback continues rebase without route prompt', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Compare the rebase conflict set with the merge alternative before asking the user.'), 'skill should compare conflict sets before route prompt');
+  assert(skill.includes('If the merge conflict set is identical to or more complex than the rebase conflict set, do not ask for a route choice. Continue with rebase conflict resolution.'), 'same-or-worse merge should auto-continue rebase');
+  assert(skill.includes('Present route options only when merge is materially cleaner than rebase.'), 'route prompt should be limited to cleaner merge fallback');
+  assert(!skill.includes('3. **Present options to user:**'), 'old unconditional route prompt should be removed');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
