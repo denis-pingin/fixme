@@ -10,13 +10,42 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 ## Hard Constraints
 
 - **This skill is a dispatcher.** It never writes plans, reviews code, or classifies findings itself. It dispatches sub-skills as agents and routes their outputs.
-- **Never read source code.** The orchestrator reads ONLY specification files, plan files, task code map metadata/paths, decision logs, config files, and agent outputs. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files, STOP - you are about to bypass the pipeline.
+- **Never read source code during active pipeline execution.** The orchestrator reads ONLY specification files, plan files, task code map metadata/paths, decision logs, config files, and agent outputs while a phase or dispatch is in flight. All codebase exploration, investigation, and understanding happens inside dispatched agents. If you catch yourself using Read, Grep, or Glob on source code files mid-dispatch, STOP - you are about to bypass the pipeline. **Exception:** during a decision pause (after a Review Classification block with HAS_ASK_USER, before the user has provided decisions) the orchestrator may read source code to help the user understand the decision. See "Discussion Mode (Decision-Pause Carve-Out)" below.
 - **Never lose retrievable context.** Full artifacts stay available by path; dispatch prompts pass compact, task-scoped context packets. Do not paste full discussion history or unrelated decision-log entries into review cycles.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
+
+## Discussion Mode (Decision-Pause Carve-Out)
+
+The dispatcher-only rules above (no source-code Read/Grep/Glob, no investigation, no answering questions inline) apply to **active pipeline execution**: parsing the task, dispatching agents, routing handler results, advancing the manifest. They do NOT apply during a **decision pause**.
+
+**A decision pause begins** the moment the orchestrator emits a Review Classification block whose closing prompt asks the user to make a decision (HAS_ASK_USER route, FIX_UNCLEAR or ASK_USER items presented). **It ends** the moment the user provides decisions and the orchestrator writes the decision log + re-invokes the handler.
+
+During a decision pause the orchestrator IS the user's interlocutor, not a dispatcher. The user is owed a competent collaborator who can:
+
+- **Read source code** (Read, Grep, Glob) to verify claims, surface evidence, or answer clarifying questions
+- **Run read-only Bash** (git log, git show, grep, ls, etc.) to ground the discussion in repo facts
+- **Read related plan/spec files** beyond the strict orchestrator allowlist when relevant to the decision
+- **Answer follow-up questions inline** about the codebase, the decision options, the tradeoffs, or upstream/downstream phases
+- **Re-frame a decision** when the user reveals new context (product intent, future-phase plans, prior decisions) that makes the original framing wrong - then re-present the decision card with the corrected framing
+
+What stays forbidden even during a decision pause:
+
+- Applying code changes (the pipeline still owns implementation - never edit source files)
+- Auto-advancing the manifest or re-invoking handlers without an explicit user decision
+- Persisting anything to `<fixme-dir>/decisions.md` until the user has actually decided
+- Pre-dispatching the next phase "to save time" before the decision is recorded
+
+The pause ends when the user provides a decision (or "go with recommendations"). At that moment, write the decision log, re-invoke the handler, and return to dispatcher-only mode for the next pipeline step.
+
+### User-Instruction Priority
+
+Even outside a decision pause, an explicit user instruction in conversation overrides the dispatcher-only rule. If the user asks "read this file and tell me X", "go check the source for Y", or "what does Z look like in the code right now", comply directly. Do not redirect the request to a sub-agent dispatch when the user has explicitly asked the main thread to do it. The dispatcher rule prevents *autonomous* drift inside the pipeline; it never overrides explicit user requests.
+
+When in doubt, ask: "Did the user just ask ME to do this, or am I doing it on my own initiative because I think the pipeline needs it?" Direct user requests = comply. Own initiative = dispatch.
 
 ## Input Resolution
 
@@ -183,7 +212,7 @@ If no candidate plan matches the resolved task across all four sources, the answ
 If the task asks "why", "what causes", "debug", or describes unexpected behavior:
 - This is an investigation. The temptation to explore the codebase will be strongest here.
 - Pass the user's EXACT description to the first phase's skill. Add nothing from your own exploration.
-- Do NOT read source files "to understand the task better." The task description IS the input.
+- Do NOT read source files "to understand the task better." The task description IS the input. (This applies to the dispatch-time investigation impulse. The Discussion Mode carve-out for decision pauses still applies.)
 
 ## Config Loading
 
@@ -437,7 +466,9 @@ The orchestrator may ONLY use these tools:
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
 - **TodoWrite** - to create and track the dispatch manifest steps
 
-Any other tool use (Read on source code, Grep, Glob, Edit on source code) is a pipeline violation. If you need information from the codebase, dispatch an agent to get it.
+Any other tool use (Read on source code, Grep, Glob, Edit on source code) **during active pipeline execution** is a pipeline violation. If you need information from the codebase mid-dispatch, dispatch an agent to get it.
+
+**Decision-pause carve-out:** during a decision pause (after a HAS_ASK_USER Review Classification block, before the user has provided decisions) the orchestrator may use Read, Grep, Glob, and read-only Bash on source files to help the user understand the decision and to answer their clarifying questions inline. Edit on source code remains forbidden at all times - the pipeline owns implementation. See "Discussion Mode (Decision-Pause Carve-Out)" near the top of this file for the full contract.
 
 ## Dispatch Manifest (NON-NEGOTIABLE)
 
@@ -543,15 +574,22 @@ TodoWrite([
 
 When invoked nested, the parent skill (e.g. `fixme-pr-comments`) has already created a todo list with a single `in_progress` placeholder dispatching this skill - typically labeled `Step N [dispatch] Dispatch Skill(fixme-task) ...` or similar. The most recent `TodoWrite` tool call in conversation history is the source of truth for the parent's list.
 
+**CRITICAL: Nested mode produces NO Run Summary and has NO terminal `[done]` step.** The parent skill owns the workflow's final summary at its own terminal step (e.g. `fixme-pr-comments`'s `Step 15 [done] Run summary`). fixme-task in nested mode ends at the implement-routing step (own `Step N.8`) - there is no `Step N.9`. After `Step N.8` is marked `completed`, control passes immediately to the parent's next pending step in the same turn. Do NOT print a `## Run Summary` block. Do NOT write a paragraph announcing the handoff. Just continue executing the parent's next step.
+
 Construction rules:
 
 1. Locate the parent's `in_progress` placeholder by scanning the latest todo state in conversation history. The placeholder is the single `in_progress` item whose content references dispatching `fixme-task` (text such as `Dispatch Skill(fixme-task)`, `Dispatch fixme-task`, or `dispatch fixme-task`).
-2. Note the parent's step number on that placeholder (e.g. parent's `Step 9`). This becomes the prefix for own substeps - parent's `Step 9` -> own steps `Step 9.1` through `Step 9.9`. If no parent step number is detectable, use `9.` as the prefix (the conventional position).
-3. Build own substeps using the same content/activeForm strings as the standalone manifest, but with each step content prefixed by the parent step number. Example: `Step 1 [plan] Dispatch fixme-write-plan` becomes `Step 9.1 [plan] Dispatch fixme-write-plan`.
+2. Note the parent's step number on that placeholder (e.g. parent's `Step 9`). This becomes the prefix for own substeps - parent's `Step 9` -> own steps `Step 9.1` through `Step 9.8`. If no parent step number is detectable, use `9.` as the prefix (the conventional position).
+3. Build own substeps from the standalone manifest's Steps 1-8 ONLY (omit Step 9 "Run Summary" entirely - nested mode does not have a Run Summary step), with each step content prefixed by the parent step number. Example: `Step 1 [plan] Dispatch fixme-write-plan` becomes `Step 9.1 [plan] Dispatch fixme-write-plan`. The full nested substep list is `Step N.1` ... `Step N.8`.
 4. The first own substep is `in_progress`. All other own substeps are `pending` (or `completed` for mid-pipeline entry, same as standalone mode).
 5. Issue ONE `TodoWrite` call that emits the full merged list: every parent item before the placeholder (status unchanged) + own substeps (replacing the placeholder) + every parent item after the placeholder (status unchanged).
 6. Every subsequent `TodoWrite` call (for status updates as the pipeline progresses) MUST also include the full merged list. Parent items before and after own substeps must be carried through every call with their statuses preserved exactly as they were in the most recent state. Never drop parent items.
-7. When the final own substep (`Step N.9 [done] Run Summary`) is marked `completed`, the parent's pending items immediately following it (e.g. `Step 10 [verify]`, `Step 11 [commit/route]`, etc.) become the next-action recency anchor. The parent skill takes over from there. This skill does NOT mark any parent items completed - that is the parent's responsibility.
+7. **Handoff at Step N.8.** When the implement-routing step (own `Step N.8`) returns CLEAN and the pipeline has nothing more to do internally, you have reached the handoff point. In the SAME TURN as marking `Step N.8 completed`:
+   - In the same TodoWrite call that marks `Step N.8 completed`, also mark the immediately-following parent pending item (e.g. parent's `Step 10 [verify]`) as `in_progress`.
+   - Do NOT output any `## Run Summary` block. Do NOT output any structured ending document. Do NOT write a paragraph that says "returning control to...", "the pipeline is complete", "now handing off", or any equivalent narration. The parent owns the summary at its own terminal step.
+   - Begin executing the parent's next step's instructions immediately. The parent skill's content (e.g. `fixme-pr-comments`) is in conversation history - read what its Step 10 says to do (typically: run build/lint/test verification commands) and start doing it in this turn.
+   - Do NOT end the turn after marking Step N.8 completed. Continue with the parent's Step 10 action (e.g. running `bun run biome:check && bun run typecheck && bun run test`) before stopping.
+8. This skill does NOT mark any parent items completed during its own substeps - that is the parent's responsibility (and the model continues to be the parent at the handoff point, marking each parent step completed as it finishes).
 
 **Nested mode example** (parent is `fixme-pr-comments` at Step 9, full default pipeline):
 
@@ -593,7 +631,6 @@ TodoWrite([
   { content: "Step 9.6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
   { content: "Step 9.7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
   { content: "Step 9.8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
-  { content: "Step 9.9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" },
   { content: "Step 10 [verify] Run build/lint/test", status: "pending", ... },
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", ... },
   { content: "Step 12 [commit] Commit and push", status: "pending", ... },
@@ -603,7 +640,7 @@ TodoWrite([
 ])
 ```
 
-The parent's `Step 9 [dispatch]` placeholder is gone - it has been replaced by the nine `Step 9.1` ... `Step 9.9` substeps. Every other parent item is carried through unchanged. When `Step 9.9` is marked `completed`, the model sees `Step 10 [verify]` as the next pending item and the parent skill resumes naturally.
+The parent's `Step 9 [dispatch]` placeholder is gone - it has been replaced by the eight `Step 9.1` ... `Step 9.8` substeps. There is NO `Step 9.9` and NO Run Summary in nested mode - the parent owns the final summary at its own terminal step (`Step 15 [done] Run summary`). Every other parent item is carried through unchanged. When `Step 9.8` is marked `completed` (CLEAN handler result), the same TodoWrite call also marks `Step 10 [verify]` as `in_progress`, and the model immediately starts executing the parent's Step 10 (running build/lint/test) in the same turn. No paragraph announcing the handoff. No Run Summary. Just continue with the parent's next step.
 
 ### Following the Manifest
 
@@ -1005,11 +1042,13 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 6. Do NOT apply fixes yourself. Do NOT proceed past blocking fixes without dispatching the required producer. Follow-up-only items may proceed without a producer dispatch.
 
-**Run Summary step** (`[done]` entry):
+**Run Summary step** (`[done]` entry, **standalone mode only** - does not exist in nested mode):
 
 1. Mark step `in_progress`
 2. Output the Run Summary (see format below)
 3. Mark step `completed`. Pipeline is DONE.
+
+In nested mode (`--nested`) there is no Run Summary step. After the implement-routing step (`Step N.8`) returns CLEAN, in the same TodoWrite call mark `Step N.8 completed` AND mark the parent's next pending item (e.g. `Step 10 [verify]`) as `in_progress`, then immediately begin executing the parent's Step 10 instructions. Do NOT print a `## Run Summary` block. Do NOT narrate the handoff. The parent owns the final summary at its own terminal step.
 
 ## Never Apply Fixes Directly
 
@@ -1216,6 +1255,10 @@ Parse the user's response. Map each answer to its decision point.
 - If remaining questions exist (user didn't address all), re-present ONLY those and ask again.
 - Repeat until all decisions are resolved.
 
+**Discussion Mode is active during this loop.** From the moment Step 2 (Present to user) finishes to the moment Step 4 (Record and re-invoke) begins, the orchestrator is in a decision pause and may read source code, run read-only Bash, fetch related files, and engage in inline discussion to help the user understand the decision (see "Discussion Mode (Decision-Pause Carve-Out)" near the top of this file). If the user asks a clarifying question that requires reading the codebase, **answer it directly with Read/Grep/Glob** - do NOT dispatch a sub-agent for it. Sub-agent dispatch during a decision pause is the failure mode this carve-out exists to prevent.
+
+The loop only exits when the user has provided decisions (or "go with recommendations"). Inline discussion does NOT count as a decision - keep the pause open until the user explicitly resolves the decision points.
+
 **Exit conditions** (any one ends the loop):
 
 - User answered all decision points explicitly
@@ -1279,7 +1322,9 @@ but {K} remain unresolved.
 
 ## Run Summary
 
-**ONLY output this after the final phase completes (with clean review or no review) or after a loop guard triggers. NEVER mid-pipeline.**
+**Standalone mode only.** In nested mode (`--nested`), do NOT output a Run Summary at any point - the parent skill owns the final summary at its own terminal step. See "Nested mode" under "Creating the Manifest with TodoWrite" above.
+
+**ONLY output this after the final phase completes (with clean review or no review) or after a loop guard triggers. NEVER mid-pipeline. NEVER in nested mode.**
 
 At completion, output:
 
