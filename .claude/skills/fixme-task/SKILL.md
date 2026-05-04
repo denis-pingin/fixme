@@ -498,10 +498,12 @@ Use that metadata as intake routing context, not as a substitute for normal plan
 - FOLLOWUP_ONLY and INFO items are recorded in the run summary and never trigger planning, execution, or loop counters.
 - Batch CURRENT_PR_FIX items by dependency cluster, not by comment source.
 - Split dispatch only when a high-complexity PLAN_REQUIRED fix touches an unrelated subsystem or blocks low-risk fixes.
-- Prefer repair mode for CURRENT_PR_FIX items with ROUTE_SCOPE: IMPLEMENT_ONLY and no PLAN_REQUIRED items.
+- `ROUTE_SCOPE` governs review-loop routing only - it does not shortcut entry into the pipeline. A fresh fixme-task entry always starts at the plan phase regardless of incoming `ROUTE_SCOPE`, because there is no existing plan to repair against. `IMPLEMENT_ONLY` takes effect during the code review loop (Step 8): blocking FIX items skip replanning and route directly back to `fixme-execute-plan` in repair mode. `PLAN_REQUIRED` items in that same loop trigger plan revision and count against `outerMaxCycles`.
 - Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.
 
 The planner and executor still validate the requested route. If a supposedly implementation-only PR fix actually requires plan, contract, persistence, migration, or acceptance-criteria changes, promote it to `PLAN_REQUIRED` before execution. If a current PR fix is found to be valid but disproportionate for this PR after deeper inspection, demote it to `FOLLOWUP_ONLY`, record the reason, and do not spend a revision cycle on it.
+
+When the dispatch input already contains a complete pre-planned recipe (TDD steps, exact file paths, exact code, exact commit message - typical for `fixme-pr-comments` PR fix dispatches), the planner runs in validate-and-persist mode rather than re-design mode. See `fixme-write-plan`'s "Pre-Planned Input" section for the contract.
 
 ### Creating the Manifest with TodoWrite
 

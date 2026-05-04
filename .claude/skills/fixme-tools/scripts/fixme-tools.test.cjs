@@ -2148,7 +2148,9 @@ test('fixme-task skill: consumes PR comment triage metadata to reduce unnecessar
   assert(skill.includes('FOLLOWUP_ONLY and INFO items are recorded in the run summary and never trigger planning, execution, or loop counters.'), 'follow-up and info should not consume loops');
   assert(skill.includes('Batch CURRENT_PR_FIX items by dependency cluster, not by comment source.'), 'fixme-task should batch by implementation dependency rather than reviewer source');
   assert(skill.includes('Split dispatch only when a high-complexity PLAN_REQUIRED fix touches an unrelated subsystem or blocks low-risk fixes.'), 'fixme-task should split only for meaningful risk isolation');
-  assert(skill.includes('Prefer repair mode for CURRENT_PR_FIX items with ROUTE_SCOPE: IMPLEMENT_ONLY and no PLAN_REQUIRED items.'), 'implementation-only PR fixes should avoid replanning');
+  assert(skill.includes('`ROUTE_SCOPE` governs review-loop routing only - it does not shortcut entry into the pipeline.'), 'fixme-task should clarify that ROUTE_SCOPE applies to review-loop routing, not entry-point shortcuts');
+  assert(skill.includes('A fresh fixme-task entry always starts at the plan phase regardless of incoming `ROUTE_SCOPE`'), 'fixme-task should always start at the plan phase on fresh entry');
+  assert(skill.includes('When the dispatch input already contains a complete pre-planned recipe'), 'fixme-task should describe pre-planned input handoff to the planner');
   assert(skill.includes('Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.'), 'review intensity should follow risk and complexity');
 });
 

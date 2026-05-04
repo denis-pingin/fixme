@@ -95,6 +95,34 @@ Key rules for rewrite mode:
 - **Quality improvements are always in scope**: more precise steps, complete file content, fixed delegation violations, better task ordering, missing verification steps, tighter Expected Outcomes.
 - **Architectural changes require user approval**: different design decisions, reversed locked decisions, different scope, different decomposition. These are surfaced as questions during the Input Audit, not made autonomously.
 
+## Pre-Planned Input
+
+When the dispatch input already contains a complete plan recipe - TDD steps with exact file paths, exact code blocks, and an exact commit message - treat it as authoritative input, not a starting point for re-design. This is typical for `fixme-pr-comments` PR fix dispatches, where the analyzer has already done the planning work.
+
+Your job in this mode is to **validate, format, and persist** - not to redesign.
+
+Validate:
+- Every referenced file path exists at the location claimed.
+- Code locations and line ranges match what the input asserts.
+- Test harness conventions, build/lint/test commands, and project tooling assumed by the input match the actual codebase.
+- No locked decision in `<fixme-dir>/decisions.md` contradicts the input's approach.
+- No internal contradiction (e.g. an asserted line range does not match the file's current contents).
+
+Format and persist:
+- Translate the input into the standard plan document structure.
+- Preserve TDD steps, file paths, code blocks, expected failure messages, and the commit message verbatim. Do not rephrase, restructure, or split steps differently.
+- Build the matching task code map from the files actually verified during validation.
+
+Do not:
+- Substitute a "simpler", "cleaner", or "more idiomatic" approach for the one specified.
+- Add scope (refactors, extra abstractions, "while we're here" cleanup) that the input did not request.
+- Reword the specified commit message.
+- Drop any TDD step, expected failure assertion, or verification command from the input.
+
+If validation reveals a real defect in the input - file path wrong, line range stale, test harness mismatch, locked-decision conflict, missing dependency, contradictory assertion - flag it via the Input Audit (Step 4: Identify Ambiguities) as a question with concrete evidence. Do not silently rewrite the input to fix the defect.
+
+If the input contains TDD scaffolding but is missing one of: exact file path, exact code block for the test, expected failure message, or the commit message - the input is incomplete pre-planned input, not a free-form task. Flag the missing piece via the Input Audit; do not invent the missing detail.
+
 ## Input Audit
 
 **This gate runs before ANY codebase exploration or plan writing. It is non-negotiable in ALL modes.**
