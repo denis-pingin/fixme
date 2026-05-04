@@ -24,6 +24,26 @@ Rebase the current branch onto its base branch. Safety, clarity, and verificatio
 - **Never commit a merge before verification passes.** When falling back from rebase to merge, the resolved-but-uncommitted state is an opportunity: run the full verification suite BEFORE `git commit`. This is the critical difference between merge and rebase - rebase auto-commits via `git rebase --continue`, but merge lets you verify first. Use that advantage.
 - **Never silently discard commits.** If rebase would drop, squash, or duplicate commits, surface this to the user before proceeding.
 
+## Discussion Mode at User-Pause Gates
+
+Several phases pause for explicit user input before proceeding: Phase 0 Step 6 shallow-clone choice, Phase 2.5 Findings Presentation (`--onto` confirmation), Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
+
+**A pause begins** the moment the skill emits the gate's user-facing block (Findings, conflict markers, regression report, etc.). **It ends** the moment the user provides a decision the skill can act on.
+
+During a pause the skill IS the user's interlocutor. The user may ask clarifying questions before answering the gate question. When that happens:
+
+- **Answer directly.** Use Read, Grep, Glob, and read-only `git` commands (`git log`, `git show`, `git diff`, `git blame`, `git rev-list`) to verify claims, surface evidence, and explain what a chosen option would do.
+- **Re-frame the gate** if the user reveals new context that makes the original framing wrong. Re-present the gate with the corrected framing rather than forcing the original question through.
+- **Do NOT just repeat the gate's "Acceptable responses" list when the user asked a clarifying question.** The acceptable-responses list is what closes the pause; clarifying questions keep the pause open. Treat them as separate concerns.
+
+What stays forbidden even during a pause:
+
+- Running destructive `git` operations (`reset --hard`, `clean -f`, force push, branch deletion, abort) without an explicit user decision
+- Proceeding with the rebase, conflict resolution, or push because the user's clarifying question "implies consent"
+- Auto-resolving the gate after a clarification because "the answer is obvious now"
+
+The pause closes only when the user provides one of the gate's acceptable responses (or an equivalent freeform answer the skill can map to one). Inline discussion does NOT count - keep the pause open.
+
 ## Process
 
 ### Phase 0: Pre-Flight Safety

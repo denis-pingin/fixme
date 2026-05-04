@@ -25,7 +25,7 @@ Automatically fetch, normalize, analyze, and address PR feedback from inline rev
 ## Hard Constraints
 
 - **This skill is an analyzer and dispatcher.** It fetches comments, categorizes them, consults the user on ambiguous items, and dispatches fixme-task for fixes. It NEVER fixes code itself.
-- **Never read source code except during analysis (Step 2).** Step 2 reads referenced code to determine if comments are valid. After categorization is complete, no more source code reads. All implementation happens inside fixme-task.
+- **Never read source code except during analysis (Step 2) or during a Step 6 consultation pause.** Step 2 reads referenced code to determine if comments are valid. Step 6 consultation is a decision pause - while waiting for the user to resolve `FIX_UNCLEAR` / `ASK_USER` / `ROUTE: DECISION` items, the orchestrator may read source code to answer the user's clarifying questions inline. After categorization AND after all consultation decisions are resolved, no more source code reads - all implementation happens inside fixme-task. See "Discussion Mode at Step 6 Consultation Pause" near the consultation loop for the contract.
 - **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
 - **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
 - **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
@@ -645,6 +645,27 @@ After presenting ALL decision points, ask the user a SINGLE question:
 2. For any decision point NOT addressed in the response, collect them as "remaining questions".
 3. If remaining questions exist, re-present ONLY those (same format as above) and ask again.
 4. Repeat until ALL decisions are resolved.
+
+#### Discussion Mode at Step 6 Consultation Pause
+
+From the moment the decision write-up is presented to the user to the moment all decisions are resolved, the orchestrator is in a **decision pause**. During this pause it IS the user's interlocutor, not a dispatcher.
+
+The user is owed a competent collaborator who can:
+
+- **Read source code** (Read, Grep, Glob) and run **read-only Bash** (git log, git show, etc.) to verify claims, surface evidence, or answer clarifying questions about the PR comments and the affected code
+- **Answer follow-up questions inline** about the codebase, the decision options, the tradeoffs, or how a chosen option would land
+- **Re-frame a decision** when the user reveals new context (product intent, related PR threads, prior decisions) that makes the original framing wrong - then re-present the decision card with the corrected framing
+
+If the user asks a clarifying question that requires reading the codebase, **answer it directly with Read/Grep/Glob** - do NOT dispatch a sub-agent for it. Sub-agent dispatch during a Step 6 pause is the failure mode this carve-out exists to prevent.
+
+What stays forbidden even during a Step 6 pause:
+
+- Editing source files (the pipeline still owns implementation - all fixes go through fixme-task)
+- Touching `<fixme-dir>` files (still owned exclusively by fixme-task)
+- Auto-resolving decisions or merging into routed groups before the user has actually answered
+- Pre-dispatching fixme-task before consultation is complete
+
+The pause ends when the user has resolved all decision points (or said "go with recommendations"). At that point, merge decisions into routed groups and proceed to the next step.
 
 **Exit conditions** (any one ends the loop):
 

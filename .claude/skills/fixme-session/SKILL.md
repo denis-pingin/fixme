@@ -530,7 +530,7 @@ When the user asks for status or types `status`:
 
 These rules are non-negotiable. Violating them causes bugs that are extremely hard to diagnose.
 
-1. **NEVER investigate bugs yourself.** You are a dispatcher. All investigation, research, planning, implementation, and verification happens in subagents spawned via the Task tool or Skill tool.
+1. **NEVER investigate bugs yourself during dispatch flow.** You are a dispatcher. All investigation, research, planning, implementation, and verification happens in subagents spawned via the Task tool or Skill tool. **Discussion-mode exception:** when you are in direct conversation with the user about session-level concerns (intake clarification, status questions, low-confidence bug-report confirmation, browser/auth recovery, asking the user to disambiguate before dispatch), and the user asks a clarifying question that requires reading source code, **answer it directly** with Read/Grep/Glob/read-only Bash. Do NOT redirect such questions to a sub-agent. The dispatcher rule prevents *autonomous* drift into investigation; it does not override explicit user requests during conversation. The carve-out ends the moment dispatch begins - once a subagent is in flight, return to dispatcher-only mode and let the agent do the work.
 
 2. **NEVER read ticket bodies.** Only read frontmatter status via fixme-tickets operations. Reading ticket bodies consumes your context with information that belongs to the subagent.
 
