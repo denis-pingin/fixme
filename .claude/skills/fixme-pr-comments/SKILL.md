@@ -322,7 +322,7 @@ For each unresolved `review_item`:
    - `REJECT_FALSE_POSITIVE`: Comment is incorrect or doesn't apply - the code is correct
    - `REJECT_ALREADY_FIXED`: Issue was already addressed
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
-   - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal
+   - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal. **Note**: file-level overlap with another PR (existing, planned, or stack-mate) is not on its own a defer reason - it must be the *specific code path* the comment flags that another PR replaces or makes obsolete. "Same file" is not "same problem."
 
 4. **Assign triage metadata** to every `review_item` and deduplicated issue group:
    - `VERDICT: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_ALREADY_FIXED | REJECT_WONT_FIX | FOLLOWUP_ONLY`
@@ -365,6 +365,8 @@ Keep the dimensions independent: severity decides importance, complexity decides
 - Use `IMPLEMENT_ONLY` when the current plan remains correct and the fix is local implementation repair.
 - Use `PLAN_REQUIRED` when the fix changes the plan, architecture, public contract, persistence, migration, or acceptance criteria.
 - Use `NONE` for `FOLLOWUP`, `NO_ACTION`, and unresolved `DECISION` items.
+
+**Anti-pattern self-check for `FOLLOWUP_ONLY`.** Before finalizing this verdict, scan your draft justification for these tokens: `touches`, `touches heavily`, `area is being reworked`, `same file`, `pr-N touches`, `stack-mate`. If they appear without naming the *specific code path* the other work supersedes, STOP. File overlap is not a defer reason. Either name the exact line range/symbol another PR replaces, or drop the stack reasoning and judge the finding on its own merits (severity, complexity, scope fit).
 
 **Distinguishing FIX vs FIX_UNCLEAR**: A fix is `FIX` when there is exactly one
 reasonable way to address it (e.g., "add missing null check", "fix typo in variable name",
@@ -610,6 +612,19 @@ MAY group them by verdict in the output. For example: list all 41 that are FIX w
 individual one-line descriptions, then all 18 that are REJECT_FALSE_POSITIVE with their
 individual reasons. But the analysis and verdict must be per-comment, and the grouping must
 show every item - not "and 15 more similar".
+
+**12. Defer reasons must name what makes the fix unnecessary or disproportionate, not just where it lives.**
+`FOLLOWUP_ONLY` justifications must describe the *reason* deferral is correct - low blast
+radius, scope creep, supersession by a specific code path, etc. They must not lean on
+file-level overlap with other PRs as a standalone reason.
+
+- BAD: "File is touched heavily by pr-4 and pr-5 - defer."
+- BAD: "This module is being reworked downstream."
+- GOOD: "Minor perf, low blast radius, no user-visible impact - defer to a follow-up PR."
+- GOOD: "Cleanup of the same hook is in flight in PR #4321 (lines 115-128 are being
+  rewritten); this exact line is removed there."
+- GOOD: "Out of scope for this PR's goal (renaming X). Worth a separate PR but no concrete
+  owner yet."
 
 ### 2.5. User Consultation for Ambiguous Fixes
 
