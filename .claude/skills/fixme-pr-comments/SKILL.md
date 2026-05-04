@@ -49,7 +49,11 @@ Before fetching any comments, expand the entire workflow into a flat, numbered m
 
 ### Building the Manifest
 
-Always build the full 15-step manifest, regardless of which flags are set. Conditional steps still get manifest entries; the routing entries decide whether their bodies execute.
+Build the manifest based on the parsed flags. Step 8 (Pre-Execution Confirmation) is the ONLY step whose presence in the manifest is controlled by a flag: it is included if and only if `--pause` is set. When `--pause` is OFF, Step 8 is omitted entirely - it does not appear in the TodoWrite list, and there is no "skip" entry for it.
+
+This is intentional. Keeping a Step 8 todo around when `--pause` is OFF creates a recency anchor that biases the model toward inserting a "Proceed? (yes / no / modify)" prompt between Step 4 (analysis presentation) and Step 9 (dispatch). The presence-or-absence of the Step 8 todo entry IS the signal: if it is in the list, you pause; if it is not, you do not.
+
+All other steps are unconditional. Steps 11 and 13 are routing entries that decide whether 12 and 14 execute; Step 8 is different because it represents an in-line user prompt, not a backend action.
 
 ### The Manifest
 
@@ -61,7 +65,7 @@ Step 4   [analyze/present]  Present `## PR Comment Analysis` to user
 Step 5   [analyze/route]    Route: any FIX_UNCLEAR, ASK_USER, or ROUTE: DECISION -> 6, otherwise -> 7
 Step 6   [consult]          Run consultation loop until all decisions are resolved
 Step 7   [consult/route]    Route: zero CURRENT_PR_FIX groups remain -> 14, --pause -> 8, otherwise -> 9
-Step 8   [confirm]          Present `## Ready to Execute` and wait for user response
+Step 8   [confirm]          Present `## Ready to Execute` and wait for user response  (CONDITIONAL: included only if --pause is set; OMIT entirely otherwise)
 Step 9   [dispatch]         Dispatch Skill("fixme-task") with routed CURRENT_PR_FIX groups
 Step 10  [verify]           Run build/lint/test using project-documented commands
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
@@ -71,10 +75,14 @@ Step 14  [resolve]          Build reply execution table, preflight reply bodies,
 Step 15  [done]             Run summary
 ```
 
+Step numbers are stable anchors to the workflow definition, not sequence indices. When Step 8 is omitted, Step 9 is still numbered 9; the todo list simply has no entry between Step 7 and Step 9.
+
 ### Routing Rules
 
 - **Step 5 (analyze/route)**: If at least one item was classified `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION`, advance to Step 6. Otherwise jump directly to Step 7.
-- **Step 7 (consult/route)**: If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely. Otherwise: if `--pause` is set advance to Step 8; if not set, jump to Step 9.
+- **Step 7 (consult/route)**: If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely.
+  - If `--pause` IS set: advance to Step 8 and wait for user confirmation in a separate turn.
+  - If `--pause` is NOT set: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `Skill("fixme-task")` tool call for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
 - **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
 - **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
 
@@ -84,9 +92,23 @@ Step 15  [done]             Run summary
 
 If you find yourself with CURRENT_PR_FIX groups resolved and Step 4 is still `pending` or `in_progress`, you have skipped the gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed.
 
+### Closing-Form Constraint (when `--pause` is OFF)
+
+When `--pause` is NOT set, the turn that emits the Step 4 presentation has a strict closing form:
+
+- The last user-visible line of the report is the final entry of the **Accounting Ledger** section.
+- **No question, prompt, or call-to-action** follows the ledger. The following phrases are explicitly forbidden as closings: `Proceed?`, `Should I dispatch?`, `Continue with B1 and B2?`, `(yes / no / modify)`, `Ready to dispatch?`, `Want me to proceed?`, or any other interrogative or confirmation-seeking sentence.
+- The same turn must contain the `Skill("fixme-task")` tool invocation for Step 9, immediately after the report. The tool call is the closing - not a prompt to the user.
+
+When `--pause` IS set, the turn that emits the Step 4 presentation may end with a neutral pointer to Step 8 (e.g. `See ## Ready to Execute below.`) followed by the Step 8 prompt in the same turn. The Step 8 prompt is the **only** place a user-facing confirmation question is allowed in this skill.
+
+**Anti-pattern self-check.** Before submitting the turn that contains the Step 4 presentation, scan your draft output for any of these tokens: `?`, `(yes`, `(modify`, `Proceed`, `dispatch?`, `Continue`. If any appear in your final paragraph and `--pause` is OFF, STOP. You are about to violate this gate. The cause is almost always recency-driven pattern matching from a prior session that did use `--pause`. Re-read the parsed flags. Confirm `--pause` is OFF. Replace the closing question with the Step 9 dispatch tool call.
+
 ### Creating the Manifest with TodoWrite
 
-After deriving the manifest, create it via TodoWrite. Step 1 starts `in_progress`; all other steps start `pending`:
+After deriving the manifest, create it via TodoWrite. Step 1 starts `in_progress`; all other steps start `pending`. The TodoWrite list **depends on whether `--pause` was set in the invocation**:
+
+**When `--pause` IS set (15-step manifest, Step 8 included):**
 
 ```
 TodoWrite([
@@ -108,6 +130,29 @@ TodoWrite([
 ])
 ```
 
+**When `--pause` is NOT set (14-step manifest, Step 8 OMITTED entirely):**
+
+```
+TodoWrite([
+  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
+  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
+  { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
+  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "pending", activeForm: "Presenting analysis and dispatching" },
+  { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
+  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
+  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "pending", activeForm: "Routing to dispatch" },
+  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "pending", activeForm: "Dispatching fixme-task" },
+  { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
+  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
+  { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
+  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
+  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
+  { content: "Step 15 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
+])
+```
+
+Note that Step 9 keeps its number even when Step 8 is absent - step numbers are stable workflow anchors, not list indices. The Step 4 and Step 9 entries in the no-`--pause` variant are explicitly worded to remind you they execute in the **same turn**, eliminating the implicit "I should pause here" pattern.
+
 ### Following the Manifest
 
 Execute steps in order. After each step (whether a Bash command, an analysis, a presentation, a consultation, or a dispatch):
@@ -117,7 +162,9 @@ Execute steps in order. After each step (whether a Bash command, an analysis, a 
 3. Set the next step (per routing rules) to `in_progress`
 4. Execute the next step
 
-**Never skip steps. Never combine steps. Never "optimize" the sequence. The manifest is the law.**
+**Same-turn execution rule (when `--pause` is OFF):** Step 4 (analysis presentation) and Step 9 (dispatch) are executed in a single turn - the analysis report is emitted, then the `Skill("fixme-task")` tool call follows in the same turn. Do not return to the user between Step 4 and Step 9 in this mode. The user invoked the skill without `--pause` precisely so they would not have to confirm; honor that contract.
+
+**Never skip steps. Never combine steps (except the explicit Step 4 + Step 9 same-turn execution above when `--pause` is OFF). Never "optimize" the sequence. The manifest is the law.**
 
 **Never treat any step as workflow completion unless it is Step 15 (Run summary).** If uncompleted steps remain in the manifest, the workflow is not done. If you feel like outputting a completion message and there are pending steps, STOP - you are about to skip remaining steps.
 
