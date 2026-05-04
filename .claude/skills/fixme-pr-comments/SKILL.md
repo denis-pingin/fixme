@@ -689,13 +689,15 @@ Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQU
 
 **BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in TodoWrite before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
 
-#### Invoke fixme-task (inline pipeline)
+#### Invoke fixme-task (inline pipeline, nested mode)
 
 Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) within platform depth limits. The Skill tool runs fixme-task in the current session context (depth 0), allowing its Agent dispatches to land at depth 1.
 
+**ALWAYS pass `--nested` as the first argument.** This tells fixme-task that this skill owns the surrounding todo list (Steps 1-7 already completed, Steps 10-15 still pending) and that fixme-task must expand its own steps inline (`Step 9.1` ... `Step 9.9`) rather than replacing the list. Without `--nested`, fixme-task replaces the parent's todo list with its own 9-step manifest, destroying the recency anchor for Steps 10-15 (verify, commit, resolve) - the model will then frequently treat fixme-task's "Run Summary" step as the end of the workflow and stop instead of continuing back to verification, commit, and thread resolution. The `--nested` flag prevents this by keeping the parent's pending items visible throughout fixme-task's execution.
+
     Skill(
       skill="fixme-task",
-      args="Fix these PR comment issues. This is a PR comment fix task.
+      args="--nested Fix these PR comment issues. This is a PR comment fix task.
 
       Fix items:
       - [full list of CURRENT_PR_FIX groups with file paths, line numbers, comment text, and source IDs]
@@ -707,7 +709,7 @@ Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-wr
       Project root: [path]"
     )
 
-fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally.
+fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In nested mode, its substeps appear as `Step 9.1` ... `Step 9.9` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
 
 **NOTE**: fixme-task runs inline in this session's context, not as an isolated agent. This is intentional - the Agent tool cannot be used from within an agent (platform constraint). The pipeline's sub-agents (fixme-write-plan, fixme-execute-plan, etc.) still get isolated context windows when dispatched by fixme-task via the Agent tool.
 

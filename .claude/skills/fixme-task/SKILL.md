@@ -47,18 +47,19 @@ When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<pr
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
 2. Extract `--pipeline <name>` if present. Remove it from remaining args.
-3. Extract intent flags if present. Supported flags:
+3. Extract `--nested` if present (boolean flag). Remove it from remaining args. When set, this skill is being invoked inline by a parent skill (typically `fixme-pr-comments`) that owns its own todo list. The dispatch manifest is built in nested mode - see "Creating the Manifest with TodoWrite" below.
+4. Extract intent flags if present. Supported flags:
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
    - `--technical-spec` -> pipeline `technical-spec`
    - `--plan` -> pipeline `plan`
    - `--execute` -> pipeline `execute`
    - `--idea-to-production` -> pipeline `idea-to-production`
-4. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
-5. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
-6. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
-7. The remaining args are the task description.
-8. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
+5. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
+6. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
+7. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
+8. The remaining args are the task description.
+9. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
 
 ### Task Resolution
 
@@ -507,9 +508,14 @@ When the dispatch input already contains a complete pre-planned recipe (TDD step
 
 ### Creating the Manifest with TodoWrite
 
-After building the manifest, create it using TodoWrite. One todo per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry:
+After building the manifest, create it using TodoWrite. One todo per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry.
 
-**Fresh start (no prior state):**
+The manifest is created in one of two modes depending on the `--nested` flag parsed in Argument Parsing:
+
+- **Standalone mode** (default): replace the todo list entirely with the standard manifest. Use this for `/fixme-task` invocations and for dispatch from `fixme-session` or any other parent that does not own a wrapping todo list.
+- **Nested mode** (`--nested` is set): preserve the parent's todo list and replace ONLY the parent's `in_progress` dispatch placeholder for this skill with the expanded substeps. Used by `fixme-pr-comments` and any other parent that wraps `fixme-task` with surrounding workflow steps.
+
+**Fresh start (standalone, no prior state):**
 ```
 TodoWrite([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
@@ -524,7 +530,7 @@ TodoWrite([
 ])
 ```
 
-**Mid-pipeline entry (plan exists, entering at plan review):**
+**Mid-pipeline entry (standalone, plan exists, entering at plan review):**
 ```
 TodoWrite([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "completed", activeForm: "Dispatching fixme-write-plan" },
@@ -532,6 +538,72 @@ TodoWrite([
   ...remaining steps as pending...
 ])
 ```
+
+**Nested mode (`--nested` set):**
+
+When invoked nested, the parent skill (e.g. `fixme-pr-comments`) has already created a todo list with a single `in_progress` placeholder dispatching this skill - typically labeled `Step N [dispatch] Dispatch Skill(fixme-task) ...` or similar. The most recent `TodoWrite` tool call in conversation history is the source of truth for the parent's list.
+
+Construction rules:
+
+1. Locate the parent's `in_progress` placeholder by scanning the latest todo state in conversation history. The placeholder is the single `in_progress` item whose content references dispatching `fixme-task` (text such as `Dispatch Skill(fixme-task)`, `Dispatch fixme-task`, or `dispatch fixme-task`).
+2. Note the parent's step number on that placeholder (e.g. parent's `Step 9`). This becomes the prefix for own substeps - parent's `Step 9` -> own steps `Step 9.1` through `Step 9.9`. If no parent step number is detectable, use `9.` as the prefix (the conventional position).
+3. Build own substeps using the same content/activeForm strings as the standalone manifest, but with each step content prefixed by the parent step number. Example: `Step 1 [plan] Dispatch fixme-write-plan` becomes `Step 9.1 [plan] Dispatch fixme-write-plan`.
+4. The first own substep is `in_progress`. All other own substeps are `pending` (or `completed` for mid-pipeline entry, same as standalone mode).
+5. Issue ONE `TodoWrite` call that emits the full merged list: every parent item before the placeholder (status unchanged) + own substeps (replacing the placeholder) + every parent item after the placeholder (status unchanged).
+6. Every subsequent `TodoWrite` call (for status updates as the pipeline progresses) MUST also include the full merged list. Parent items before and after own substeps must be carried through every call with their statuses preserved exactly as they were in the most recent state. Never drop parent items.
+7. When the final own substep (`Step N.9 [done] Run Summary`) is marked `completed`, the parent's pending items immediately following it (e.g. `Step 10 [verify]`, `Step 11 [commit/route]`, etc.) become the next-action recency anchor. The parent skill takes over from there. This skill does NOT mark any parent items completed - that is the parent's responsibility.
+
+**Nested mode example** (parent is `fixme-pr-comments` at Step 9, full default pipeline):
+
+Parent list before nested dispatch:
+```
+[
+  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "completed", ... },
+  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "completed", ... },
+  { content: "Step 3 [analyze] Analyze every item individually", status: "completed", ... },
+  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "completed", ... },
+  { content: "Step 5 [analyze/route] Route on consultation need", status: "completed", ... },
+  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "completed", ... },
+  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "completed", ... },
+  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "in_progress", ... },
+  { content: "Step 10 [verify] Run build/lint/test", status: "pending", ... },
+  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", ... },
+  { content: "Step 12 [commit] Commit and push", status: "pending", ... },
+  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", ... },
+  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", ... },
+  { content: "Step 15 [done] Run summary", status: "pending", ... }
+]
+```
+
+First merged TodoWrite call from nested fixme-task:
+```
+TodoWrite([
+  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "completed", ... },
+  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "completed", ... },
+  { content: "Step 3 [analyze] Analyze every item individually", status: "completed", ... },
+  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "completed", ... },
+  { content: "Step 5 [analyze/route] Route on consultation need", status: "completed", ... },
+  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "completed", ... },
+  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "completed", ... },
+  { content: "Step 9.1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
+  { content: "Step 9.2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 9.3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 9.4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 9.5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 9.6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 9.7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 9.8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
+  { content: "Step 9.9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" },
+  { content: "Step 10 [verify] Run build/lint/test", status: "pending", ... },
+  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", ... },
+  { content: "Step 12 [commit] Commit and push", status: "pending", ... },
+  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", ... },
+  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", ... },
+  { content: "Step 15 [done] Run summary", status: "pending", ... }
+])
+```
+
+The parent's `Step 9 [dispatch]` placeholder is gone - it has been replaced by the nine `Step 9.1` ... `Step 9.9` substeps. Every other parent item is carried through unchanged. When `Step 9.9` is marked `completed`, the model sees `Step 10 [verify]` as the next pending item and the parent skill resumes naturally.
 
 ### Following the Manifest
 
