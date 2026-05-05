@@ -316,13 +316,23 @@ For each unresolved `review_item`:
    - `ROUTE: CURRENT_PR_FIX | DECISION | FOLLOWUP | NO_ACTION`
    - `ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | NONE`
 
-Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance.
+Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance. Severity itself is multi-dimensional - weight user impact, frequency, and reversibility together; do not let one topic match anchor the verdict.
+
+**Severity is multi-axis, not topic-match.** Before assigning a bucket, answer all three forcing questions:
+
+1. **User impact** - does an end user observe a wrong outcome, or is this internal-only (logs, metrics, dev ergonomics)?
+2. **Frequency / trigger conditions** - does this fire on every request, only on a specific code path, or only during an already-degraded state (outage, rare race, deprecated flow)?
+3. **Reversibility** - if shipped wrong, is the fix a one-line follow-up, or does it require migration, data repair, or a public-API change?
+
+An issue that is internal-only, fires only during an existing outage, and is trivially reversible cannot be `MAJOR` even if its topic matches "reliability" or "maintainability." A topic match is necessary for a bucket but never sufficient.
 
 **Severity definitions**:
 - `BLOCKER`: Correctness, data loss, security, privacy, crash, migration, or public API risk that can break the PR goal or production behavior.
-- `MAJOR`: Real behavioral, compatibility, reliability, test, or maintainability issue that should be fixed before this PR is accepted.
+- `MAJOR`: Real behavioral, compatibility, reliability, test, or maintainability issue that should be fixed before this PR is accepted. **A topic match alone is insufficient**: the issue must affect a user-observable outcome, fire on a non-rare path, OR be costly to reverse later. If none of those hold, downgrade to `MINOR` or `INFO`.
 - `MINOR`: Real issue with limited blast radius, mostly local cleanup, narrow readability, small test hardening, or low-risk consistency.
 - `INFO`: Educational note, optional observation, or future improvement that should not block or drive a fix loop.
+
+**Calibration example**: A duplicate warning log during a rare third-party outage is `INFO`, not `MAJOR`. It has zero user impact, fires only inside an already-active outage, and is a one-line fix later. The "reliability" topic match does not promote it.
 
 **Complexity definitions**:
 - `LOW`: One local file or mechanical change, no design choice, no cross-module contract change.
