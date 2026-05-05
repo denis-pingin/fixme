@@ -391,6 +391,13 @@ and line numbers**, e.g. `[config.ts:42-58](/absolute/path/to/config.ts#L42-L58)
 to every file mentioned anywhere in the report - problem descriptions, fix descriptions, file
 lists, decision context, options, everything. No plain-text file paths.
 
+**Every summary surface in this skill MUST start with a clickable PR link**, in the form
+`**PR**: [{owner}/{repo}#{pr_number}]({pr_html_url})`. This is non-negotiable and applies to
+the Step 4 `## PR Comment Analysis` report, the Step 8 `## Ready to Execute` confirmation, and
+the Step 15 `Run summary` output. The link is the first non-heading line so the user can jump
+to the PR from any summary surface without scrolling. Use the canonical GitHub PR URL
+(`https://github.com/{owner}/{repo}/pull/{pr_number}`) - never a plain-text PR reference.
+
 **Structure**: Start with the outcome, then expand only the actionable buckets in priority order, then close with the ledger. Section order is fixed:
 
 1. PR Comment Analysis (one-sentence outcome + next action)
@@ -405,6 +412,8 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 
 ```
 ## PR Comment Analysis
+
+**PR**: [{owner}/{repo}#{pr_number}](https://github.com/{owner}/{repo}/pull/{pr_number})
 
 {One sentence with the outcome: "N review items from 3 fetched surfaces were grouped into G issues: X current PR fixes, Y decisions, Z follow-ups, A already fixed, B no-action."}
 
@@ -682,6 +691,8 @@ and wait for explicit user confirmation before proceeding.
 
 ```
 ## Ready to Execute ({N} CURRENT_PR_FIX groups via fixme-task pipeline)
+
+**PR**: [{owner}/{repo}#{pr_number}](https://github.com/{owner}/{repo}/pull/{pr_number})
 
 {For each current PR fix group, one line:}
 {N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] - {the planned fix action} -> [{files affected}]
