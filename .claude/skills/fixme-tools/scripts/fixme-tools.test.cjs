@@ -2057,11 +2057,27 @@ test('fixme-rebase skill: clean verified rebase pushes by default unless --no-pu
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('argument-hint: "[base-branch] [--no-push]"'), 'argument hint should document --no-push');
+  assert(skill.includes('argument-hint: "[base-branch] [--no-push] [--confirm]"'), 'argument hint should document --no-push and --confirm');
   assert(skill.includes('Push is default when `--no-push` is absent and verification passed.'), 'auto-push default should be explicit');
   assert(skill.includes('If `--no-push` is present: do not push automatically. Present the exact push command and wait for confirmation.'), '--no-push should restore confirmation flow');
   assert(skill.includes('git push --force-with-lease origin <branch>'), 'force-with-lease command should remain documented');
   assert(!skill.includes('**Wait for explicit confirmation. Do not push.**'), 'old default confirmation gate should be removed');
+});
+
+test('fixme-rebase skill: --confirm is the only pre-execution confirmation gate', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Treat `--confirm` as a workflow flag, not a base branch.'), '--confirm should be parsed as a workflow flag');
+  assert(skill.includes('Set `CONFIRM_BEFORE_EXECUTION=true` when `--confirm` is present.'), '--confirm should enable pre-execution confirmation');
+  assert(skill.includes('Set `CONFIRM_BEFORE_EXECUTION=false` when `--confirm` is absent.'), 'default should not require pre-execution confirmation');
+  assert(skill.includes('Remove `--confirm` from the remaining arguments before resolving the optional base branch.'), '--confirm should not be treated as a branch');
+  assert(skill.includes('By default, Phase 2.5 is informational, not a confirmation gate.'), 'onto detection should not pause by default');
+  assert(skill.includes('If `--confirm` is absent and detection result is DETECTED, set `REBASE_MODE` = "onto" and proceed to Phase 3 with the detected `FORK_POINT`.'), 'detected onto rebase should proceed by default');
+  assert(skill.includes('When `--confirm` is present, this summary becomes the single pre-execution confirmation gate.'), '--confirm should add one pre-execution gate after analysis');
+  assert(skill.includes('When `--confirm` is absent, proceed directly to Phase 4 after presenting the summary.'), 'default path should proceed after analysis summary');
+  assert(!skill.includes('mandatory, non-negotiable user confirmation gate for any `--onto` recommendation'), 'old unconditional onto confirmation gate should be removed');
+  assert(!skill.includes('The user always confirms before execution.'), 'old unconditional confirmation statement should be removed');
 });
 
 test('fixme-rebase skill: same-or-worse merge fallback continues rebase without route prompt', () => {

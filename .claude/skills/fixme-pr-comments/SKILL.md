@@ -398,7 +398,7 @@ the Step 15 `Run summary` output. The link is the first non-heading line so the 
 to the PR from any summary surface without scrolling. Use the canonical GitHub PR URL
 (`https://github.com/{owner}/{repo}/pull/{pr_number}`) - never a plain-text PR reference.
 
-**Structure**: Start with the outcome, then expand only the actionable buckets in priority order, then close with the ledger. Section order is fixed:
+**Structure**: Start with the outcome, not the ledger. Expand only the actionable buckets in priority order, then close with the ledger. Do not start the report with a markdown table. Section order is fixed:
 
 1. PR Comment Analysis (one-sentence outcome + next action)
 2. Decisions Needed
@@ -420,6 +420,10 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 **Recommended next action**: {one sentence naming exactly what should happen next, such as "Proceed with B1 and B2 only."}
 
 **Why**: {one sentence explaining the main risk/cost tradeoff behind the recommendation.}
+
+### Highest Priority First
+
+Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups. Lower-risk already-fixed and not-actionable groups stay in the Accounting Ledger unless the user asks for a specific ID.
 
 ### Decisions Needed
 
