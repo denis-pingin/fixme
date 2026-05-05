@@ -310,6 +310,13 @@ For each unresolved `review_item`:
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
    - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal. **Note**: file-level overlap with another PR (existing, planned, or stack-mate) is not on its own a defer reason - it must be the *specific code path* the comment flags that another PR replaces or makes obsolete. "Same file" is not "same problem."
 
+Future-work classification rule:
+
+- If a valid concern still needs action in another PR, phase, ticket, TODO, or cleanup commit, classify it as `FOLLOWUP_ONLY`, not `REJECT_WONT_FIX`.
+- A later branch can justify `REJECT_ALREADY_FIXED` or `REJECT_WONT_FIX` only when the exact flagged code path is already removed or replaced and no remaining action is required before the stacked work ships.
+- Phrases like "natural home", "will be handled by", "track in a TODO", "cleanup pending", or "before merging" describe follow-up work unless the exact action is already complete.
+- Do not write `Follow-Up Only: None` while also saying an item will be handled by another PR, phase, ticket, TODO, or cleanup commit.
+
 4. **Assign triage metadata** to every `review_item` and deduplicated issue group:
    - `VERDICT: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_ALREADY_FIXED | REJECT_WONT_FIX | FOLLOWUP_ONLY`
    - `SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
