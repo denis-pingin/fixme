@@ -99,10 +99,12 @@ Every decision card starts with the same fast-orientation header:
 - **Context**: {where we are in the product, workflow, or system}
 - **Problem**: {the concrete issue or ambiguity}
 - **Impact**: {what breaks, degrades, or remains blocked if undecided}
-- **Why now**: {what makes this PR/phase the right place to act, not the workflow's own pause. "The workflow is waiting on this decision" or "the reviewer left a comment" are circular and not valid - the workflow paused BECAUSE this was routed for input. Valid reasons: reviewer-blocking pressure on this PR, cohesion with files already touched in this PR's diff, or concrete operational/correctness pain that justifies acting now over deferring. If none apply, the item probably belongs in follow-up, not in a decision card.}
+- **Why now**: {what this decision unlocks or prevents}
 ```
 
 Then add the body that fits the decision type.
+
+`Why now` must explain what makes this PR/phase the right place to act, not the workflow's own pause. "The workflow is waiting on this decision" or "the reviewer left a comment" are circular and not valid - the workflow paused BECAUSE this was routed for input. Valid reasons: reviewer-blocking pressure on this PR, cohesion with files already touched in this PR's diff, or concrete operational/correctness pain that justifies acting now over deferring. If none apply, the item probably belongs in follow-up, not in a decision card.
 
 ### ASK_USER Body
 

@@ -1,7 +1,7 @@
 ---
 name: fixme-rebase
-description: Safely rebase current branch onto its base branch with conflict resolution, verification, data protection, and default push after clean verification. Detects base branch from PR target or merge-base, analyzes divergence, backs up when needed, resolves conflicts with intent awareness, runs full verification, and pushes unless --no-push is set.
-argument-hint: "[base-branch] [--no-push]"
+description: Safely rebase current branch onto its base branch with conflict resolution, verification, data protection, and default push after clean verification. Detects base branch from PR target or merge-base, analyzes divergence, backs up when needed, resolves conflicts with intent awareness, runs full verification, and pushes unless --no-push is set. Use --confirm to pause after analysis before executing.
+argument-hint: "[base-branch] [--no-push] [--confirm]"
 ---
 
 ## Fixme Directory
@@ -26,7 +26,7 @@ Rebase the current branch onto its base branch. Safety, clarity, and verificatio
 
 ## Discussion Mode at User-Pause Gates
 
-Several phases pause for explicit user input before proceeding: Phase 0 Step 6 shallow-clone choice, Phase 2.5 Findings Presentation (`--onto` confirmation), Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
+Several phases pause for explicit user input before proceeding: Phase 0 Step 6 shallow-clone choice, Phase 3 pre-execution confirmation when `--confirm` is present, Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
 
 **A pause begins** the moment the skill emits the gate's user-facing block (Findings, conflict markers, regression report, etc.). **It ends** the moment the user provides a decision the skill can act on.
 
@@ -54,7 +54,11 @@ Before anything else, capture the full current state. This is the recovery basel
    - Treat `--no-push` as a workflow flag, not a base branch.
    - Set `AUTO_PUSH=false` when `--no-push` is present.
    - Set `AUTO_PUSH=true` when `--no-push` is absent.
+   - Treat `--confirm` as a workflow flag, not a base branch.
+   - Set `CONFIRM_BEFORE_EXECUTION=true` when `--confirm` is present.
+   - Set `CONFIRM_BEFORE_EXECUTION=false` when `--confirm` is absent.
    - Remove `--no-push` from the remaining arguments before resolving the optional base branch.
+   - Remove `--confirm` from the remaining arguments before resolving the optional base branch.
 
 1. **Check for in-progress rebase or merge:**
    ```bash
@@ -321,7 +325,7 @@ Detect scenarios where the current branch carries commits already represented on
 1. **Squash merge via PR** - a parent feature branch was merged to the target via GitHub's squash-merge. The current branch still holds the parent's individual commits; a normal rebase tries to replay all of them and hits massive conflicts because the target already contains those changes in squashed form.
 2. **Upstream rewrite of the base branch** - the base branch was rewritten in place on its upstream (force-push after `git rebase`, `git commit --amend`, interactive rebase, etc.). After Phase 1 Step 5a resets local `<BASE_BRANCH>` to the rewritten upstream, commits on our side of the merge-base may be identical-content copies of pre-rewrite base commits that now live on the new base under different SHAs. A normal rebase replays them and produces either empty commits or conflicts.
 
-This phase runs a cascade of increasingly expensive detection steps, short-circuiting when a definitive answer is found. If an already-represented ancestor is detected, the rebase switches to `--onto` mode. The user always confirms before execution.
+This phase runs a cascade of increasingly expensive detection steps, short-circuiting when a definitive answer is found. If an already-represented ancestor is detected, the rebase switches to `--onto` mode. By default, Phase 2.5 is informational, not a confirmation gate. The user only confirms before execution when `--confirm` is present; that confirmation happens after all analysis in Phase 3.
 
 **Prohibition on prose rationalization:** Once a detection step begins executing (particularly the Step 5 content walk), it MUST complete. Do not bail out of a running step based on narrative interpretation of the intermediate data ("this looks like organic refactors", "too much file overlap", "probably not a squash"). The algorithmic signal (inflection analysis, message-match partition, cherry-mark count) is authoritative. Prose reasoning about the data is not a substitute for running the algorithm to completion.
 
@@ -346,7 +350,7 @@ git merge-base --is-ancestor $MERGE_BASE $candidate_mb 2>/dev/null
 
 If `candidate_mb` is a descendant of `MERGE_BASE`, it means the current branch and `<candidate>` diverged at a point AFTER the target merge-base. This candidate is likely the parent branch (or a sibling that shares the parent).
 
-**Note:** Do NOT verify whether the candidate's tip is an ancestor of BASE_BRANCH. After a squash merge, the original branch's commits are unreachable from the target (the squash commit is a new single-parent commit). An `--is-ancestor` check would reject all valid squash-merge candidates - the exact scenario this phase exists to detect. The merge-base proximity check above is sufficient signal for a candidate to proceed to user confirmation. Step 2 (GitHub PR metadata) provides independent verification.
+**Note:** Do NOT verify whether the candidate's tip is an ancestor of BASE_BRANCH. After a squash merge, the original branch's commits are unreachable from the target (the squash commit is a new single-parent commit). An `--is-ancestor` check would reject all valid squash-merge candidates - the exact scenario this phase exists to detect. The merge-base proximity check above is sufficient signal for a candidate to proceed to Findings Presentation. Step 2 (GitHub PR metadata) provides independent verification.
 
 **If a match is found** (a local branch whose merge-base with HEAD is a strict descendant of MERGE_BASE):
 - Record `FORK_POINT` = `candidate_mb` (where current branch diverged from the parent)
@@ -628,9 +632,9 @@ Apply 5-commit window smoothing to the diff-size sequence before computing the t
 
 #### Findings Presentation
 
-**This is a mandatory, non-negotiable user confirmation gate for any `--onto` recommendation, regardless of detection confidence.**
+By default, Phase 2.5 is informational, not a confirmation gate.
 
-Before running `git rebase --onto`, the skill MUST present the Findings block and receive an explicit user response. HIGH confidence is not a license to skip confirmation. Proceeding without user confirmation is a skill violation regardless of detection quality. This gate exists to catch detection errors that no algorithm can prevent.
+Before choosing rebase mode, the skill MUST present the Findings block so the reasoning is visible. HIGH confidence is a license to proceed with the detected mode only when `--confirm` is absent; when `--confirm` is present, Phase 3 pauses after the full analysis summary and before execution.
 
 Present ALL findings from the detection steps, regardless of which step produced the definitive answer:
 
@@ -674,15 +678,12 @@ This will:
 3. Skip the M inherited commits (already on target)
 ```
 
-**Ask the user:** "Proceed with `--onto` rebase using the detected fork point? You can also specify a different fork point if the detection is off."
+**Default routing after findings:**
+- If `--confirm` is absent and detection result is DETECTED, set `REBASE_MODE` = "onto" and proceed to Phase 3 with the detected `FORK_POINT`.
+- If `--confirm` is absent and detection result is UNCERTAIN or NOT DETECTED, set `REBASE_MODE` = "normal" and proceed to Phase 3.
+- If `--confirm` is present, record the recommended `REBASE_MODE` and proceed to Phase 3 without asking here. Phase 3 is the single pre-execution confirmation gate.
 
-**Acceptable responses:**
-- Explicit approval: set `REBASE_MODE` = "onto", keep `FORK_POINT`, proceed to Phase 3.
-- User-supplied override: use the user's fork point, set `REBASE_MODE` = "onto", proceed to Phase 3.
-- Rejection ("no", "use normal"): set `REBASE_MODE` = "normal", proceed to Phase 3.
-- Abort ("stop", "cancel"): stop the skill entirely.
-
-**If detection result is NOT DETECTED:** Still present the (empty) findings and warnings as an informational block, then proceed to Phase 3 with `REBASE_MODE` = "normal". User confirmation is not required when there is no `--onto` recommendation to confirm - but the findings block is still printed so the reasoning is visible.
+**If detection result is NOT DETECTED:** Still present the (empty) findings and warnings as an informational block, then proceed to Phase 3 with `REBASE_MODE` = "normal". User confirmation is not required by default - but the findings block is still printed so the reasoning is visible. If `--confirm` is present, Phase 3 still asks before execution.
 
 #### Deep Hierarchy Handling
 
@@ -701,7 +702,7 @@ If Step 2 finds multiple PR candidates that could be ancestors in a chain, note 
 
 ### Phase 3: Pre-Rebase Summary
 
-Present an informational summary before attempting the rebase. This is NOT a confirmation gate - proceed directly to Phase 4 after presenting.
+Present the complete analysis summary before attempting the rebase. When `--confirm` is present, this summary becomes the single pre-execution confirmation gate. When `--confirm` is absent, proceed directly to Phase 4 after presenting the summary.
 
 **Format:**
 
@@ -737,7 +738,17 @@ Present an informational summary before attempting the rebase. This is NOT a con
 Attempting rebase...
 ```
 
-Proceed immediately to Phase 4.
+If `CONFIRM_BEFORE_EXECUTION=false`, proceed immediately to Phase 4.
+
+If `CONFIRM_BEFORE_EXECUTION=true`, ask:
+
+"Proceed with this rebase plan?"
+
+**Acceptable responses:**
+- Explicit approval: keep the displayed `REBASE_MODE`, `BASE_BRANCH`, and `FORK_POINT` if present, then proceed to Phase 4.
+- User-supplied fork point: set `REBASE_MODE` = "onto", use the user's fork point, update the summary, then proceed to Phase 4.
+- Rejection of `--onto` ("no", "use normal"): set `REBASE_MODE` = "normal", update the summary, then proceed to Phase 4.
+- Abort ("stop", "cancel"): stop the skill entirely before creating a backup or running any rebase command.
 
 ### Phase 4: Safety Net
 
@@ -824,7 +835,7 @@ git rebase --onto <BASE_BRANCH> <FORK_POINT> \
   $(test -n "$HAS_FIXUP_COMMITS" && echo "--autosquash")
 ```
 
-The `--onto` form replays only commits from `FORK_POINT..HEAD` onto `BASE_BRANCH`, skipping inherited commits that are already on the target via squash merge. The `FORK_POINT` was confirmed by the user in Phase 2.5.
+The `--onto` form replays only commits from `FORK_POINT..HEAD` onto `BASE_BRANCH`, skipping inherited commits that are already on the target via squash merge. The `FORK_POINT` was selected by detection or by the Phase 3 `--confirm` gate.
 
 #### If rebase succeeds cleanly:
 Proceed to Phase 7.
