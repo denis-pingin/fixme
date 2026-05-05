@@ -26,6 +26,19 @@ Read the plan fully before proceeding. If a specification, context document, or 
 
 **The review is a two-pass process. Do not emit findings as you discover them.**
 
+## Importance axes
+
+Use the shared `fixme-howto-importance` rubric for every finding. Every finding must include:
+
+- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
+- `user_impact: user-visible | internal-shippable | internal-dev-only`
+- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
+- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
+- `confidence: HIGH | MEDIUM | LOW`
+- `fix_risk: localized | cross-cutting | speculative-rewrite`
+
+Assign axes from verified plan, specification, and codebase evidence. Do not assign a numeric importance score; the handler computes that deterministically from these axes.
+
 ### Pass 1: Investigation (internal, not in output)
 
 Read the plan, read the task code map if available, read the codebase, identify candidate issues. Use the code map to target source reads and avoid rediscovering unrelated neighboring context. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
@@ -375,6 +388,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
 | **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
 | **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKER severity |
+| **Importance axes** | `harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>` from `fixme-howto-importance`. Do not emit a numeric importance score. |
 
 ### Final Output Structure
 

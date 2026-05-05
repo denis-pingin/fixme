@@ -4,6 +4,7 @@ description: Triages specification review findings using the unified taxonomy (F
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-spec-review
+  - fixme-howto-importance
   - fixme-howto-present-decisions
   - fixme-howto-find-fixme-dir
 effort: high

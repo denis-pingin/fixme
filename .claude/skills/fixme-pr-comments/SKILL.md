@@ -313,8 +313,13 @@ For each unresolved `review_item`:
    - `SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
    - `COMPLEXITY: LOW | MEDIUM | HIGH`
    - `CONFIDENCE: HIGH | MEDIUM | LOW`
+   - `IMPORTANCE_AXES: harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>`
+   - `IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible`
+   - `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false`
    - `ROUTE: CURRENT_PR_FIX | DECISION | FOLLOWUP | NO_ACTION`
    - `ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | NONE`
+
+Use `fixme-howto-importance` for the exact axis values, floor list, deterministic scoring formula, and pattern aggregation rule.
 
 Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance. Severity itself is multi-dimensional - weight user impact, frequency, and reversibility together; do not let one topic match anchor the verdict.
 
@@ -361,6 +366,20 @@ An issue that is internal-only, fires only during an existing outage, and is tri
 - Use `NONE` for `FOLLOWUP`, `NO_ACTION`, and unresolved `DECISION` items.
 
 **Anti-pattern self-check for `FOLLOWUP_ONLY`.** Before finalizing this verdict, scan your draft justification for these tokens: `touches`, `touches heavily`, `area is being reworked`, `same file`, `pr-N touches`, `stack-mate`. If they appear without naming the *specific code path* the other work supersedes, STOP. File overlap is not a defer reason. Either name the exact line range/symbol another PR replaces, or drop the stack reasoning and judge the finding on its own merits (severity, complexity, scope fit).
+
+**Softness routing**:
+
+Resolve PR-comment softness with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --surface pr-comments
+```
+
+Softness-suppressed groups use FOLLOWUP_ONLY and ROUTE: FOLLOWUP. The suppressed ledger must include the source IDs, resolved softness value, computed importance, and full `IMPORTANCE_AXES`.
+
+Every triaged item and deduplicated group must include the `IMPORTANCE` line. Use `not-eligible` for ASK_USER, REJECT_*, REJECT_ALREADY_FIXED, and file-overlap-only deferral candidates.
+
+file-overlap-only deferral candidates are never softness-suppressed. If `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true`, keep the item visible and explain that softness cannot bypass the file-overlap-only deferral ban.
 
 **Distinguishing FIX vs FIX_UNCLEAR**: A fix is `FIX` when there is exactly one
 reasonable way to address it (e.g., "add missing null check", "fix typo in variable name",
@@ -425,6 +444,8 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 
 {If there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` groups, write "None." and skip this section.}
 
+{For each decision group, put `**Importance**: {IMPORTANCE}` immediately before the decision card.}
+
 {For each decision group, use `fixme-howto-present-decisions` exactly. Do not restate, summarize, or locally redefine its decision-card fields in this skill.}
 
 {Do not put workflow-status preamble before or between decision cards (e.g. "Only D1 is blocking the flow", "PR #2-#6 don't change the count"). If status context is genuinely needed, put it in the one-sentence outcome line above, not inside the decision section.}
@@ -436,6 +457,8 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 {List only groups with `ROUTE: CURRENT_PR_FIX`, sorted by severity, then complexity, then dependency order.}
 
 **G{N}. {Issue title}** [`{VERDICT}`] [`{SEVERITY}`] [`{COMPLEXITY}`] [`{CONFIDENCE}`] [`{ROUTE_SCOPE}`]
+
+**Importance**: {IMPORTANCE}
 
 **Problem**: {The actual problem in one sentence. Do not start with a file path or implementation detail.}
 
@@ -468,6 +491,8 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 
 **G{N}. {Issue title}** [`FOLLOWUP_ONLY`] [`{SEVERITY}`] [`{COMPLEXITY}`]
 
+**Importance**: {IMPORTANCE}
+
 **Problem**: {The valid concern in one sentence.}
 
 **Impact if not fixed now**: {The concrete risk of deferring it.}
@@ -484,6 +509,7 @@ For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describ
 - **Decisions needed**: {G1 (T22, I3), G2 (T24) or None}
 - **Current PR fixes**: {G3 (T15), G4 (T7, I2) or None}
 - **Follow-up only**: {G5 (T9) or None}
+- **SUPPRESSED_COUNT: <number>**: {Number of groups suppressed by softness; list G ids or None}
 - **Already fixed**: {G6 (T1, T2, T5)... or None. One short reason per group, e.g. "fixed in commit abc123"}
 - **Not actionable**: {G7 (T11, I4)... or None. One short reason per group, e.g. "false positive: code already validates input"}
 ```
@@ -695,7 +721,7 @@ and wait for explicit user confirmation before proceeding.
 **PR**: [{owner}/{repo}#{pr_number}](https://github.com/{owner}/{repo}/pull/{pr_number})
 
 {For each current PR fix group, one line:}
-{N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] - {the planned fix action} -> [{files affected}]
+{N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] [{IMPORTANCE}] - {the planned fix action} -> [{files affected}]
 
 Only CURRENT_PR_FIX groups will be dispatched to fixme-task (plan -> execute -> review). Follow-up groups will be replied to but will not consume this pipeline. Proceed? (yes / no / modify)
 ```

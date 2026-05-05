@@ -83,6 +83,7 @@ Competing valid behaviors:
 Required decision:
 Recommended specification text:
 Acceptance test implied:
+Importance axes:
 ```
 
 `Specification location` must cite the text that creates the issue. If the issue is an absence, cite the nearest section where the behavior should have been defined.
@@ -94,6 +95,8 @@ Acceptance test implied:
 `Recommended specification text` must be concrete enough to paste into the specification or adapt directly.
 
 `Acceptance test implied` must describe the observable test shape using given state, actor or input, action, and expected result.
+
+`Importance axes` must use the shared `fixme-howto-importance` values: `harm_class`, `user_impact`, `fire_rate`, `reversibility`, `confidence`, and `fix_risk`.
 
 ## Report Structure
 

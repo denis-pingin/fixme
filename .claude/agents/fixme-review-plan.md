@@ -4,6 +4,7 @@ description: Reviews implementation plans for correctness, completeness, and fea
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-review-plan
+  - fixme-howto-importance
   - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
 effort: high

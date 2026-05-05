@@ -172,6 +172,21 @@ const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit'
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
 const VALID_RUNTIME_VALUES = new Set(['claude', 'codex']);
 const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
+const DEFAULT_SOFTNESS_LABELS = Object.freeze({
+  strict: 0.0,
+  default: 0.3,
+  lenient: 0.6,
+  tactical: 0.85,
+  panic: 1.0,
+});
+const DEFAULT_SOFTNESS_SURFACES = Object.freeze({
+  'spec-review': 'strict',
+  'plan-review': 'lenient',
+  'code-review': 'lenient',
+  'pr-comments': 'lenient',
+});
+const VALID_SOFTNESS_LABELS = new Set(Object.keys(DEFAULT_SOFTNESS_LABELS));
+const VALID_REVIEW_SURFACES = new Set(Object.keys(DEFAULT_SOFTNESS_SURFACES));
 const FIXME_CODEX_MARKER = '# Fixme Agent Configuration - managed by fixme installer';
 const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
 const GSD_CODEX_MARKER_PREFIX = '# GSD Agent Configuration';
@@ -1062,6 +1077,55 @@ function writeConfigAtomic(configPath, config) {
   fs.renameSync(tmpPath, configPath);
 }
 
+function ensureReviewSoftnessConfig(config) {
+  let migrated = false;
+
+  if (!isPlainObject(config.review)) {
+    config.review = {};
+    migrated = true;
+  }
+
+  if (!isPlainObject(config.review.softness)) {
+    config.review.softness = {};
+    migrated = true;
+  }
+
+  const softness = config.review.softness;
+  if (!Object.prototype.hasOwnProperty.call(softness, 'default')) {
+    softness.default = 'default';
+    migrated = true;
+  }
+
+  if (!isPlainObject(softness.labels)) {
+    softness.labels = {};
+    migrated = true;
+  }
+  for (const [label, value] of Object.entries(DEFAULT_SOFTNESS_LABELS)) {
+    if (!Object.prototype.hasOwnProperty.call(softness.labels, label)) {
+      softness.labels[label] = value;
+      migrated = true;
+    }
+  }
+
+  if (!isPlainObject(softness.surfaces)) {
+    softness.surfaces = {};
+    migrated = true;
+  }
+  for (const [surface, value] of Object.entries(DEFAULT_SOFTNESS_SURFACES)) {
+    if (!Object.prototype.hasOwnProperty.call(softness.surfaces, surface)) {
+      softness.surfaces[surface] = value;
+      migrated = true;
+    }
+  }
+
+  if (!isPlainObject(softness.workflows)) {
+    softness.workflows = {};
+    migrated = true;
+  }
+
+  return migrated;
+}
+
 function applyConfigMigration(config) {
   const result = {
     migrated: false,
@@ -1072,6 +1136,10 @@ function applyConfigMigration(config) {
 
   if (!isPlainObject(config.workflows)) {
     config.workflows = {};
+    result.migrated = true;
+  }
+
+  if (ensureReviewSoftnessConfig(config)) {
     result.migrated = true;
   }
 
@@ -1150,12 +1218,38 @@ function isWorkflowName(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
 }
 
+function isSoftnessFloat(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+function knownSoftnessLabelsText() {
+  return Object.keys(DEFAULT_SOFTNESS_LABELS).join(', ');
+}
+
+function isReviewSoftnessConfigKey(parts) {
+  const [top, second, third, fourth, fifth, sixth] = parts;
+  if (top !== 'review' || second !== 'softness') return false;
+
+  if (parts.length === 3 && third === 'default') return true;
+  if (parts.length === 4 && third === 'labels' && /^[A-Za-z0-9_-]+$/.test(fourth)) return true;
+  if (parts.length === 4 && third === 'surfaces' && VALID_REVIEW_SURFACES.has(fourth)) return true;
+
+  if (third === 'workflows') {
+    if (!isWorkflowName(fourth)) return false;
+    if (parts.length === 5 && fifth === 'default') return true;
+    if (parts.length === 6 && fifth === 'phases' && isWorkflowName(sixth)) return true;
+  }
+
+  return false;
+}
+
 function isSupportedConfigKey(parts) {
   const [top, second, third] = parts;
 
   if (top === 'ticketBackend') return parts.length === 1;
   if (top === 'sub_repos') return parts.length === 1;
   if (top === 'project') return parts.length >= 1;
+  if (top === 'review') return isReviewSoftnessConfigKey(parts);
 
   if (top === 'models') {
     if (second === 'profile') return parts.length === 2;
@@ -1219,6 +1313,67 @@ function collectUnknownSkillWarnings(skills, warnings, fieldName) {
 function defaultReviewCyclesForPhase(phaseName) {
   if (phaseName === 'implement') return 2;
   return 3;
+}
+
+function validateSoftnessFloat(value, fieldName) {
+  if (!isSoftnessFloat(value)) {
+    throw new Error(`${fieldName} must be a float in [0.0, 1.0]`);
+  }
+}
+
+function validateSoftnessSetting(value, fieldName) {
+  if (isSoftnessFloat(value)) return;
+
+  if (typeof value === 'number') {
+    throw new Error(`Softness must be a float in [0.0, 1.0]. Got: ${value}`);
+  }
+
+  if (typeof value === 'string') {
+    if (!VALID_SOFTNESS_LABELS.has(value)) {
+      throw new Error(`Unknown softness label: ${value}. Known labels: ${knownSoftnessLabelsText()}`);
+    }
+    return;
+  }
+
+  throw new Error(`${fieldName} must be a softness label or a float in [0.0, 1.0]`);
+}
+
+function validateReviewSoftnessConfigSetValue(parts, value) {
+  const [, , third, fourth, fifth] = parts;
+  const keyPath = parts.join('.');
+
+  if (third === 'labels') {
+    if (!VALID_SOFTNESS_LABELS.has(fourth)) {
+      throw new Error(`Unsupported softness label: ${fourth}. Supported labels: ${knownSoftnessLabelsText()}`);
+    }
+    validateSoftnessFloat(value, keyPath);
+    return { warnings: [] };
+  }
+
+  if (third === 'default') {
+    if (typeof value === 'number' && !isSoftnessFloat(value)) {
+      throw new Error(`Softness must be a float in [0.0, 1.0]. Got: ${value}`);
+    }
+    validateSoftnessSetting(value, keyPath);
+    return { warnings: [] };
+  }
+
+  if (third === 'surfaces') {
+    validateSoftnessSetting(value, keyPath);
+    return { warnings: [] };
+  }
+
+  if (third === 'workflows' && fifth === 'default') {
+    validateSoftnessSetting(value, keyPath);
+    return { warnings: [] };
+  }
+
+  if (third === 'workflows' && fifth === 'phases') {
+    validateSoftnessSetting(value, keyPath);
+    return { warnings: [] };
+  }
+
+  throw new Error(`Unsupported config key: ${keyPath}`);
 }
 
 function validatePipeline(pipeline, workflowName) {
@@ -1297,6 +1452,10 @@ function validateWorkflow(workflow, workflowName) {
 function validateConfigSetValue(parts, value) {
   const [top, second, third] = parts;
 
+  if (top === 'review') {
+    return validateReviewSoftnessConfigSetValue(parts, value);
+  }
+
   if (top === 'ticketBackend') {
     if (typeof value !== 'string' || !VALID_TICKET_BACKENDS.has(value)) {
       throw new Error("ticketBackend must be one of: fixme-tickets-md, fixme-tickets-linear");
@@ -1374,6 +1533,127 @@ function deepSet(target, parts, value) {
   current[parts[parts.length - 1]] = value;
 }
 
+function configuredSoftnessCandidates(config, options = {}) {
+  const softness = config.review && config.review.softness;
+  const candidates = [];
+  const workflowName = options.workflow || null;
+  const phaseName = options.phase || null;
+  const surfaceName = options.surface || null;
+
+  if (workflowName && phaseName) {
+    const workflow = softness
+      && isPlainObject(softness.workflows)
+      && isPlainObject(softness.workflows[workflowName])
+      ? softness.workflows[workflowName]
+      : null;
+    if (workflow && isPlainObject(workflow.phases) && Object.prototype.hasOwnProperty.call(workflow.phases, phaseName)) {
+      candidates.push({ source: 'phase', configured: workflow.phases[phaseName] });
+    }
+  }
+
+  if (workflowName) {
+    const workflow = softness
+      && isPlainObject(softness.workflows)
+      && isPlainObject(softness.workflows[workflowName])
+      ? softness.workflows[workflowName]
+      : null;
+    if (workflow && Object.prototype.hasOwnProperty.call(workflow, 'default')) {
+      candidates.push({ source: 'workflow', configured: workflow.default });
+    }
+  }
+
+  if (surfaceName && softness && isPlainObject(softness.surfaces) && Object.prototype.hasOwnProperty.call(softness.surfaces, surfaceName)) {
+    candidates.push({ source: 'surface', configured: softness.surfaces[surfaceName] });
+  }
+
+  if (softness && Object.prototype.hasOwnProperty.call(softness, 'default')) {
+    candidates.push({ source: 'global', configured: softness.default });
+  }
+
+  candidates.push({ source: 'builtin', configured: DEFAULT_SOFTNESS_SURFACES[surfaceName] || 'default' });
+  return candidates;
+}
+
+function resolveConfiguredSoftness(configured, labels, source) {
+  if (isSoftnessFloat(configured)) {
+    return { ok: true, value: configured, configured, source };
+  }
+
+  if (typeof configured === 'number') {
+    return {
+      ok: false,
+      warning: `Invalid softness ${configured} at ${source}; expected float in [0.0, 1.0]. Falling back to next layer.`,
+    };
+  }
+
+  if (typeof configured !== 'string') {
+    return {
+      ok: false,
+      warning: `Invalid softness at ${source}; expected label or float. Falling back to next layer.`,
+    };
+  }
+
+  if (!VALID_SOFTNESS_LABELS.has(configured)) {
+    return {
+      ok: false,
+      warning: `Unknown softness label '${configured}' at ${source}. Known labels: ${knownSoftnessLabelsText()}. Falling back to next layer.`,
+    };
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(labels, configured)) {
+    return {
+      ok: false,
+      warning: `Softness label '${configured}' at ${source} has no configured float. Falling back to next layer.`,
+    };
+  }
+
+  const value = labels[configured];
+  if (!isSoftnessFloat(value)) {
+    return {
+      ok: false,
+      warning: `Softness label '${configured}' at ${source} maps to invalid value ${JSON.stringify(value)}. Falling back to next layer.`,
+    };
+  }
+
+  return { ok: true, value, configured, label: configured, source };
+}
+
+function resolveReviewSoftness(config, options = {}) {
+  const configForResolution = cloneJson(config || {});
+  applyConfigMigration(configForResolution);
+  const softness = configForResolution.review.softness;
+  const labels = isPlainObject(softness.labels) ? softness.labels : cloneJson(DEFAULT_SOFTNESS_LABELS);
+  const warnings = [];
+
+  for (const candidate of configuredSoftnessCandidates(configForResolution, options)) {
+    const resolved = resolveConfiguredSoftness(candidate.configured, labels, candidate.source);
+    if (resolved.ok) {
+      return {
+        workflow: options.workflow || null,
+        phase: options.phase || null,
+        surface: options.surface || null,
+        source: resolved.source,
+        configured: resolved.configured,
+        label: resolved.label || null,
+        value: resolved.value,
+        warnings,
+      };
+    }
+    warnings.push(resolved.warning);
+  }
+
+  return {
+    workflow: options.workflow || null,
+    phase: options.phase || null,
+    surface: options.surface || null,
+    source: 'builtin',
+    configured: 'default',
+    label: 'default',
+    value: DEFAULT_SOFTNESS_LABELS.default,
+    warnings: warnings.concat('No valid configured softness found. Used builtin default label.'),
+  };
+}
+
 function configMigrate(fixmeRoot) {
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
   const migration = applyConfigMigration(config);
@@ -1409,6 +1689,53 @@ function configGet(keyPath, fixmeRoot) {
   });
 }
 
+function readConfigForResolve(fixmeRoot) {
+  const configPath = configPathForRoot(fixmeRoot);
+  if (!fs.existsSync(configPath)) {
+    return { config: {}, configPath, existed: false };
+  }
+
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Invalid config.json: ${e.message}`);
+  }
+
+  if (!isPlainObject(config)) {
+    throw new Error('Invalid config.json: top-level value must be an object');
+  }
+
+  return { config, configPath, existed: true };
+}
+
+function configSoftnessResolve(flags, fixmeRoot) {
+  const surface = flags.surface || null;
+  if (surface !== null && !VALID_REVIEW_SURFACES.has(surface)) {
+    throw new Error(`Unknown review surface: ${surface}. Known surfaces: ${Object.keys(DEFAULT_SOFTNESS_SURFACES).join(', ')}`);
+  }
+
+  const { config, configPath, existed } = readConfigForResolve(fixmeRoot);
+  const resolution = resolveReviewSoftness(config, {
+    workflow: flags.workflow || null,
+    phase: flags.phase || null,
+    surface,
+  });
+
+  return output({
+    path: configPath,
+    configured: resolution.configured,
+    value: resolution.value,
+    label: resolution.label,
+    source: resolution.source,
+    workflow: resolution.workflow,
+    phase: resolution.phase,
+    surface: resolution.surface,
+    configExists: existed,
+    warnings: resolution.warnings,
+  });
+}
+
 function configSet(keyPath, rawValue, fixmeRoot) {
   const parts = splitConfigKey(keyPath);
   if (!isSupportedConfigKey(parts)) {
@@ -1416,9 +1743,9 @@ function configSet(keyPath, rawValue, fixmeRoot) {
   }
 
   const value = parseConfigValue(rawValue);
-  const validation = validateConfigSetValue(parts, value);
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
   const migration = applyConfigMigration(config);
+  const validation = validateConfigSetValue(parts, value);
 
   let valueToWrite = value;
   if (parts[0] === 'workflows' && parts.length === 2) {
@@ -2771,8 +3098,15 @@ function main() {
               default:
                 return error(`Unknown config workflow subcommand: '${args[0] || ''}'. Valid: configure`);
             }
+          case 'softness':
+            switch (args[0]) {
+              case 'resolve':
+                return configSoftnessResolve(flags, fixmeRoot);
+              default:
+                return error(`Unknown config softness subcommand: '${args[0] || ''}'. Valid: resolve`);
+            }
           default:
-            return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow`);
+            return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow, softness`);
         }
 
       case 'codex-agents':
@@ -2830,4 +3164,5 @@ module.exports = {
   installCodexAgents,
   convertCodexSkillMarkdown,
   installCodexSkills,
+  resolveReviewSoftness,
 };

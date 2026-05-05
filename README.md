@@ -192,6 +192,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-howto-write-product-spec` | Shared product specification writing rubric for behavior-first specifications |
 | `fixme-howto-write-technical-spec` | Shared technical specification writing rubric for deterministic implementation contracts |
 | `fixme-howto-review-spec` | Shared specification review rubric for reviewers or standalone use |
+| `fixme-howto-importance` | Shared importance axes, floor, scoring, suppression, and aggregation rubric |
 | `fixme-write-product-spec` | Write product specifications from feature requests or review FIX items |
 | `fixme-write-technical-spec` | Write technical specifications from product specifications, source material, or review FIX items |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |

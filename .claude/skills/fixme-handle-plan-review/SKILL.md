@@ -55,6 +55,35 @@ Every finding must include both severity and route scope. Classification answers
 
 MINOR and INFO findings never trigger a revision loop by themselves. If a finding is real but nonblocking, classify it as `FIX` with `SEVERITY: MINOR` or `INFO` and `ROUTE_SCOPE: FOLLOWUP`; the orchestrator reports it without consuming plan review cycles.
 
+## Softness Routing
+
+Use the shared `fixme-howto-importance` rubric after classification.
+
+Resolve softness with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface plan-review
+```
+
+Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
+
+Softness applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
+
+Floor findings from `fixme-howto-importance` are never softness-suppressed. Missing or invalid importance axes are treated as floor-equivalent for this run and must be reported with a warning.
+
+Every classified finding must include one of these `Importance` outputs:
+
+- `Importance: floor / softness <resolved_float> -> survives`
+- `Importance: <score> / softness <resolved_float> -> survives`
+- `Importance: <score> / softness <resolved_float> -> suppressed`
+- `Importance: not-eligible / softness <resolved_float> -> not-eligible`
+
+For every suppressed item, add it to the suppressed ledger using this wording:
+
+`Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
+
+Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, BLOCKING_FIX_COUNT, NONBLOCKING_COUNT, PLAN_REQUIRED_COUNT, IMPLEMENT_ONLY_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
+
 ## Process
 
 For each finding:
@@ -103,6 +132,7 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 | **Severity** | BLOCKER / MAJOR / MINOR / INFO |
 | **Route Scope** | PLAN_REQUIRED / IMPLEMENT_ONLY / FOLLOWUP / NONE |
 | **Confidence** | HIGH / MEDIUM / LOW |
+| **Importance** | `Importance: floor / softness <resolved_float> -> survives` OR `Importance: <score> / softness <resolved_float> -> survives` OR `Importance: <score> / softness <resolved_float> -> suppressed` OR `Importance: not-eligible / softness <resolved_float> -> not-eligible` |
 | **Why** | 1-2 sentences. For FIX: what breaks or degrades. For FIX_UNCLEAR: what breaks AND what makes the fix approach ambiguous (name the competing approaches). For REJECT_*: why it's wrong, irrelevant, or already covered. For ASK_USER: what's unknown and why it matters |
 | **Question** | (ASK_USER and FIX_UNCLEAR only) For ASK_USER: a self-contained briefing on whether this is a real issue. For FIX_UNCLEAR: a self-contained briefing presenting the competing fix approaches. See Question Guidelines below |
 | **Approach** | (FIX only) Concrete steps to resolve - name files, functions, patterns. No hand-waving. For FIX_UNCLEAR: omitted (user chooses approach first) |
@@ -148,6 +178,7 @@ FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
 BLOCKING_FIX_COUNT: <number>
 NONBLOCKING_COUNT: <number>
+SUPPRESSED_COUNT: <number>
 PLAN_REQUIRED_COUNT: <number>
 IMPLEMENT_ONLY_COUNT: <number>
 NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY

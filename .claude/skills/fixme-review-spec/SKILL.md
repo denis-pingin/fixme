@@ -17,8 +17,22 @@ Review a specification before implementation planning. The goal is to decide whe
 - **NO code or specification modifications.** This is a review. The only output is the findings report.
 - **Read the full specification before writing findings.** Partial reads produce false positives and missed ambiguity.
 - **Use the shared specification review rubric.** This agent preloads `fixme-howto-review-spec`; if running standalone, read `~/.claude/skills/fixme-howto-review-spec/SKILL.md` or `~/.codex/skills/fixme-howto-review-spec/SKILL.md` before evaluating the specification.
+- **Use the shared importance rubric.** This agent preloads `fixme-howto-importance`; if running standalone, read `~/.claude/skills/fixme-howto-importance/SKILL.md` or `~/.codex/skills/fixme-howto-importance/SKILL.md` before emitting findings.
 - **Use the shared decision presentation rubric.** This agent preloads `fixme-howto-present-decisions`; if running standalone, read `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md` before asking the user to decide anything.
 - **Every finding must cite specification evidence.** If the issue is an absence, cite the nearest section where the behavior should have been defined.
+
+## Importance axes
+
+Every finding must include the shared `fixme-howto-importance` axes:
+
+- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
+- `user_impact: user-visible | internal-shippable | internal-dev-only`
+- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
+- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
+- `confidence: HIGH | MEDIUM | LOW`
+- `fix_risk: localized | cross-cutting | speculative-rewrite`
+
+Assign axes from specification evidence, not from a numeric gut feel. If one axis cannot be assigned from evidence, keep the finding visible and state which axis is missing so the handler can treat it as floor-equivalent for that run.
 
 ## Input Resolution
 
@@ -64,6 +78,8 @@ Return the report in this structure:
 3. **Findings**: one block per finding using the required finding format from `fixme-howto-review-spec`.
 4. **Verdict**: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the shared verdict rules.
 5. **Decisions**: only include unresolved questions that are needed to complete review, formatted as decision cards from `fixme-howto-present-decisions`.
+
+Every finding must include the `Importance axes:` field from `fixme-howto-review-spec`. Do not emit a numeric importance score; the handler computes it after classification.
 
 If there are no findings, say the specification passes and list the surfaces and acceptance criteria you verified.
 

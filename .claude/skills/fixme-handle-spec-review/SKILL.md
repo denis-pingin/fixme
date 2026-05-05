@@ -44,6 +44,35 @@ If the packet and an artifact disagree, trust the artifact after verifying it di
 - **REJECT_WONT_FIX** - the finding is valid but intentionally out of scope, acceptable for this specification, contradicts a confirmed locked decision without new concrete risk, or would make the specification worse.
 - **REJECT_ALREADY_FIXED** - the issue is already addressed by the current specification or by a prior decision recorded in the decision log.
 
+## Softness Routing
+
+Use the shared `fixme-howto-importance` rubric after classification.
+
+Resolve softness with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface spec-review
+```
+
+Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
+
+Softness applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
+
+Floor findings from `fixme-howto-importance` are never softness-suppressed. Missing or invalid importance axes are treated as floor-equivalent for this run and must be reported with a warning.
+
+Every classified finding must include one of these `Importance` outputs:
+
+- `Importance: floor / softness <resolved_float> -> survives`
+- `Importance: <score> / softness <resolved_float> -> survives`
+- `Importance: <score> / softness <resolved_float> -> suppressed`
+- `Importance: not-eligible / softness <resolved_float> -> not-eligible`
+
+For every suppressed item, add it to the suppressed ledger using this wording:
+
+`Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
+
+Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
+
 ## Pre-Classification Gate
 
 For each finding:
@@ -66,6 +95,7 @@ Use this shape for each finding:
 
 - **Classification**: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_WONT_FIX | REJECT_ALREADY_FIXED
 - **Confidence**: HIGH | MEDIUM | LOW
+- **Importance**: Importance: floor / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> suppressed OR Importance: not-eligible / softness <resolved_float> -> not-eligible
 - **Why**: {1-2 sentences grounded in the specification}
 - **Specification evidence**: {clickable specification location, or nearest section for absence}
 - **Question**: {ASK_USER and FIX_UNCLEAR only; full decision card from fixme-howto-present-decisions}
@@ -103,6 +133,7 @@ HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
 FIX_COUNT: <number>
 FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
+SUPPRESSED_COUNT: <number>
 NEXT_ACTION: SPEC_LOOP_EXIT | SPEC_REVISION | ASK_USER_BATCH
 ```
 

@@ -5,6 +5,7 @@ tools: Read, Bash, Grep, Glob
 skills:
   - fixme-review-spec
   - fixme-howto-review-spec
+  - fixme-howto-importance
   - fixme-howto-present-decisions
   - fixme-howto-find-fixme-dir
 effort: high

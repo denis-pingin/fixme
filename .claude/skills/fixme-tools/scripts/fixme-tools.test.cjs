@@ -1262,6 +1262,26 @@ test('config migrate creates config.json with unified standard workflows', () =>
   assert(result.data.migrated === true, 'result should report migration');
 });
 
+test('config migrate seeds review softness defaults', () => {
+  const tmp = createTmpDir();
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
+
+  const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
+  const softness = config.review && config.review.softness;
+  assert(softness && typeof softness === 'object', 'review.softness should be created');
+  assert(softness.default === 'default', `global softness should default to label default, got ${softness.default}`);
+  assert(softness.labels.strict === 0.0, 'strict label should resolve to 0.0');
+  assert(softness.labels.default === 0.3, 'default label should resolve to 0.3');
+  assert(softness.labels.lenient === 0.6, 'lenient label should resolve to 0.6');
+  assert(softness.labels.tactical === 0.85, 'tactical label should resolve to 0.85');
+  assert(softness.labels.panic === 1.0, 'panic label should resolve to 1.0');
+  assert(softness.surfaces['spec-review'] === 'strict', 'spec-review should default to strict softness');
+  assert(softness.surfaces['plan-review'] === 'lenient', 'plan-review should default to lenient softness');
+  assert(softness.surfaces['code-review'] === 'lenient', 'code-review should default to lenient softness');
+  assert(softness.surfaces['pr-comments'] === 'lenient', 'pr-comments should default to lenient softness');
+});
+
 test('config migrate converts legacy pipelines and controls into unified workflows', () => {
   const tmp = createTmpDir();
   const fixmeDir = path.join(tmp, '.fixme');
@@ -1421,6 +1441,73 @@ test('config set validates model runtime', () => {
   assert(!bad.ok, 'unsupported runtime should fail');
   assert(bad.data && bad.data.error, 'error should be returned');
   assert(bad.data.error.includes('models.runtime'), `error should mention runtime key: ${bad.data.error}`);
+});
+
+test('config softness resolves phase, workflow, surface, and global values', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('config set review.softness.default 0.45', tmp);
+  assert(result.ok, `raw float global softness should be accepted: ${JSON.stringify(result.data)}`);
+
+  result = runInDir('config softness resolve', tmp);
+  assert(result.ok, `global softness should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.value === 0.45, `global softness value should be 0.45, got ${result.data.value}`);
+  assert(result.data.source === 'global', `global source should be reported, got ${result.data.source}`);
+  assert(result.data.configured === 0.45, 'raw float should be used directly');
+
+  result = runInDir('config set review.softness.labels.lenient 0.5', tmp);
+  assert(result.ok, `label mapping update should be accepted: ${JSON.stringify(result.data)}`);
+
+  result = runInDir('config softness resolve --surface pr-comments', tmp);
+  assert(result.ok, `surface softness should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.value === 0.5, `pr-comments lenient label should resolve to 0.5, got ${result.data.value}`);
+  assert(result.data.source === 'surface', `surface source should be reported, got ${result.data.source}`);
+  assert(result.data.configured === 'lenient', 'surface configured label should be reported');
+
+  result = runInDir('config set review.softness.surfaces.plan-review 0.7', tmp);
+  assert(result.ok, `surface raw float softness should be accepted: ${JSON.stringify(result.data)}`);
+
+  result = runInDir('config softness resolve --surface plan-review', tmp);
+  assert(result.ok, `surface raw softness should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.value === 0.7, `plan-review surface raw float should resolve to 0.7, got ${result.data.value}`);
+  assert(result.data.source === 'surface', `surface source should be reported for raw float, got ${result.data.source}`);
+
+  result = runInDir('config set review.softness.workflows.default.default "\\"strict\\""', tmp);
+  assert(result.ok, `workflow default softness should be accepted: ${JSON.stringify(result.data)}`);
+
+  result = runInDir('config softness resolve --workflow default --phase plan --surface plan-review', tmp);
+  assert(result.ok, `workflow softness should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.value === 0.0, `strict workflow label should resolve to 0.0, got ${result.data.value}`);
+  assert(result.data.source === 'workflow', `workflow source should be reported, got ${result.data.source}`);
+
+  result = runInDir('config set review.softness.workflows.default.phases.implement 0.8', tmp);
+  assert(result.ok, `phase softness should be accepted: ${JSON.stringify(result.data)}`);
+
+  result = runInDir('config softness resolve --workflow default --phase implement --surface code-review', tmp);
+  assert(result.ok, `phase softness should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.value === 0.8, `phase raw float should resolve to 0.8, got ${result.data.value}`);
+  assert(result.data.source === 'phase', `phase source should be reported, got ${result.data.source}`);
+  assert(result.data.configured === 0.8, 'phase configured float should be reported');
+});
+
+test('config softness rejects out-of-range floats and unknown labels', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('config set review.softness.default 1.5', tmp);
+  assert(!result.ok, 'out-of-range softness should fail');
+  assert(result.data.error.includes('Softness must be a float in [0.0, 1.0]'), `range error should be clear: ${result.data.error}`);
+
+  result = runInDir('config set review.softness.default "\\"aggressive\\""', tmp);
+  assert(!result.ok, 'unknown softness label should fail');
+  assert(result.data.error.includes('Unknown softness label: aggressive'), `unknown label error should be clear: ${result.data.error}`);
+
+  result = runInDir('config set review.softness.labels.lenient -0.1', tmp);
+  assert(!result.ok, 'out-of-range label mapping should fail');
+  assert(result.data.error.includes('review.softness.labels.lenient'), `label mapping error should name key: ${result.data.error}`);
+
+  result = runInDir('config set review.softness.labels.aggressive 0.4', tmp);
+  assert(!result.ok, 'unsupported label mapping key should fail');
+  assert(result.data.error.includes('Unsupported softness label: aggressive'), `unsupported label error should be clear: ${result.data.error}`);
 });
 
 // ============================================================================
@@ -2169,6 +2256,108 @@ test('fixme review handlers: classify blocking severity and route scope separate
     assert(skill.includes('PLAN_REQUIRED_COUNT: <number>'), 'handler should count plan-required fixes');
     assert(skill.includes('IMPLEMENT_ONLY_COUNT: <number>'), 'handler should count implementation-only fixes');
     assert(skill.includes('MINOR and INFO findings never trigger a revision loop by themselves'), 'handler should keep nonblocking findings out of loops');
+  }
+});
+
+test('fixme importance rubric defines softness axes, floor, scoring, and aggregation', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-importance', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('softness 0.0 is loudest and softness 1.0 is most permissive'), 'rubric should define softness direction');
+  assert(skill.includes('harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none'), 'rubric should define harm_class axis');
+  assert(skill.includes('user_impact: user-visible | internal-shippable | internal-dev-only'), 'rubric should define user_impact axis');
+  assert(skill.includes('fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure'), 'rubric should define fire_rate axis');
+  assert(skill.includes('reversibility: cheap-later | costly-later | irreversible-once-shipped'), 'rubric should define reversibility axis');
+  assert(skill.includes('fix_risk: localized | cross-cutting | speculative-rewrite'), 'rubric should define fix_risk axis');
+  assert(skill.includes('softness=1.0 suppresses every non-floor finding regardless of computed importance'), 'rubric should make panic floor-only');
+  assert(skill.includes('Aggregate only findings that share severity, category, surface, and harm_class'), 'rubric should aggregate before suppression without mixing harm classes');
+  assert(skill.includes('Softness applies to FIX and FIX_UNCLEAR only'), 'rubric should state softness-eligible classifications');
+  assert(skill.includes('Every classified review item must include an `Importance` line'), 'rubric should require importance output on every classified item');
+  assert(skill.includes('Importance: floor / softness <resolved_float> -> survives'), 'rubric should define floor importance output');
+  assert(skill.includes('Importance: <score> / softness <resolved_float> -> survives'), 'rubric should define surviving scored importance output');
+  assert(skill.includes('Importance: <score> / softness <resolved_float> -> suppressed'), 'rubric should define suppressed scored importance output');
+  assert(skill.includes('Importance: not-eligible / softness <resolved_float> -> not-eligible'), 'rubric should define not-eligible importance output');
+});
+
+test('fixme reviewers and handlers use shared importance rubric', () => {
+  const reviewerPaths = [
+    path.resolve(__dirname, '..', '..', 'fixme-review-spec', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md'),
+  ];
+  const handlerPaths = [
+    path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md'),
+  ];
+
+  for (const skillPath of reviewerPaths) {
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('fixme-howto-importance'), `${skillPath} should load the shared importance rubric`);
+    assert(skill.includes('Importance axes'), `${skillPath} should require importance axes per finding`);
+    assert(skill.includes('harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none'), `${skillPath} should emit harm_class`);
+    assert(skill.includes('user_impact: user-visible | internal-shippable | internal-dev-only'), `${skillPath} should emit user_impact`);
+    assert(skill.includes('fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure'), `${skillPath} should emit fire_rate`);
+    assert(skill.includes('reversibility: cheap-later | costly-later | irreversible-once-shipped'), `${skillPath} should emit reversibility`);
+    assert(skill.includes('fix_risk: localized | cross-cutting | speculative-rewrite'), `${skillPath} should emit fix_risk`);
+  }
+
+  for (const skillPath of handlerPaths) {
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('fixme-howto-importance'), `${skillPath} should load the shared importance rubric`);
+    assert(skill.includes('Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.'), `${skillPath} should apply softness before routing counts`);
+    assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve'), `${skillPath} should resolve softness through fixme-tools`);
+    assert(skill.includes('SUPPRESSED_COUNT: <number>'), `${skillPath} should report suppressed count`);
+    assert(skill.includes('Suppressed at softness='), `${skillPath} should include suppressed ledger wording`);
+    assert(skill.includes('Softness applies to FIX and FIX_UNCLEAR only'), `${skillPath} should not suppress ASK_USER or REJECT items`);
+    assert(skill.includes('Every classified finding must include one of these `Importance` outputs:'), `${skillPath} should require importance output on every classified finding`);
+    assert(skill.includes('Importance: floor / softness <resolved_float> -> survives'), `${skillPath} should include floor importance output`);
+    assert(skill.includes('Importance: <score> / softness <resolved_float> -> survives'), `${skillPath} should include surviving scored importance output`);
+    assert(skill.includes('Importance: <score> / softness <resolved_float> -> suppressed'), `${skillPath} should include suppressed scored importance output`);
+    assert(skill.includes('Importance: not-eligible / softness <resolved_float> -> not-eligible'), `${skillPath} should include not-eligible importance output`);
+  }
+});
+
+test('fixme-pr-comments records importance axes and softness routing metadata', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('fixme-howto-importance'), 'PR comments skill should use shared importance rubric');
+  assert(skill.includes('IMPORTANCE_AXES'), 'PR comments should require importance axes metadata');
+  assert(skill.includes('IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible'), 'PR comments should require importance output on every triaged item');
+  assert(skill.includes('SUPPRESSED_COUNT: <number>'), 'PR comments should report suppressed count');
+  assert(skill.includes('FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false'), 'PR comments should explicitly mark file-overlap-only deferral candidates');
+  assert(skill.includes('Softness-suppressed groups use FOLLOWUP_ONLY'), 'softness should route suppressed PR findings to follow-up');
+  assert(skill.includes('file-overlap-only deferral candidates are never softness-suppressed'), 'softness should not bypass the file-overlap-only ban');
+});
+
+test('fixme-config documents review softness prompts and CLI writes', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-config', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Review softness'), 'fixme-config should present review softness settings');
+  assert(skill.includes('Softness accepts either a label or a raw float in [0.0, 1.0].'), 'fixme-config should explain accepted softness values');
+  assert(skill.includes('config set review.softness.default'), 'fixme-config should write global softness through fixme-tools');
+  assert(skill.includes('config set review.softness.surfaces.<surface>'), 'fixme-config should write surface softness through fixme-tools');
+  assert(skill.includes('config set review.softness.labels.<label>'), 'fixme-config should write label mapping through fixme-tools');
+  assert(skill.includes('config set review.softness.workflows.<selectedWorkflow>.default'), 'fixme-config should write workflow softness through fixme-tools');
+  assert(skill.includes('config set review.softness.workflows.<selectedWorkflow>.phases.<phase>'), 'fixme-config should write phase softness through fixme-tools');
+});
+
+test('fixme reviewer and handler agents preload importance rubric', () => {
+  const agentNames = [
+    'fixme-review-spec',
+    'fixme-review-plan',
+    'fixme-review-code',
+    'fixme-handle-spec-review',
+    'fixme-handle-plan-review',
+    'fixme-handle-code-review',
+  ];
+
+  for (const agentName of agentNames) {
+    const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', `${agentName}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('- fixme-howto-importance'), `${agentName} should preload fixme-howto-importance`);
   }
 });
 
