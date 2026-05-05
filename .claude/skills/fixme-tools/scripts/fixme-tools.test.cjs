@@ -1645,7 +1645,7 @@ test('resolve-model: empty models object returns quality defaults', () => {
   const res = runInDir('resolve-model fixme-execute-plan', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'high', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'medium', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
@@ -1660,7 +1660,7 @@ test('resolve-model: balanced profile returns per-agent mapping', () => {
   const executor = runInDir('resolve-model fixme-execute-plan', dir);
   assert(executor.ok, `exit: ${JSON.stringify(executor)}`);
   assert(executor.data.model === 'sonnet', `executor model: ${executor.data.model}`);
-  assert(executor.data.reasoning_effort === 'high', `executor reasoning_effort: ${executor.data.reasoning_effort}`);
+  assert(executor.data.reasoning_effort === 'medium', `executor reasoning_effort: ${executor.data.reasoning_effort}`);
   assert(executor.data.profile === 'balanced', `executor profile: ${executor.data.profile}`);
   assert(executor.data.source === 'profile', `executor source: ${executor.data.source}`);
 
@@ -1839,7 +1839,7 @@ test('resolve-model: override beats profile', () => {
   const res = runInDir('resolve-model fixme-execute-plan', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'high', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'medium', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
   assert(res.data.source === 'override', `source: ${res.data.source}`);
 });

@@ -732,9 +732,9 @@ Tool access for each sub-skill is enforced by its agent definition in `~/.claude
 
 Model and reasoning resolution is performed by `fixme-tools.cjs resolve-model` (see the dispatch contract above). The CLI is the authoritative source for the profile tables and the `override > profile > default` resolution order.
 
-Claude runtime receives short model tags only (`opus`, `sonnet`, `haiku`, `inherit`) plus agent-specific `reasoning_effort` for every non-inherit model. Specification, planning, review, and classifier agents use `xhigh`; other agents use `high`. No versioned Claude model IDs are emitted.
+Claude runtime receives short model tags only (`opus`, `sonnet`, `haiku`, `inherit`) plus agent-specific `reasoning_effort` for every non-inherit model. Specification, planning, review, and classifier agents use `xhigh`; `fixme-execute-plan` uses `medium`; other agents use `high`. No versioned Claude model IDs are emitted.
 
-Codex runtime receives no model value. It receives only `reasoning_effort`, so the user-selected Codex model remains in force. Inherit omits both model and reasoning controls. `fixme-execute-plan` uses `medium` on Codex across profiles because implementation should spend less reasoning than planning and review.
+Codex runtime receives no model value. It receives only `reasoning_effort`, so the user-selected Codex model remains in force. Inherit omits both model and reasoning controls. `fixme-execute-plan` uses `medium` on Codex across profiles too, because implementation should spend less reasoning than planning and review.
 
 **`source` field values:**
 - `override` - came from `models.overrides[agent]`

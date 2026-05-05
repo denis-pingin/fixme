@@ -8,7 +8,7 @@ skills:
   - fixme-howto-code-comments
   - fixme-howto-find-fixme-dir
 permissionMode: acceptEdits
-effort: high
+effort: medium
 ---
 
 <role>

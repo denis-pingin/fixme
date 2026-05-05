@@ -64,6 +64,7 @@ const DEFAULT_MODEL = 'opus';
 const DEFAULT_PROFILE = 'quality';
 const DEFAULT_RUNTIME = 'claude';
 const CLAUDE_REASONING_EFFORT = 'high';
+const CLAUDE_MEDIUM_REASONING_EFFORT = 'medium';
 const CLAUDE_EXTRA_HIGH_REASONING_EFFORT = 'xhigh';
 
 const CLAUDE_EXTRA_HIGH_AGENTS = new Set([
@@ -76,6 +77,10 @@ const CLAUDE_EXTRA_HIGH_AGENTS = new Set([
   'fixme-handle-spec-review',
   'fixme-handle-plan-review',
   'fixme-handle-code-review',
+]);
+
+const CLAUDE_MEDIUM_AGENTS = new Set([
+  'fixme-execute-plan',
 ]);
 
 const CODEX_REASONING_PROFILES = {
@@ -245,6 +250,7 @@ function applyRuntimeSettings(result, agentName, modelOrNull) {
 }
 
 function claudeReasoningEffortForAgent(agentName) {
+  if (CLAUDE_MEDIUM_AGENTS.has(agentName)) return CLAUDE_MEDIUM_REASONING_EFFORT;
   return CLAUDE_EXTRA_HIGH_AGENTS.has(agentName)
     ? CLAUDE_EXTRA_HIGH_REASONING_EFFORT
     : CLAUDE_REASONING_EFFORT;

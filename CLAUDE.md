@@ -132,7 +132,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-write-product-spec | Product specification writer | Writes only product specification files | opus | xhigh | xhigh |
 | fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus | xhigh | xhigh |
 | fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus | xhigh | xhigh |
-| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | high | medium |
+| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | medium | medium |
 | fixme-review-plan | Plan reviewer | Read-only, structured findings | opus | xhigh | xhigh |
 | fixme-review-code | Code reviewer | Read-only, structured findings | opus | xhigh | xhigh |
 | fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh | xhigh |
@@ -143,7 +143,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 
 Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
-Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
+Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `medium` for `fixme-execute-plan`; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
 
 ### Ticket State Machine
 
