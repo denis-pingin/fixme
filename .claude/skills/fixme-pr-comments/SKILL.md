@@ -321,6 +321,8 @@ For each unresolved `review_item`:
 
 Use `fixme-howto-importance` for the exact axis values, floor list, deterministic scoring formula, and pattern aggregation rule.
 
+Do not write `IMPORTANCE: floor` for non-floor project-rule violations, cleanup, doc/comment mismatch, raw JSON.parse usage by itself, or generic test-hygiene findings. For non-floor findings, compute and print the numeric score so softness can visibly decide survives vs suppressed.
+
 Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance. Severity itself is multi-dimensional - weight user impact, frequency, and reversibility together; do not let one topic match anchor the verdict.
 
 **Severity is multi-axis, not topic-match.** Before assigning a bucket, answer all three forcing questions:
@@ -513,7 +515,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 - **Decisions needed**: {G1 (T22, I3), G2 (T24) or None}
 - **Current PR fixes**: {G3 (T15), G4 (T7, I2) or None}
 - **Follow-up only**: {G5 (T9) or None}
-- **SUPPRESSED_COUNT: <number>**: {Number of groups suppressed by softness; list G ids or None}
+- **Suppressed by softness: {number suppressed, with group IDs or None}**
 - **Already fixed**: {G6 (T1, T2, T5)... or None. One short reason per group, e.g. "fixed in commit abc123"}
 - **Not actionable**: {G7 (T11, I4)... or None. One short reason per group, e.g. "false positive: code already validates input"}
 ```

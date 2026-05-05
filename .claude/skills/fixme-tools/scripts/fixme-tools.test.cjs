@@ -2307,6 +2307,11 @@ test('fixme importance rubric defines softness axes, floor, scoring, and aggrega
   assert(skill.includes('Importance: <score> / softness <resolved_float> -> survives'), 'rubric should define surviving scored importance output');
   assert(skill.includes('Importance: <score> / softness <resolved_float> -> suppressed'), 'rubric should define suppressed scored importance output');
   assert(skill.includes('Importance: not-eligible / softness <resolved_float> -> not-eligible'), 'rubric should define not-eligible importance output');
+  assert(skill.includes('A finding is floor only when the issue itself would ship one of the explicit floor harms.'), 'rubric should keep floor narrow');
+  assert(skill.includes('Do not assign a floor harm_class for project-rule violations, style cleanup, duplicated branches, doc/comment mismatch, ordinary maintainability, generic test hygiene, or raw JSON parsing by itself.'), 'rubric should forbid floor overclassification for common non-floor findings');
+  assert(skill.includes('BLOCKER severity does not imply floor.'), 'rubric should not derive floor from severity');
+  assert(skill.includes('`test-fakeness` is narrow: tests that copy production or business logic, assert a reimplementation instead of exercising production code, or pass without the production behavior being wired.'), 'rubric should keep test-fakeness narrow');
+  assert(skill.includes('Use ASCII `->` exactly. Do not use Unicode arrows.'), 'rubric should require ASCII importance arrows');
 });
 
 test('fixme reviewers and handlers use shared importance rubric', () => {
@@ -2355,10 +2360,13 @@ test('fixme-pr-comments records importance axes and softness routing metadata', 
   assert(skill.includes('fixme-howto-importance'), 'PR comments skill should use shared importance rubric');
   assert(skill.includes('IMPORTANCE_AXES'), 'PR comments should require importance axes metadata');
   assert(skill.includes('IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible'), 'PR comments should require importance output on every triaged item');
-  assert(skill.includes('SUPPRESSED_COUNT: <number>'), 'PR comments should report suppressed count');
+  assert(skill.includes('Suppressed by softness: {number suppressed, with group IDs or None}'), 'PR comments should report suppressed count with a human-facing label');
+  assert(!skill.includes('SUPPRESSED_COUNT'), 'PR comments should not leak handler-style uppercase counters into user-facing reports');
   assert(skill.includes('FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false'), 'PR comments should explicitly mark file-overlap-only deferral candidates');
   assert(skill.includes('Softness-suppressed groups use FOLLOWUP_ONLY'), 'softness should route suppressed PR findings to follow-up');
   assert(skill.includes('file-overlap-only deferral candidates are never softness-suppressed'), 'softness should not bypass the file-overlap-only ban');
+  assert(skill.includes('Do not write `IMPORTANCE: floor` for non-floor project-rule violations, cleanup, doc/comment mismatch, raw JSON.parse usage by itself, or generic test-hygiene findings.'), 'PR comments should not mark ordinary valid issues as floor');
+  assert(skill.includes('For non-floor findings, compute and print the numeric score so softness can visibly decide survives vs suppressed.'), 'PR comments should show numeric scores for non-floor findings');
 });
 
 test('fixme-config documents review softness prompts and CLI writes', () => {

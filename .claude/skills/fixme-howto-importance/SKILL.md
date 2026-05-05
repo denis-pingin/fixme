@@ -39,6 +39,16 @@ The floor is the non-negotiable set of harm classes that softness cannot suppres
 
 Floor findings always appear in the main report and always route through normal handler rules. A floor finding can still be rejected as a false positive or wont-fix if the handler proves that classification independently; softness is not involved in that decision.
 
+A finding is floor only when the issue itself would ship one of the explicit floor harms. The floor is not a priority label, a reviewer pressure label, or a synonym for "valid".
+
+BLOCKER severity does not imply floor. Severity decides how urgent or blocking the issue is; `harm_class` decides whether softness can suppress it.
+
+Do not assign a floor harm_class for project-rule violations, style cleanup, duplicated branches, doc/comment mismatch, ordinary maintainability, generic test hygiene, or raw JSON parsing by itself. Those are normally `harm_class=none` unless the evidence proves a concrete correctness, security, privacy, data-loss, migration, test-fakeness, stub-claimed-complete, or locked-decision-violation harm.
+
+`correctness` is narrow: shipped behavior is wrong, silently dropped, crashes, corrupts state, or fails a required workflow under a credible trigger condition. A code smell, cleanup, project convention violation, or confusing branch is not correctness by itself.
+
+`test-fakeness` is narrow: tests that copy production or business logic, assert a reimplementation instead of exercising production code, or pass without the production behavior being wired. A missing test, missing mock, noisy test logger, or generic test hygiene issue is not `test-fakeness` by itself.
+
 ## Deterministic Importance Score
 
 Handlers compute importance for non-floor findings from the axes. Reviewers do not assign numeric importance directly.
@@ -93,6 +103,8 @@ Use one of these exact output shapes:
 - `Importance: <score> / softness <resolved_float> -> survives`
 - `Importance: <score> / softness <resolved_float> -> suppressed`
 - `Importance: not-eligible / softness <resolved_float> -> not-eligible`
+
+Use ASCII `->` exactly. Do not use Unicode arrows.
 
 Use `not-eligible` for ASK_USER, REJECT_*, already-fixed items, and file-overlap-only deferral candidates. Keep those items visible through their normal route; softness does not decide them.
 
