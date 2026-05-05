@@ -63,7 +63,7 @@ Do not redesign the plan in repair mode. Do not implement follow-up-only `MINOR`
 
 Before writing any code, capture the current state:
 
-1. Run the project's full verification suite (build, lint, typecheck, tests)
+1. Run the project's full verification suite (build, lint, typecheck, tests). Run independent commands in parallel - see [Running Verification Commands in Parallel](#running-verification-commands-in-parallel).
 2. Record the results. This is the **baseline**.
    - If baseline is fully clean: any failure after changes is caused by the changes
    - If baseline has failures: record exactly which tests fail and with what errors. This is the ONLY valid reference for pre-existing failure claims later
@@ -96,6 +96,8 @@ Use the project's documented commands. Common patterns:
 - Typecheck: the project's typecheck command
 - Tests: ALL test suites, not just the ones touched
 
+Run independent commands in parallel - see [Running Verification Commands in Parallel](#running-verification-commands-in-parallel).
+
 **Capture sufficient output.** Use `2>&1 | tail -150` or more. Never truncate to a small number of lines - missing the actual error and re-running a multi-minute suite is unacceptable.
 
 **Every check must pass with zero errors and zero warnings.** Not "mostly passes". Not "only warnings". Zero.
@@ -106,6 +108,36 @@ If any check fails:
 3. Repeat until everything is green
 
 **Work is not done until this phase produces a fully clean run.**
+
+### Running Verification Commands in Parallel
+
+Verification commands that do not depend on each other MUST run in parallel, not sequentially. This applies to Phase 2 (Baseline), Phase 3 task-level verifications, and Phase 4 (Final Verification).
+
+**What is independent:**
+- Build, lint, and typecheck of the same target are independent of each other.
+- Test suites for separate apps, packages, or workspaces in a monorepo (e.g. `yarn workspace api test`, `yarn workspace web test`, `yarn workspace mobile test`) are independent of each other.
+- Build/lint/typecheck across separate workspaces are independent of each other.
+
+**What is NOT independent:**
+- A test command that requires a build artifact produced by an earlier step. Run the build first, then the dependent test.
+- Commands that mutate shared state (lockfiles, generated files, the same output directory) - run sequentially or fix the conflict.
+
+**How to run in parallel:**
+
+1. For each independent command, start it with `Bash` using `run_in_background: true`. Capture the returned shell ID.
+2. Do not poll or sleep. The runtime notifies you when each background shell completes.
+3. After every shell has completed, read each shell's output with `BashOutput` and aggregate results. Capture sufficient output per shell using `2>&1 | tail -150` or more.
+4. Treat the verification gate as failed if ANY shell fails. Do not stop the others early - finish collecting results so the user sees every failure on the first run.
+5. If any shell fails, fix the issue and re-run ALL verification commands from the beginning, again in parallel. Fixes can introduce new failures elsewhere.
+
+**Sequential is acceptable only when:**
+- There is exactly one verification command (single test command that internally fans out, e.g. Turbo/Nx/Lerna already running its own internal parallelism).
+- A later command genuinely depends on an earlier command's output.
+- Running in parallel would exhaust system resources (only when verified, not assumed).
+
+**Example - monorepo with three independent test suites:**
+- BAD: run `yarn workspace api test`, wait, run `yarn workspace web test`, wait, run `yarn workspace mobile test`. Three serial multi-minute waits.
+- GOOD: start all three with `run_in_background: true` in a single message, wait for all completion notifications, read each output via `BashOutput`, then report aggregated pass/fail.
 
 ## Pre-Existing Failures
 
