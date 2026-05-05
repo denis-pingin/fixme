@@ -2152,6 +2152,15 @@ test('fixme-pr-comments skill: triages comments by risk, complexity, confidence,
   assert(skill.includes('If after consultation zero `CURRENT_PR_FIX` groups remain'), 'routing should dispatch only current PR fixes');
 });
 
+test('fixme-pr-comments skill: zero current fixes proceeds to reply resolution without confirmation', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('When zero `CURRENT_PR_FIX` groups remain and replies are needed, Step 14 runs in the same turn as the Step 4 presentation.'), 'zero-fix route should run Step 14 immediately');
+  assert(skill.includes('Do not ask whether to proceed with replies, thread resolution, or hand-picked fixes.'), 'zero-fix route should forbid reply confirmation prompts');
+  assert(skill.includes('The Step 14 reply/resolve execution is the closing action - not a prompt to the user.'), 'Step 14 should close with action, not confirmation');
+});
+
 test('fixme decision presentation skill: uses visually scannable cards', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-present-decisions', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
