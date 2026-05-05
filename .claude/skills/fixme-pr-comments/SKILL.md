@@ -80,9 +80,10 @@ Step numbers are stable anchors to the workflow definition, not sequence indices
 ### Routing Rules
 
 - **Step 5 (analyze/route)**: If at least one item was classified `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION`, advance to Step 6. Otherwise jump directly to Step 7.
-- **Step 7 (consult/route)**: If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely.
-  - If `--pause` IS set: advance to Step 8 and wait for user confirmation in a separate turn.
-  - If `--pause` is NOT set: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `Skill("fixme-task")` tool call for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
+- **Step 7 (consult/route)**:
+  - If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely. When zero `CURRENT_PR_FIX` groups remain and replies are needed, Step 14 runs in the same turn as the Step 4 presentation. Do not ask whether to proceed with replies, thread resolution, or hand-picked fixes.
+  - If `--pause` IS set and at least one `CURRENT_PR_FIX` group remains: advance to Step 8 and wait for user confirmation in a separate turn.
+  - If `--pause` is NOT set and at least one `CURRENT_PR_FIX` group remains: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `Skill("fixme-task")` tool call for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
 - **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
 - **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
 
@@ -97,8 +98,9 @@ If you find yourself with CURRENT_PR_FIX groups resolved and Step 4 is still `pe
 When `--pause` is NOT set, the turn that emits the Step 4 presentation has a strict closing form:
 
 - The last user-visible line of the report is the final entry of the **Accounting Ledger** section.
-- **No question, prompt, or call-to-action** follows the ledger. The following phrases are explicitly forbidden as closings: `Proceed?`, `Should I dispatch?`, `Continue with B1 and B2?`, `(yes / no / modify)`, `Ready to dispatch?`, `Want me to proceed?`, or any other interrogative or confirmation-seeking sentence.
-- The same turn must contain the `Skill("fixme-task")` tool invocation for Step 9, immediately after the report. The tool call is the closing - not a prompt to the user.
+- **No question, prompt, or call-to-action** follows the ledger. The following phrases are explicitly forbidden as closings: `Proceed?`, `Should I dispatch?`, `Should I proceed with replies?`, `stop here`, `hand-pick`, `Continue with B1 and B2?`, `(yes / no / modify)`, `Ready to dispatch?`, `Want me to proceed?`, or any other interrogative or confirmation-seeking sentence.
+- If at least one `CURRENT_PR_FIX` group remains, the same turn must contain the `Skill("fixme-task")` tool invocation for Step 9, immediately after the report. The tool call is the closing - not a prompt to the user.
+- If zero `CURRENT_PR_FIX` groups remain and replies are needed, the same turn must execute Step 14 immediately after the report. The Step 14 reply/resolve execution is the closing action - not a prompt to the user.
 
 When `--pause` IS set, the turn that emits the Step 4 presentation may end with a neutral pointer to Step 8 (e.g. `See ## Ready to Execute below.`) followed by the Step 8 prompt in the same turn. The Step 8 prompt is the **only** place a user-facing confirmation question is allowed in this skill.
 
@@ -137,10 +139,10 @@ TodoWrite([
   { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
   { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
   { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
-  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "pending", activeForm: "Presenting analysis and dispatching" },
+  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately continue to Step 9 or Step 14 in same turn", status: "pending", activeForm: "Presenting analysis and continuing" },
   { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
   { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
-  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "pending", activeForm: "Routing to dispatch" },
+  { content: "Step 7 [consult/route] Route to dispatch or resolve (no --pause confirmation gate)", status: "pending", activeForm: "Routing to dispatch or resolve" },
   { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "pending", activeForm: "Dispatching fixme-task" },
   { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
@@ -151,7 +153,7 @@ TodoWrite([
 ])
 ```
 
-Note that Step 9 keeps its number even when Step 8 is absent - step numbers are stable workflow anchors, not list indices. The Step 4 and Step 9 entries in the no-`--pause` variant are explicitly worded to remind you they execute in the **same turn**, eliminating the implicit "I should pause here" pattern.
+Note that Step 9 keeps its number even when Step 8 is absent - step numbers are stable workflow anchors, not list indices. The Step 4, Step 7, Step 9, and Step 14 entries in the no-`--pause` variant are explicitly worded to remind you the routed next action executes in the **same turn**, eliminating the implicit "I should pause here" pattern.
 
 ### Following the Manifest
 
@@ -162,7 +164,7 @@ Execute steps in order. After each step (whether a Bash command, an analysis, a 
 3. Set the next step (per routing rules) to `in_progress`
 4. Execute the next step
 
-**Same-turn execution rule (when `--pause` is OFF):** Step 4 (analysis presentation) and Step 9 (dispatch) are executed in a single turn - the analysis report is emitted, then the `Skill("fixme-task")` tool call follows in the same turn. Do not return to the user between Step 4 and Step 9 in this mode. The user invoked the skill without `--pause` precisely so they would not have to confirm; honor that contract.
+**Same-turn execution rule (when `--pause` is OFF):** Step 4 (analysis presentation) and the routed next action are executed in a single turn. If current fixes remain, the analysis report is emitted, then the `Skill("fixme-task")` tool call follows in the same turn. If zero current fixes remain and replies are needed, the analysis report is emitted, then Step 14 reply/resolve execution follows in the same turn. Do not return to the user between Step 4 and the routed next action in this mode. The user invoked the skill without `--pause` precisely so they would not have to confirm; honor that contract.
 
 **Never skip steps. Never combine steps (except the explicit Step 4 + Step 9 same-turn execution above when `--pause` is OFF). Never "optimize" the sequence. The manifest is the law.**
 
