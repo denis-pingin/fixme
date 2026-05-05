@@ -2248,6 +2248,15 @@ test('fixme-pr-comments skill: zero current fixes proceeds to reply resolution w
   assert(skill.includes('The Step 14 reply/resolve execution is the closing action - not a prompt to the user.'), 'Step 14 should close with action, not confirmation');
 });
 
+test('fixme-pr-comments skill: future-phase handling is follow-up, not rejection', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('If a valid concern still needs action in another PR, phase, ticket, TODO, or cleanup commit, classify it as `FOLLOWUP_ONLY`, not `REJECT_WONT_FIX`.'), 'future work should be follow-up, not rejection');
+  assert(skill.includes('Do not write `Follow-Up Only: None` while also saying an item will be handled by another PR, phase, ticket, TODO, or cleanup commit.'), 'follow-up section should not contradict deferred handling');
+  assert(skill.includes('A later branch can justify `REJECT_ALREADY_FIXED` or `REJECT_WONT_FIX` only when the exact flagged code path is already removed or replaced and no remaining action is required before the stacked work ships.'), 'supersession rejection should require already-complete replacement');
+});
+
 test('fixme decision presentation skill: uses visually scannable cards', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-present-decisions', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
