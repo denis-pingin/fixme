@@ -124,26 +124,26 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 
 Skills dispatched as sub-agents have corresponding agent definitions in `.claude/agents/`. The agent definition binds role constraints (identity, boundaries, tool restrictions) at the system level via `subagent_type`, and preloads operational procedures via `skills` frontmatter. Dispatch prompts only contain task-specific inputs.
 
-| Agent | Role | Key Constraint | Default Claude Model | Default Codex Effort |
-| ----- | ---- | -------------- | -------------------- | -------------------- |
-| fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | opus | xhigh |
-| fixme-review-spec | Specification reviewer | Read-only, structured findings | opus | xhigh |
-| fixme-handle-spec-review | Specification finding classifier | Read-only, outputs routing directives | opus | xhigh |
-| fixme-write-product-spec | Product specification writer | Writes only product specification files | opus | xhigh |
-| fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus | xhigh |
-| fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus | xhigh |
-| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | xhigh |
-| fixme-review-plan | Plan reviewer | Read-only, structured findings | opus | xhigh |
-| fixme-review-code | Code reviewer | Read-only, structured findings | opus | xhigh |
-| fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh |
-| fixme-handle-code-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh |
-| fixme-investigate | Bug investigator | Writes reports, never fixes code | opus | xhigh |
-| fixme-research | Codebase explorer | Writes research output, never fixes code | opus | xhigh |
-| fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | xhigh |
+| Agent | Role | Key Constraint | Default Claude Model | Default Claude Effort | Default Codex Effort |
+| ----- | ---- | -------------- | -------------------- | --------------------- | -------------------- |
+| fixme-task | Pipeline orchestrator | Dispatcher only, never reads source code | opus | high | xhigh |
+| fixme-review-spec | Specification reviewer | Read-only, structured findings | opus | xhigh | xhigh |
+| fixme-handle-spec-review | Specification finding classifier | Read-only, outputs routing directives | opus | xhigh | xhigh |
+| fixme-write-product-spec | Product specification writer | Writes only product specification files | opus | xhigh | xhigh |
+| fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus | xhigh | xhigh |
+| fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus | xhigh | xhigh |
+| fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | high | medium |
+| fixme-review-plan | Plan reviewer | Read-only, structured findings | opus | xhigh | xhigh |
+| fixme-review-code | Code reviewer | Read-only, structured findings | opus | xhigh | xhigh |
+| fixme-handle-plan-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh | xhigh |
+| fixme-handle-code-review | Finding classifier | Read-only, outputs routing directives | opus | xhigh | xhigh |
+| fixme-investigate | Bug investigator | Writes reports, never fixes code | opus | high | xhigh |
+| fixme-research | Codebase explorer | Writes research output, never fixes code | opus | high | xhigh |
+| fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | high | xhigh |
 
 Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
-Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus high reasoning effort. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Claude `opus` and Codex `xhigh` for all agents.
+Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
 
 ### Ticket State Machine
 

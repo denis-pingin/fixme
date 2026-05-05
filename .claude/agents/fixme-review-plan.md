@@ -6,7 +6,7 @@ skills:
   - fixme-review-plan
   - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
-effort: high
+effort: xhigh
 ---
 
 <role>

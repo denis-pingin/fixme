@@ -6,7 +6,7 @@ skills:
   - fixme-handle-spec-review
   - fixme-howto-present-decisions
   - fixme-howto-find-fixme-dir
-effort: high
+effort: xhigh
 ---
 
 <role>

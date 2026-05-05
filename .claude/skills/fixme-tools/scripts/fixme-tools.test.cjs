@@ -1632,7 +1632,7 @@ test('resolve-model: no config returns opus/quality/default', () => {
   assert(res.data.agent === 'fixme-write-plan', `agent: ${res.data.agent}`);
   assert(res.data.runtime === 'claude', `runtime: ${res.data.runtime}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'high', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
@@ -1667,7 +1667,7 @@ test('resolve-model: balanced profile returns per-agent mapping', () => {
   const planner = runInDir('resolve-model fixme-write-plan', dir);
   assert(planner.ok, `exit: ${JSON.stringify(planner)}`);
   assert(planner.data.model === 'opus', `planner model: ${planner.data.model}`);
-  assert(planner.data.reasoning_effort === 'high', `planner reasoning_effort: ${planner.data.reasoning_effort}`);
+  assert(planner.data.reasoning_effort === 'xhigh', `planner reasoning_effort: ${planner.data.reasoning_effort}`);
   assert(planner.data.profile === 'balanced', `planner profile: ${planner.data.profile}`);
 
   const productSpecWriter = runInDir('resolve-model fixme-write-product-spec', dir);
@@ -1687,12 +1687,12 @@ test('resolve-model: codex quality controls effort only and omits model', () => 
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.runtime === 'codex', `runtime: ${res.data.runtime}`);
   assert(res.data.model === null, `codex model should be null, got: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'medium', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
 
-test('resolve-model: codex balanced maps planners to xhigh and executors to high', () => {
+test('resolve-model: codex balanced maps planners to xhigh and executors to medium', () => {
   const dir = createTmpDir();
   const fixmeDir = path.join(dir, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
@@ -1714,7 +1714,7 @@ test('resolve-model: codex balanced maps planners to xhigh and executors to high
   const executor = runInDir('resolve-model fixme-execute-plan --runtime codex', dir);
   assert(executor.ok, `exit: ${JSON.stringify(executor)}`);
   assert(executor.data.model === null, `executor codex model should be null, got: ${executor.data.model}`);
-  assert(executor.data.reasoning_effort === 'high', `executor reasoning_effort: ${executor.data.reasoning_effort}`);
+  assert(executor.data.reasoning_effort === 'medium', `executor reasoning_effort: ${executor.data.reasoning_effort}`);
 
   const browserVerifier = runInDir('resolve-model fixme-browser-verify --runtime codex', dir);
   assert(browserVerifier.ok, `exit: ${JSON.stringify(browserVerifier)}`);
@@ -1770,6 +1770,7 @@ test('resolve-model: spec reviewer follows reviewer profile mapping', () => {
   const res = runInDir('resolve-model fixme-review-spec', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'sonnet', `model: ${res.data.model}`);
+  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
   assert(res.data.source === 'profile', `source: ${res.data.source}`);
 });
@@ -1785,12 +1786,14 @@ test('resolve-model: spec writers follow writer profile mapping', () => {
   const productSpecWriter = runInDir('resolve-model fixme-write-product-spec', dir);
   assert(productSpecWriter.ok, `exit: ${JSON.stringify(productSpecWriter)}`);
   assert(productSpecWriter.data.model === 'sonnet', `product spec writer model: ${productSpecWriter.data.model}`);
+  assert(productSpecWriter.data.reasoning_effort === 'xhigh', `product spec writer reasoning_effort: ${productSpecWriter.data.reasoning_effort}`);
   assert(productSpecWriter.data.profile === 'budget', `product spec writer profile: ${productSpecWriter.data.profile}`);
   assert(productSpecWriter.data.source === 'profile', `product spec writer source: ${productSpecWriter.data.source}`);
 
   const technicalSpecWriter = runInDir('resolve-model fixme-write-technical-spec', dir);
   assert(technicalSpecWriter.ok, `exit: ${JSON.stringify(technicalSpecWriter)}`);
   assert(technicalSpecWriter.data.model === 'sonnet', `technical spec writer model: ${technicalSpecWriter.data.model}`);
+  assert(technicalSpecWriter.data.reasoning_effort === 'xhigh', `technical spec writer reasoning_effort: ${technicalSpecWriter.data.reasoning_effort}`);
   assert(technicalSpecWriter.data.profile === 'budget', `technical spec writer profile: ${technicalSpecWriter.data.profile}`);
   assert(technicalSpecWriter.data.source === 'profile', `technical spec writer source: ${technicalSpecWriter.data.source}`);
 });
@@ -1805,6 +1808,7 @@ test('resolve-model: spec review handler follows handler profile mapping', () =>
   const res = runInDir('resolve-model fixme-handle-spec-review', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'sonnet', `model: ${res.data.model}`);
+  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'budget', `profile: ${res.data.profile}`);
   assert(res.data.source === 'profile', `source: ${res.data.source}`);
 });
@@ -1850,7 +1854,7 @@ test('resolve-model: unknown profile falls back to quality', () => {
   const res = runInDir('resolve-model fixme-write-plan', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'high', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.profile === 'quality', `profile: ${res.data.profile}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
@@ -1886,7 +1890,7 @@ test('resolve-model: malformed config falls back gracefully', () => {
   const res = runInDir('resolve-model fixme-write-plan', dir);
   assert(res.ok, `exit: ${JSON.stringify(res)}`);
   assert(res.data.model === 'opus', `model: ${res.data.model}`);
-  assert(res.data.reasoning_effort === 'high', `reasoning_effort: ${res.data.reasoning_effort}`);
+  assert(res.data.reasoning_effort === 'xhigh', `reasoning_effort: ${res.data.reasoning_effort}`);
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
 
@@ -1922,15 +1926,22 @@ config_file = "/Users/denis/.codex/agents/gsd-executor.toml"
     'Read-only code reviewer.',
     '<role>\nRead ~/.claude/skills/fixme-review-code/SKILL.md before reviewing.\n</role>'
   );
+  createAgentFile(
+    agentsSrc,
+    'fixme-execute-plan',
+    'Plan executor.',
+    '<role>\nRead ~/.claude/skills/fixme-execute-plan/SKILL.md before executing.\n</role>'
+  );
 
   const result = run(`codex-agents install --agents-src "${agentsSrc}" --codex-dir "${codexDir}"`);
   assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
-  assert(result.data.installed === 2, `installed count: ${result.data.installed}`);
+  assert(result.data.installed === 3, `installed count: ${result.data.installed}`);
 
   const config = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8');
   assert(config.includes('[agents.gsd-executor]'), 'existing GSD agent registration should be preserved');
   assert(config.includes('[agents.fixme-task]'), 'fixme-task should use [agents.fixme-task]');
   assert(config.includes('[agents.fixme-review-code]'), 'fixme-review-code should use [agents.fixme-review-code]');
+  assert(config.includes('[agents.fixme-execute-plan]'), 'fixme-execute-plan should use [agents.fixme-execute-plan]');
   assert(!config.includes('[[agents]]'), 'Codex config must not use [[agents]] array tables');
   assert(config.includes(`config_file = "${path.join(codexDir, 'agents', 'fixme-task.toml').replace(/\\/g, '/')}"`), 'config_file should be absolute');
   assert(config.indexOf('# Fixme Agent Configuration') < config.indexOf('# GSD Agent Configuration'), 'Fixme block should be inserted before GSD-managed tail block');
@@ -1943,6 +1954,9 @@ config_file = "/Users/denis/.codex/agents/gsd-executor.toml"
   assert(taskToml.includes('spawn_agent(agent_type=..., reasoning_effort=..., message=...)'), 'agent TOML should include Codex dispatch adapter with reasoning effort');
   assert(!taskToml.includes('\nmodel = '), 'Codex agent TOML must not pin a model');
   assert(taskToml.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'agent TOML should rewrite Claude skill paths to Codex paths');
+
+  const executeToml = fs.readFileSync(path.join(codexDir, 'agents', 'fixme-execute-plan.toml'), 'utf8');
+  assert(executeToml.includes('model_reasoning_effort = "medium"'), 'Codex execute agent TOML should default to medium reasoning');
 });
 
 test('codex-agents install: removes stale Fixme agent registrations and TOML files', () => {

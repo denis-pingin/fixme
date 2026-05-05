@@ -175,7 +175,7 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 ## Dispatch Loop
 
-**Runtime settings:** Resolve every dispatched Fixme agent with `fixme-tools.cjs resolve-model` before calling Agent. Claude dispatch uses the resolved short model tag plus high reasoning effort. Codex-installed skills pass `--runtime codex`, omit model, and pass only the resolved reasoning effort so the user-selected Codex model remains in force.
+**Runtime settings:** Resolve every dispatched Fixme agent with `fixme-tools.cjs resolve-model` before calling Agent. Claude dispatch uses the resolved short model tag plus the resolved reasoning effort. Codex-installed skills pass `--runtime codex`, omit model, and pass only the resolved reasoning effort so the user-selected Codex model remains in force.
 
 **Concurrent task limit (v1):** Only one background fixme-task at a time. Track the active task's ticket path in session.md frontmatter (`active_task` field). This prevents git state conflicts. Future: multiple concurrent tasks using git worktrees.
 
