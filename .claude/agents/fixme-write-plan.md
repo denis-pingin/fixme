@@ -8,7 +8,7 @@ skills:
   - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
 permissionMode: acceptEdits
-effort: high
+effort: xhigh
 ---
 
 <role>

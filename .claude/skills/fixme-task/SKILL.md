@@ -682,7 +682,7 @@ Step 1 - Resolve runtime settings:
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>
 ```
 
-Returns JSON like `{"agent":"fixme-write-plan","runtime":"claude","model":"opus","reasoning_effort":"high","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, reasoning effort, or runtime behavior, and do not skip the call.
+Returns JSON like `{"agent":"fixme-write-plan","runtime":"claude","model":"opus","reasoning_effort":"xhigh","profile":"quality","source":"profile"}`. The CLI reads `<fixme-dir>/config.json` (or returns defaults if none exists). Do not hardcode models, reasoning effort, or runtime behavior, and do not skip the call.
 
 Installed Codex skills resolve Codex settings with:
 
@@ -695,7 +695,7 @@ Codex results intentionally return `model: null`. Codex dispatch must preserve t
 Step 2 - Print the banner as a single line of user-visible text before the Agent tool call:
 
 ```
-→ dispatching fixme-write-plan (runtime: claude, model: opus, reasoning: high, profile: quality, source: profile)
+→ dispatching fixme-write-plan (runtime: claude, model: opus, reasoning: xhigh, profile: quality, source: profile)
 ```
 
 The banner is the user's only window into runtime selection. If you dispatch without it, you are hiding state the user needs to audit runtime behavior.
@@ -732,9 +732,9 @@ Tool access for each sub-skill is enforced by its agent definition in `~/.claude
 
 Model and reasoning resolution is performed by `fixme-tools.cjs resolve-model` (see the dispatch contract above). The CLI is the authoritative source for the profile tables and the `override > profile > default` resolution order.
 
-Claude runtime receives short model tags only (`opus`, `sonnet`, `haiku`, `inherit`) plus `reasoning_effort: high` for every non-inherit model. No versioned Claude model IDs are emitted.
+Claude runtime receives short model tags only (`opus`, `sonnet`, `haiku`, `inherit`) plus agent-specific `reasoning_effort` for every non-inherit model. Specification, planning, review, and classifier agents use `xhigh`; other agents use `high`. No versioned Claude model IDs are emitted.
 
-Codex runtime receives no model value. It receives only `reasoning_effort`, so the user-selected Codex model remains in force. Inherit omits both model and reasoning controls.
+Codex runtime receives no model value. It receives only `reasoning_effort`, so the user-selected Codex model remains in force. Inherit omits both model and reasoning controls. `fixme-execute-plan` uses `medium` on Codex across profiles because implementation should spend less reasoning than planning and review.
 
 **`source` field values:**
 - `override` - came from `models.overrides[agent]`
@@ -766,7 +766,7 @@ Codex reasoning quick reference:
 |-------------|---------|----------|--------|
 | planning, specs, review, handlers, research, investigation | xhigh | xhigh | high |
 | fixme-task | xhigh | xhigh | medium |
-| fixme-execute-plan | xhigh | high | medium |
+| fixme-execute-plan | medium | medium | medium |
 | fixme-browser-verify | xhigh | high | medium |
 
 **Config example:**

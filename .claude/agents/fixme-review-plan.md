@@ -7,7 +7,7 @@ skills:
   - fixme-howto-importance
   - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
-effort: high
+effort: xhigh
 ---
 
 <role>

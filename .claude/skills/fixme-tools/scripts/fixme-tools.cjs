@@ -64,14 +64,28 @@ const DEFAULT_MODEL = 'opus';
 const DEFAULT_PROFILE = 'quality';
 const DEFAULT_RUNTIME = 'claude';
 const CLAUDE_REASONING_EFFORT = 'high';
+const CLAUDE_EXTRA_HIGH_REASONING_EFFORT = 'xhigh';
+
+const CLAUDE_EXTRA_HIGH_AGENTS = new Set([
+  'fixme-write-plan',
+  'fixme-write-product-spec',
+  'fixme-write-technical-spec',
+  'fixme-review-spec',
+  'fixme-review-plan',
+  'fixme-review-code',
+  'fixme-handle-spec-review',
+  'fixme-handle-plan-review',
+  'fixme-handle-code-review',
+]);
 
 const CODEX_REASONING_PROFILES = {
   quality: {
     default: 'xhigh',
+    'fixme-execute-plan': 'medium',
   },
   balanced: {
     default: 'xhigh',
-    'fixme-execute-plan': 'high',
+    'fixme-execute-plan': 'medium',
     'fixme-browser-verify': 'high',
   },
   budget: {
@@ -213,8 +227,8 @@ const KNOWN_FIXME_SKILLS = new Set([
 /**
  * Resolve runtime-specific agent settings based on config.
  *
- * Claude receives short model names plus high reasoning effort. Codex receives
- * reasoning effort only so the user's selected Codex model remains in force.
+ * Claude receives short model names plus agent-specific reasoning effort. Codex
+ * receives reasoning effort only so the user's selected Codex model remains in force.
  *
  * Resolution order:
  *   1. models.overrides[agent] (source = 'override')
@@ -241,8 +255,14 @@ function applyRuntimeSettings(result, agentName, modelOrNull) {
   }
 
   result.model = modelOrNull || DEFAULT_MODEL;
-  result.reasoning_effort = result.model === 'inherit' ? null : CLAUDE_REASONING_EFFORT;
+  result.reasoning_effort = result.model === 'inherit' ? null : claudeReasoningEffortForAgent(agentName);
   return result;
+}
+
+function claudeReasoningEffortForAgent(agentName) {
+  return CLAUDE_EXTRA_HIGH_AGENTS.has(agentName)
+    ? CLAUDE_EXTRA_HIGH_REASONING_EFFORT
+    : CLAUDE_REASONING_EFFORT;
 }
 
 function codexReasoningEffortForAgent(profile, agentName) {
