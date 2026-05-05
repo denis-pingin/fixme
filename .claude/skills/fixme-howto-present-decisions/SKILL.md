@@ -99,7 +99,7 @@ Every decision card starts with the same fast-orientation header:
 - **Context**: {where we are in the product, workflow, or system}
 - **Problem**: {the concrete issue or ambiguity}
 - **Impact**: {what breaks, degrades, or remains blocked if undecided}
-- **Why now**: {what this decision unlocks or prevents}
+- **Why now**: {what makes this PR/phase the right place to act, not the workflow's own pause. "The workflow is waiting on this decision" or "the reviewer left a comment" are circular and not valid - the workflow paused BECAUSE this was routed for input. Valid reasons: reviewer-blocking pressure on this PR, cohesion with files already touched in this PR's diff, or concrete operational/correctness pain that justifies acting now over deferring. If none apply, the item probably belongs in follow-up, not in a decision card.}
 ```
 
 Then add the body that fits the decision type.
@@ -214,6 +214,7 @@ All decision output must be visually scannable. Dense walls of text are never ac
 - **One idea per line/bullet.** Never combine two pieces of information into one bullet.
 - **Clickable file references everywhere.** Every file path is a markdown link with absolute path and line numbers: `[schema.test.ts:132-143](/absolute/path/schema.test.ts#L132-L143)`. No plain-text paths.
 - **No markdown tables.** Represent comparisons as option bullets.
+- **No preamble before the first decision card.** Workflow status ("only D1 is blocking", "PR #2-#6 don't change the count", "we are paused inside Step 6") goes in a separate status line above all cards or is omitted entirely. It must never appear inside or immediately above a card. If multiple cards are presented together, do not insert workflow-status sentences between them either.
 
 ## Length Budget
 
@@ -235,12 +236,12 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 
 ## Option Rules
 
-- **All 6 option fields are mandatory** for every option: What, How it solves the issue, Pros, Cons, Tradeoff, Effort.
+- **All 6 option fields are mandatory and exhaustive** for every option: What, How it solves the issue, Pros, Cons, Tradeoff, Effort. Do not invent additional fields like "Product impact", "Complexity", "Risk", or "Why now". If a field would have the same value across all options (e.g. "Product impact: user-facing fallback remains unchanged" repeated for every option), it is filler and must not appear at all.
 - **Options are mandatory** for `FIX_UNCLEAR`.
 - **Options are optional** for `ASK_USER`. Include them only when there are genuinely different directions.
 - **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
 - **Cross-reference between options.** When Option B's main advantage is that it avoids Option A's biggest downside, say so explicitly. Do not make the reader connect the dots.
-- **Dropping the fix is an option when real.** If keeping the current behavior is viable, include it as an option with the same sub-fields.
+- **Dropping the fix is a default option to consider, not an afterthought.** Before listing fix-shape options, ask whether keeping current behavior is viable. For MINOR or INFO severity findings, "accept current behavior" must appear as an option unless there is a specific named reason it cannot. Frame it with the same 6 sub-fields as the fix options so the user can compare it on equal footing.
 
 ## Recommendation Rules
 

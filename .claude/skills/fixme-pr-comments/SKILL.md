@@ -284,25 +284,9 @@ One fetched container may yield multiple `review_item` records when its body con
 
 For each specific `review_item`, check whether a later issue comment already addresses it. A later reply counts only if it was posted after the source container and explicitly references the same title, file path, or description plus a commit SHA or fixed/resolved wording. A reply for item X never addresses item Y by implication.
 
-#### Display all normalized items
+#### Do not print the normalized items list at this stage
 
-Display all surfaces in format:
-
-```
-## PR Comments ({count} total)
-
-### Inline Review Threads ({count})
-- **T1.** @author file.ts#line (thread_id: {id}):
-  > comment text
-
-### PR Issue Comments ({count})
-- **I1.** [comment_id: {id}] @author file.ts#line (parser: claude_bot|greptile_summary|generic_human_review):
-  > extracted finding or non-actionable body summary
-
-### Top-Level PR Review Bodies ({count})
-- **R1.** [review_id: {id}] @author (state: COMMENTED, parser: codex_review|generic_ai_review|generic_human_review):
-  > extracted finding or non-actionable body summary
-```
+Normalize every fetched container into `review_item` records internally, but do not enumerate them in the user-visible output. The Accounting Ledger at the end of the analysis report enumerates every container by ID (`T*`, `I*`, `R*`) and proves nothing was skipped. Printing the full list before analysis is pure duplication.
 
 **Do not skip analysis based on source or author.** `ROUTE` is assigned only after Step 3 analysis. After Step 3, if every `review_item` has route `FOLLOWUP` or `NO_ACTION`, report "No current PR fixes to dispatch" and proceed to Step 14 if replies are needed.
 
@@ -397,9 +381,17 @@ and line numbers**, e.g. `[config.ts:42-58](/absolute/path/to/config.ts#L42-L58)
 to every file mentioned anywhere in the report - problem descriptions, fix descriptions, file
 lists, decision context, options, everything. No plain-text file paths.
 
-**Structure**: Start with the outcome, not the ledger. Do not start the report with a markdown table.
-Lead with what matters to the reader: what should be fixed now, what needs a decision, what is valid but deferred, and what can be ignored. Put exhaustive accounting at the end.
-For each expanded item, describe it top-down: problem, context, impact, recommended action, and why this route is the right tradeoff.
+**Structure**: Start with the outcome, then expand only the actionable buckets in priority order, then close with the ledger. Section order is fixed:
+
+1. PR Comment Analysis (one-sentence outcome + next action)
+2. Decisions Needed
+3. Current PR Fixes
+4. Follow-Up Only
+5. Accounting Ledger
+
+Already-fixed and not-actionable items appear ONLY as ledger lines. Do not expand them as evidence cards - the ledger's per-ID accounting is sufficient and the detailed cards are pure duplication. If the user asks about a specific already-fixed or rejected item, look it up by ID on demand.
+
+For each expanded item in Decisions / Current PR Fixes / Follow-Up Only, describe it top-down: problem, context, impact, recommended action, and why this route is the right tradeoff.
 
 ```
 ## PR Comment Analysis
@@ -410,14 +402,17 @@ For each expanded item, describe it top-down: problem, context, impact, recommen
 
 **Why**: {one sentence explaining the main risk/cost tradeoff behind the recommendation.}
 
-### Highest Priority First
+### Decisions Needed
 
-- **Current PR fixes**: {X groups. Name the BLOCKER and MAJOR items first, then opportunistic MINOR items.}
-- **Decisions needed**: {Y groups. One line per decision, with the title and why user input is needed.}
-- **Follow-up only**: {Z groups. One line explaining why they are valid but deferred.}
-- **No action**: {A+B groups. One line explaining already-fixed or rejected categories.}
+{If there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` groups, write "None." and skip this section.}
+
+{For each decision group, use `fixme-howto-present-decisions` exactly. Do not restate, summarize, or locally redefine its decision-card fields in this skill.}
+
+{Do not put workflow-status preamble before or between decision cards (e.g. "Only D1 is blocking the flow", "PR #2-#6 don't change the count"). If status context is genuinely needed, put it in the one-sentence outcome line above, not inside the decision section.}
 
 ### Current PR Fixes
+
+{If there are no `ROUTE: CURRENT_PR_FIX` groups, write "None." and skip this section.}
 
 {List only groups with `ROUTE: CURRENT_PR_FIX`, sorted by severity, then complexity, then dependency order.}
 
@@ -431,19 +426,13 @@ For each expanded item, describe it top-down: problem, context, impact, recommen
 
 **Recommended action**: {The intended fix behavior, including test/codegen/verification expectation when relevant.}
 
-**Why this route**: {Why this is CURRENT_PR_FIX, and why the scope is IMPLEMENT_ONLY or PLAN_REQUIRED. Include the complexity tradeoff when relevant.}
+**Why this route**: {Why this is CURRENT_PR_FIX over FOLLOWUP_ONLY. Must point to one of: (a) reviewer-blocking pressure on this PR, (b) cohesion with files already touched in this PR's diff, or (c) concrete operational pain. "The workflow is waiting" or "the reviewer left a comment" are NOT valid reasons - those are tautologies. If none of (a)/(b)/(c) apply, the verdict is FOLLOWUP_ONLY, not CURRENT_PR_FIX.}
 
 **Sources**: {N source items: T1 reviewer, I2 claude[bot], R1 chatgpt-codex-connector[bot]. Include clickable file references.}
 
-### Decisions Needed
+#### Execution Batches
 
-{If there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` groups, write "None."}
-
-{For each decision group, use `fixme-howto-present-decisions` exactly. Do not restate, summarize, or locally redefine its decision-card fields in this skill.}
-
-### Execution Batches
-
-{List only groups with `ROUTE: CURRENT_PR_FIX`. Batch by implementation dependency cluster, not by comment source. Use bullets, not a table.}
+{Subsection inside Current PR Fixes. Skip if Current PR Fixes is empty. Batch by implementation dependency cluster, not by comment source. Use bullets, not a table.}
 
 **B{N}. {batch title}**
 
@@ -452,9 +441,10 @@ For each expanded item, describe it top-down: problem, context, impact, recommen
 - **Review shape**: {focused re-review | full review}
 - **Why batched together**: {shared files, shared behavior, or same root cause}
 
-Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confidence, or PLAN_REQUIRED groups. For lower-risk groups, keep one concise planned-action line.
+### Follow-Up Only
 
-### Follow-Up Only ({N} groups)
+{If there are no `FOLLOWUP_ONLY` groups, write "None." and skip this section.}
+
 {List valid but deferred groups. These are not rejections. For each:}
 
 **G{N}. {Issue title}** [`FOLLOWUP_ONLY`] [`{SEVERITY}`] [`{COMPLEXITY}`]
@@ -467,34 +457,16 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 
 - **Follow-up action**: {Concrete follow-up title or "No durable follow-up artifact created" if the project has no follow-up backend in this workflow.}
 
-### Not Actionable ({N} items)
-{List REJECT_FALSE_POSITIVE, REJECT_WONT_FIX items. For each:}
-
-**G{N}. {Issue title}** [`{VERDICT}`] [`{SEVERITY}`]
-
-**What was reported**: {What the reviewer flagged and why they thought it was a problem.}
-
-**Why no action**: {For FALSE_POSITIVE: what the code actually does and why the concern does not apply. For WONT_FIX: what the real risk is, why it is acceptable now, and where it should be addressed if ever.}
-
-### Already Fixed ({N} groups)
-{List items confirmed fixed in the current code. For each:}
-
-**G{N}. {Issue title}** [`REJECT_ALREADY_FIXED`]
-
-**Fixed in**: `{commit_sha}`
-
-**Verification**: {One sentence: what was wrong and how the current code proves it is fixed.}
-
 ### Accounting Ledger
 
-{Use bullets, not a markdown table. Every review_item must appear exactly once. Counts must sum to the total.}
+{Use bullets, not a markdown table. Every review_item must appear exactly once. Counts must sum to the total. The ledger is the ONLY place already-fixed and not-actionable items are enumerated - do not expand them above.}
 
 - **Total**: {N review items from 3 fetched surfaces: T inline review threads, I issue comments, R pull request reviews}
-- **Current PR fixes**: {G1 (...source IDs...), G2 (...source IDs...)}
-- **Decisions needed**: {G3 (...source IDs...) or None}
-- **Follow-up only**: {G4 (...source IDs...) or None}
-- **Already fixed**: {G5 (...source IDs...) or None}
-- **Not actionable**: {G6 (...source IDs...) or None}
+- **Decisions needed**: {G1 (T22, I3), G2 (T24) or None}
+- **Current PR fixes**: {G3 (T15), G4 (T7, I2) or None}
+- **Follow-up only**: {G5 (T9) or None}
+- **Already fixed**: {G6 (T1, T2, T5)... or None. One short reason per group, e.g. "fixed in commit abc123"}
+- **Not actionable**: {G7 (T11, I4)... or None. One short reason per group, e.g. "false positive: code already validates input"}
 ```
 
 ##### Presentation Rules (NON-NEGOTIABLE)
