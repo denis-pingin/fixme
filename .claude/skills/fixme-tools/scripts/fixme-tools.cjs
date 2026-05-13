@@ -480,6 +480,19 @@ function runAlert(event, fixmeRoot, options = {}) {
   }
 }
 
+function listAlertSounds(platform) {
+  const effectivePlatform = platform || process.platform;
+  const platformDefaults = ALERT_PLATFORM_DEFAULTS[effectivePlatform];
+  return {
+    platform: effectivePlatform,
+    supported: Boolean(platformDefaults),
+    sounds: platformDefaults ? [...platformDefaults.soundCatalog] : [],
+    canonicalSounds: [...ALERT_PLATFORM_DEFAULTS.darwin.soundCatalog],
+    events: [...ALERT_EVENTS],
+    defaults: { ...ALERT_DEFAULT_SOUNDS },
+  };
+}
+
 // ============================================================================
 // YAML Frontmatter Parser/Serializer
 // ============================================================================
@@ -3304,8 +3317,7 @@ function main() {
 
       case 'alert': {
         if (subcommand === '--list-sounds') {
-          // Task 3 handles this branch
-          return error("alert --list-sounds not implemented yet");
+          return output(listAlertSounds());
         }
         const event = subcommand;
         if (!event) {

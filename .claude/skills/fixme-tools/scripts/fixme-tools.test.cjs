@@ -2533,6 +2533,18 @@ test('CLI: alert without event exits non-zero', () => {
   assert(!result.ok, 'missing event should fail');
 });
 
+test('CLI: alert --list-sounds returns catalog for current platform', () => {
+  const result = run('alert --list-sounds');
+  assert(result.ok, `expected success, got: ${result.stderr}`);
+  assert(typeof result.data.platform === 'string', 'platform must be string');
+  assert(Array.isArray(result.data.sounds), 'sounds must be array');
+  assert(Array.isArray(result.data.events), 'events must be array');
+  assert(result.data.events.includes('user_input'), 'events must include user_input');
+  assert(result.data.events.includes('task_finished'), 'events must include task_finished');
+  assert(result.data.events.includes('task_failed'), 'events must include task_failed');
+  assert(result.data.defaults && result.data.defaults.user_input === 'Glass', 'default user_input should be Glass');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
