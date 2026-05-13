@@ -120,6 +120,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
 - **Dynamic state machine.** The state machine is derived from workflow config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the workflow definition.
 - **Background dispatch.** fixme-session dispatches fixme-task in the background per ticket, staying responsive for new intake and status queries.
+- **Audible alerts on every attention point.** All orchestrators and interactive skills (fixme-task, fixme-session, fixme-rebase, fixme-pr-comments, fixme-ticket, fixme-config) emit a sound via `fixme-tools.cjs alert <event>` whenever they pause for user input (`user_input`), complete successfully (`task_finished`), or fail (`task_failed`). The user should never have to watch the terminal to know something happened. Sounds are configurable per event via `/fixme-config` (Alerts round) and persisted in `.fixme/config.json` under `alerts.{enabled, sounds, players}`. Cross-platform: macOS uses `afplay`, Linux uses `paplay`, Windows uses `powershell` Media.SoundPlayer; unsupported platforms no-op silently.
 
 ### Agent Definitions
 
