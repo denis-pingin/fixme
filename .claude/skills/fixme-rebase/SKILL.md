@@ -44,6 +44,22 @@ What stays forbidden even during a pause:
 
 The pause closes only when the user provides one of the gate's acceptable responses (or an equivalent freeform answer the skill can map to one). Inline discussion does NOT count - keep the pause open.
 
+## Audible Alerts
+
+Fire an alert at every user-pause gate and at the terminal outcome. Use the Bash one-liner; do not invoke a skill.
+
+| Gate | Alert |
+| --- | --- |
+| Phase 0 shallow-clone choice | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Phase 3 pre-execution confirmation (when `--confirm`) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Phase 5 conflict stop | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Phase 6 regression stop | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Final push confirmation | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Rebase complete, push successful (or skipped with `--no-push` after clean verification) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| Rebase aborted, verification failed, or destructive operation refused | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
+
+Fire once per gate entry. Do not re-fire if the user reopens the same gate with a clarifying question during the discussion mode. Alerts are fire-and-forget and never block the rebase flow.
+
 ## Process
 
 ### Phase 0: Pre-Flight Safety
