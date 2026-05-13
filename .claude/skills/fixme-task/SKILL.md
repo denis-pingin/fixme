@@ -18,6 +18,19 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
 
+## Audible Alerts
+
+Fire an audible alert at every attention point so the user is never idling without sound. Use the `fixme-alert` skill's Bash one-liner; do not invoke a skill for this.
+
+| When | Alert |
+| --- | --- |
+| About to print an ASK_USER decision card (any phase) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| About to print a Review Classification block with HAS_ASK_USER | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Ticket transitions to `done` / pipeline completes successfully | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| Ticket transitions to `failed` or workflow aborts | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
+
+Alerts are fire-and-forget. Failures are silent and never block workflow progress. See `fixme-alert/SKILL.md` for the full event taxonomy and `fixme-howto-present-decisions` for the ping-before-decision-card rule (which already covers most user_input gates).
+
 ## Discussion Mode (Decision-Pause Carve-Out)
 
 The dispatcher-only rules above (no source-code Read/Grep/Glob, no investigation, no answering questions inline) apply to **active pipeline execution**: parsing the task, dispatching agents, routing handler results, advancing the manifest. They do NOT apply during a **decision pause**.
