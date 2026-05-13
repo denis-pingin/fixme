@@ -2546,6 +2546,36 @@ test('CLI: alert --list-sounds returns catalog for current platform', () => {
 });
 
 // ============================================================================
+// applyConfigMigration: alerts defaults
+// ============================================================================
+
+const { applyConfigMigration: _applyConfigMigration } = require(TOOLS_PATH);
+
+test('migration: empty config gets alerts defaults', () => {
+  const cfg = {};
+  _applyConfigMigration(cfg);
+  assert(cfg.alerts, 'alerts section should be created');
+  assert(cfg.alerts.enabled === true, 'alerts should default to enabled');
+  assert(cfg.alerts.sounds.user_input === 'Glass', `user_input default wrong: ${cfg.alerts.sounds.user_input}`);
+  assert(cfg.alerts.sounds.task_finished === 'Hero', `task_finished default wrong: ${cfg.alerts.sounds.task_finished}`);
+  assert(cfg.alerts.sounds.task_failed === 'Basso', `task_failed default wrong: ${cfg.alerts.sounds.task_failed}`);
+});
+
+test('migration: preserves explicit alerts.enabled=false', () => {
+  const cfg = { alerts: { enabled: false } };
+  _applyConfigMigration(cfg);
+  assert(cfg.alerts.enabled === false, 'should not override user disabling');
+  assert(cfg.alerts.sounds.user_input === 'Glass', 'sounds should still be filled in');
+});
+
+test('migration: preserves custom sound choices and fills missing ones', () => {
+  const cfg = { alerts: { sounds: { user_input: 'Ping' } } };
+  _applyConfigMigration(cfg);
+  assert(cfg.alerts.sounds.user_input === 'Ping', 'custom sound should be preserved');
+  assert(cfg.alerts.sounds.task_finished === 'Hero', 'missing entries should be filled');
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 

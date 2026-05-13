@@ -1313,6 +1313,39 @@ function ensureReviewSoftnessConfig(config) {
   return migrated;
 }
 
+function ensureAlertsConfig(config) {
+  let changed = false;
+
+  if (!isPlainObject(config.alerts)) {
+    config.alerts = {};
+    changed = true;
+  }
+
+  if (typeof config.alerts.enabled !== 'boolean') {
+    config.alerts.enabled = true;
+    changed = true;
+  }
+
+  if (!isPlainObject(config.alerts.sounds)) {
+    config.alerts.sounds = {};
+    changed = true;
+  }
+
+  for (const event of ALERT_EVENTS) {
+    if (typeof config.alerts.sounds[event] !== 'string' || config.alerts.sounds[event].trim() === '') {
+      config.alerts.sounds[event] = ALERT_DEFAULT_SOUNDS[event];
+      changed = true;
+    }
+  }
+
+  if (!isPlainObject(config.alerts.players)) {
+    config.alerts.players = {};
+    changed = true;
+  }
+
+  return changed;
+}
+
 function applyConfigMigration(config) {
   const result = {
     migrated: false,
@@ -1327,6 +1360,10 @@ function applyConfigMigration(config) {
   }
 
   if (ensureReviewSoftnessConfig(config)) {
+    result.migrated = true;
+  }
+
+  if (ensureAlertsConfig(config)) {
     result.migrated = true;
   }
 
