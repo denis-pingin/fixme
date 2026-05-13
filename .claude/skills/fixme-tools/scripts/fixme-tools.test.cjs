@@ -2575,6 +2575,64 @@ test('migration: preserves custom sound choices and fills missing ones', () => {
   assert(cfg.alerts.sounds.task_finished === 'Hero', 'missing entries should be filled');
 });
 
+test('CLI: config set alerts.enabled false works', () => {
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-alert-cfg-'));
+  tmpDirs.push(tmp);
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, '.fixme', 'config.json'), '{}');
+
+  const result = runInDir('config set alerts.enabled false', tmp);
+  assert(result.ok, `expected success, got: ${result.stderr}`);
+  const written = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
+  assert(written.alerts.enabled === false, 'should persist enabled=false');
+});
+
+test('CLI: config set alerts.sounds.user_input Ping works', () => {
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-alert-cfg-'));
+  tmpDirs.push(tmp);
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, '.fixme', 'config.json'), '{}');
+
+  const result = runInDir('config set alerts.sounds.user_input Ping', tmp);
+  assert(result.ok, `expected success, got: ${result.stderr}`);
+  const written = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
+  assert(written.alerts.sounds.user_input === 'Ping', `expected Ping, got ${written.alerts.sounds.user_input}`);
+});
+
+test('CLI: config set alerts.sounds.unknown_event rejected', () => {
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-alert-cfg-'));
+  tmpDirs.push(tmp);
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, '.fixme', 'config.json'), '{}');
+
+  const result = runInDir('config set alerts.sounds.bogus_event Glass', tmp);
+  assert(!result.ok, 'unknown event key should be rejected');
+});
+
+test('CLI: config set alerts.sounds.user_input ZzzNotARealSound rejected', () => {
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-alert-cfg-'));
+  tmpDirs.push(tmp);
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, '.fixme', 'config.json'), '{}');
+
+  const result = runInDir('config set alerts.sounds.user_input ZzzNotARealSound', tmp);
+  assert(!result.ok, 'unknown sound name should be rejected');
+});
+
+test('CLI: config get alerts returns the alerts section', () => {
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-alert-cfg-'));
+  tmpDirs.push(tmp);
+  fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, '.fixme', 'config.json'), JSON.stringify({
+    alerts: { enabled: true, sounds: { user_input: 'Pop', task_finished: 'Hero', task_failed: 'Basso' } },
+  }));
+
+  const result = runInDir('config get alerts', tmp);
+  assert(result.ok, `expected success, got: ${result.stderr}`);
+  assert(result.data.value.enabled === true, 'enabled in output');
+  assert(result.data.value.sounds.user_input === 'Pop', 'user_input should be Pop');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

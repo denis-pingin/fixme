@@ -1497,6 +1497,21 @@ function isSupportedConfigKey(parts) {
     return parts.length >= 2;
   }
 
+  if (top === 'alerts') {
+    if (parts.length === 1) return true;
+    if (second === 'enabled' && parts.length === 2) return true;
+    if (second === 'sounds') {
+      if (parts.length === 2) return true;
+      if (parts.length === 3 && ALERT_EVENTS.includes(third)) return true;
+      return false;
+    }
+    if (second === 'players') {
+      // Allow free-form platform overrides; validation is permissive.
+      return parts.length >= 2;
+    }
+    return false;
+  }
+
   return false;
 }
 
@@ -1730,6 +1745,52 @@ function validateConfigSetValue(parts, value) {
 
   if (top === 'ticketTemplate' && parts.length === 2 && second === 'default' && typeof value !== 'string') {
     throw new Error('ticketTemplate.default must be a string');
+  }
+
+  if (top === 'alerts') {
+    if (parts.length === 1) {
+      if (!isPlainObject(value)) {
+        throw new Error('alerts must be an object');
+      }
+      return { warnings: [] };
+    }
+    if (second === 'enabled') {
+      if (typeof value !== 'boolean') {
+        throw new Error('alerts.enabled must be a boolean');
+      }
+      return { warnings: [] };
+    }
+    if (second === 'sounds' && parts.length === 3) {
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new Error('alerts.sounds.<event> must be a non-empty string');
+      }
+      const validSounds = new Set(ALERT_PLATFORM_DEFAULTS.darwin.soundCatalog);
+      if (!validSounds.has(value)) {
+        throw new Error(`Unknown sound name: ${value}. Known: ${[...validSounds].join(', ')}`);
+      }
+      return { warnings: [] };
+    }
+    if (second === 'sounds' && parts.length === 2) {
+      if (!isPlainObject(value)) {
+        throw new Error('alerts.sounds must be an object');
+      }
+      for (const [event, sound] of Object.entries(value)) {
+        if (!ALERT_EVENTS.includes(event)) {
+          throw new Error(`Unknown alert event: ${event}. Known: ${ALERT_EVENTS.join(', ')}`);
+        }
+        const validSounds = new Set(ALERT_PLATFORM_DEFAULTS.darwin.soundCatalog);
+        if (typeof sound !== 'string' || !validSounds.has(sound)) {
+          throw new Error(`alerts.sounds.${event}: unknown sound '${sound}'`);
+        }
+      }
+      return { warnings: [] };
+    }
+    if (second === 'players') {
+      if (parts.length === 2 && !isPlainObject(value)) {
+        throw new Error('alerts.players must be an object');
+      }
+      return { warnings: [] };
+    }
   }
 
   return { warnings: [] };
