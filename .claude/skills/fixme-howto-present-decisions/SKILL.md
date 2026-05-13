@@ -61,6 +61,16 @@ If an `ASK_USER` item is actually an approach choice, use the `FIX_UNCLEAR` shap
 
 `FIX_UNCLEAR` is not an `ASK_USER` classification, but it requires the same user-input route. Any handler output with one or more `FIX_UNCLEAR` items must route to user decision batching, never to clean/no-fix exit.
 
+## Ping Before Printing
+
+Before emitting any decision card to the user, fire one `user_input` alert so the user knows the workflow is waiting:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input
+```
+
+If you are emitting multiple decision cards in a single response, ping once at the start of that response. Do NOT ping per-card. The alert is fire-and-forget and never blocks; if alerts are disabled or the platform is unsupported, the command silently no-ops.
+
 ## Visual Layout Contract
 
 Decision cards must read like designed cards, not logs.
