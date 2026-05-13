@@ -2445,6 +2445,66 @@ test('fixme execute/review skills: support repair mode and focused re-review', (
 });
 
 // ============================================================================
+// resolveAlert
+// ============================================================================
+
+const { resolveAlert: _resolveAlert } = require(TOOLS_PATH);
+
+test('resolveAlert: defaults on darwin with empty config', () => {
+  const r = _resolveAlert('user_input', {}, 'darwin');
+  assert(r.enabled === true, 'should be enabled');
+  assert(r.command === 'afplay', `expected afplay, got ${r.command}`);
+  assert(r.args[0] === '/System/Library/Sounds/Glass.aiff', `expected Glass.aiff, got ${r.args[0]}`);
+  assert(r.platform === 'darwin', 'platform should be darwin');
+});
+
+test('resolveAlert: custom sound on darwin', () => {
+  const cfg = { alerts: { sounds: { user_input: 'Ping' } } };
+  const r = _resolveAlert('user_input', cfg, 'darwin');
+  assert(r.args[0] === '/System/Library/Sounds/Ping.aiff', `expected Ping.aiff, got ${r.args[0]}`);
+});
+
+test('resolveAlert: disabled when alerts.enabled is false', () => {
+  const r = _resolveAlert('user_input', { alerts: { enabled: false } }, 'darwin');
+  assert(r.enabled === false, 'should be disabled');
+  assert(r.reason === 'alerts disabled', `unexpected reason: ${r.reason}`);
+});
+
+test('resolveAlert: unknown event returns disabled', () => {
+  const r = _resolveAlert('nonsense', {}, 'darwin');
+  assert(r.enabled === false, 'unknown event should disable');
+  assert(/unknown event/.test(r.reason), `unexpected reason: ${r.reason}`);
+});
+
+test('resolveAlert: unsupported platform returns disabled', () => {
+  const r = _resolveAlert('user_input', {}, 'aix');
+  assert(r.enabled === false, 'aix should be unsupported');
+  assert(/unsupported platform/.test(r.reason), `unexpected reason: ${r.reason}`);
+});
+
+test('resolveAlert: linux maps Glass -> bell', () => {
+  const r = _resolveAlert('user_input', {}, 'linux');
+  assert(r.enabled === true, 'linux should be enabled');
+  assert(r.command === 'paplay', `expected paplay, got ${r.command}`);
+  assert(r.args[0] === '/usr/share/sounds/freedesktop/stereo/bell.oga', `unexpected path: ${r.args[0]}`);
+});
+
+test('resolveAlert: win32 builds powershell command with mapped name', () => {
+  const r = _resolveAlert('task_failed', {}, 'win32');
+  assert(r.enabled === true, 'win32 should be enabled');
+  assert(r.command === 'powershell', `expected powershell, got ${r.command}`);
+  const joined = r.args.join(' ');
+  assert(/Windows Critical Stop/.test(joined), `command should reference mapped sound, got: ${joined}`);
+});
+
+test('resolveAlert: linux unmapped sound falls back to default for event', () => {
+  const cfg = { alerts: { sounds: { user_input: 'Submarine' } } };
+  const r = _resolveAlert('user_input', cfg, 'linux');
+  assert(r.enabled === true, 'should still be enabled');
+  assert(r.args[0].endsWith('bell.oga') || r.args[0].endsWith('message.oga'), `should fall back to a known linux sound, got ${r.args[0]}`);
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 

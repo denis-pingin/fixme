@@ -229,6 +229,69 @@ const KNOWN_FIXME_SKILLS = new Set([
   'fixme-write-technical-spec',
 ]);
 
+const ALERT_EVENTS = Object.freeze(['user_input', 'task_finished', 'task_failed']);
+
+const ALERT_DEFAULT_SOUNDS = Object.freeze({
+  user_input: 'Glass',
+  task_finished: 'Hero',
+  task_failed: 'Basso',
+});
+
+const ALERT_PLATFORM_DEFAULTS = Object.freeze({
+  darwin: {
+    player: 'afplay',
+    soundDir: '/System/Library/Sounds',
+    extension: '.aiff',
+    soundCatalog: ['Basso', 'Blow', 'Bottle', 'Frog', 'Funk', 'Glass', 'Hero', 'Morse', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'],
+    soundNameMap: null,
+    fallbackSound: 'Glass',
+  },
+  linux: {
+    player: 'paplay',
+    soundDir: '/usr/share/sounds/freedesktop/stereo',
+    extension: '.oga',
+    soundCatalog: ['bell', 'complete', 'dialog-error', 'message', 'service-login', 'service-logout'],
+    soundNameMap: {
+      Glass: 'bell',
+      Hero: 'complete',
+      Basso: 'dialog-error',
+      Ping: 'message',
+      Sosumi: 'dialog-error',
+      Funk: 'message',
+      Pop: 'bell',
+      Tink: 'message',
+      Purr: 'message',
+      Blow: 'message',
+      Bottle: 'message',
+      Frog: 'message',
+      Morse: 'message',
+    },
+    fallbackSound: 'bell',
+  },
+  win32: {
+    player: 'powershell',
+    commandTemplate: ['-NoProfile', '-Command', '(New-Object Media.SoundPlayer "$env:SystemRoot\\Media\\{file}.wav").PlaySync()'],
+    soundCatalog: ['Windows Notify', 'Windows Logon', 'Windows Critical Stop', 'Windows Ding', 'Windows Default'],
+    soundNameMap: {
+      Glass: 'Windows Notify',
+      Hero: 'Windows Logon',
+      Basso: 'Windows Critical Stop',
+      Ping: 'Windows Ding',
+      Submarine: 'Windows Logon',
+      Sosumi: 'Windows Critical Stop',
+      Funk: 'Windows Ding',
+      Pop: 'Windows Ding',
+      Tink: 'Windows Ding',
+      Purr: 'Windows Default',
+      Blow: 'Windows Default',
+      Bottle: 'Windows Default',
+      Frog: 'Windows Default',
+      Morse: 'Windows Default',
+    },
+    fallbackSound: 'Windows Notify',
+  },
+});
+
 /**
  * Resolve runtime-specific agent settings based on config.
  *
@@ -330,6 +393,57 @@ function resolveModel(agentName, fixmeRoot, options = {}) {
   }
 
   return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
+}
+
+function resolveAlert(event, config, platform) {
+  const effectivePlatform = platform || process.platform;
+
+  if (!ALERT_EVENTS.includes(event)) {
+    return { enabled: false, event, reason: `unknown event: ${event}` };
+  }
+
+  const alerts = isPlainObject(config && config.alerts) ? config.alerts : {};
+  if (alerts.enabled === false) {
+    return { enabled: false, event, reason: 'alerts disabled' };
+  }
+
+  const platformDefaults = ALERT_PLATFORM_DEFAULTS[effectivePlatform];
+  if (!platformDefaults) {
+    return { enabled: false, event, reason: `unsupported platform: ${effectivePlatform}` };
+  }
+
+  const userPlayers = isPlainObject(alerts.players) ? alerts.players : {};
+  const userPlatform = isPlainObject(userPlayers[effectivePlatform]) ? userPlayers[effectivePlatform] : {};
+  const platformConfig = { ...platformDefaults, ...userPlatform };
+
+  const userSounds = isPlainObject(alerts.sounds) ? alerts.sounds : {};
+  const canonicalName = userSounds[event] || ALERT_DEFAULT_SOUNDS[event];
+
+  let nativeName;
+  if (platformConfig.soundNameMap) {
+    nativeName = platformConfig.soundNameMap[canonicalName] || platformConfig.fallbackSound;
+  } else {
+    nativeName = canonicalName;
+  }
+
+  let command, args;
+  if (effectivePlatform === 'win32') {
+    command = platformConfig.player;
+    args = platformConfig.commandTemplate.map(s => s.replace('{file}', nativeName));
+  } else {
+    command = platformConfig.player;
+    args = [path.join(platformConfig.soundDir, nativeName + platformConfig.extension)];
+  }
+
+  return {
+    enabled: true,
+    event,
+    canonicalName,
+    nativeName,
+    command,
+    args,
+    platform: effectivePlatform,
+  };
 }
 
 // ============================================================================
@@ -3182,6 +3296,7 @@ module.exports = {
   parseFrontmatter,
   findFixmeRoot,
   resolveModel,
+  resolveAlert,
   MODEL_PROFILES,
   STANDARD_PIPELINES,
   applyConfigMigration,
