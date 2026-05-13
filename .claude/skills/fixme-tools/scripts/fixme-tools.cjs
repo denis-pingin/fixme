@@ -446,6 +446,40 @@ function resolveAlert(event, config, platform) {
   };
 }
 
+function runAlert(event, fixmeRoot, options = {}) {
+  let config = {};
+  if (fixmeRoot) {
+    try {
+      const loaded = readConfigForResolve(fixmeRoot);
+      config = loaded.config || {};
+    } catch (e) {
+      // Bad config should not block the alert; degrade to defaults.
+      config = {};
+    }
+  }
+
+  const resolved = resolveAlert(event, config);
+  if (options.resolveOnly) {
+    return resolved;
+  }
+  if (!resolved.enabled) {
+    return resolved;
+  }
+
+  const { spawn } = require('child_process');
+  try {
+    const child = spawn(resolved.command, resolved.args, {
+      stdio: 'ignore',
+      detached: true,
+    });
+    child.on('error', () => {});
+    child.unref();
+    return { ...resolved, spawned: true };
+  } catch (e) {
+    return { ...resolved, spawned: false, reason: `spawn failed: ${e.message}` };
+  }
+}
+
 // ============================================================================
 // YAML Frontmatter Parser/Serializer
 // ============================================================================
@@ -3268,6 +3302,25 @@ function main() {
       case 'root':
         return rootCommand();
 
+      case 'alert': {
+        if (subcommand === '--list-sounds') {
+          // Task 3 handles this branch
+          return error("alert --list-sounds not implemented yet");
+        }
+        const event = subcommand;
+        if (!event) {
+          return error('Usage: fixme-tools.cjs alert <event> [--resolve]\n  Events: user_input, task_finished, task_failed');
+        }
+        const resolveOnly = flags.resolve === true || flags.resolve === '';
+        const result = runAlert(event, fixmeRoot, { resolveOnly });
+        // Unknown event is a usage error; other disabled states (alerts disabled,
+        // unsupported platform) are legitimate no-ops and exit cleanly.
+        if (!result.enabled && result.reason && /^unknown event/.test(result.reason)) {
+          return error(result.reason);
+        }
+        return output(result);
+      }
+
       case 'resolve-model': {
         // subcommand slot holds the agent name for this single-arg command
         const agentName = subcommand;
@@ -3278,7 +3331,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, root, resolve-model`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, root, resolve-model, alert`);
     }
   } catch (e) {
     return error(e.message);

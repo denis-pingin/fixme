@@ -2504,6 +2504,35 @@ test('resolveAlert: linux unmapped sound falls back to default for event', () =>
   assert(r.args[0].endsWith('bell.oga') || r.args[0].endsWith('message.oga'), `should fall back to a known linux sound, got ${r.args[0]}`);
 });
 
+test('CLI: alert --resolve user_input returns JSON spec', () => {
+  const result = run('alert user_input --resolve');
+  assert(result.ok, `expected success, got: ${result.stderr || JSON.stringify(result.data)}`);
+  assert(typeof result.data.enabled === 'boolean', 'enabled should be boolean');
+  assert(result.data.event === 'user_input', `event should echo input, got ${result.data.event}`);
+  assert(typeof result.data.platform === 'string', 'platform should be present');
+});
+
+test('CLI: alert <event> exits 0 on supported platform', () => {
+  if (process.platform !== 'darwin') {
+    console.log('  SKIP: requires darwin to verify spawn (current platform: ' + process.platform + ')');
+    return;
+  }
+  // Use --resolve to avoid actually playing during tests
+  const result = run('alert task_finished --resolve');
+  assert(result.ok, `expected success, got: ${result.stderr}`);
+  assert(result.data.enabled === true, 'task_finished should be enabled by default on darwin');
+});
+
+test('CLI: alert with unknown event exits non-zero', () => {
+  const result = run('alert nonsense --resolve');
+  assert(!result.ok, 'unknown event should fail');
+});
+
+test('CLI: alert without event exits non-zero', () => {
+  const result = run('alert');
+  assert(!result.ok, 'missing event should fail');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
