@@ -34,7 +34,7 @@ If Linear MCP is unavailable when Step 6 runs, branch on backend:
 
   > "Linear MCP is not available. Skipping Linear team configuration. `/fixme-ticket` will not work until you enable Linear MCP and re-run `/fixme-config`."
 
-  Do not stop the skill. Do not write or clear `linear.teamId` / `linear.teamName` (leave any existing values untouched). Continue to Step 7.
+  Do not stop the skill. Do not write or clear `linear.teamId` / `linear.teamName` (leave any existing values untouched). Continue to Step 8.
 
 ## Process
 
@@ -503,14 +503,101 @@ Do NOT proceed. Do NOT write any Linear fields.
 
 #### Step 6b: Stage Linear values
 
-After Step 6a resolves `selectedTeam`, hold these values in memory for the merge in Step 8:
+After Step 6a resolves `selectedTeam`, hold these values in memory for the merge in Step 9:
 
 - `linear.teamId` = `selectedTeam.id`
 - `linear.teamName` = `selectedTeam.name`
 
 No other Linear fields are staged. `linear.defaultLabels` and `linear.defaultProject` are NOT configured by this skill (Decision 13).
 
-### Step 7: Validate
+### Step 7: Alerts round
+
+Configure audible alerts for user-input gates, task completion, and task failure. The `fixme-alert` skill (documented at `~/.claude/skills/fixme-alert/SKILL.md`) plays a sound via `fixme-tools.cjs alert <event>` whenever a workflow needs the user's attention.
+
+**Step 7a: Probe available sounds**
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert --list-sounds
+```
+
+Parse the JSON output. Use `sounds` (platform-specific catalog), `canonicalSounds` (canonical macOS-style names), `events` (the three event identifiers), and `defaults` (per-event default sound name).
+
+**Step 7b: Ask the master switch**
+
+```
+AskUserQuestion([
+  {
+    question: "Enable audible alerts for user-input prompts, task completion, and failure?",
+    header: "Alerts",
+    multiSelect: false,
+    options: [
+      { label: "Yes (Recommended)", description: "Play a sound whenever a workflow pauses for input, completes, or fails" },
+      { label: "No", description: "Stay silent. Per-event sound preferences are preserved but never played." }
+    ]
+  }
+])
+```
+
+If "No", stage `alerts.enabled = false` and skip Step 7c. If "Yes", stage `alerts.enabled = true` and continue.
+
+**Step 7c: Ask per-event sound choices**
+
+Iterate `events` in the order returned (`user_input`, `task_finished`, `task_failed`). For each event, present an `AskUserQuestion` with 4 options drawn from the canonical sound catalog. The current/default sound is marked Recommended. Suggested option sets:
+
+- `user_input`: `Glass (Recommended)`, `Ping`, `Pop`, `Tink`
+- `task_finished`: `Hero (Recommended)`, `Funk`, `Submarine`, `Bottle`
+- `task_failed`: `Basso (Recommended)`, `Sosumi`, `Frog`, `Morse`
+
+If the user picks "Other" (auto-added by the harness), accept free-text and validate it against `canonicalSounds`. On invalid input, re-prompt.
+
+Stage each answer as `alerts.sounds.<event> = <SoundName>`.
+
+**Step 7d: Persist staged alerts values**
+
+Once Steps 7b-7c complete, write the staged values via the standard config-set path so validation runs:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set alerts.enabled <bool>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set alerts.sounds.user_input <name>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set alerts.sounds.task_finished <name>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set alerts.sounds.task_failed <name>
+```
+
+When `alerts.enabled` is staged as `false`, still set `alerts.enabled false` but do not write per-event sound entries (preserve whatever was there).
+
+**Step 7e: Verify and audition**
+
+After writing, run:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get alerts
+```
+
+Show the resulting JSON to the user. If alerts are enabled, offer a one-shot audition (the user can decline):
+
+```
+AskUserQuestion([
+  {
+    question: "Play each configured alert now so you can audition them?",
+    header: "Audition",
+    multiSelect: false,
+    options: [
+      { label: "Yes", description: "Play user_input, task_finished, task_failed in sequence" },
+      { label: "No (skip)", description: "Skip the audition" }
+    ]
+  }
+])
+```
+
+If "Yes", run:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input && sleep 1 && \
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished && sleep 1 && \
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed
+```
+
+### Step 8: Validate
 
 Before writing, validate the config:
 
@@ -532,7 +619,7 @@ Before writing, validate the config:
 
 If validation fails, display errors and re-prompt for the specific invalid settings.
 
-### Step 8: Write config
+### Step 9: Write config
 
 All writes to `<fixme-dir>/config.json` must go through `fixme-tools.cjs`. Do not use the Write tool for config JSON. The CLI is the schema gate, migration owner, merge owner, and atomic writer.
 
@@ -604,7 +691,7 @@ Write rules:
 - If the selected workflow has only standard defaults and the user kept every default, still call `config workflow configure` for that selected workflow so future `/fixme-config` runs can show it as configured.
 - If any CLI write returns JSON with an `error` field or exits non-zero, stop and show that exact error. Do not continue with partial settings.
 
-### Step 9: Confirm
+### Step 10: Confirm
 
 Display:
 
