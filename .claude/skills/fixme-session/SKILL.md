@@ -302,6 +302,18 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
    Go back to step 1.
 
+## Audible Alerts
+
+Fire an alert when a background ticket completes, fails, or the session pauses for input so the user is never idling without sound. Use the Bash one-liner; do not invoke a skill.
+
+| When | Alert |
+| --- | --- |
+| A dispatched fixme-task returns with the ticket in `done` (any terminal-success phase like `verify` or `implement`) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| A dispatched fixme-task returns with the ticket in `failed` | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
+| The session-level intake or status loop pauses for a user decision | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+
+Alerts are fire-and-forget and never block. See `fixme-alert/SKILL.md` for events and configuration.
+
 ## Completion Handling
 
 When a background fixme-task completes (notification received or detected on resume):
