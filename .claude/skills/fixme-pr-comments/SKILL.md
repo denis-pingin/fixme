@@ -31,6 +31,19 @@ Automatically fetch, normalize, analyze, and address PR feedback from inline rev
 - **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
 - **Never touch `.fixme/` or `<fixme-dir>/` files. Ever.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are passed as text inputs to `Skill("fixme-task", args=...)`, never written to disk by this skill.
 
+## Audible Alerts
+
+Fire an alert at decision points and the terminal outcome so the user is never idling without sound. Use the Bash one-liner; do not invoke a skill.
+
+| When | Alert |
+| --- | --- |
+| About to present a Step 6 consultation pause (FIX_UNCLEAR / ASK_USER / ROUTE: DECISION items) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| About to print a contested-verdict decision card | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| All PR comments processed, fixes verified and pushed | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| Halted before completion (verification failure, fixme-task aborted, unresolvable comment) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
+
+Alerts are fire-and-forget. See `fixme-alert/SKILL.md` for full event semantics.
+
 ## Configuration
 
 Parse arguments from skill invocation. All flags default to OFF (all phases run).
