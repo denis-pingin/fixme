@@ -36,6 +36,18 @@ Parse `$ARGUMENTS` for the description and optional flags:
 
 Flags can appear anywhere in the arguments. The non-flag text is the ticket description.
 
+## Audible Alerts
+
+Fire an alert before any AskUserQuestion prompt and at the terminal outcome so the user is never idling without sound. Use the Bash one-liner; do not invoke a skill.
+
+| When | Alert |
+| --- | --- |
+| Before any AskUserQuestion prompt (missing description, team selection, label / project / assignee / status / due date / priority confirmation, ticket preview confirmation) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Ticket successfully created in the Linear backend | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| Ticket creation failed (Linear MCP unavailable, validation error, dry-run aborted) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
+
+Alerts are fire-and-forget. Fire once per pause; if a single AskUserQuestion batches multiple sub-questions (e.g. all labels in one prompt), ping once.
+
 ## Workflow
 
 ### Phase 1: Gather Raw Ticket Content
