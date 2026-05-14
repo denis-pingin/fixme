@@ -12,7 +12,7 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 Validate specification review findings against the specification and classify each using the unified finding taxonomy.
 
-This handler enables a review loop for specifications when used in a pipeline phase that has an upstream skill capable of writing or revising the specification. The handler never edits specifications itself; `HAS_FIX` tells the orchestrator to loop back to that phase's execute skill with the FIX items.
+This handler enables a review loop for specifications when used in a pipeline phase that has an upstream skill capable of writing or revising the specification. The handler never edits specifications itself; `HAS_BLOCKING_FIX` tells the orchestrator to loop back to that phase's execute skill with the blocking FIX items, while `HAS_NONBLOCKING_FINDINGS` reports MINOR/INFO items as follow-up without consuming a revision cycle.
 
 ## Input Resolution
 
@@ -44,6 +44,21 @@ If the packet and an artifact disagree, trust the artifact after verifying it di
 - **REJECT_WONT_FIX** - the finding is valid but intentionally out of scope, acceptable for this specification, contradicts a confirmed locked decision without new concrete risk, or would make the specification worse.
 - **REJECT_ALREADY_FIXED** - the issue is already addressed by the current specification or by a prior decision recorded in the decision log.
 
+## Severity
+
+Every finding must include a severity. Classification answers whether the finding is real. Severity answers whether it should block the workflow.
+
+`SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
+
+- **BLOCKER** - the specification has multiple valid implementations, a missing required behavior, a contradiction, an unsafe migration path, or an untestable acceptance criterion. The specification cannot proceed to planning until this is resolved.
+- **MAJOR** - the specification is implementable but has a meaningful ambiguity, omission, or risk in a primary path that should be resolved before planning continues.
+- **MINOR** - a wording, organization, or completeness improvement in a non-blocking path. Worth reporting but does not block planning.
+- **INFO** - observation, optional clarification, or reviewer preference. Never blocks.
+
+MINOR and INFO findings never trigger a revision loop by themselves. If a finding is real but nonblocking, classify it as `FIX` with `SEVERITY: MINOR` or `INFO`; the orchestrator reports it as follow-up without consuming specification review cycles.
+
+If the spec reviewer's per-finding verdict uses `BLOCK | FLAG | NOTE`, treat `BLOCK` as `BLOCKER` (or `MAJOR` when implementable with a single dominant interpretation), `FLAG` as `MAJOR` or `MINOR` based on the finding's blast radius, and `NOTE` as `INFO`.
+
 ## Softness Routing
 
 Use the shared `fixme-howto-importance` rubric after classification.
@@ -71,7 +86,7 @@ For every suppressed item, add it to the suppressed ledger using this wording:
 
 `Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
 
-Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
+Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, BLOCKING_FIX_COUNT, NONBLOCKING_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
 
 ## Pre-Classification Gate
 
@@ -94,6 +109,7 @@ Use this shape for each finding:
 ### Finding {n}: {short title}
 
 - **Classification**: FIX | FIX_UNCLEAR | ASK_USER | REJECT_FALSE_POSITIVE | REJECT_WONT_FIX | REJECT_ALREADY_FIXED
+- **Severity**: BLOCKER | MAJOR | MINOR | INFO
 - **Confidence**: HIGH | MEDIUM | LOW
 - **Importance**: Importance: floor / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> suppressed OR Importance: not-eligible / softness <resolved_float> -> not-eligible
 - **Why**: {1-2 sentences grounded in the specification}
@@ -129,26 +145,31 @@ End your output with a structured routing block. This is mandatory.
 
 ```md
 ---
-HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER
+HANDLER_RESULT: CLEAN | HAS_BLOCKING_FIX | HAS_NONBLOCKING_FINDINGS | HAS_ASK_USER
 FIX_COUNT: <number>
 FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
+BLOCKING_FIX_COUNT: <number>
+NONBLOCKING_COUNT: <number>
 SUPPRESSED_COUNT: <number>
-NEXT_ACTION: SPEC_LOOP_EXIT | SPEC_REVISION | ASK_USER_BATCH
+NEXT_ACTION: DONE | SPEC_REVISION | ASK_USER_BATCH | FOLLOWUP_ONLY
 ```
 
-- `CLEAN` means 0 FIX, 0 FIX_UNCLEAR, and 0 ASK_USER. The specification review loop exits.
-- `HAS_FIX` means 1+ FIX, 0 FIX_UNCLEAR, and 0 ASK_USER. The orchestrator loops back to the phase execute skill with the FIX items.
-- `HAS_ASK_USER` means 1+ FIX_UNCLEAR or ASK_USER. The orchestrator batches decision cards to the user, writes answers to the decision log, then re-runs this handler.
+- `CLEAN` (0 FIX, 0 FIX_UNCLEAR, 0 ASK_USER): the specification review loop exits and the pipeline advances.
+- `HAS_BLOCKING_FIX` (1+ BLOCKER or MAJOR FIX, 0 FIX_UNCLEAR, 0 ASK_USER): the orchestrator loops back to the phase execute skill with the blocking FIX items.
+- `HAS_NONBLOCKING_FINDINGS` (only MINOR or INFO FIX items, 0 FIX_UNCLEAR, 0 ASK_USER): the orchestrator reports follow-up items and exits the specification review loop.
+- `HAS_ASK_USER` (1+ FIX_UNCLEAR or ASK_USER): the orchestrator batches decision cards to the user, writes answers to the decision log, then re-runs this handler.
 
 Routing consistency is mandatory:
 
 - If `FIX_UNCLEAR_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
 - If `ASK_USER_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
-- Never output `CLEAN` or `HAS_FIX` while any `FIX_UNCLEAR` item exists.
+- If `BLOCKING_FIX_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_BLOCKING_FIX` and `NEXT_ACTION` MUST be `SPEC_REVISION`.
+- If `BLOCKING_FIX_COUNT = 0` and `NONBLOCKING_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_NONBLOCKING_FINDINGS` and `NEXT_ACTION` MUST be `FOLLOWUP_ONLY`.
+- Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists.
 - `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the specification behavior or wording.
 
-If the configured phase has no execute skill capable of revising the specification, do not pretend the handler can fix it. State that the pipeline needs a phase that revises the specification or a user-edited specification before `HAS_FIX` can be applied safely.
+If the configured phase has no execute skill capable of revising the specification, do not pretend the handler can fix it. State that the pipeline needs a phase that revises the specification or a user-edited specification before `HAS_BLOCKING_FIX` can be applied safely.
 
 ## Rules
 

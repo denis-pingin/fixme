@@ -524,9 +524,10 @@ The manifest always contains ALL steps. When entering mid-pipeline (e.g., plan a
 
 Each routing entry specifies explicit jump targets:
 
-Handler route actions use this contract: `NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY`.
+Handler route actions use this contract: `NEXT_ACTION: DONE | SPEC_REVISION | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY`. Spec handlers use `SPEC_REVISION`; plan/code handlers use `PLAN_REVISION` or `IMPLEMENT_REPAIR`. `FOLLOWUP_ONLY`, `ASK_USER_BATCH`, and `DONE` apply to all handlers.
 
 - **CLEAN**: advance to the next numbered step
+- **HAS_BLOCKING_FIX with SPEC_REVISION**: jump back to the specification phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
 - **HAS_BLOCKING_FIX with PLAN_REQUIRED (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
 - **HAS_BLOCKING_FIX with PLAN_REQUIRED (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
 - **HAS_BLOCKING_FIX with IMPLEMENT_ONLY**: jump back to the current implementation phase's execute step in repair mode. IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.
@@ -851,7 +852,7 @@ For phases using the standard skills, these are the input contracts:
 - Path to decision log (if it exists)
 - The phase must have an execute skill capable of revising the specification when the handler returns FIX items
 
-Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fixme-review-spec`. `HAS_FIX` routes back to the phase's first execute skill; without a skill that writes or revises the specification there is nothing safe to re-run.
+Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fixme-review-spec`. `HAS_BLOCKING_FIX` routes back to the phase's first execute skill; without a skill that writes or revises the specification there is nothing safe to re-run.
 
 **fixme-handle-plan-review** (in `plan` phase review):
 - Review findings from reviewer
@@ -972,8 +973,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
 | Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
 | Plan writer | `PLAN_PATH: <absolute path>` + `CODE_MAP_PATH: <absolute path>` | End of fixme-write-plan output |
-| Plan/code review handler | `HANDLER_RESULT: CLEAN\|HAS_BLOCKING_FIX\|HAS_NONBLOCKING_FINDINGS\|HAS_ASK_USER` | End of fixme-handle-plan-review or fixme-handle-code-review output |
-| Specification review handler | `HANDLER_RESULT: CLEAN\|HAS_FIX\|HAS_ASK_USER` | End of fixme-handle-spec-review output |
+| Review handler (spec/plan/code) | `HANDLER_RESULT: CLEAN\|HAS_BLOCKING_FIX\|HAS_NONBLOCKING_FINDINGS\|HAS_ASK_USER` | End of fixme-handle-spec-review, fixme-handle-plan-review, or fixme-handle-code-review output |
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
 
@@ -1026,21 +1026,21 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 2. Mark step `completed`, set next step to `in_progress`
 3. Pass the findings and current review context packet as input to the handler dispatch (the next manifest step)
 
-**Handler steps** (`[phase/review]` entries - handlers like fixme-handle-plan-review, fixme-handle-code-review):
+**Handler steps** (`[phase/review]` entries - handlers like fixme-handle-spec-review, fixme-handle-plan-review, fixme-handle-code-review):
 
-1. Validate the routing directive. Plan/code handlers use `HANDLER_RESULT: CLEAN|HAS_BLOCKING_FIX|HAS_NONBLOCKING_FINDINGS|HAS_ASK_USER`. Specification handlers still use `HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`.
-2. Capture only the routing summary, classification counts, severity counts, route-scope counts, FIX items, decision cards, follow-up-only items, and rejection rationale needed for routing and the next review context packet
+1. Validate the routing directive. All review handlers use the same contract: `HANDLER_RESULT: CLEAN|HAS_BLOCKING_FIX|HAS_NONBLOCKING_FINDINGS|HAS_ASK_USER`.
+2. Capture only the routing summary, classification counts, severity counts, route-scope counts (plan/code only), FIX items, decision cards, follow-up-only items, and rejection rationale needed for routing and the next review context packet
 3. Mark step `completed`, set next step to `in_progress` (the routing step)
 
 **Routing steps** (`[phase/route]` entries):
 
 1. Read the HANDLER_RESULT from the previous handler's output
-2. Validate the handler's classification counts before following the route:
-   - For specification handlers, use the specification handler's legacy routing contract: `CLEAN`, `HAS_FIX`, or `HAS_ASK_USER` with `NEXT_ACTION: SPEC_LOOP_EXIT | SPEC_REVISION | ASK_USER_BATCH`. The remaining bullets in this list apply to plan/code handlers.
+2. Validate the handler's classification counts before following the route. All handlers (spec/plan/code) share the same `HANDLER_RESULT` vocabulary and the same severity-based blocking semantics; the only difference is per-handler `NEXT_ACTION` values (spec uses `SPEC_REVISION`; plan/code use `PLAN_REVISION` or `IMPLEMENT_REPAIR`):
    - `FIX_UNCLEAR_COUNT > 0` or `ASK_USER_COUNT > 0` requires `HANDLER_RESULT: HAS_ASK_USER` and `NEXT_ACTION: ASK_USER_BATCH`
    - `HANDLER_RESULT: CLEAN` is valid only when `FIX_COUNT`, `FIX_UNCLEAR_COUNT`, and `ASK_USER_COUNT` are all `0`
    - `HANDLER_RESULT: HAS_BLOCKING_FIX` is valid only when `BLOCKING_FIX_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
    - `HANDLER_RESULT: HAS_NONBLOCKING_FINDINGS` is valid only when `BLOCKING_FIX_COUNT = 0`, `NONBLOCKING_COUNT > 0`, `FIX_UNCLEAR_COUNT = 0`, and `ASK_USER_COUNT = 0`
+   - `NEXT_ACTION: SPEC_REVISION` requires `BLOCKING_FIX_COUNT > 0` from a specification handler
    - `NEXT_ACTION: PLAN_REVISION` requires `PLAN_REQUIRED_COUNT > 0`
    - `NEXT_ACTION: IMPLEMENT_REPAIR` requires `IMPLEMENT_ONLY_COUNT > 0` and `PLAN_REQUIRED_COUNT = 0`
    - `NEXT_ACTION: FOLLOWUP_ONLY` requires `BLOCKING_FIX_COUNT = 0` and `NONBLOCKING_COUNT > 0`
@@ -1049,6 +1049,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 4. Print the Review Classification block (see Review Classification Visibility). This happens for every handler output: CLEAN, HAS_BLOCKING_FIX, HAS_NONBLOCKING_FINDINGS, and HAS_ASK_USER.
 5. Follow the routing rules specified in the manifest entry:
    - **CLEAN**: mark step `completed`, advance to the next numbered step
+   - **HAS_BLOCKING_FIX + SPEC_REVISION**: mark step `completed`, jump back to the specification phase's first execute step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, focused code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
    - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.

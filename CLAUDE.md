@@ -97,6 +97,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
   fixme-execute-plan/       # Executes plans step-by-step with verification gates
   fixme-review-code/        # Reviews executed code against plan
   fixme-handle-code-review/ # Triages code review findings (unified taxonomy)
+  fixme-brainstorm/         # Socratic exploration before spec/plan/ticket (standalone)
   fixme-investigate/        # Browser reproduction + root cause analysis (standalone)
   fixme-pr-comments/        # Fetch, analyze, and address unresolved PR review comments (standalone)
   fixme-rebase/             # Safe branch rebasing with conflict resolution and verification
@@ -120,7 +121,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
 - **Dynamic state machine.** The state machine is derived from workflow config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the workflow definition.
 - **Background dispatch.** fixme-session dispatches fixme-task in the background per ticket, staying responsive for new intake and status queries.
-- **Audible alerts on every attention point.** All orchestrators and interactive skills (fixme-task, fixme-session, fixme-rebase, fixme-pr-comments, fixme-ticket, fixme-config) emit a sound via `fixme-tools.cjs alert <event>` whenever they pause for user input (`user_input`), complete successfully (`task_finished`), or fail (`task_failed`). The user should never have to watch the terminal to know something happened. Sounds are configurable per event via `/fixme-config` (Alerts round) and persisted in `.fixme/config.json` under `alerts.{enabled, sounds, players}`. Cross-platform: macOS uses `afplay`, Linux uses `paplay`, Windows uses `powershell` Media.SoundPlayer; unsupported platforms no-op silently.
+- **Audible alerts on every attention point.** All orchestrators and interactive skills (fixme-task, fixme-session, fixme-rebase, fixme-pr-comments, fixme-ticket, fixme-config, fixme-brainstorm) emit a sound via `fixme-tools.cjs alert <event>` whenever they pause for user input (`user_input`), complete successfully (`task_finished`), or fail (`task_failed`). The user should never have to watch the terminal to know something happened. Sounds are configurable per event via `/fixme-config` (Alerts round) and persisted in `.fixme/config.json` under `alerts.{enabled, sounds, players}`. Cross-platform: macOS uses `afplay`, Linux uses `paplay`, Windows uses `powershell` Media.SoundPlayer; unsupported platforms no-op silently.
 
 ### Agent Definitions
 
@@ -143,7 +144,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-research | Codebase explorer | Writes research output, never fixes code | opus | high | xhigh |
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | high | xhigh |
 
-Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
+Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config, fixme-brainstorm), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
 Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `medium` for `fixme-execute-plan`; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
 
@@ -166,7 +167,7 @@ for each phase:
   execute phase skills -> review loop (if configured) -> next phase
 ```
 
-Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER, REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, REJECT_ALREADY_FIXED) and output routing directives (`HANDLER_RESULT: CLEAN|HAS_FIX|HAS_ASK_USER`) that drive review loop control flow.
+Handlers classify findings using a unified taxonomy (FIX, FIX_UNCLEAR, ASK_USER, REJECT_FALSE_POSITIVE, REJECT_WONT_FIX, REJECT_ALREADY_FIXED) and output routing directives (`HANDLER_RESULT: CLEAN|HAS_BLOCKING_FIX|HAS_NONBLOCKING_FINDINGS|HAS_ASK_USER`) that drive review loop control flow. All three review handlers (spec, plan, code) use the same directive contract.
 
 ### Runtime State Locations
 

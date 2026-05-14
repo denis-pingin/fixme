@@ -2307,6 +2307,37 @@ test('fixme review handlers: classify blocking severity and route scope separate
   }
 });
 
+test('fixme-handle-spec-review uses the same unified routing contract as plan/code handlers', () => {
+  const specHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md');
+  const specAgentPath = path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-handle-spec-review.md');
+  const specHandler = fs.readFileSync(specHandlerPath, 'utf8');
+  const specAgent = fs.readFileSync(specAgentPath, 'utf8');
+
+  assert(specHandler.includes('SEVERITY: BLOCKER | MAJOR | MINOR | INFO'), 'spec handler should require severity in each finding');
+  assert(specHandler.includes('HANDLER_RESULT: CLEAN | HAS_BLOCKING_FIX | HAS_NONBLOCKING_FINDINGS | HAS_ASK_USER'), 'spec handler routing should match plan/code three-state contract');
+  assert(specHandler.includes('BLOCKING_FIX_COUNT: <number>'), 'spec handler should count blocking fixes');
+  assert(specHandler.includes('NONBLOCKING_COUNT: <number>'), 'spec handler should count nonblocking findings');
+  assert(specHandler.includes('NEXT_ACTION: DONE | SPEC_REVISION | ASK_USER_BATCH | FOLLOWUP_ONLY'), 'spec handler next-action should include SPEC_REVISION and FOLLOWUP_ONLY');
+  assert(specHandler.includes('MINOR and INFO findings never trigger a revision loop by themselves'), 'spec handler should keep nonblocking findings out of loops');
+  assert(!specHandler.includes('HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER'), 'spec handler should no longer emit the legacy two-state directive');
+  assert(!specHandler.includes('SPEC_LOOP_EXIT'), 'spec handler should no longer use SPEC_LOOP_EXIT; CLEAN with DONE replaces it');
+
+  assert(specAgent.includes('HAS_BLOCKING_FIX'), 'spec handler agent role text should enumerate HAS_BLOCKING_FIX');
+  assert(specAgent.includes('HAS_NONBLOCKING_FINDINGS'), 'spec handler agent role text should enumerate HAS_NONBLOCKING_FINDINGS');
+  assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(specAgent), 'spec handler agent role text should not enumerate the legacy two-state directive');
+});
+
+test('fixme review handler agents enumerate the unified three-state directive', () => {
+  const agentNames = ['fixme-handle-spec-review', 'fixme-handle-plan-review', 'fixme-handle-code-review'];
+  for (const agentName of agentNames) {
+    const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', `${agentName}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('HAS_BLOCKING_FIX'), `${agentName} role text should enumerate HAS_BLOCKING_FIX`);
+    assert(agent.includes('HAS_NONBLOCKING_FINDINGS'), `${agentName} role text should enumerate HAS_NONBLOCKING_FINDINGS`);
+    assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(agent), `${agentName} role text should not enumerate the legacy two-state directive`);
+  }
+});
+
 test('fixme importance rubric defines softness axes, floor, scoring, and aggregation', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-importance', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -2422,7 +2453,7 @@ test('fixme-task skill: routes implementation-only code review fixes without out
   const skill = fs.readFileSync(skillPath, 'utf8');
 
   assert(skill.includes('HAS_BLOCKING_FIX'), 'orchestrator should understand blocking fix handler result');
-  assert(skill.includes('NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY'), 'orchestrator should support implement repair and follow-up routes');
+  assert(skill.includes('NEXT_ACTION: DONE | SPEC_REVISION | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY'), 'orchestrator should support spec revision, implement repair, and follow-up routes');
   assert(skill.includes('PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles.'), 'plan-required findings should still use outer loop');
   assert(skill.includes('IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.'), 'implementation-only findings should avoid plan loop');
   assert(skill.includes('MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.'), 'nonblocking findings should not trigger loops');
