@@ -70,6 +70,28 @@ Classify every finding as exactly one of:
 - `Untestable`: acceptance criteria cannot be verified
 - `Out of scope`: real concern, but not needed to implement this specification
 
+## Edge-Case Validity Gate
+
+Run this gate for any candidate about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, negative path, legacy path, partial-failure path, or "this could happen if..." scenario.
+
+Do not promote an edge-case candidate to a finding until you have identified the exact state, the behavioral surface that could produce it, and the specification contract that says whether that state is supported.
+
+Answer these questions in order:
+
+1. **What is the exact reported state?** Name the actor, API input, persisted state, workflow state, migration state, or failure condition. Vague labels like "bad input" or "edge case" are insufficient.
+2. **Is this state inside the specification's declared surface?** Check declared user journeys, API inputs, entity states, migrations, background workflows, examples, and acceptance criteria.
+3. **Is this state supported behavior?** Look for concrete specification text, examples, requirements, or locked decisions that require the behavior.
+4. **If unsupported, where should the specification exclude it?** Prefer explicit validation, request-shape constraints, state-machine transition rules, migration preconditions, or failure semantics over downstream special-case support.
+5. **If the support contract is unclear, do not guess.** Emit a decision card and frame the decision as: "Should this state be supported?"
+
+Validity outcomes:
+
+- **Supported** - the state belongs to the specification and must have exactly one behavior. Promote a finding only if the behavior is missing, conflicting, or ambiguous.
+- **Unsupported but reachable** - the state can be requested or produced, but should be rejected or constrained. Promote a finding only when the specification lacks that boundary behavior; recommended text must fail-fast or make-impossible, not broadly support the state.
+- **Impossible by construction** - the specification's declared request shapes, states, migrations, or transitions make the state unreachable. Drop the candidate silently unless another section weakens those guarantees.
+- **Out of scope** - the state may matter in a different product journey or future specification, but not this one. Do not promote it as a blocking finding.
+- **Unclear** - evidence does not prove supported, unsupported, or impossible. Emit a decision card instead of recommending specification text.
+
 ## Required Finding Format
 
 Every finding or note must use this format:

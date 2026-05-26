@@ -314,6 +314,7 @@ For each unresolved `review_item`:
    - Is it a real bug/problem?
    - Is the suggested fix correct?
    - Does it apply to the current code state?
+   - For edge-case review items, run the Edge-Case Validity Gate before assigning VERDICT.
 3. **Categorize**:
    - `FIX`: Valid issue with a single clear solution - no ambiguity in how to fix it
    - `FIX_UNCLEAR`: Valid issue but multiple viable approaches exist, or tradeoffs/design choices are involved
@@ -322,6 +323,25 @@ For each unresolved `review_item`:
    - `REJECT_ALREADY_FIXED`: Issue was already addressed
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
    - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal. **Note**: file-level overlap with another PR (existing, planned, or stack-mate) is not on its own a defer reason - it must be the *specific code path* the comment flags that another PR replaces or makes obsolete. "Same file" is not "same problem."
+
+Edge-Case Validity Gate:
+
+Run this gate for any PR review item about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.
+
+Only classify support, unsupported, or impossible when concrete evidence proves that route. If edge-case validity is fuzzy, set VERDICT: ASK_USER and EDGE_VALIDITY: ASK_USER_VALIDITY.
+
+1. **Exact state** - identify the specific values, input shape, entity state, caller behavior, timing condition, or implementation precondition being discussed.
+2. **Reachability** - prove whether the state can happen from the PR diff, current source, tests, schemas, API contracts, caller guards, or state-machine transitions.
+3. **Support contract** - prove whether the state is required, unsupported, or out of scope from user journeys, requirements, locked decisions, documented API contracts, existing tests, or established product behavior.
+4. **Boundary location** - if the state is unsupported but reachable, identify where it should be rejected or constrained before downstream code sees it.
+
+Edge validity routing:
+
+- Supported and unhandled -> `VERDICT: FIX` or `FIX_UNCLEAR`; `EDGE_VALIDITY: NONE`.
+- Unsupported but reachable and not blocked early enough -> `VERDICT: FIX`; `EDGE_VALIDITY: FIX_FAIL_FAST`; route according to severity and complexity, but the fix must fail early or make the state impossible.
+- Validity or support unclear -> `VERDICT: ASK_USER`; `EDGE_VALIDITY: ASK_USER_VALIDITY`; route `DECISION`.
+- Impossible by construction -> `VERDICT: REJECT_FALSE_POSITIVE`; `EDGE_VALIDITY: REJECT_IMPOSSIBLE`; route `NO_ACTION`.
+- Unsupported or out of scope with no current PR action -> `VERDICT: REJECT_WONT_FIX` or `FOLLOWUP_ONLY` based on whether follow-up work remains; `EDGE_VALIDITY: REJECT_UNSUPPORTED`.
 
 Future-work classification rule:
 
@@ -335,6 +355,7 @@ Future-work classification rule:
    - `SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
    - `COMPLEXITY: LOW | MEDIUM | HIGH`
    - `CONFIDENCE: HIGH | MEDIUM | LOW`
+   - `EDGE_VALIDITY: FIX_FAIL_FAST | ASK_USER_VALIDITY | REJECT_IMPOSSIBLE | REJECT_UNSUPPORTED | NONE`
    - `IMPORTANCE_AXES: harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>`
    - `IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible`
    - `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false`

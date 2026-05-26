@@ -40,6 +40,12 @@ Optimize the block for evidence:
 
 Options are optional for `ASK_USER`. Include options only when the user must choose between materially different directions such as fix, defer, or reject.
 
+### Edge-Case Validity Decisions
+
+Edge-case validity questions ask whether the reported state should be supported, rejected earlier, or treated as impossible under the current contract.
+
+Use this shape when an edge case is technically plausible but the product, domain, API, or state-machine contract does not clearly say whether it belongs in supported behavior. The decision must be phrased as support/scope first, not as an implementation proposal. Ask "Should this state be supported?" before presenting any fix shape.
+
 ### FIX_UNCLEAR
 
 Use `FIX_UNCLEAR` when the finding is valid but multiple reasonable fix paths exist.

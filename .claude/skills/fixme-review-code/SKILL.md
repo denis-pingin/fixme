@@ -405,6 +405,28 @@ Before promoting ANY candidate to a finding, pass it through every gate. If it f
 6. **Does this contradict a locked decision?** If the plan includes Locked Decisions in its Context section, those are settled user choices. Do not flag code that implements a locked decision. If the locked decision itself appears to cause a problem in practice, frame it as a question, not a finding.
 7. **Is the severity consistent with the actual impact?** If your own analysis concludes "functionally correct", "cosmetic", or "not blocking", the finding cannot be MAJOR or BLOCKER. Either downgrade to MINOR or INFO, or drop it entirely.
 
+## Edge-Case Validity Gate
+
+Run this gate for any candidate about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.
+
+Do not promote an edge-case candidate to a finding until you have identified the exact state, the code path that could produce it, and the contract that says whether that state is supported.
+
+Answer these questions in order:
+
+1. **What is the exact reported state?** Name the values, inputs, entity state, caller behavior, or timing condition. Vague labels like "bad input" or "edge case" are insufficient.
+2. **Can this state actually happen?** Verify reachability from the changed code, plan, spec, tests, API contracts, schemas, caller guards, or state machine.
+3. **Is this state supported behavior?** Look for concrete evidence in user journeys, requirements, existing tests, documented API contracts, locked decisions, or established product behavior.
+4. **If unsupported, where should it be excluded?** Prefer a boundary guard, parser, schema, type constraint, caller precondition, or state-machine transition over downstream special-case handling.
+5. **If the support contract is unclear, do not guess.** Move it to Questions and frame the decision as: "Should this state be supported?"
+
+Validity outcomes:
+
+- **Supported** - the state is reachable and the product/domain/API contract says it must work. Promote a finding only if the implementation fails to support it.
+- **Unsupported but reachable** - the state can happen, but should be rejected or constrained earlier. Promote a finding only when the implementation lacks that boundary behavior; the suggestion must be fail-fast or make-impossible, not broad downstream support.
+- **Impossible by construction** - the current types, schema, caller guards, or state machine make the state unreachable. Drop the candidate silently unless the implementation weakens those guarantees.
+- **Out of scope** - the state may be meaningful in a different product journey or future phase, but not this task. Do not promote it as a blocking finding.
+- **Unclear** - evidence does not prove supported, unsupported, or impossible. Put it in Questions instead of recommending a fix.
+
 ## What NOT to Flag
 
 - Style preferences not established by the codebase's linter/formatter

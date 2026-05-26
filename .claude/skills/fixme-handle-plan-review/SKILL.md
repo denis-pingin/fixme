@@ -35,9 +35,17 @@ If the packet/code map and an artifact disagree, trust the artifact after verify
 - **REJECT_WONT_FIX** - finding is technically valid but intentionally out of scope, contradicts a locked decision (without revealing new concrete problems), or would be net-negative to address.
 - **REJECT_ALREADY_FIXED** - the issue described is already addressed by the plan's current state or a prior revision.
 
+For edge-case findings, also assign an edge-case validity classification:
+
+- **FIX_FAIL_FAST** - the reported state is reachable but should not be supported downstream. The correct fix is to reject, constrain, parse, type-narrow, or fail earlier so later code never handles the invalid state.
+- **ASK_USER_VALIDITY** - the reported state may be reachable, but product/domain/API support is unclear. A human must decide whether this state is supported before any fix approach is selected.
+- **REJECT_IMPOSSIBLE** - the reported state cannot happen because current types, schemas, caller guards, state-machine transitions, or plan constraints already exclude it.
+- **REJECT_UNSUPPORTED** - the reported state is reachable but explicitly unsupported or out of this task's scope, and the plan already preserves the correct boundary behavior or no current-task action is needed.
+- **NONE** - not an edge-case validity finding.
+
 ## Severity and Route Scope
 
-Every finding must include both severity and route scope. Classification answers whether the finding is real. Severity answers whether it should block the workflow. Route scope answers which producer must handle it.
+Every finding must include both severity and route scope. Classification answers whether the finding is real. Edge-case validity classification answers whether a reported state should be supported, rejected earlier, rejected as impossible, or escalated for a support decision. Severity answers whether it should block the workflow. Route scope answers which producer must handle it.
 
 `SEVERITY: BLOCKER | MAJOR | MINOR | INFO`
 
@@ -84,6 +92,29 @@ For every suppressed item, add it to the suppressed ledger using this wording:
 
 Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, BLOCKING_FIX_COUNT, NONBLOCKING_COUNT, PLAN_REQUIRED_COUNT, IMPLEMENT_ONLY_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
 
+## Edge-Case Validity Gate
+
+Run this gate before normal classification for every finding about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.
+
+Only classify support, unsupported, or impossible when concrete evidence proves that route. If validity is fuzzy, classify ASK_USER_VALIDITY.
+
+Evidence threshold:
+
+1. **Exact state** - identify the specific values, input shape, entity state, caller behavior, timing condition, or plan precondition being discussed.
+2. **Reachability** - prove whether the state can happen from source code, plan steps, specs, tests, schemas, API contracts, caller guards, or state-machine transitions.
+3. **Support contract** - prove whether the state is required, unsupported, or out of scope from user journeys, requirements, locked decisions, documented API contracts, existing tests, or established product behavior.
+4. **Boundary location** - if the state is unsupported but reachable, identify where it should be rejected or constrained before downstream code sees it.
+
+Routing map:
+
+- **Supported and unhandled** -> main `Classification: FIX` or `FIX_UNCLEAR`; edge-case validity `NONE`.
+- **Unsupported but reachable and not blocked early enough** -> main `Classification: FIX`; edge-case validity `FIX_FAIL_FAST`; `FIX_FAIL_FAST_COUNT` increments and this counts inside `FIX_COUNT`.
+- **Validity or support unclear** -> main `Classification: ASK_USER`; edge-case validity `ASK_USER_VALIDITY`; `ASK_USER_VALIDITY_COUNT` increments and this counts inside `ASK_USER_COUNT`.
+- **Impossible by construction** -> main `Classification: REJECT_FALSE_POSITIVE`; edge-case validity `REJECT_IMPOSSIBLE`.
+- **Unsupported or out of scope with no current-task action** -> main `Classification: REJECT_WONT_FIX`; edge-case validity `REJECT_UNSUPPORTED`.
+
+For `ASK_USER_VALIDITY`, the Question field must ask whether the reported state should be supported before discussing implementation. Phrase the decision directly: "Should this state be supported?" Include evidence for and against support, then recommend support, fail-fast, reject, or defer based on the evidence.
+
 ## Process
 
 For each finding:
@@ -129,6 +160,7 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 |-------|-------------|
 | **Finding** | One-line summary of the reviewer's concern |
 | **Classification** | FIX / FIX_UNCLEAR / ASK_USER / REJECT_FALSE_POSITIVE / REJECT_WONT_FIX / REJECT_ALREADY_FIXED |
+| **Validity** | FIX_FAIL_FAST / ASK_USER_VALIDITY / REJECT_IMPOSSIBLE / REJECT_UNSUPPORTED / NONE |
 | **Severity** | BLOCKER / MAJOR / MINOR / INFO |
 | **Route Scope** | PLAN_REQUIRED / IMPLEMENT_ONLY / FOLLOWUP / NONE |
 | **Confidence** | HIGH / MEDIUM / LOW |
@@ -176,6 +208,10 @@ HANDLER_RESULT: CLEAN | HAS_BLOCKING_FIX | HAS_NONBLOCKING_FINDINGS | HAS_ASK_US
 FIX_COUNT: <number>
 FIX_UNCLEAR_COUNT: <number>
 ASK_USER_COUNT: <number>
+FIX_FAIL_FAST_COUNT: <number>
+ASK_USER_VALIDITY_COUNT: <number>
+REJECT_IMPOSSIBLE_COUNT: <number>
+REJECT_UNSUPPORTED_COUNT: <number>
 BLOCKING_FIX_COUNT: <number>
 NONBLOCKING_COUNT: <number>
 SUPPRESSED_COUNT: <number>
@@ -193,6 +229,9 @@ Routing consistency is mandatory:
 
 - If `FIX_UNCLEAR_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
 - If `ASK_USER_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_ASK_USER` and `NEXT_ACTION` MUST be `ASK_USER_BATCH`.
+- `FIX_FAIL_FAST_COUNT` is a subset of `FIX_COUNT`. Every `FIX_FAIL_FAST` item must also be counted in `FIX_COUNT` and routed like a normal blocking or nonblocking fix based on severity.
+- `ASK_USER_VALIDITY_COUNT` is a subset of `ASK_USER_COUNT`. Every `ASK_USER_VALIDITY` item must also be counted in `ASK_USER_COUNT` and routed to `ASK_USER_BATCH`.
+- `REJECT_IMPOSSIBLE_COUNT` and `REJECT_UNSUPPORTED_COUNT` are dismissed counts. They do not contribute to `FIX_COUNT`, `ASK_USER_COUNT`, blocking counts, or loop routing.
 - If `BLOCKING_FIX_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_BLOCKING_FIX`.
 - If `BLOCKING_FIX_COUNT = 0` and `NONBLOCKING_COUNT > 0`, `HANDLER_RESULT` MUST be `HAS_NONBLOCKING_FINDINGS` and `NEXT_ACTION` MUST be `FOLLOWUP_ONLY`.
 - If `PLAN_REQUIRED_COUNT > 0`, `NEXT_ACTION` MUST be `PLAN_REVISION`.

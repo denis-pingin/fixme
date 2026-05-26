@@ -2307,6 +2307,55 @@ test('fixme review handlers: classify blocking severity and route scope separate
   }
 });
 
+test('fixme review loop has an explicit edge-case validity gate', () => {
+  const planReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md');
+  const codeReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const specReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-spec', 'SKILL.md');
+  const specReviewRubricPath = path.resolve(__dirname, '..', '..', 'fixme-howto-review-spec', 'SKILL.md');
+  const planHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md');
+  const codeHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md');
+  const specHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md');
+  const prCommentsPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const taskPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const decisionPath = path.resolve(__dirname, '..', '..', 'fixme-howto-present-decisions', 'SKILL.md');
+
+  const planReview = fs.readFileSync(planReviewPath, 'utf8');
+  const codeReview = fs.readFileSync(codeReviewPath, 'utf8');
+  const specReview = fs.readFileSync(specReviewPath, 'utf8');
+  const specReviewRubric = fs.readFileSync(specReviewRubricPath, 'utf8');
+  const planHandler = fs.readFileSync(planHandlerPath, 'utf8');
+  const codeHandler = fs.readFileSync(codeHandlerPath, 'utf8');
+  const specHandler = fs.readFileSync(specHandlerPath, 'utf8');
+  const prComments = fs.readFileSync(prCommentsPath, 'utf8');
+  const task = fs.readFileSync(taskPath, 'utf8');
+  const decision = fs.readFileSync(decisionPath, 'utf8');
+
+  for (const reviewer of [planReview, codeReview, specReview, specReviewRubric]) {
+    assert(reviewer.includes('## Edge-Case Validity Gate'), 'reviewer should require explicit edge-case validity analysis');
+    assert(reviewer.includes('Do not promote an edge-case candidate to a finding until you have identified the exact state'), 'reviewer should define the exact reported state before flagging');
+    assert(reviewer.includes('Should this state be supported?'), 'reviewer should frame fuzzy edge cases as support decisions');
+  }
+
+  for (const handler of [planHandler, codeHandler, specHandler]) {
+    assert(handler.includes('FIX_FAIL_FAST'), 'handler should support fail-fast fixes for unsupported-but-reachable states');
+    assert(handler.includes('ASK_USER_VALIDITY'), 'handler should support validity questions distinct from approach questions');
+    assert(handler.includes('REJECT_IMPOSSIBLE'), 'handler should explicitly reject impossible edge cases');
+    assert(handler.includes('REJECT_UNSUPPORTED'), 'handler should explicitly reject unsupported edge cases');
+    assert(handler.includes('## Edge-Case Validity Gate'), 'handler should verify edge-case validity before classification');
+    assert(handler.includes('Only classify support, unsupported, or impossible when concrete evidence proves that route.'), 'handler should require an evidence threshold before deciding validity');
+    assert(handler.includes('If validity is fuzzy, classify ASK_USER_VALIDITY.'), 'handler should ask instead of guessing when support is unclear');
+    assert(handler.includes('FIX_FAIL_FAST_COUNT: <number>'), 'handler should count fail-fast fixes in the routing block');
+    assert(handler.includes('ASK_USER_VALIDITY_COUNT: <number>'), 'handler should count validity questions in the routing block');
+  }
+
+  assert(prComments.includes('EDGE_VALIDITY: FIX_FAIL_FAST | ASK_USER_VALIDITY | REJECT_IMPOSSIBLE | REJECT_UNSUPPORTED | NONE'), 'PR comments should expose edge-case validity metadata');
+  assert(prComments.includes('For edge-case review items, run the Edge-Case Validity Gate before assigning VERDICT.'), 'PR comments should gate edge-case verdicts before route assignment');
+  assert(prComments.includes('If edge-case validity is fuzzy, set VERDICT: ASK_USER and EDGE_VALIDITY: ASK_USER_VALIDITY.'), 'PR comments should ask on fuzzy validity instead of guessing');
+  assert(task.includes('FIX_FAIL_FAST counts as a blocking fix'), 'orchestrator should map fail-fast fixes into normal fix routing');
+  assert(task.includes('ASK_USER_VALIDITY counts as a decision needed'), 'orchestrator should map validity questions into user decision routing');
+  assert(decision.includes('Edge-case validity questions ask whether the reported state should be supported'), 'decision cards should frame validity questions directly');
+});
+
 test('fixme-handle-spec-review uses the same unified routing contract as plan/code handlers', () => {
   const specHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md');
   const specAgentPath = path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-handle-spec-review.md');

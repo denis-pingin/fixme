@@ -534,6 +534,14 @@ Handler route actions use this contract: `NEXT_ACTION: DONE | SPEC_REVISION | PL
 - **HAS_NONBLOCKING_FINDINGS**: print the review classification, record follow-up-only items in the run summary, and advance without re-running the producer. MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.
 - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 
+### Edge-Case Validity Routing
+
+Handlers may include edge-case validity classifications in addition to the normal `Classification` field. These classifications make the support decision explicit without changing the top-level `HANDLER_RESULT` contract.
+
+- FIX_FAIL_FAST counts as a blocking fix when severity is BLOCKER or MAJOR, and as a follow-up item when severity is MINOR or INFO. It routes through the same producer loop as a normal FIX, but the producer must reject, constrain, parse, type-narrow, or fail earlier instead of adding downstream support for the invalid state.
+- ASK_USER_VALIDITY counts as a decision needed. It routes through the normal decision batching flow and asks whether the reported state should be supported before any fix approach is selected.
+- `REJECT_IMPOSSIBLE` and `REJECT_UNSUPPORTED` are dismissed findings. They appear in the Review Classification block as dismissed findings and do not trigger producer loops.
+
 ### PR Comment Triage Inputs
 
 When invoked by `fixme-pr-comments`, the task input may already contain risk-aware PR comment triage. Incoming PR comment fix items may include VERDICT, SEVERITY, COMPLEXITY, CONFIDENCE, ROUTE, and ROUTE_SCOPE metadata.
