@@ -2255,6 +2255,29 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
 // Skill contract tests
 // ============================================================================
 
+test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL directly', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-usage', 'SKILL.md');
+  assert(fs.existsSync(skillPath), 'fixme-usage skill should exist');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('name: fixme-usage'), 'frontmatter name');
+  assert(skill.includes('allowed-tools: Bash'), 'only Bash is required');
+  assert(skill.includes('usage report --scope'), 'skill should call usage report');
+  assert(skill.includes('Never parse JSONL directly.'), 'skill should not parse JSONL');
+  assert(skill.includes('Never inspect runtime transcripts directly.'), 'skill should not inspect transcripts');
+  assert(skill.includes('Do not display `outcomeReason`'), 'markdown reports should hide outcomeReason');
+  assert(skill.includes('/fixme-usage global pipeline <pipeline-run-id>'), 'global pipeline form documented');
+});
+
+test('documentation: README and fixme-tools skill mention usage reporting', () => {
+  const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '..', 'README.md'), 'utf8');
+  const toolsSkill = fs.readFileSync(path.resolve(__dirname, '..', 'SKILL.md'), 'utf8');
+  assert(readme.includes('`/fixme-usage`'), 'README should list /fixme-usage');
+  assert(readme.includes('usage report --scope project'), 'README should document usage report command');
+  assert(toolsSkill.includes('usage start --skill'), 'fixme-tools skill should document usage start');
+  assert(toolsSkill.includes('usage finish --invocation-id'), 'fixme-tools skill should document usage finish');
+  assert(toolsSkill.includes('usage report --scope'), 'fixme-tools skill should document usage report');
+});
+
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

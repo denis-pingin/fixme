@@ -11,6 +11,7 @@ Primary entry points:
 - **`/fixme-ticket`** - Create Linear tickets from a description or conversation context.
 - **`/fixme-brainstorm`** - Explore a feature, bug fix, or rough idea before choosing a spec, plan, or ticket path.
 - **`/fixme-config`** - Interactive configuration for workflows, model profiles, project settings, Linear, review softness, and alerts.
+- **`/fixme-usage`** - Show project, global, per-skill, and per-pipeline token usage reports.
 
 ## Quick Start
 
@@ -121,6 +122,16 @@ Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-pha
 
 Linear team discovery is used by `/fixme-ticket` even when the ticket backend stays on markdown files. If Linear MCP is unavailable with the markdown backend, `/fixme-config` skips only that Linear round and leaves existing Linear settings untouched.
 
+### Show usage reports
+
+```text
+/fixme-usage
+/fixme-usage global
+/fixme-usage pipeline <pipeline-run-id>
+```
+
+`/fixme-usage` renders token usage recorded by active Fixme skill invocations. It delegates aggregation to `fixme-tools.cjs usage report --scope project`.
+
 ## Architecture
 
 ### Two Orchestrators
@@ -177,6 +188,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert <user_input|task_finished|task_failed>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```
@@ -231,6 +243,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-ticket` | Create Linear tickets from description or conversation context |
 | `fixme-config` | Interactive configuration for workflows, models, review softness, project settings, Linear, and alerts |
+| `fixme-usage` | Show project, global, per-skill, and per-pipeline token usage reports |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |
 | `fixme-tickets-linear` | Linear ticket backend (v2 stub) |

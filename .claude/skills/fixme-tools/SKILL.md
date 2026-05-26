@@ -20,10 +20,12 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Create, migrate, validate, and atomically write `<fixme-dir>/config.json`
 - Detect, load, and save project context
 - Resolve configured agent runtime settings
-- Install Codex-adapted Fixme skill copies under `~/.codex/skills`
+- Install Claude and Codex-adapted Fixme skill copies under `~/.claude/skills` and `~/.codex/skills`
 - Register Fixme agents in Codex `config.toml`
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from workflow config
+- Record usage start and finish events with pending state, runtime counter extraction, and append-only project/global usage JSONL
+- Aggregate token usage reports from project and global usage JSONL
 
 ## Config Commands
 
@@ -39,13 +41,26 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 ## Codex Install Commands
 
 ```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs claude-skills install --skills-src <skills-dir> --claude-dir ~/.claude
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src <skills-dir> --codex-dir ~/.codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src <agents-dir> --codex-dir ~/.codex
 ```
 
+`claude-skills install` copies source `fixme*` skills into `~/.claude/skills`, injects generated usage tracking instructions into installed `SKILL.md` entrypoints, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
+
 `codex-skills install` copies source `fixme*` skills into `~/.codex/skills`, rewrites `.claude` paths to `.codex`, prepends a Codex runtime adapter to each installed `SKILL.md`, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
 
 `codex-agents install` generates `~/.codex/agents/fixme-*.toml`, copies converted `fixme-*.md` agent files, removes stale Fixme agent files, and updates `~/.codex/config.toml` with `[agents.fixme-*]` tables that point at absolute `config_file` paths. Generated Codex agents set `model_reasoning_effort` but do not pin a model. It deliberately does not emit `[[agents]]`.
+
+## Usage Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage start --skill <skill-name> --runtime claude
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage finish --invocation-id <id> --outcome complete
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
+```
+
+`usage start` creates pending invocation state. `usage finish` extracts runtime counters when available, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, partial-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
 
 ## Ownership
 
