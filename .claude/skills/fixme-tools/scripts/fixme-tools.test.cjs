@@ -68,6 +68,54 @@ function runInDir(args, cwd) {
   }
 }
 
+function runToolPath(toolPath, args, options = {}) {
+  try {
+    const result = execSync(`node "${toolPath}" ${args}`, {
+      encoding: 'utf8',
+      timeout: options.timeout || 5000,
+      cwd: options.cwd || process.cwd(),
+      env: { ...process.env, ...(options.env || {}) },
+    });
+    return { ok: true, data: JSON.parse(result.trim()) };
+  } catch (e) {
+    const stdout = e.stdout ? e.stdout.trim() : '';
+    let data = null;
+    try { data = JSON.parse(stdout); } catch (_) {}
+    return { ok: false, data, stderr: e.stderr || '', exitCode: e.status };
+  }
+}
+
+function runInDirWithEnv(args, cwd, env = {}) {
+  return runToolPath(TOOLS_PATH, args, { cwd, env });
+}
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function readJsonl(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
+}
+
+function createUsageWorkspace() {
+  const projectRoot = createTmpDir();
+  const homeDir = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.fixme', 'config.json'), '{}\n');
+  return {
+    projectRoot,
+    homeDir,
+    fixmeDir: path.join(projectRoot, '.fixme'),
+    env: { HOME: homeDir },
+    projectEvents: path.join(projectRoot, '.fixme', 'usage', 'events.jsonl'),
+    globalEvents: path.join(homeDir, '.fixme', 'usage', 'events.jsonl'),
+  };
+}
+
 function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-test-'));
   tmpDirs.push(dir);
@@ -2711,6 +2759,115 @@ test('CLI: config get alerts returns the alerts section', () => {
   assert(result.ok, `expected success, got: ${result.stderr}`);
   assert(result.data.value.enabled === true, 'enabled in output');
   assert(result.data.value.sounds.user_input === 'Pop', 'user_input should be Pop');
+});
+
+// ============================================================================
+// Usage start and config tests
+// ============================================================================
+
+console.log('\n=== usage start and config tests ===\n');
+
+test('usage start: creates pending state for direct skill with null pipelineRunId', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(result.ok, `usage start should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.invocationId.startsWith('usage_'), `invocationId should use usage_ prefix: ${result.data.invocationId}`);
+  assert(result.data.pipelineRunId === null, `pipelineRunId should be null, got ${result.data.pipelineRunId}`);
+  assert(result.data.runtime === 'codex', 'runtime should be codex');
+  assert(fs.existsSync(result.data.pendingPath), 'pending file should exist');
+
+  const pending = readJson(result.data.pendingPath);
+  assert(pending.schemaVersion === 1, 'pending schema version');
+  assert(pending.skill === 'fixme-write-plan', 'pending skill');
+  assert(pending.role === 'skill', 'default role');
+  assert(pending.runtime === 'codex', 'pending runtime');
+  assert(pending.pipelineRunId === null, 'pending pipelineRunId');
+  assert(pending.parentInvocationId === null, 'pending parentInvocationId');
+  assert(pending.finalizedEvent === null, 'pending finalizedEvent starts null');
+  assert(pending.appendState.projectWritten === false, 'projectWritten starts false');
+  assert(pending.appendState.globalWritten === false, 'globalWritten starts false');
+  assert(!fs.existsSync(ctx.projectEvents), 'start must not write project events');
+  assert(!fs.existsSync(ctx.globalEvents), 'start must not write global events');
+});
+
+test('usage start: standalone fixme-task uses own invocation as pipelineRunId', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-task --role orchestrator --runtime claude', ctx.projectRoot, ctx.env);
+  assert(result.ok, `usage start should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.pipelineRunId === result.data.invocationId, 'fixme-task standalone pipelineRunId should equal invocationId');
+  const pending = readJson(result.data.pendingPath);
+  assert(pending.role === 'orchestrator', 'role should be orchestrator');
+  assert(pending.pipelineRunId === result.data.invocationId, 'pending pipelineRunId should match invocationId');
+});
+
+test('usage start: nested fixme-task reuses provided pipelineRunId', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-task --role orchestrator --runtime codex --pipeline-run-id usage_parent --parent-invocation-id usage_grandparent', ctx.projectRoot, ctx.env);
+  assert(result.ok, `usage start should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.pipelineRunId === 'usage_parent', 'pipelineRunId should be reused');
+  const pending = readJson(result.data.pendingPath);
+  assert(pending.pipelineRunId === 'usage_parent', 'pending pipelineRunId');
+  assert(pending.parentInvocationId === 'usage_grandparent', 'pending parentInvocationId');
+});
+
+test('usage start: repo-source auto runtime is unresolved and writes no state', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-write-plan --runtime auto', ctx.projectRoot, ctx.env);
+  assert(!result.ok, 'auto runtime from source tree should fail');
+  assert(result.data.code === 'AUTO_RUNTIME_UNRESOLVED', `expected AUTO_RUNTIME_UNRESOLVED, got ${JSON.stringify(result.data)}`);
+  assert(!fs.existsSync(path.join(ctx.fixmeDir, 'usage', 'pending')), 'pending directory should not be created');
+});
+
+test('usage start: installed Claude and Codex paths resolve explicit runtimes', () => {
+  const ctx = createUsageWorkspace();
+  const claudeTool = path.join(ctx.homeDir, '.claude', 'skills', 'fixme-tools', 'scripts', 'fixme-tools.cjs');
+  const codexTool = path.join(ctx.homeDir, '.codex', 'skills', 'fixme-tools', 'scripts', 'fixme-tools.cjs');
+  fs.mkdirSync(path.dirname(claudeTool), { recursive: true });
+  fs.mkdirSync(path.dirname(codexTool), { recursive: true });
+  fs.copyFileSync(TOOLS_PATH, claudeTool);
+  fs.copyFileSync(TOOLS_PATH, codexTool);
+
+  const claude = runToolPath(claudeTool, 'usage start --skill fixme-write-plan --runtime claude', { cwd: ctx.projectRoot, env: ctx.env });
+  const codex = runToolPath(codexTool, 'usage start --skill fixme-write-plan --runtime codex', { cwd: ctx.projectRoot, env: ctx.env });
+  assert(claude.ok && claude.data.runtime === 'claude', `Claude runtime failed: ${JSON.stringify(claude.data)}`);
+  assert(codex.ok && codex.data.runtime === 'codex', `Codex runtime failed: ${JSON.stringify(codex.data)}`);
+});
+
+test('usage start: --task is rejected before pending state is created', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex --task "review spec"', ctx.projectRoot, ctx.env);
+  assert(!result.ok, 'usage start with --task should fail');
+  assert(result.data.code === 'UNSUPPORTED_USAGE_TASK', `expected UNSUPPORTED_USAGE_TASK, got ${JSON.stringify(result.data)}`);
+  assert(!fs.existsSync(path.join(ctx.fixmeDir, 'usage', 'pending')), 'pending directory should not exist');
+});
+
+test('config set usage.printAfterFinish accepts only booleans', () => {
+  const ctx = createUsageWorkspace();
+  const ok = runInDirWithEnv('config set usage.printAfterFinish false', ctx.projectRoot, ctx.env);
+  assert(ok.ok, `boolean write should succeed, got ${JSON.stringify(ok.data)}`);
+  assert(readJson(path.join(ctx.fixmeDir, 'config.json')).usage.printAfterFinish === false, 'boolean should persist');
+
+  const bad = runInDirWithEnv('config set usage.printAfterFinish "\\"false\\""', ctx.projectRoot, ctx.env);
+  assert(!bad.ok, 'string false should be rejected');
+  assert(String(bad.data.error).includes('usage.printAfterFinish must be a boolean'), `unexpected error: ${JSON.stringify(bad.data)}`);
+});
+
+test('config migrate preserves existing usage keys and defaults printAfterFinish', () => {
+  const ctx = createUsageWorkspace();
+  fs.writeFileSync(path.join(ctx.fixmeDir, 'config.json'), JSON.stringify({ usage: { customFutureKey: 'keep-me' } }, null, 2));
+  const result = runInDirWithEnv('config migrate', ctx.projectRoot, ctx.env);
+  assert(result.ok, `config migrate should succeed, got ${JSON.stringify(result.data)}`);
+  const written = readJson(path.join(ctx.fixmeDir, 'config.json'));
+  assert(written.usage.customFutureKey === 'keep-me', 'unknown usage key should be preserved');
+  assert(written.usage.printAfterFinish === true, 'printAfterFinish should default true');
+});
+
+test('config workflow configure treats fixme-usage as a known Fixme skill', () => {
+  const ctx = createUsageWorkspace();
+  const data = JSON.stringify({ phases: [{ name: 'report', skills: ['fixme-usage'] }] });
+  const result = runInDirWithEnv(`config workflow configure reporting --data '${data}'`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `workflow configure should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.warnings.length === 0, `fixme-usage should not warn as unknown: ${JSON.stringify(result.data.warnings)}`);
 });
 
 // ============================================================================

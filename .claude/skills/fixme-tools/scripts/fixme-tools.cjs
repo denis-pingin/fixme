@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // ============================================================================
 // Model Profile Table
@@ -224,9 +225,45 @@ const KNOWN_FIXME_SKILLS = new Set([
   'fixme-review-plan',
   'fixme-review-spec',
   'fixme-task',
+  'fixme-usage',
   'fixme-write-plan',
   'fixme-write-product-spec',
   'fixme-write-technical-spec',
+]);
+
+const USAGE_RUNTIMES = Object.freeze(['claude', 'codex', 'auto']);
+const USAGE_ROLES = Object.freeze(['skill', 'orchestrator', 'reviewer', 'handler', 'reporter', 'reference']);
+const USAGE_OUTCOMES = Object.freeze(['complete', 'failed', 'aborted']);
+const USAGE_STATUS = Object.freeze({ COMPLETE: 'complete', PARTIAL: 'partial' });
+const USAGE_REASON_VALUES = Object.freeze([
+  'verification_failed',
+  'user_aborted',
+  'usage_tracking_failed',
+  'runtime_error',
+  'dispatch_failed',
+  'timeout',
+  'invalid_usage_request',
+  'unknown',
+]);
+const USAGE_WARNING_CODES = Object.freeze({
+  COUNTERS_UNAVAILABLE: 'COUNTERS_UNAVAILABLE',
+  NO_NEW_USAGE: 'NO_NEW_USAGE',
+  NEGATIVE_DELTA: 'NEGATIVE_DELTA',
+  COUNTER_CONFLICT: 'COUNTER_CONFLICT',
+  AMBIGUOUS_COUNTER_SOURCE: 'AMBIGUOUS_COUNTER_SOURCE',
+  DUPLICATE_INVOCATION_CONFLICT: 'DUPLICATE_INVOCATION_CONFLICT',
+  CORRUPT_JSONL_LINE: 'CORRUPT_JSONL_LINE',
+  TRAILING_PARTIAL_LINE: 'TRAILING_PARTIAL_LINE',
+  DESTINATION_APPEND_FAILED: 'DESTINATION_APPEND_FAILED',
+});
+const USAGE_TOKEN_BUCKETS = Object.freeze([
+  'inputTokens',
+  'cachedInputTokens',
+  'cacheCreationInputTokens',
+  'cacheReadInputTokens',
+  'outputTokens',
+  'reasoningOutputTokens',
+  'totalTokens',
 ]);
 
 const ALERT_EVENTS = Object.freeze(['user_input', 'task_finished', 'task_failed']);
@@ -1080,7 +1117,7 @@ function buildTransitionsFromPhases(phases) {
 function findFixmeRoot(startDir) {
   const resolved = path.resolve(startDir);
   const root = path.parse(resolved).root;
-  const homedir = require('os').homedir();
+  const homedir = os.homedir();
 
   // If startDir already contains .fixme/, it IS the project root.
   const ownFixme = path.join(resolved, '.fixme');
@@ -1346,6 +1383,22 @@ function ensureAlertsConfig(config) {
   return changed;
 }
 
+function ensureUsageConfig(config) {
+  let changed = false;
+
+  if (!isPlainObject(config.usage)) {
+    config.usage = {};
+    changed = true;
+  }
+
+  if (typeof config.usage.printAfterFinish !== 'boolean') {
+    config.usage.printAfterFinish = true;
+    changed = true;
+  }
+
+  return changed;
+}
+
 function applyConfigMigration(config) {
   const result = {
     migrated: false,
@@ -1364,6 +1417,10 @@ function applyConfigMigration(config) {
   }
 
   if (ensureAlertsConfig(config)) {
+    result.migrated = true;
+  }
+
+  if (ensureUsageConfig(config)) {
     result.migrated = true;
   }
 
@@ -1510,6 +1567,10 @@ function isSupportedConfigKey(parts) {
       return parts.length >= 2;
     }
     return false;
+  }
+
+  if (top === 'usage') {
+    return parts.length === 2 && second === 'printAfterFinish';
   }
 
   return false;
@@ -1788,6 +1849,15 @@ function validateConfigSetValue(parts, value) {
     if (second === 'players') {
       if (parts.length === 2 && !isPlainObject(value)) {
         throw new Error('alerts.players must be an object');
+      }
+      return { warnings: [] };
+    }
+  }
+
+  if (top === 'usage') {
+    if (second === 'printAfterFinish') {
+      if (typeof value !== 'boolean') {
+        throw new Error('usage.printAfterFinish must be a boolean');
       }
       return { warnings: [] };
     }
@@ -3281,6 +3351,174 @@ function codexSkillsInstall(flags) {
 }
 
 // ============================================================================
+// Subcommands: usage
+// ============================================================================
+
+function usageProjectDir(fixmeDir) {
+  return path.join(fixmeDir, 'usage');
+}
+
+function usagePendingDir(fixmeDir) {
+  return path.join(usageProjectDir(fixmeDir), 'pending');
+}
+
+function usageProjectEventPath(fixmeDir) {
+  return path.join(usageProjectDir(fixmeDir), 'events.jsonl');
+}
+
+function usageGlobalEventPath() {
+  return path.join(os.homedir(), '.fixme', 'usage', 'events.jsonl');
+}
+
+function normalizeNullableFlag(value) {
+  if (value === undefined || value === null || value === '' || value === 'null') return null;
+  return value;
+}
+
+function validateUsageId(value, fieldName) {
+  const normalized = normalizeNullableFlag(value);
+  if (normalized === null) return null;
+  if (typeof normalized !== 'string' || !/^[A-Za-z0-9_-]+$/.test(normalized)) {
+    const err = new Error(`${fieldName} must contain only letters, numbers, underscores, and dashes`);
+    err.code = 'INVALID_USAGE_ID';
+    throw err;
+  }
+  return normalized;
+}
+
+function generateUsageId(prefix) {
+  const stamp = new Date().toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z')
+    .replace('T', '_')
+    .replace('Z', '');
+  const random = Math.random().toString(16).slice(2, 10);
+  return `${prefix}_${stamp}_${random}`;
+}
+
+function readJsonFileStrict(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n');
+  fs.renameSync(tmp, filePath);
+}
+
+function captureSourceSnapshot(runtime, explicitPath) {
+  const sourcePath = explicitPath || process.env.FIXME_USAGE_SOURCE_PATH || null;
+  return {
+    runtime,
+    explicitPath: sourcePath,
+    source: sourcePath ? { kind: `${runtime}_jsonl`, path: sourcePath, discovery: 'explicit' } : null,
+    cursor: sourcePath && fs.existsSync(sourcePath)
+      ? { path: sourcePath, size: fs.statSync(sourcePath).size, mtimeMs: fs.statSync(sourcePath).mtimeMs }
+      : null,
+  };
+}
+
+function resolveUsageRuntime(rawRuntime, scriptPath) {
+  const runtime = rawRuntime || 'auto';
+  if (!USAGE_RUNTIMES.includes(runtime)) {
+    const err = new Error(`Unsupported usage runtime: ${runtime}`);
+    err.code = 'UNSUPPORTED_USAGE_RUNTIME';
+    throw err;
+  }
+  if (runtime === 'claude' || runtime === 'codex') return runtime;
+
+  const resolvedScript = path.resolve(scriptPath || '');
+  const home = os.homedir();
+  const codexRoot = path.join(home, '.codex', 'skills') + path.sep;
+  const claudeRoot = path.join(home, '.claude', 'skills') + path.sep;
+  if (resolvedScript.startsWith(codexRoot)) return 'codex';
+  if (resolvedScript.startsWith(claudeRoot)) return 'claude';
+
+  const err = new Error('usage runtime auto cannot be resolved from this script path; pass --runtime claude or --runtime codex');
+  err.code = 'AUTO_RUNTIME_UNRESOLVED';
+  throw err;
+}
+
+function usageCliError(code, message, extra = {}) {
+  process.stdout.write(JSON.stringify({ error: message, code, ...extra }) + '\n');
+  process.exit(1);
+}
+
+function usageStart(flags, fixmeRoot) {
+  if (Object.prototype.hasOwnProperty.call(flags, 'task')) {
+    return usageCliError('UNSUPPORTED_USAGE_TASK', '--task is reserved for a future usage schema and is not supported in v1');
+  }
+  if (!flags.skill) {
+    return usageCliError('MISSING_USAGE_SKILL', '--skill is required for usage start');
+  }
+
+  const role = flags.role || 'skill';
+  if (!USAGE_ROLES.includes(role)) {
+    return usageCliError('UNSUPPORTED_USAGE_ROLE', `Unsupported usage role: ${role}`);
+  }
+
+  let runtime;
+  try {
+    runtime = resolveUsageRuntime(flags.runtime || 'auto', process.argv[1]);
+  } catch (e) {
+    return usageCliError(e.code || 'USAGE_RUNTIME_ERROR', e.message);
+  }
+
+  const fixmeDir = flags['fixme-dir'] ? path.resolve(flags['fixme-dir']) : path.join(fixmeRoot, '.fixme');
+  const projectRoot = flags['project-root'] ? path.resolve(flags['project-root']) : path.dirname(fixmeDir);
+  if (!path.isAbsolute(fixmeDir) || !path.isAbsolute(projectRoot)) {
+    return usageCliError('INVALID_USAGE_PATH', '--fixme-dir and --project-root must resolve to absolute paths');
+  }
+
+  let pipelineRunId;
+  let parentInvocationId;
+  try {
+    pipelineRunId = validateUsageId(flags['pipeline-run-id'], 'pipelineRunId');
+    parentInvocationId = validateUsageId(flags['parent-invocation-id'], 'parentInvocationId');
+  } catch (e) {
+    return usageCliError(e.code || 'INVALID_USAGE_ID', e.message);
+  }
+
+  const invocationId = generateUsageId('usage');
+  if (!pipelineRunId && flags.skill === 'fixme-task' && role === 'orchestrator') {
+    pipelineRunId = invocationId;
+  }
+
+  const startedAt = new Date().toISOString();
+  const pendingPath = path.join(usagePendingDir(fixmeDir), `${invocationId}.json`);
+  const pending = {
+    schemaVersion: 1,
+    invocationId,
+    pipelineRunId,
+    parentInvocationId,
+    skill: flags.skill,
+    role,
+    runtime,
+    startedAt,
+    projectRoot,
+    fixmeDir,
+    sourceSnapshot: captureSourceSnapshot(runtime, flags['source-path']),
+    finalizedEvent: null,
+    appendState: {
+      projectWritten: false,
+      globalWritten: false,
+    },
+  };
+
+  writeJsonAtomic(pendingPath, pending);
+
+  return output({
+    invocationId,
+    pipelineRunId,
+    pendingPath,
+    runtime,
+    startedAt,
+    finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete`,
+  });
+}
+
+// ============================================================================
 // Output Helpers
 // ============================================================================
 
@@ -3410,6 +3648,17 @@ function main() {
             return error(`Unknown codex-skills subcommand: '${subcommand}'. Valid: install`);
         }
 
+      case 'usage':
+        switch (subcommand) {
+          case 'start':
+            return usageStart(flags, fixmeRoot);
+          case 'finish':
+          case 'report':
+            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'`);
+          default:
+            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start`);
+        }
+
       case 'root':
         return rootCommand();
 
@@ -3441,7 +3690,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, usage, root, resolve-model, alert`);
     }
   } catch (e) {
     return error(e.message);
