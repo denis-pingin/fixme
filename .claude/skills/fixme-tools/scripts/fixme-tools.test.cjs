@@ -3000,6 +3000,166 @@ test('usage finish: destination conflict exits non-zero and appends nothing', ()
 });
 
 // ============================================================================
+// Usage report tests
+// ============================================================================
+
+console.log('\n=== usage report tests ===\n');
+
+function usageEvent(overrides = {}) {
+  const invocationId = overrides.invocationId || `usage_test_${Math.random().toString(16).slice(2)}`;
+  const eventId = overrides.eventId || `event_test_${Math.random().toString(16).slice(2)}`;
+  return {
+    schemaVersion: 1,
+    eventType: 'skill_invocation',
+    eventId,
+    invocationId,
+    parentInvocationId: overrides.parentInvocationId === undefined ? null : overrides.parentInvocationId,
+    pipelineRunId: overrides.pipelineRunId === undefined ? null : overrides.pipelineRunId,
+    skill: overrides.skill || 'fixme-write-plan',
+    role: overrides.role || 'skill',
+    runtime: overrides.runtime || 'codex',
+    status: overrides.status || 'complete',
+    outcome: overrides.outcome || 'complete',
+    outcomeReason: overrides.outcomeReason === undefined ? null : overrides.outcomeReason,
+    startedAt: overrides.startedAt || '2026-05-26T10:00:00Z',
+    finishedAt: overrides.finishedAt || '2026-05-26T10:01:00Z',
+    durationMs: overrides.durationMs || 60000,
+    projectRoot: overrides.projectRoot || '/tmp/project',
+    fixmeDir: overrides.fixmeDir || '/tmp/project/.fixme',
+    tokens: overrides.tokens === undefined ? {
+      inputTokens: 100,
+      cachedInputTokens: 20,
+      cacheCreationInputTokens: 8,
+      cacheReadInputTokens: 12,
+      outputTokens: 30,
+      reasoningOutputTokens: 5,
+      totalTokens: 135,
+    } : overrides.tokens,
+    cost: null,
+    source: overrides.source || { kind: 'test_fixture', path: null, startCursor: null, finishCursor: null },
+    warnings: overrides.warnings || [],
+  };
+}
+
+function writeUsageEvents(filePath, rows, trailing = true) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + (trailing ? '\n' : ''));
+}
+
+test('usage report: project totals exclude partial rows and include not-included count', () => {
+  const ctx = createUsageWorkspace();
+  const complete = usageEvent({ eventId: 'event_complete', invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  const partial = usageEvent({
+    eventId: 'event_partial',
+    invocationId: 'usage_partial',
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    status: 'partial',
+    tokens: null,
+    warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+  });
+  writeUsageEvents(ctx.projectEvents, [complete, partial]);
+
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage.totalTokens === 135, `total tokens should be 135, got ${result.data.totalUsage.totalTokens}`);
+  assert(result.data.notIncludedInTotal.invocationCount === 1, 'one partial invocation excluded');
+  assert(result.data.notIncludedInTotal.eventIds.includes('event_partial'), 'partial event listed');
+  assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes partial warning');
+});
+
+test('usage report: identical duplicates count once and conflicting duplicates are excluded', () => {
+  const ctx = createUsageWorkspace();
+  const one = usageEvent({ eventId: 'event_one', invocationId: 'usage_dup', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  const identical = JSON.parse(JSON.stringify(one));
+  const conflict = usageEvent({
+    eventId: 'event_conflict',
+    invocationId: 'usage_conflict',
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    tokens: { inputTokens: 1, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 2 },
+  });
+  const conflictOther = { ...conflict, eventId: 'event_conflict_other', tokens: { ...conflict.tokens, totalTokens: 999 } };
+  writeUsageEvents(ctx.projectEvents, [one, identical, conflict, conflictOther]);
+
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage.totalTokens === 135, `only identical duplicate should count once, got ${result.data.totalUsage.totalTokens}`);
+  assert(result.data.notIncludedInTotal.invocationCount === 1, 'one conflicting invocation excluded');
+  assert(result.data.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'conflict warning summary');
+  assert(!result.data.recent.some(row => row.invocationId === 'usage_conflict'), 'conflict omitted from recent');
+});
+
+test('usage report: date filters use finishedAt with inclusive since and exclusive until', () => {
+  const ctx = createUsageWorkspace();
+  const included = usageEvent({ eventId: 'event_included', invocationId: 'usage_included', finishedAt: '2026-05-01T00:00:00Z', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  const excluded = usageEvent({ eventId: 'event_excluded', invocationId: 'usage_excluded', finishedAt: '2026-05-02T00:00:00Z', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  writeUsageEvents(ctx.projectEvents, [included, excluded]);
+
+  const result = runInDirWithEnv('usage report --scope project --since 2026-05-01 --until 2026-05-01', ctx.projectRoot, ctx.env);
+  assert(result.ok, `date report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.recent.length === 1, `expected one row, got ${result.data.recent.length}`);
+  assert(result.data.recent[0].eventId === 'event_included', 'since boundary included and until next-day boundary excluded');
+});
+
+test('usage report: pipeline report splits orchestrator overhead and child usage', () => {
+  const ctx = createUsageWorkspace();
+  const pipelineRunId = 'usage_pipeline';
+  const orchestrator = usageEvent({
+    eventId: 'event_orchestrator',
+    invocationId: 'usage_orchestrator',
+    skill: 'fixme-task',
+    role: 'orchestrator',
+    pipelineRunId,
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    tokens: { inputTokens: 10, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 15 },
+  });
+  const child = usageEvent({
+    eventId: 'event_child',
+    invocationId: 'usage_child',
+    skill: 'fixme-write-plan',
+    role: 'skill',
+    pipelineRunId,
+    parentInvocationId: 'usage_orchestrator',
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    tokens: { inputTokens: 100, cachedInputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 25, reasoningOutputTokens: 5, totalTokens: 130 },
+  });
+  writeUsageEvents(ctx.projectEvents, [orchestrator, child]);
+
+  const result = runInDirWithEnv(`usage report --scope project --pipeline-run-id ${pipelineRunId}`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `pipeline report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage.totalTokens === 145, 'pipeline total');
+  assert(result.data.byPipeline[0].orchestratorUsage.totalTokens === 15, 'orchestrator overhead');
+  assert(result.data.byPipeline[0].childUsage.totalTokens === 130, 'child usage');
+});
+
+test('usage report: text output uses required Total usage language', () => {
+  const ctx = createUsageWorkspace();
+  writeUsageEvents(ctx.projectEvents, [
+    usageEvent({ invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir }),
+    usageEvent({ eventId: 'event_partial', invocationId: 'usage_partial', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir, status: 'partial', tokens: null, warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }] }),
+  ]);
+  const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
+  assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(typeof result.data === 'string', 'text format returns raw string data in tests');
+  assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
+  assert(result.data.includes('Not included in total: 1 invocation with unavailable exact counters'), `missing not-included line: ${result.data}`);
+});
+
+test('usage report: corrupt and trailing partial JSONL lines are skipped with warnings', () => {
+  const ctx = createUsageWorkspace();
+  fs.mkdirSync(path.dirname(ctx.projectEvents), { recursive: true });
+  fs.writeFileSync(ctx.projectEvents, JSON.stringify(usageEvent({ projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir })) + '\n{"bad":\n{"trailing"');
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `corrupt report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage.totalTokens === 135, 'valid row should still count');
+  assert(result.data.warnings.some(w => w.code === 'CORRUPT_JSONL_LINE'), 'corrupt line warning');
+  assert(result.data.warnings.some(w => w.code === 'TRAILING_PARTIAL_LINE'), 'trailing partial warning');
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 

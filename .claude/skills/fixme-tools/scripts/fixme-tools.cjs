@@ -3649,13 +3649,6 @@ function usagePrintAfterFinish(fixmeRoot) {
   }
 }
 
-function buildPlaceholderUsageReportLine(event) {
-  if (event.status === USAGE_STATUS.PARTIAL) {
-    return `Usage: ${event.skill} unavailable | project total unavailable | not included: 1 invocation`;
-  }
-  return `Usage: ${event.skill} +${event.tokens.totalTokens} tokens | project total unavailable`;
-}
-
 function usageFinish(flags, fixmeRoot) {
   if (!flags['invocation-id']) {
     return usageCliError('MISSING_INVOCATION_ID', '--invocation-id is required for usage finish');
@@ -3729,7 +3722,7 @@ function usageFinish(flags, fixmeRoot) {
   fs.rmSync(pendingPath, { force: true });
 
   const suppressed = flags.quiet === true || flags.quiet === '' || !usagePrintAfterFinish(fixmeRoot);
-  const reportLine = suppressed ? null : buildPlaceholderUsageReportLine(finalizedEvent);
+  const reportLine = suppressed ? null : buildCompactUsageReportLine(finalizedEvent, projectEventPath);
   return usageCliResult({
     eventId: finalizedEvent.eventId,
     invocationId: finalizedEvent.invocationId,
@@ -3742,6 +3735,306 @@ function usageFinish(flags, fixmeRoot) {
     reportLineSuppressed: suppressed,
     warnings: finalizedEvent.warnings,
   });
+}
+
+function emptyTokenUsage() {
+  const usage = {};
+  for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
+  return usage;
+}
+
+function addTokenUsage(total, tokens) {
+  if (!tokens) return total;
+  for (const key of USAGE_TOKEN_BUCKETS) {
+    if (typeof tokens[key] === 'number' && Number.isFinite(tokens[key])) {
+      total[key] += tokens[key];
+    }
+  }
+  return total;
+}
+
+function formatTokenCount(value) {
+  return Number(value || 0).toLocaleString('en-US');
+}
+
+function usageSummaryRow(event) {
+  return {
+    eventId: event.eventId,
+    invocationId: event.invocationId,
+    pipelineRunId: event.pipelineRunId,
+    parentInvocationId: event.parentInvocationId,
+    skill: event.skill,
+    role: event.role,
+    runtime: event.runtime,
+    status: event.status,
+    outcome: event.outcome,
+    startedAt: event.startedAt,
+    finishedAt: event.finishedAt,
+    totalTokens: event.tokens && typeof event.tokens.totalTokens === 'number' ? event.tokens.totalTokens : null,
+    warnings: event.warnings || [],
+  };
+}
+
+function parseUsageDateBound(raw, boundName) {
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const date = new Date(`${raw}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) {
+      throw new Error(`Invalid ${boundName}: ${raw}`);
+    }
+    if (boundName === 'until') {
+      date.setUTCDate(date.getUTCDate() + 1);
+    }
+    return date.getTime();
+  }
+  const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const time = Date.parse(normalized);
+  if (Number.isNaN(time)) {
+    throw new Error(`Invalid ${boundName}: ${raw}`);
+  }
+  return time;
+}
+
+function readUsageEventFile(eventPath) {
+  if (!fs.existsSync(eventPath)) return { rows: [], warnings: [] };
+  const text = fs.readFileSync(eventPath, 'utf8');
+  const lines = text.split('\n');
+  const rows = [];
+  const warnings = [];
+  const endsWithNewline = text.endsWith('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    try {
+      rows.push(JSON.parse(line));
+    } catch (e) {
+      const code = (!endsWithNewline && i === lines.length - 1)
+        ? USAGE_WARNING_CODES.TRAILING_PARTIAL_LINE
+        : USAGE_WARNING_CODES.CORRUPT_JSONL_LINE;
+      warnings.push({ code, message: `${code} in ${eventPath} at line ${i + 1}` });
+    }
+  }
+  return { rows, warnings };
+}
+
+function filterUsageRows(rows, filters) {
+  return rows.filter(row => {
+    if (filters.skill && row.skill !== filters.skill) return false;
+    if (filters.pipelineRunId && row.pipelineRunId !== filters.pipelineRunId) return false;
+    const finished = Date.parse(row.finishedAt || '');
+    if (filters.since !== null && (!Number.isFinite(finished) || finished < filters.since)) return false;
+    if (filters.until !== null && (!Number.isFinite(finished) || finished >= filters.until)) return false;
+    return true;
+  });
+}
+
+function normalizeUsageRows(rows) {
+  const byInvocation = new Map();
+  for (const row of rows) {
+    if (!row || !row.invocationId) continue;
+    if (!byInvocation.has(row.invocationId)) byInvocation.set(row.invocationId, []);
+    byInvocation.get(row.invocationId).push(row);
+  }
+
+  const normalized = [];
+  const conflicts = [];
+  for (const [invocationId, group] of byInvocation.entries()) {
+    const first = group[0];
+    if (group.every(row => eventsEqual(row, first))) {
+      normalized.push(first);
+    } else {
+      conflicts.push({
+        invocationId,
+        eventIds: group.map(row => row.eventId).filter(Boolean),
+      });
+    }
+  }
+  return { rows: normalized, conflicts };
+}
+
+function warningSummaryFromWarnings(warnings) {
+  const counts = new Map();
+  for (const warning of warnings) {
+    if (!warning || !warning.code) continue;
+    counts.set(warning.code, (counts.get(warning.code) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([code, count]) => ({ code, count }));
+}
+
+function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit }) {
+  const filtered = filterUsageRows(rows, filters);
+  const normalized = normalizeUsageRows(filtered);
+  const totalUsage = emptyTokenUsage();
+  const notIncludedEventIds = [];
+  const warningEvents = [...fileWarnings];
+  const completeRows = [];
+
+  for (const conflict of normalized.conflicts) {
+    notIncludedEventIds.push(...conflict.eventIds);
+    warningEvents.push({ code: USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT, message: `Conflicting duplicate usage rows for ${conflict.invocationId}` });
+  }
+
+  for (const row of normalized.rows) {
+    for (const warning of row.warnings || []) warningEvents.push(warning);
+    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
+      addTokenUsage(totalUsage, row.tokens);
+      completeRows.push(row);
+    } else {
+      notIncludedEventIds.push(row.eventId);
+    }
+  }
+
+  const bySkillMap = new Map();
+  for (const row of normalized.rows) {
+    if (!bySkillMap.has(row.skill)) {
+      bySkillMap.set(row.skill, { skill: row.skill, invocations: 0, complete: 0, partial: 0, totalUsage: emptyTokenUsage() });
+    }
+    const item = bySkillMap.get(row.skill);
+    item.invocations++;
+    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
+      item.complete++;
+      addTokenUsage(item.totalUsage, row.tokens);
+    } else {
+      item.partial++;
+    }
+  }
+
+  const byPipelineMap = new Map();
+  for (const row of completeRows) {
+    if (!row.pipelineRunId) continue;
+    if (!byPipelineMap.has(row.pipelineRunId)) {
+      byPipelineMap.set(row.pipelineRunId, {
+        pipelineRunId: row.pipelineRunId,
+        totalUsage: emptyTokenUsage(),
+        orchestratorUsage: emptyTokenUsage(),
+        childUsage: emptyTokenUsage(),
+      });
+    }
+    const item = byPipelineMap.get(row.pipelineRunId);
+    addTokenUsage(item.totalUsage, row.tokens);
+    if (row.role === 'orchestrator') {
+      addTokenUsage(item.orchestratorUsage, row.tokens);
+    } else {
+      addTokenUsage(item.childUsage, row.tokens);
+    }
+  }
+
+  const recent = normalized.rows
+    .slice()
+    .sort((a, b) => Date.parse(b.finishedAt || '') - Date.parse(a.finishedAt || ''))
+    .slice(0, limit || 20)
+    .map(usageSummaryRow);
+
+  return {
+    schemaVersion: 1,
+    scope,
+    eventPath,
+    filters: {
+      skill: filters.skill || null,
+      pipelineRunId: filters.pipelineRunId || null,
+    },
+    totalUsage,
+    notIncludedInTotal: {
+      invocationCount: new Set(notIncludedEventIds.filter(Boolean).map(eventId => {
+        const row = [...normalized.rows, ...filtered].find(item => item.eventId === eventId);
+        return row ? row.invocationId : eventId;
+      })).size,
+      eventIds: [...new Set(notIncludedEventIds.filter(Boolean))],
+    },
+    bySkill: [...bySkillMap.values()].sort((a, b) => a.skill.localeCompare(b.skill)),
+    byPipeline: [...byPipelineMap.values()].sort((a, b) => a.pipelineRunId.localeCompare(b.pipelineRunId)),
+    recent,
+    warnings: warningEvents,
+    warningSummary: warningSummaryFromWarnings(warningEvents),
+  };
+}
+
+function formatUsageReportText(report) {
+  const lines = [
+    `Total usage: ${formatTokenCount(report.totalUsage.totalTokens)} tokens`,
+  ];
+  if (report.notIncludedInTotal.invocationCount > 0) {
+    const plural = report.notIncludedInTotal.invocationCount === 1 ? 'invocation' : 'invocations';
+    lines.push(`Not included in total: ${report.notIncludedInTotal.invocationCount} ${plural} with unavailable exact counters`);
+  }
+  return lines.join('\n');
+}
+
+function usageReport(flags, fixmeRoot) {
+  const scope = flags.scope || 'project';
+  const format = flags.format || 'json';
+  if (!['project', 'global'].includes(scope)) {
+    return usageCliError('INVALID_USAGE_SCOPE', '--scope must be project or global');
+  }
+  if (!['json', 'text'].includes(format)) {
+    return usageCliError('INVALID_USAGE_FORMAT', '--format must be json or text');
+  }
+
+  let since = null;
+  let until = null;
+  try {
+    since = parseUsageDateBound(flags.since, 'since');
+    until = parseUsageDateBound(flags.until, 'until');
+  } catch (e) {
+    return usageCliError('INVALID_USAGE_DATE', e.message);
+  }
+
+  const limit = flags.limit === undefined ? 20 : Number(flags.limit);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    return usageCliError('INVALID_USAGE_LIMIT', '--limit must be a positive integer');
+  }
+
+  const eventPath = scope === 'project'
+    ? usageProjectEventPath(path.join(fixmeRoot, '.fixme'))
+    : usageGlobalEventPath();
+  const file = readUsageEventFile(eventPath);
+  const report = buildUsageReport({
+    scope,
+    eventPath,
+    rows: file.rows,
+    fileWarnings: file.warnings,
+    filters: {
+      since,
+      until,
+      skill: flags.skill || null,
+      pipelineRunId: flags['pipeline-run-id'] || null,
+    },
+    limit,
+  });
+
+  return usageCliResult(format === 'text' ? formatUsageReportText(report) : report);
+}
+
+function buildCompactUsageReportLine(event, projectEventPath) {
+  const file = readUsageEventFile(projectEventPath);
+  const projectReport = buildUsageReport({
+    scope: 'project',
+    eventPath: projectEventPath,
+    rows: file.rows,
+    fileWarnings: file.warnings,
+    filters: { since: null, until: null, skill: null, pipelineRunId: null },
+    limit: 20,
+  });
+  const pipelineReport = event.pipelineRunId ? buildUsageReport({
+    scope: 'project',
+    eventPath: projectEventPath,
+    rows: file.rows,
+    fileWarnings: file.warnings,
+    filters: { since: null, until: null, skill: null, pipelineRunId: event.pipelineRunId },
+    limit: 20,
+  }) : null;
+  if (event.status === USAGE_STATUS.COMPLETE && event.tokens) {
+    const base = `Usage: ${event.skill} +${formatTokenCount(event.tokens.totalTokens)} tokens`;
+    if (pipelineReport) {
+      return `${base} | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
+    }
+    return `${base} | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
+  }
+  const notIncluded = projectReport.notIncludedInTotal.invocationCount;
+  if (pipelineReport) {
+    return `Usage: ${event.skill} unavailable | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens | not included: ${notIncluded} invocation(s)`;
+  }
+  return `Usage: ${event.skill} unavailable | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens | not included: ${notIncluded} invocation(s)`;
 }
 
 // ============================================================================
@@ -3881,7 +4174,7 @@ function main() {
           case 'finish':
             return usageFinish(flags, fixmeRoot);
           case 'report':
-            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'`);
+            return usageReport(flags, fixmeRoot);
           default:
             return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start`);
         }
