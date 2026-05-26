@@ -70,6 +70,18 @@ Before anything else - before parsing arguments, before checking the filesystem 
 
 When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 
+### Usage Invocation State
+
+The generated usage tracking block starts this active `fixme-task` invocation.
+
+Store the returned `invocationId` as `usageInvocationId`. Store the returned `pipelineRunId` as `pipelineRunId`.
+
+Standalone `fixme-task` has no incoming `pipeline_run_id`; `usage start` returns `pipelineRunId === usageInvocationId`.
+
+Nested `fixme-task` receives a `pipeline_run_id` from its parent and must pass that value into usage start; the returned `pipelineRunId` reuses the parent value.
+
+If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`, print the required warning, and continue without usage-linked child rows.
+
 ### Argument Parsing
 
 ```
@@ -738,11 +750,18 @@ Agent(
     Project root: [path]
     Fixme dir: [fixme_dir from root resolution]
     </project>
+
+    <usage>
+    pipeline_run_id: <pipelineRunId>
+    parent_invocation_id: <usageInvocationId>
+    </usage>
   "
 )
 ```
 
 When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
+
+Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipeline_run_id` and the dispatching `fixme-task` `parent_invocation_id`; non-pipeline direct skill invocations omit both fields.
 
 The agent's role and operational procedures are already loaded by its agent definition. The dispatch prompt only contains task-specific inputs.
 
@@ -824,6 +843,8 @@ Ticket transitions are dispatched through the `fixme-tickets` abstraction skill,
 ### Phase-specific dispatch contracts
 
 For phases using the standard skills, these are the input contracts:
+
+Custom skills and standard skills also receive the `<usage>` block when `pipelineRunId` and `usageInvocationId` are known.
 
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description
@@ -1364,6 +1385,9 @@ At completion, output:
 |-------|----------|---------------|
 | [name] | [time] | [N cycles or "no review"] |
 | ... | ... | ... |
+
+### Usage
+[Before rendering this section, when `pipelineRunId` is known, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project --pipeline-run-id <pipelineRunId> --format json`. Show pipeline total usage, not-included count, orchestrator overhead, child usage subtotal, by-skill breakdown, and project usage file path. If the report command fails, print a warning with `pipelineRunId` and continue this section with `Usage unavailable`. v1 does not include per-phase usage.]
 
 ### Decisions Made
 [numbered list of all locked decisions]

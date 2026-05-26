@@ -2278,6 +2278,26 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('usage report --scope'), 'fixme-tools skill should document usage report');
 });
 
+test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('usageInvocationId'), 'fixme-task should name its usage invocation state');
+  assert(skill.includes('pipelineRunId'), 'fixme-task should name the shared pipelineRunId state');
+  assert(skill.includes('pipeline_run_id: <pipelineRunId>'), 'child prompts should include pipeline_run_id');
+  assert(skill.includes('parent_invocation_id: <usageInvocationId>'), 'child prompts should include parent_invocation_id');
+  assert(skill.includes('Nested `fixme-task` receives a `pipeline_run_id`'), 'nested pipeline ID reuse should be explicit');
+});
+
+test('fixme-task skill: Run Summary includes usage block backed by usage report', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('### Usage'), 'Run Summary template should include Usage section');
+  assert(skill.includes('usage report --scope project --pipeline-run-id <pipelineRunId> --format json'), 'Run Summary should call usage report for pipeline');
+  assert(skill.includes('orchestrator overhead'), 'usage summary should mention orchestrator overhead');
+  assert(skill.includes('child usage subtotal'), 'usage summary should mention child usage subtotal');
+  assert(skill.includes('v1 does not include per-phase usage'), 'per-phase usage should remain out of scope');
+});
+
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
