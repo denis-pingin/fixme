@@ -21,7 +21,7 @@ Use the returned `fixme_dir` value as the current project Fixme directory. Do no
 
 ## Usage Tracking
 
-This skill is instrumented by the generated `## Fixme Usage Tracking` install block like every other active Fixme skill. Do not add separate recording logic here.
+This skill is instrumented by the generated usage tracking install block like every other active Fixme skill. Do not add separate recording logic here.
 
 ## Supported Forms
 
