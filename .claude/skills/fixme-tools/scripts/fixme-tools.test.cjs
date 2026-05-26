@@ -2184,6 +2184,15 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'source skill body should rewrite Claude paths to Codex paths');
   assert(installedTask.includes('~/.codex/rules/spec-review-rules.md'), 'tilde Claude paths should rewrite to Codex paths');
   assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');
+  assert(installedTask.includes('## Fixme Usage Tracking'), 'installed Codex skill should include usage tracking block');
+  assert(installedTask.includes('--runtime codex'), 'Codex usage block should pass --runtime codex');
+  assert(!installedTask.includes('--runtime auto'), 'Codex usage block should not pass --runtime auto');
+  assert(!installedTask.includes('--task'), 'usage block must not pass --task');
+  assert(installedTask.includes('Only run this block when `fixme-task` is the active skill invocation.'), 'usage block should have active-skill guard');
+  assert(installedTask.includes('--role orchestrator'), 'fixme-task should be instrumented as orchestrator');
+
+  const usageBlockCount = (installedTask.match(/## Fixme Usage Tracking/g) || []).length;
+  assert(usageBlockCount === 1, `usage block should be idempotent, got ${usageBlockCount}`);
 
   const installedReference = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'references', 'dispatch.md'), 'utf8');
   assert(installedReference.includes('.codex/skills/fixme-task/SKILL.md'), 'markdown references should be path-converted');
@@ -2196,6 +2205,50 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   const reinstalledTask = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
   const adapterCount = (reinstalledTask.match(/<codex_skill_adapter>/g) || []).length;
   assert(adapterCount === 1, `adapter should be idempotent, got ${adapterCount}`);
+});
+
+test('claude-skills install: writes Claude skills with usage tracking and cleans stale copies', () => {
+  const dir = createTmpDir();
+  const skillsSrc = path.join(dir, 'source-skills');
+  const claudeDir = path.join(dir, '.claude');
+  const claudeSkillsDir = path.join(claudeDir, 'skills');
+  fs.mkdirSync(path.join(claudeSkillsDir, 'fixme-stale'), { recursive: true });
+  fs.writeFileSync(path.join(claudeSkillsDir, 'fixme-stale', 'SKILL.md'), 'stale\n');
+
+  createSkillFile(skillsSrc, 'fixme-task', 'Task orchestrator.');
+  createSkillFile(skillsSrc, 'fixme-review-code', 'Reviewer.');
+  createSkillFile(skillsSrc, 'fixme-handle-plan-review', 'Handler.');
+  createSkillFile(skillsSrc, 'fixme-howto-code-map', 'Reference.');
+  const ticketsDir = createSkillFile(skillsSrc, 'fixme-tickets-md', 'Ticket backend skill.');
+  fs.mkdirSync(path.join(ticketsDir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(ticketsDir, 'scripts', 'private.cjs'), 'console.log("do not install");\n');
+
+  const result = run(`claude-skills install --skills-src "${skillsSrc}" --claude-dir "${claudeDir}"`);
+  assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
+  assert(result.data.installed === 5, `installed count: ${result.data.installed}`);
+  assert(result.data.removed === 1, `removed count: ${result.data.removed}`);
+
+  const task = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-review-code', 'SKILL.md'), 'utf8');
+  const handler = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-handle-plan-review', 'SKILL.md'), 'utf8');
+  const reference = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-howto-code-map', 'SKILL.md'), 'utf8');
+
+  assert(task.includes('## Fixme Usage Tracking'), 'Claude task skill should include usage tracking block');
+  assert(task.includes('--runtime claude'), 'Claude usage block should pass --runtime claude');
+  assert(!task.includes('--runtime auto'), 'Claude usage block should not pass --runtime auto');
+  assert(!task.includes('--task'), 'usage block must not pass --task');
+  assert(task.includes('--role orchestrator'), 'fixme-task role mapping');
+  assert(reviewer.includes('--role reviewer'), 'fixme-review-* role mapping');
+  assert(handler.includes('--role handler'), 'fixme-handle-* role mapping');
+  assert(reference.includes('--role reference'), 'fixme-howto-* role mapping');
+  assert(reference.includes('Only run this block when `fixme-howto-code-map` is the active skill invocation.'), 'reference guard');
+  assert(!fs.existsSync(path.join(claudeSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not install');
+
+  const reinstall = run(`claude-skills install --skills-src "${skillsSrc}" --claude-dir "${claudeDir}"`);
+  assert(reinstall.ok, `reinstall should succeed, got: ${JSON.stringify(reinstall)}`);
+  const reinstalledTask = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
+  const blockCount = (reinstalledTask.match(/## Fixme Usage Tracking/g) || []).length;
+  assert(blockCount === 1, `usage block should be idempotent, got ${blockCount}`);
 });
 
 // ============================================================================

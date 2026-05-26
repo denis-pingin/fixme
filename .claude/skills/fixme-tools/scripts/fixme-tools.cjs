@@ -212,6 +212,8 @@ const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
 const GSD_CODEX_MARKER_PREFIX = '# GSD Agent Configuration';
 const FIXME_CODEX_SKILL_ADAPTER_OPEN = '<codex_skill_adapter>';
 const FIXME_CODEX_SKILL_ADAPTER_CLOSE = '</codex_skill_adapter>';
+const FIXME_USAGE_TRACKING_OPEN = '<!-- fixme-usage-tracking:start -->';
+const FIXME_USAGE_TRACKING_CLOSE = '<!-- fixme-usage-tracking:end -->';
 
 const KNOWN_FIXME_SKILLS = new Set([
   'fixme-browser-verify',
@@ -3042,16 +3044,90 @@ function splitRawFrontmatter(content) {
   };
 }
 
+function usageRoleForSkill(skillName) {
+  if (skillName === 'fixme-task' || skillName === 'fixme-session') return 'orchestrator';
+  if (skillName.startsWith('fixme-review-')) return 'reviewer';
+  if (skillName.startsWith('fixme-handle-')) return 'handler';
+  if (skillName === 'fixme-usage') return 'reporter';
+  if (skillName.startsWith('fixme-howto-')) return 'reference';
+  return 'skill';
+}
+
+function stripGeneratedUsageTrackingBlock(content) {
+  let result = content;
+  while (true) {
+    const start = result.indexOf(FIXME_USAGE_TRACKING_OPEN);
+    if (start === -1) return result;
+    const close = result.indexOf(FIXME_USAGE_TRACKING_CLOSE, start);
+    const end = close === -1 ? result.length : close + FIXME_USAGE_TRACKING_CLOSE.length;
+    const before = result.slice(0, start).trimEnd();
+    const after = result.slice(end).replace(/^\n+/, '');
+    result = before ? `${before}\n\n${after}` : after;
+  }
+}
+
+function getUsageTrackingBlock(skillName, runtime) {
+  const role = usageRoleForSkill(skillName);
+  const toolPath = runtime === 'codex'
+    ? '~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs'
+    : '~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs';
+  return [
+    FIXME_USAGE_TRACKING_OPEN,
+    '## Fixme Usage Tracking',
+    '',
+    `Only run this block when \`${skillName}\` is the active skill invocation. Do not run it when this file is loaded only as reference material by another skill.`,
+    '',
+    'At invocation start, run:',
+    '',
+    '```bash',
+    `node ${toolPath} usage start --skill ${skillName} --runtime ${runtime} --role ${role}`,
+    '```',
+    '',
+    'If the dispatch prompt includes `pipeline_run_id`, include `--pipeline-run-id <pipeline_run_id>`. If it includes `parent_invocation_id`, include `--parent-invocation-id <parent_invocation_id>`. Never pass the reserved task flag.',
+    '',
+    'Store the returned `invocationId`. On normal completion, run `usage finish --invocation-id <invocationId> --outcome complete`. On failure, use `--outcome failed --reason <reason>`. On abort, use `--outcome aborted --reason <reason>`. Reasons must be one of: `verification_failed`, `user_aborted`, `usage_tracking_failed`, `runtime_error`, `dispatch_failed`, `timeout`, `invalid_usage_request`, or `unknown`.',
+    '',
+    'If usage start or finish fails, print a warning with the skill name, invocation ID when known, failed operation, and fallback, then continue the normal skill completion path. If `usage finish` returns `reportLine`, relay it. If it is suppressed, do not invent one.',
+    FIXME_USAGE_TRACKING_CLOSE,
+  ].join('\n');
+}
+
+function injectUsageTrackingBlock(content, skillName, runtime, afterCodexAdapter) {
+  const stripped = stripGeneratedUsageTrackingBlock(content);
+  const block = getUsageTrackingBlock(skillName, runtime);
+  const { frontmatter, body } = splitRawFrontmatter(stripped);
+  if (afterCodexAdapter) {
+    const adapterClose = body.indexOf(FIXME_CODEX_SKILL_ADAPTER_CLOSE);
+    if (adapterClose !== -1) {
+      const insertAt = adapterClose + FIXME_CODEX_SKILL_ADAPTER_CLOSE.length;
+      const before = body.slice(0, insertAt).trimEnd();
+      const after = body.slice(insertAt).trimStart();
+      return frontmatter
+        ? `${frontmatter}\n\n${before}\n\n${block}\n\n${after}`
+        : `${before}\n\n${block}\n\n${after}`;
+    }
+  }
+  return frontmatter
+    ? `${frontmatter}\n\n${block}\n\n${body.trimStart()}`
+    : `${block}\n\n${stripped.trimStart()}`;
+}
+
 function convertCodexSkillMarkdown(content, skillName, isSkillEntry) {
-  const converted = codexPathContent(stripCodexSkillAdapter(content));
+  const converted = codexPathContent(stripGeneratedUsageTrackingBlock(stripCodexSkillAdapter(content)));
   if (!isSkillEntry) return converted;
 
   const { frontmatter, body } = splitRawFrontmatter(converted);
   const adapter = getCodexSkillAdapterHeader(skillName);
-  if (frontmatter) {
-    return `${frontmatter}\n\n${adapter}\n\n${body.trimStart()}`;
-  }
-  return `${adapter}\n\n${converted.trimStart()}`;
+  const withAdapter = frontmatter
+    ? `${frontmatter}\n\n${adapter}\n\n${body.trimStart()}`
+    : `${adapter}\n\n${converted.trimStart()}`;
+  return injectUsageTrackingBlock(withAdapter, skillName, 'codex', true);
+}
+
+function convertClaudeSkillMarkdown(content, skillName, isSkillEntry) {
+  const converted = stripGeneratedUsageTrackingBlock(content);
+  if (!isSkillEntry) return converted;
+  return injectUsageTrackingBlock(converted, skillName, 'claude', false);
 }
 
 function copyCodexSkillDir(sourceDir, targetDir, skillName) {
@@ -3075,6 +3151,25 @@ function copyCodexSkillDir(sourceDir, targetDir, skillName) {
       continue;
     }
 
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+}
+
+function copyClaudeSkillDir(sourceDir, targetDir, skillName) {
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      copyClaudeSkillDir(sourcePath, targetPath, skillName);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (entry.name.endsWith('.md')) {
+      const content = fs.readFileSync(sourcePath, 'utf8');
+      fs.writeFileSync(targetPath, convertClaudeSkillMarkdown(content, skillName, entry.name === 'SKILL.md'));
+      continue;
+    }
     fs.copyFileSync(sourcePath, targetPath);
   }
 }
@@ -3347,6 +3442,53 @@ function codexSkillsInstall(flags) {
   return output(installCodexSkills({
     skillsSrc: flags['skills-src'],
     codexDir: flags['codex-dir'],
+  }));
+}
+
+function installClaudeSkills(options) {
+  const skillsSrc = options.skillsSrc;
+  const claudeDir = options.claudeDir;
+  if (!skillsSrc) throw new Error('--skills-src is required');
+  if (!claudeDir) throw new Error('--claude-dir is required');
+  if (!fs.existsSync(skillsSrc) || !fs.statSync(skillsSrc).isDirectory()) {
+    throw new Error(`Skills source not found: ${skillsSrc}`);
+  }
+
+  const skillsDir = path.join(claudeDir, 'skills');
+  fs.mkdirSync(skillsDir, { recursive: true });
+
+  let removed = 0;
+  for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith('fixme')) {
+      fs.rmSync(path.join(skillsDir, entry.name), { recursive: true, force: true });
+      removed++;
+    }
+  }
+
+  const sourceDirs = fs.readdirSync(skillsSrc, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && entry.name.startsWith('fixme'))
+    .map(entry => entry.name)
+    .sort();
+
+  for (const name of sourceDirs) {
+    copyClaudeSkillDir(path.join(skillsSrc, name), path.join(skillsDir, name), name);
+  }
+
+  fs.rmSync(path.join(skillsDir, 'fixme-tickets-md', 'scripts'), { recursive: true, force: true });
+
+  return {
+    claudeDir: path.resolve(claudeDir),
+    skillsDir: path.resolve(skillsDir),
+    installed: sourceDirs.length,
+    removed,
+    skills: sourceDirs,
+  };
+}
+
+function claudeSkillsInstall(flags) {
+  return output(installClaudeSkills({
+    skillsSrc: flags['skills-src'],
+    claudeDir: flags['claude-dir'],
   }));
 }
 
@@ -4485,6 +4627,14 @@ function main() {
             return error(`Unknown codex-skills subcommand: '${subcommand}'. Valid: install`);
         }
 
+      case 'claude-skills':
+        switch (subcommand) {
+          case 'install':
+            return claudeSkillsInstall(flags);
+          default:
+            return error(`Unknown claude-skills subcommand: '${subcommand}'. Valid: install`);
+        }
+
       case 'usage':
         switch (subcommand) {
           case 'start':
@@ -4528,7 +4678,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, usage, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, claude-skills, usage, root, resolve-model, alert`);
     }
   } catch (e) {
     return error(e.message);
@@ -4554,6 +4704,8 @@ module.exports = {
   mergeFixmeCodexConfig,
   installCodexAgents,
   convertCodexSkillMarkdown,
+  convertClaudeSkillMarkdown,
   installCodexSkills,
+  installClaudeSkills,
   resolveReviewSoftness,
 };
