@@ -3255,6 +3255,79 @@ test('usage report: corrupt and trailing partial JSONL lines are skipped with wa
   assert(result.data.warnings.some(w => w.code === 'TRAILING_PARTIAL_LINE'), 'trailing partial warning');
 });
 
+test('usage report: JSON grouping schema includes documented counts and exclusions', () => {
+  const ctx = createUsageWorkspace();
+  const pipelineRunId = 'usage_pipeline_schema';
+  const complete = usageEvent({
+    eventId: 'event_schema_complete',
+    invocationId: 'usage_schema_complete',
+    skill: 'fixme-write-plan',
+    pipelineRunId,
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+  });
+  const partial = usageEvent({
+    eventId: 'event_schema_partial',
+    invocationId: 'usage_schema_partial',
+    skill: 'fixme-write-plan',
+    pipelineRunId,
+    status: 'partial',
+    tokens: null,
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+  });
+  const conflict = usageEvent({
+    eventId: 'event_schema_conflict',
+    invocationId: 'usage_schema_conflict',
+    skill: 'fixme-write-plan',
+    pipelineRunId,
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+  });
+  const conflictOther = { ...conflict, eventId: 'event_schema_conflict_other', tokens: { ...conflict.tokens, totalTokens: 999 } };
+  writeUsageEvents(ctx.projectEvents, [complete, partial, conflict, conflictOther]);
+
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  const recent = result.data.recent.find(row => row.eventId === 'event_schema_partial');
+  assert(recent && Object.prototype.hasOwnProperty.call(recent, 'outcomeReason'), 'recent rows include outcomeReason');
+  assert(Array.isArray(recent.warningCodes), 'recent rows include warningCodes array');
+  assert(!Object.prototype.hasOwnProperty.call(recent, 'warnings'), 'recent rows should not expose raw warnings field');
+
+  const bySkill = result.data.bySkill.find(row => row.skill === 'fixme-write-plan');
+  assert(bySkill.invocationCount === 3, `bySkill invocationCount should include complete, partial, and conflict groups, got ${bySkill.invocationCount}`);
+  assert(bySkill.completeCount === 1, `bySkill completeCount ${bySkill.completeCount}`);
+  assert(bySkill.partialCount === 1, `bySkill partialCount ${bySkill.partialCount}`);
+  assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
+  assert(bySkill.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'bySkill warning summary includes duplicate conflict group');
+  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose legacy invocations field');
+
+  const byPipeline = result.data.byPipeline.find(row => row.pipelineRunId === pipelineRunId);
+  assert(byPipeline.invocationCount === 3, `byPipeline invocationCount should include complete, partial, and conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
+  assert(byPipeline.completeCount === 1, `byPipeline completeCount ${byPipeline.completeCount}`);
+  assert(byPipeline.partialCount === 1, `byPipeline partialCount ${byPipeline.partialCount}`);
+  assert(byPipeline.notIncludedInTotal.invocationCount === 2, `byPipeline excluded count ${byPipeline.notIncludedInTotal.invocationCount}`);
+  assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes partial warning');
+  assert(byPipeline.orchestratorUsage.totalTokens === 0, 'byPipeline includes orchestratorUsage subtotal object');
+  assert(byPipeline.childUsage.totalTokens === 135, 'byPipeline includes childUsage subtotal object');
+});
+
+test('usage report: text output uses duplicate-conflict not-included language', () => {
+  const ctx = createUsageWorkspace();
+  const complete = usageEvent({ eventId: 'event_text_complete', invocationId: 'usage_text_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  const conflict = usageEvent({ eventId: 'event_text_conflict', invocationId: 'usage_text_conflict', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  const conflictOther = { ...conflict, eventId: 'event_text_conflict_other', tokens: { ...conflict.tokens, totalTokens: 999 } };
+  writeUsageEvents(ctx.projectEvents, [complete, conflict, conflictOther]);
+
+  const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
+  assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
+  assert(result.data.includes('Not included in total: 1 invocation'), `missing duplicate not-included line: ${result.data}`);
+  assert(!result.data.includes('with unavailable exact counters'), `duplicate conflicts should not use unavailable-counters language: ${result.data}`);
+  assert(result.data.includes('Warnings: DUPLICATE_INVOCATION_CONFLICT'), `missing duplicate warning line: ${result.data}`);
+});
+
 // ============================================================================
 // Usage runtime adapter tests
 // ============================================================================
@@ -3406,6 +3479,61 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
   assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
   assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
+});
+
+test('runtime adapter: inferred Codex last_token_usage excludes rows before invocation start', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = codexSessionPath(ctx, 'rollout-last-window');
+  appendJsonl(sourcePath, [
+    codexSessionMeta(ctx.projectRoot),
+    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0, total_tokens: 120 } } } },
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 15 } } } },
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 15, `inferred source should count only after-start last usage, got ${row.tokens.totalTokens}`);
+});
+
+test('runtime adapter: source discovery failures append partial row instead of failing finish', () => {
+  const ctx = createUsageWorkspace();
+  const sessionsPath = path.join(ctx.homeDir, '.codex', 'sessions');
+  fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+  fs.writeFileSync(sessionsPath, 'not a directory\n');
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should append partial row after source discovery failure, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'source discovery failure should produce partial row');
+  assert(row.tokens === null, 'partial tokens null');
+  assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
+});
+
+test('usage finish: partial pipeline compact line uses pipeline not-included count', () => {
+  const ctx = createUsageWorkspace();
+  writeUsageEvents(ctx.projectEvents, [
+    usageEvent({
+      eventId: 'event_other_partial',
+      invocationId: 'usage_other_partial',
+      status: 'partial',
+      tokens: null,
+      projectRoot: ctx.projectRoot,
+      fixmeDir: ctx.fixmeDir,
+      warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+    }),
+  ]);
+  const started = startUsage(ctx, '--pipeline-run-id usage_pipeline_compact');
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  assert(finished.data.reportLine.includes('not included: 1 invocation(s)'), `pipeline compact line should use pipeline exclusion count: ${finished.data.reportLine}`);
 });
 
 test('runtime adapter: Codex cumulative and summed last usage conflicts create partial row', () => {

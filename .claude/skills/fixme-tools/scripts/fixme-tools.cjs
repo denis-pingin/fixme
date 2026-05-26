@@ -3549,9 +3549,16 @@ function writeJsonAtomic(filePath, value) {
   fs.renameSync(tmp, filePath);
 }
 
-function captureSourceSnapshot(runtime, explicitPath) {
-  const sourcePath = explicitPath || process.env.FIXME_USAGE_SOURCE_PATH || null;
-  return {
+function explicitUsageSourcePath(runtime, explicitPath) {
+  return explicitPath
+    || process.env.FIXME_USAGE_SOURCE_PATH
+    || (runtime === 'codex' ? process.env.CODEX_SESSION_FILE : process.env.CLAUDE_TRANSCRIPT_PATH)
+    || null;
+}
+
+function captureSourceSnapshot(runtime, explicitPath, projectRoot, skill, startedAt) {
+  const sourcePath = explicitUsageSourcePath(runtime, explicitPath);
+  const snapshot = {
     runtime,
     explicitPath: sourcePath,
     source: sourcePath ? { kind: `${runtime}_jsonl`, path: sourcePath, discovery: 'explicit' } : null,
@@ -3559,11 +3566,33 @@ function captureSourceSnapshot(runtime, explicitPath) {
       ? { path: sourcePath, size: fs.statSync(sourcePath).size, mtimeMs: fs.statSync(sourcePath).mtimeMs }
       : null,
   };
+  if (!sourcePath && projectRoot) {
+    try {
+      const discovery = discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, startedAt, null);
+      if (discovery.status === 'one') {
+        const candidate = discovery.candidates[0];
+        snapshot.source = sourceMetadata(
+          `${runtime}_jsonl`,
+          candidate.path,
+          candidate.discovery,
+          1,
+          candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {}
+        );
+        snapshot.cursor = { ...candidate.cursor, path: candidate.path };
+      }
+    } catch (_) {
+      snapshot.source = null;
+      snapshot.cursor = null;
+    }
+  }
+  return snapshot;
 }
 
 function walkJsonlFiles(rootDir) {
   const results = [];
   if (!fs.existsSync(rootDir)) return results;
+  const rootStat = fs.statSync(rootDir);
+  if (!rootStat.isDirectory()) return results;
   for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
@@ -3604,7 +3633,17 @@ function readJsonlSlice(filePath, startByte = 0, endByte = null) {
   const stat = fs.statSync(filePath);
   const start = Math.max(0, Math.min(startByte || 0, stat.size));
   const end = endByte === null ? stat.size : Math.max(start, Math.min(endByte, stat.size));
-  const text = fs.readFileSync(filePath, 'utf8').slice(start, end);
+  const length = end - start;
+  if (length <= 0) return [];
+  const fd = fs.openSync(filePath, 'r');
+  let text;
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, start);
+    text = buffer.toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
   return text.split('\n').filter(Boolean).map(line => {
     try {
       return sanitizeRuntimeRow(JSON.parse(line));
@@ -3715,27 +3754,25 @@ function sourceMetadata(kind, sourcePath, discovery, candidateCount, extra = {})
 }
 
 function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source) {
-  const rows = readJsonlSlice(sourcePath, 0, null);
-  const cumulative = [];
-  const lastUsages = [];
+  const startByte = startCursor && startCursor.size ? startCursor.size : 0;
+  const beforeStartRows = readJsonlSlice(sourcePath, 0, startByte);
+  const afterStartRows = readJsonlSlice(sourcePath, startByte, null);
+  const cumulativeBefore = [];
+  const cumulativeAfter = [];
+  const afterStartUsages = [];
   const execUsages = [];
-  for (const row of rows) {
+  for (const row of beforeStartRows) {
     if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
-      if (row.payload.info.total_token_usage) cumulative.push(normalizeCodexUsage(row.payload.info.total_token_usage));
-      if (row.payload.info.last_token_usage) lastUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
-    }
-    if (row.type === 'turn.completed' && row.usage) {
-      execUsages.push(normalizeCodexUsage(row.usage));
+      if (row.payload.info.total_token_usage) cumulativeBefore.push(normalizeCodexUsage(row.payload.info.total_token_usage));
     }
   }
-
-  const afterStartRows = readJsonlSlice(sourcePath, startCursor && startCursor.size ? startCursor.size : 0, null);
-  const afterStartUsages = [];
   for (const row of afterStartRows) {
-    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info && row.payload.info.last_token_usage) {
-      afterStartUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
+    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
+      if (row.payload.info.total_token_usage) cumulativeAfter.push(normalizeCodexUsage(row.payload.info.total_token_usage));
+      if (row.payload.info.last_token_usage) afterStartUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
     }
     if (row.type === 'turn.completed' && row.usage) afterStartUsages.push(normalizeCodexUsage(row.usage));
+    if (row.type === 'turn.completed' && row.usage) execUsages.push(normalizeCodexUsage(row.usage));
   }
 
   if (execUsages.length > 0) {
@@ -3743,9 +3780,11 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source) {
     if (execTotal && hasPositiveToken(execTotal)) return completeCounterResult(execTotal, source);
   }
 
-  const summedLast = sumTokenUsageFromList(startCursor && startCursor.size ? afterStartUsages : (cumulative.length >= 2 ? lastUsages.slice(1) : lastUsages));
-  if (cumulative.length >= 2) {
-    const delta = subtractTokenUsage(cumulative[cumulative.length - 1], cumulative[0]);
+  const summedLast = sumTokenUsageFromList(afterStartUsages);
+  if (cumulativeAfter.length > 0) {
+    const startSnapshot = cumulativeBefore.length > 0 ? cumulativeBefore[cumulativeBefore.length - 1] : null;
+    const finishSnapshot = cumulativeAfter[cumulativeAfter.length - 1];
+    const delta = subtractTokenUsage(finishSnapshot, startSnapshot);
     if (delta.negative) {
       return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
     }
@@ -3805,25 +3844,42 @@ function discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, f
   if (explicitPath) {
     if (!fs.existsSync(explicitPath)) return { status: 'none', candidates: [] };
     const stat = fs.statSync(explicitPath);
-    return { status: 'one', candidates: [{ path: explicitPath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'explicit' }] };
+    return { status: 'one', candidates: [{ path: explicitPath, cursor: { size: stat.size, mtimeMs: stat.mtimeMs }, discovery: 'explicit' }] };
   }
 
   const root = runtime === 'codex'
     ? path.join(os.homedir(), '.codex', 'sessions')
     : path.join(os.homedir(), '.claude', 'projects');
-  const files = walkJsonlFiles(root);
+  let files;
+  try {
+    files = walkJsonlFiles(root);
+  } catch (e) {
+    return { status: 'error', candidates: [], error: e };
+  }
   const candidates = [];
+  const startedMs = Date.parse(startedAt || '');
+  const finishedMs = Date.parse(finishedAt || '');
+  const windowStart = Number.isFinite(startedMs) ? startedMs - 1000 : null;
+  const windowEnd = Number.isFinite(finishedMs) ? finishedMs + 1000 : null;
   for (const filePath of files) {
-    const stat = fs.statSync(filePath);
-    const rows = readJsonlSlice(filePath, 0, Math.min(stat.size, 4096));
+    let stat;
+    let rows;
+    try {
+      stat = fs.statSync(filePath);
+      if (windowStart !== null && stat.mtimeMs < windowStart) continue;
+      if (windowEnd !== null && stat.mtimeMs > windowEnd) continue;
+      rows = readJsonlSlice(filePath, 0, Math.min(stat.size, 4096));
+    } catch (_) {
+      continue;
+    }
     const projectMatch = rows.some(row => runtimeProjectMatches(row, projectRoot));
     if (!projectMatch) continue;
     if (runtime === 'claude' && filePath.includes(`${path.sep}subagents${path.sep}`)) {
       const attributionRow = rows.find(row => runtimeAttributionMatches(row, skill));
       if (!attributionRow) continue;
-      candidates.push({ path: filePath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'inferred', attributionSkill: attributionRow.attributionSkill || attributionRow.agentId || attributionRow.attributionAgent || skill });
+      candidates.push({ path: filePath, cursor: { size: stat.size, mtimeMs: stat.mtimeMs }, discovery: 'inferred', attributionSkill: attributionRow.attributionSkill || attributionRow.agentId || attributionRow.attributionAgent || skill });
     } else {
-      candidates.push({ path: filePath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'inferred' });
+      candidates.push({ path: filePath, cursor: { size: stat.size, mtimeMs: stat.mtimeMs }, discovery: 'inferred' });
     }
   }
 
@@ -3926,7 +3982,7 @@ function usageStart(flags, fixmeRoot) {
     startedAt,
     projectRoot,
     fixmeDir,
-    sourceSnapshot: captureSourceSnapshot(runtime, flags['source-path']),
+    sourceSnapshot: captureSourceSnapshot(runtime, flags['source-path'], projectRoot, flags.skill, startedAt),
     finalizedEvent: null,
     appendState: {
       projectWritten: false,
@@ -4027,7 +4083,7 @@ function resolveUsageCounters(pending) {
   const finishedAt = new Date().toISOString();
   const explicitPath = pending.sourceSnapshot && pending.sourceSnapshot.explicitPath
     ? pending.sourceSnapshot.explicitPath
-    : (process.env.FIXME_USAGE_SOURCE_PATH || (pending.runtime === 'codex' ? process.env.CODEX_SESSION_FILE : process.env.CLAUDE_TRANSCRIPT_PATH) || null);
+    : explicitUsageSourcePath(pending.runtime, null);
   const discovery = discoverRuntimeCounterSources(
     pending.runtime,
     pending.projectRoot,
@@ -4037,6 +4093,14 @@ function resolveUsageCounters(pending) {
     explicitPath
   );
   const kind = `${pending.runtime}_jsonl`;
+  if (discovery.status === 'error') {
+    return counterPartial(
+      pending,
+      USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
+      `Runtime counter source discovery failed: ${discovery.error.message}`,
+      sourceMetadata(kind, null, 'error', 0)
+    );
+  }
   if (discovery.status === 'none') {
     return counterPartial(
       pending,
@@ -4057,7 +4121,7 @@ function resolveUsageCounters(pending) {
   const candidate = discovery.candidates[0];
   const startCursor = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
     ? pending.sourceSnapshot.cursor
-    : candidate.cursor;
+    : { ...candidate.cursor, size: 0 };
   const source = sourceMetadata(kind, candidate.path, candidate.discovery, 1, candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {});
   try {
     if (pending.runtime === 'codex') {
@@ -4221,17 +4285,19 @@ function usageSummaryRow(event) {
   return {
     eventId: event.eventId,
     invocationId: event.invocationId,
-    pipelineRunId: event.pipelineRunId,
-    parentInvocationId: event.parentInvocationId,
     skill: event.skill,
     role: event.role,
     runtime: event.runtime,
     status: event.status,
     outcome: event.outcome,
+    outcomeReason: event.outcomeReason,
     startedAt: event.startedAt,
     finishedAt: event.finishedAt,
+    durationMs: event.durationMs,
+    pipelineRunId: event.pipelineRunId,
+    parentInvocationId: event.parentInvocationId,
     totalTokens: event.tokens && typeof event.tokens.totalTokens === 'number' ? event.tokens.totalTokens : null,
-    warnings: event.warnings || [],
+    warningCodes: (event.warnings || []).map(warning => warning.code).filter(Boolean),
   };
 }
 
@@ -4305,6 +4371,7 @@ function normalizeUsageRows(rows) {
     } else {
       conflicts.push({
         invocationId,
+        rows: group,
         eventIds: group.map(row => row.eventId).filter(Boolean),
       });
     }
@@ -4316,9 +4383,14 @@ function warningSummaryFromWarnings(warnings) {
   const counts = new Map();
   for (const warning of warnings) {
     if (!warning || !warning.code) continue;
-    counts.set(warning.code, (counts.get(warning.code) || 0) + 1);
+    if (!counts.has(warning.code)) counts.set(warning.code, { code: warning.code, count: 0, eventIds: [] });
+    const item = counts.get(warning.code);
+    item.count += warning.count || 1;
+    for (const eventId of warning.eventIds || (warning.eventId ? [warning.eventId] : [])) {
+      if (eventId && !item.eventIds.includes(eventId)) item.eventIds.push(eventId);
+    }
   }
-  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([code, count]) => ({ code, count }));
+  return [...counts.values()].sort((a, b) => a.code.localeCompare(b.code));
 }
 
 function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit }) {
@@ -4331,11 +4403,16 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
 
   for (const conflict of normalized.conflicts) {
     notIncludedEventIds.push(...conflict.eventIds);
-    warningEvents.push({ code: USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT, message: `Conflicting duplicate usage rows for ${conflict.invocationId}` });
+    warningEvents.push({
+      code: USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT,
+      count: 1,
+      eventIds: conflict.eventIds,
+      message: `Conflicting duplicate usage rows for ${conflict.invocationId}`,
+    });
   }
 
   for (const row of normalized.rows) {
-    for (const warning of row.warnings || []) warningEvents.push(warning);
+    for (const warning of row.warnings || []) warningEvents.push({ ...warning, eventId: row.eventId });
     if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
       addTokenUsage(totalUsage, row.tokens);
       completeRows.push(row);
@@ -4344,38 +4421,84 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     }
   }
 
+  function newGroup(keyName, keyValue) {
+    return {
+      [keyName]: keyValue,
+      invocationCount: 0,
+      completeCount: 0,
+      partialCount: 0,
+      totalUsage: emptyTokenUsage(),
+      notIncludedInTotal: { invocationCount: 0, eventIds: [] },
+      warningSummary: [],
+    };
+  }
+
+  function addGroupWarning(group, warning) {
+    group.warningSummary = warningSummaryFromWarnings([
+      ...group.warningSummary.flatMap(item => [{ code: item.code, count: item.count, eventIds: item.eventIds }]),
+      warning,
+    ]);
+  }
+
   const bySkillMap = new Map();
-  for (const row of normalized.rows) {
-    if (!bySkillMap.has(row.skill)) {
-      bySkillMap.set(row.skill, { skill: row.skill, invocations: 0, complete: 0, partial: 0, totalUsage: emptyTokenUsage() });
+  function groupForSkill(skill) {
+    if (!bySkillMap.has(skill)) {
+      bySkillMap.set(skill, newGroup('skill', skill));
     }
-    const item = bySkillMap.get(row.skill);
-    item.invocations++;
-    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
-      item.complete++;
-      addTokenUsage(item.totalUsage, row.tokens);
-    } else {
-      item.partial++;
-    }
+    return bySkillMap.get(skill);
   }
 
   const byPipelineMap = new Map();
-  for (const row of completeRows) {
-    if (!row.pipelineRunId) continue;
-    if (!byPipelineMap.has(row.pipelineRunId)) {
-      byPipelineMap.set(row.pipelineRunId, {
-        pipelineRunId: row.pipelineRunId,
-        totalUsage: emptyTokenUsage(),
+  function groupForPipeline(pipelineRunId) {
+    if (!pipelineRunId) return null;
+    if (!byPipelineMap.has(pipelineRunId)) {
+      byPipelineMap.set(pipelineRunId, {
+        ...newGroup('pipelineRunId', pipelineRunId),
         orchestratorUsage: emptyTokenUsage(),
         childUsage: emptyTokenUsage(),
       });
     }
-    const item = byPipelineMap.get(row.pipelineRunId);
-    addTokenUsage(item.totalUsage, row.tokens);
-    if (row.role === 'orchestrator') {
-      addTokenUsage(item.orchestratorUsage, row.tokens);
+    return byPipelineMap.get(pipelineRunId);
+  }
+
+  function addRowToGroup(item, row) {
+    if (!item) return;
+    item.invocationCount++;
+    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
+      item.completeCount++;
+      addTokenUsage(item.totalUsage, row.tokens);
+      if (Object.prototype.hasOwnProperty.call(item, 'orchestratorUsage')) {
+        addTokenUsage(row.role === 'orchestrator' ? item.orchestratorUsage : item.childUsage, row.tokens);
+      }
     } else {
-      addTokenUsage(item.childUsage, row.tokens);
+      item.partialCount++;
+      item.notIncludedInTotal.invocationCount++;
+      if (row.eventId) item.notIncludedInTotal.eventIds.push(row.eventId);
+    }
+    for (const warning of row.warnings || []) {
+      addGroupWarning(item, { ...warning, eventId: row.eventId });
+    }
+  }
+
+  for (const row of normalized.rows) {
+    addRowToGroup(groupForSkill(row.skill), row);
+    addRowToGroup(groupForPipeline(row.pipelineRunId), row);
+  }
+
+  for (const conflict of normalized.conflicts) {
+    const first = conflict.rows[0] || {};
+    const groups = [groupForSkill(first.skill), groupForPipeline(first.pipelineRunId)].filter(Boolean);
+    for (const item of groups) {
+      item.invocationCount++;
+      item.notIncludedInTotal.invocationCount++;
+      for (const eventId of conflict.eventIds) {
+        if (eventId) item.notIncludedInTotal.eventIds.push(eventId);
+      }
+      addGroupWarning(item, {
+        code: USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT,
+        count: 1,
+        eventIds: conflict.eventIds,
+      });
     }
   }
 
@@ -4415,7 +4538,13 @@ function formatUsageReportText(report) {
   ];
   if (report.notIncludedInTotal.invocationCount > 0) {
     const plural = report.notIncludedInTotal.invocationCount === 1 ? 'invocation' : 'invocations';
-    lines.push(`Not included in total: ${report.notIncludedInTotal.invocationCount} ${plural} with unavailable exact counters`);
+    const warningCodes = report.warningSummary.map(warning => warning.code);
+    if (warningCodes.includes(USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT)) {
+      lines.push(`Not included in total: ${report.notIncludedInTotal.invocationCount} ${plural}`);
+      lines.push(`Warnings: ${warningCodes.join(', ')}`);
+    } else {
+      lines.push(`Not included in total: ${report.notIncludedInTotal.invocationCount} ${plural} with unavailable exact counters`);
+    }
   }
   return lines.join('\n');
 }
@@ -4490,7 +4619,9 @@ function buildCompactUsageReportLine(event, projectEventPath) {
     }
     return `${base} | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
   }
-  const notIncluded = projectReport.notIncludedInTotal.invocationCount;
+  const notIncluded = pipelineReport
+    ? pipelineReport.notIncludedInTotal.invocationCount
+    : projectReport.notIncludedInTotal.invocationCount;
   if (pipelineReport) {
     return `Usage: ${event.skill} unavailable | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens | not included: ${notIncluded} invocation(s)`;
   }
