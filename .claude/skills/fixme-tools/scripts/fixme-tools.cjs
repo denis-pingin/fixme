@@ -3419,6 +3419,283 @@ function captureSourceSnapshot(runtime, explicitPath) {
   };
 }
 
+function walkJsonlFiles(rootDir) {
+  const results = [];
+  if (!fs.existsSync(rootDir)) return results;
+  for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkJsonlFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function sanitizeRuntimeRow(raw) {
+  const row = {};
+  for (const key of ['type', 'cwd', 'projectRoot', 'project_root', 'timestamp', 'agentId', 'attributionAgent', 'attributionSkill']) {
+    if (raw[key] !== undefined) row[key] = raw[key];
+  }
+  if (raw.payload && typeof raw.payload === 'object') {
+    row.payload = {};
+    for (const key of ['type', 'cwd', 'project_root']) {
+      if (raw.payload[key] !== undefined) row.payload[key] = raw.payload[key];
+    }
+    if (raw.payload.info && typeof raw.payload.info === 'object') {
+      row.payload.info = {};
+      if (raw.payload.info.total_token_usage !== undefined) row.payload.info.total_token_usage = raw.payload.info.total_token_usage;
+      if (raw.payload.info.last_token_usage !== undefined) row.payload.info.last_token_usage = raw.payload.info.last_token_usage;
+    }
+  }
+  if (raw.message && typeof raw.message === 'object') {
+    row.message = {};
+    if (raw.message.cwd !== undefined) row.message.cwd = raw.message.cwd;
+    if (raw.message.usage !== undefined) row.message.usage = raw.message.usage;
+  }
+  if (raw.usage !== undefined) row.usage = raw.usage;
+  return row;
+}
+
+function readJsonlSlice(filePath, startByte = 0, endByte = null) {
+  const stat = fs.statSync(filePath);
+  const start = Math.max(0, Math.min(startByte || 0, stat.size));
+  const end = endByte === null ? stat.size : Math.max(start, Math.min(endByte, stat.size));
+  const text = fs.readFileSync(filePath, 'utf8').slice(start, end);
+  return text.split('\n').filter(Boolean).map(line => {
+    try {
+      return sanitizeRuntimeRow(JSON.parse(line));
+    } catch (_) {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+function tokenValue(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeCodexUsage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const tokens = {
+    inputTokens: tokenValue(raw.input_tokens),
+    cachedInputTokens: tokenValue(raw.cached_input_tokens),
+    cacheCreationInputTokens: tokenValue(raw.cache_creation_input_tokens),
+    cacheReadInputTokens: tokenValue(raw.cache_read_input_tokens),
+    outputTokens: tokenValue(raw.output_tokens),
+    reasoningOutputTokens: tokenValue(raw.reasoning_output_tokens),
+    totalTokens: tokenValue(raw.total_tokens),
+  };
+  return tokens;
+}
+
+function normalizeClaudeUsage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cacheCreationInputTokens = tokenValue(raw.cache_creation_input_tokens);
+  const cacheReadInputTokens = tokenValue(raw.cache_read_input_tokens);
+  const cachedInputTokens = cacheCreationInputTokens === null && cacheReadInputTokens === null
+    ? null
+    : (cacheCreationInputTokens || 0) + (cacheReadInputTokens || 0);
+  const tokens = {
+    inputTokens: tokenValue(raw.input_tokens),
+    cachedInputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    outputTokens: tokenValue(raw.output_tokens),
+    reasoningOutputTokens: tokenValue(raw.reasoning_output_tokens),
+    totalTokens: tokenValue(raw.total_tokens),
+  };
+  if (tokens.totalTokens === null) {
+    tokens.totalTokens = (tokens.inputTokens || 0)
+      + (tokens.cacheCreationInputTokens || 0)
+      + (tokens.cacheReadInputTokens || 0)
+      + (tokens.outputTokens || 0)
+      + (tokens.reasoningOutputTokens || 0);
+  }
+  return tokens;
+}
+
+function sumTokenUsageFromList(usages) {
+  const total = {};
+  for (const key of USAGE_TOKEN_BUCKETS) total[key] = null;
+  for (const usage of usages) {
+    if (!usage) continue;
+    for (const key of USAGE_TOKEN_BUCKETS) {
+      if (usage[key] !== null && usage[key] !== undefined) {
+        total[key] = (total[key] || 0) + usage[key];
+      }
+    }
+  }
+  if (total.totalTokens === null) return null;
+  return total;
+}
+
+function subtractTokenUsage(finish, start) {
+  const result = {};
+  let negative = false;
+  for (const key of USAGE_TOKEN_BUCKETS) {
+    const finishValue = finish && finish[key] !== null && finish[key] !== undefined ? finish[key] : null;
+    const startValue = start && start[key] !== null && start[key] !== undefined ? start[key] : null;
+    if (finishValue === null && startValue === null) {
+      result[key] = null;
+    } else {
+      result[key] = (finishValue || 0) - (startValue || 0);
+      if (result[key] < 0) negative = true;
+    }
+  }
+  return { result, negative };
+}
+
+function hasPositiveToken(usage) {
+  return !!usage && USAGE_TOKEN_BUCKETS.some(key => typeof usage[key] === 'number' && usage[key] > 0);
+}
+
+function tokensEqual(a, b) {
+  for (const key of USAGE_TOKEN_BUCKETS) {
+    if ((a[key] || 0) !== (b[key] || 0)) return false;
+  }
+  return true;
+}
+
+function counterPartial(pending, code, message, source) {
+  const result = buildPartialCounterResult(pending, code, message);
+  if (source) result.source = source;
+  return result;
+}
+
+function completeCounterResult(tokens, source) {
+  return { status: USAGE_STATUS.COMPLETE, tokens, source, warnings: [] };
+}
+
+function sourceMetadata(kind, sourcePath, discovery, candidateCount, extra = {}) {
+  return { kind, path: sourcePath, discovery, candidateCount, ...extra };
+}
+
+function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source) {
+  const rows = readJsonlSlice(sourcePath, 0, null);
+  const cumulative = [];
+  const lastUsages = [];
+  const execUsages = [];
+  for (const row of rows) {
+    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
+      if (row.payload.info.total_token_usage) cumulative.push(normalizeCodexUsage(row.payload.info.total_token_usage));
+      if (row.payload.info.last_token_usage) lastUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
+    }
+    if (row.type === 'turn.completed' && row.usage) {
+      execUsages.push(normalizeCodexUsage(row.usage));
+    }
+  }
+
+  const afterStartRows = readJsonlSlice(sourcePath, startCursor && startCursor.size ? startCursor.size : 0, null);
+  const afterStartUsages = [];
+  for (const row of afterStartRows) {
+    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info && row.payload.info.last_token_usage) {
+      afterStartUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
+    }
+    if (row.type === 'turn.completed' && row.usage) afterStartUsages.push(normalizeCodexUsage(row.usage));
+  }
+
+  if (execUsages.length > 0) {
+    const execTotal = sumTokenUsageFromList(execUsages);
+    if (execTotal && hasPositiveToken(execTotal)) return completeCounterResult(execTotal, source);
+  }
+
+  const summedLast = sumTokenUsageFromList(startCursor && startCursor.size ? afterStartUsages : (cumulative.length >= 2 ? lastUsages.slice(1) : lastUsages));
+  if (cumulative.length >= 2) {
+    const delta = subtractTokenUsage(cumulative[cumulative.length - 1], cumulative[0]);
+    if (delta.negative) {
+      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
+    }
+    const modelWork = !String(skill || '').startsWith('fixme-howto-');
+    if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLast)) {
+      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
+    }
+    if (summedLast && hasPositiveToken(summedLast) && !tokensEqual(delta.result, summedLast)) {
+      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
+    }
+    return completeCounterResult(delta.result, source);
+  }
+
+  if (summedLast && hasPositiveToken(summedLast)) {
+    return completeCounterResult(summedLast, source);
+  }
+
+  return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
+}
+
+function extractClaudeCountersFromJsonl(sourcePath, startCursor, source) {
+  const rows = readJsonlSlice(sourcePath, startCursor && startCursor.size ? startCursor.size : 0, null);
+  const usages = rows
+    .filter(row => row.message && row.message.usage)
+    .map(row => normalizeClaudeUsage(row.message.usage));
+  const tokens = sumTokenUsageFromList(usages);
+  if (tokens && hasPositiveToken(tokens)) return completeCounterResult(tokens, source);
+  return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
+}
+
+function runtimeProjectMatches(row, projectRoot) {
+  function normalizeProjectPath(value) {
+    if (!value || typeof value !== 'string') return null;
+    try {
+      return fs.realpathSync(value);
+    } catch (_) {
+      return path.resolve(value);
+    }
+  }
+  const expected = normalizeProjectPath(projectRoot);
+  const values = [
+    row.cwd,
+    row.projectRoot,
+    row.project_root,
+    row.payload && row.payload.cwd,
+    row.payload && row.payload.project_root,
+    row.message && row.message.cwd,
+  ].map(normalizeProjectPath).filter(Boolean);
+  return values.includes(expected);
+}
+
+function runtimeAttributionMatches(row, skill) {
+  return [row.agentId, row.attributionAgent, row.attributionSkill].filter(Boolean).includes(skill);
+}
+
+function discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, finishedAt, explicitPath) {
+  if (explicitPath) {
+    if (!fs.existsSync(explicitPath)) return { status: 'none', candidates: [] };
+    const stat = fs.statSync(explicitPath);
+    return { status: 'one', candidates: [{ path: explicitPath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'explicit' }] };
+  }
+
+  const root = runtime === 'codex'
+    ? path.join(os.homedir(), '.codex', 'sessions')
+    : path.join(os.homedir(), '.claude', 'projects');
+  const files = walkJsonlFiles(root);
+  const candidates = [];
+  for (const filePath of files) {
+    const stat = fs.statSync(filePath);
+    const rows = readJsonlSlice(filePath, 0, Math.min(stat.size, 4096));
+    const projectMatch = rows.some(row => runtimeProjectMatches(row, projectRoot));
+    if (!projectMatch) continue;
+    if (runtime === 'claude' && filePath.includes(`${path.sep}subagents${path.sep}`)) {
+      const attributionRow = rows.find(row => runtimeAttributionMatches(row, skill));
+      if (!attributionRow) continue;
+      candidates.push({ path: filePath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'inferred', attributionSkill: attributionRow.attributionSkill || attributionRow.agentId || attributionRow.attributionAgent || skill });
+    } else {
+      candidates.push({ path: filePath, cursor: { size: 0, mtimeMs: stat.mtimeMs }, discovery: 'inferred' });
+    }
+  }
+
+  if (runtime === 'claude') {
+    const attributed = candidates.filter(candidate => candidate.attributionSkill);
+    if (attributed.length === 1) return { status: 'one', candidates: attributed };
+    if (attributed.length > 1) return { status: 'many', candidates: attributed };
+  }
+
+  if (candidates.length === 0) return { status: 'none', candidates: [] };
+  if (candidates.length > 1) return { status: 'many', candidates };
+  return { status: 'one', candidates };
+}
+
 function resolveUsageRuntime(rawRuntime, scriptPath) {
   const runtime = rawRuntime || 'auto';
   if (!USAGE_RUNTIMES.includes(runtime)) {
@@ -3605,11 +3882,52 @@ function buildPartialCounterResult(pending, warningCode, message) {
 }
 
 function resolveUsageCounters(pending) {
-  return buildPartialCounterResult(
-    pending,
-    USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
-    'Runtime token counters were unavailable; this invocation is not included in total usage.'
+  const finishedAt = new Date().toISOString();
+  const explicitPath = pending.sourceSnapshot && pending.sourceSnapshot.explicitPath
+    ? pending.sourceSnapshot.explicitPath
+    : (process.env.FIXME_USAGE_SOURCE_PATH || (pending.runtime === 'codex' ? process.env.CODEX_SESSION_FILE : process.env.CLAUDE_TRANSCRIPT_PATH) || null);
+  const discovery = discoverRuntimeCounterSources(
+    pending.runtime,
+    pending.projectRoot,
+    pending.skill,
+    pending.startedAt,
+    finishedAt,
+    explicitPath
   );
+  const kind = `${pending.runtime}_jsonl`;
+  if (discovery.status === 'none') {
+    return counterPartial(
+      pending,
+      USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
+      'Runtime token counters were unavailable; this invocation is not included in total usage.',
+      sourceMetadata(kind, null, 'none', 0)
+    );
+  }
+  if (discovery.status === 'many') {
+    return counterPartial(
+      pending,
+      USAGE_WARNING_CODES.AMBIGUOUS_COUNTER_SOURCE,
+      'Multiple runtime counter sources matched this invocation; no source was guessed.',
+      sourceMetadata(kind, null, 'inferred', discovery.candidates.length)
+    );
+  }
+
+  const candidate = discovery.candidates[0];
+  const startCursor = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
+    ? pending.sourceSnapshot.cursor
+    : candidate.cursor;
+  const source = sourceMetadata(kind, candidate.path, candidate.discovery, 1, candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {});
+  try {
+    if (pending.runtime === 'codex') {
+      return extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source);
+    }
+    if (pending.runtime === 'claude') {
+      return extractClaudeCountersFromJsonl(candidate.path, startCursor, source);
+    }
+  } catch (e) {
+    return counterPartial(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, `Runtime counter extraction failed: ${e.message}`, source);
+  }
+  return counterPartial(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, 'Runtime token counters were unavailable.', source);
 }
 
 function buildFinalizedUsageEvent(pending, outcomeResult, counterResult) {

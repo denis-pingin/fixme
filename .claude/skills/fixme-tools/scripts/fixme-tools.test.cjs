@@ -3160,6 +3160,293 @@ test('usage report: corrupt and trailing partial JSONL lines are skipped with wa
 });
 
 // ============================================================================
+// Usage runtime adapter tests
+// ============================================================================
+
+console.log('\n=== usage runtime adapter tests ===\n');
+
+function appendJsonl(filePath, rows) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+}
+
+function codexTokenCount(total, last) {
+  return { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: total, last_token_usage: last } } };
+}
+
+function codexSessionMeta(projectRoot) {
+  return { type: 'session_meta', payload: { cwd: projectRoot } };
+}
+
+function claudeTranscriptMeta(projectRoot, extra = {}) {
+  return { type: 'transcript_metadata', cwd: projectRoot, ...extra };
+}
+
+function codexSessionPath(ctx, name) {
+  return path.join(ctx.homeDir, '.codex', 'sessions', '2026', '05', '26', `${name}.jsonl`);
+}
+
+function claudeTranscriptPath(ctx, name) {
+  return path.join(ctx.homeDir, '.claude', 'projects', 'synthetic-project', `${name}.jsonl`);
+}
+
+test('runtime adapter: Codex cumulative total_token_usage deltas are authoritative', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 },
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 250, cached_input_tokens: 55, output_tokens: 40, reasoning_output_tokens: 15, total_tokens: 305 },
+      { input_tokens: 150, cached_input_tokens: 35, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 190 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.inputTokens === 150, `input delta ${row.tokens.inputTokens}`);
+  assert(row.tokens.cachedInputTokens === 35, `cached delta ${row.tokens.cachedInputTokens}`);
+  assert(row.tokens.outputTokens === 30, `output delta ${row.tokens.outputTokens}`);
+  assert(row.tokens.reasoningOutputTokens === 10, `reasoning delta ${row.tokens.reasoningOutputTokens}`);
+  assert(row.tokens.totalTokens === 190, `total delta ${row.tokens.totalTokens}`);
+  assert(row.source.kind === 'codex_jsonl', 'source kind');
+});
+
+test('runtime adapter: Codex negative cumulative deltas create partial row', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-negative-delta.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 200, cached_input_tokens: 40, output_tokens: 30, reasoning_output_tokens: 20, total_tokens: 290 },
+      { input_tokens: 200, cached_input_tokens: 40, output_tokens: 30, reasoning_output_tokens: 20, total_tokens: 290 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 150, cached_input_tokens: 35, output_tokens: 25, reasoning_output_tokens: 15, total_tokens: 225 },
+      { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'negative cumulative delta should be partial');
+  assert(row.tokens === null, 'partial tokens null');
+  assert(row.warnings.some(w => w.code === 'NEGATIVE_DELTA'), 'NEGATIVE_DELTA warning expected');
+});
+
+test('runtime adapter: Codex zero cumulative deltas create NO_NEW_USAGE partial row', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-zero-delta.jsonl');
+  const snapshot = { input_tokens: 200, cached_input_tokens: 40, output_tokens: 30, reasoning_output_tokens: 20, total_tokens: 290 };
+  appendJsonl(sourcePath, [
+    codexTokenCount(snapshot, { input_tokens: 200, cached_input_tokens: 40, output_tokens: 30, reasoning_output_tokens: 20, total_tokens: 290 }),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(snapshot, undefined),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'zero cumulative delta should be partial');
+  assert(row.tokens === null, 'partial tokens null');
+  assert(row.warnings.some(w => w.code === 'NO_NEW_USAGE'), 'NO_NEW_USAGE warning expected');
+  assert(!row.warnings.some(w => w.code === 'NEGATIVE_DELTA'), 'zero delta must not be classified as NEGATIVE_DELTA');
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'zero delta without after-start usage must not be classified as COUNTER_CONFLICT');
+});
+
+test('runtime adapter: Codex sums each last_token_usage event when cumulative snapshots are absent', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-last-only.jsonl');
+  fs.writeFileSync(sourcePath, '');
+  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3, reasoning_output_tokens: 1, total_tokens: 14 } } } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 20, cached_input_tokens: 4, output_tokens: 6, reasoning_output_tokens: 2, total_tokens: 28 } } } },
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', 'last usage rows should produce complete counters');
+  assert(row.tokens.totalTokens === 42, `expected 42, got ${row.tokens.totalTokens}`);
+});
+
+test('runtime adapter: inferred Codex session under HOME sessions is used when exactly one candidate matches', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = codexSessionPath(ctx, 'rollout-good');
+  appendJsonl(sourcePath, [
+    codexSessionMeta(ctx.projectRoot),
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens.totalTokens}`);
+  assert(row.source.kind === 'codex_jsonl', 'source kind');
+  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
+  assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
+  assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
+});
+
+test('runtime adapter: Codex cumulative and summed last usage conflicts create partial row', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-conflict.jsonl');
+  appendJsonl(sourcePath, [codexTokenCount({ input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 }, { input_tokens: 0, total_tokens: 0 })]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 100 },
+      { input_tokens: 99, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 99 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'conflicting counters should be partial');
+  assert(row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'COUNTER_CONFLICT warning expected');
+});
+
+test('runtime adapter: Codex exec turn.completed.usage maps normalized tokens', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-exec.jsonl');
+  fs.writeFileSync(sourcePath, '');
+  const started = runInDirWithEnv('usage start --skill fixme-execute-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  appendJsonl(sourcePath, [
+    { type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 11 } },
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', 'exec usage should produce complete row');
+  assert(row.tokens.totalTokens === 11, 'exec total tokens');
+});
+
+test('runtime adapter: Claude message.usage maps cache buckets and derived cachedInputTokens', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'claude-transcript.jsonl');
+  fs.writeFileSync(sourcePath, '');
+  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    { type: 'assistant', message: { usage: { input_tokens: 7, cache_creation_input_tokens: 3, cache_read_input_tokens: 4, output_tokens: 6 } }, content: 'must be ignored' },
+    { type: 'assistant', message: { usage: { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 1, output_tokens: 2 } }, tool_output: 'must be ignored' },
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', 'Claude usage should produce complete row');
+  assert(row.tokens.inputTokens === 12, 'Claude input sum');
+  assert(row.tokens.cacheCreationInputTokens === 3, 'Claude cache creation sum');
+  assert(row.tokens.cacheReadInputTokens === 5, 'Claude cache read sum');
+  assert(row.tokens.cachedInputTokens === 8, 'Claude cachedInputTokens derived sum');
+  assert(row.tokens.outputTokens === 8, 'Claude output sum');
+  assert(row.tokens.totalTokens === 28, `Claude fallback total should be 28, got ${row.tokens.totalTokens}`);
+  assert(row.source.kind === 'claude_jsonl', 'source kind');
+  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
+});
+
+test('runtime adapter: inferred Claude transcript under HOME projects is used when exactly one candidate matches', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = claudeTranscriptPath(ctx, 'session-main');
+  appendJsonl(sourcePath, [claudeTranscriptMeta(ctx.projectRoot)]);
+  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 3, cache_creation_input_tokens: 1, cache_read_input_tokens: 2, output_tokens: 4 } }, content: 'must be ignored' },
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 10, `expected inferred total 10, got ${row.tokens.totalTokens}`);
+  assert(row.source.kind === 'claude_jsonl', 'source kind');
+  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
+  assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
+  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
+  assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
+});
+
+test('runtime adapter: Claude subagent transcript attribution is used for the active skill', () => {
+  const ctx = createUsageWorkspace();
+  const parentPath = claudeTranscriptPath(ctx, 'session-parent');
+  const subagentPath = path.join(path.dirname(parentPath), 'subagents', 'fixme-review-code.jsonl');
+  appendJsonl(parentPath, [claudeTranscriptMeta(ctx.projectRoot)]);
+  appendJsonl(subagentPath, [claudeTranscriptMeta(ctx.projectRoot, { attributionSkill: 'fixme-review-code', attributionAgent: 'fixme-review-code' })]);
+  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime claude', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(subagentPath, [
+    { type: 'assistant', cwd: ctx.projectRoot, attributionSkill: 'fixme-review-code', message: { usage: { input_tokens: 6, cache_creation_input_tokens: 0, cache_read_input_tokens: 2, output_tokens: 5 } }, tool_result: 'must be ignored' },
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 13, `expected subagent total 13, got ${row.tokens.totalTokens}`);
+  assert(row.source.kind === 'claude_jsonl', 'source kind');
+  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
+  assert(row.source.attributionSkill === 'fixme-review-code', 'source attributionSkill should be sanitized and preserved');
+  assert(row.source.path === subagentPath, 'source path identifies the attributed local subagent source');
+  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
+});
+
+test('runtime adapter: no inferred runtime source appends partial row', () => {
+  const ctx = createUsageWorkspace();
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'missing runtime source should be partial');
+  assert(row.tokens === null, 'partial tokens null');
+  assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
+});
+
+test('runtime adapter: ambiguous inferred runtime sources append partial row without guessing', () => {
+  const ctx = createUsageWorkspace();
+  const sourceOne = codexSessionPath(ctx, 'rollout-one');
+  const sourceTwo = codexSessionPath(ctx, 'rollout-two');
+  appendJsonl(sourceOne, [codexSessionMeta(ctx.projectRoot)]);
+  appendJsonl(sourceTwo, [codexSessionMeta(ctx.projectRoot)]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourceOne, [codexTokenCount({ input_tokens: 1, total_tokens: 1 }, { input_tokens: 1, total_tokens: 1 })]);
+  appendJsonl(sourceTwo, [codexTokenCount({ input_tokens: 2, total_tokens: 2 }, { input_tokens: 2, total_tokens: 2 })]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'partial', 'ambiguous runtime sources should be partial');
+  assert(row.tokens === null, 'partial tokens null');
+  assert(row.warnings.some(w => w.code === 'AMBIGUOUS_COUNTER_SOURCE'), 'AMBIGUOUS_COUNTER_SOURCE warning expected');
+  assert(row.source.candidateCount === 2, 'candidate count should be recorded without source paths');
+  assert(row.source.path === null, 'ambiguous source path should be null');
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 
