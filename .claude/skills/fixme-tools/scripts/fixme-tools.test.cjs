@@ -2871,6 +2871,135 @@ test('config workflow configure treats fixme-usage as a known Fixme skill', () =
 });
 
 // ============================================================================
+// Usage finish tests
+// ============================================================================
+
+console.log('\n=== usage finish tests ===\n');
+
+function startUsage(ctx, extra = '') {
+  const result = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex ${extra}`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `usage start failed: ${JSON.stringify(result.data)}`);
+  return result.data;
+}
+
+test('usage finish: missing counters appends one partial row to project and global events', () => {
+  const ctx = createUsageWorkspace();
+  const started = startUsage(ctx);
+  const result = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `usage finish should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.status === 'partial', `expected partial, got ${result.data.status}`);
+  assert(result.data.outcomeReason === null, 'complete outcomeReason should be null');
+  assert(result.data.reportLine && result.data.reportLine.includes('Usage: fixme-write-plan unavailable'), 'partial report line should be present');
+  assert(result.data.reportLineSuppressed === false, 'report line should not be suppressed by default');
+  assert(!fs.existsSync(started.pendingPath), 'pending file should be removed after both appends complete');
+
+  const projectRows = readJsonl(ctx.projectEvents);
+  const globalRows = readJsonl(ctx.globalEvents);
+  assert(projectRows.length === 1, `project rows: ${projectRows.length}`);
+  assert(globalRows.length === 1, `global rows: ${globalRows.length}`);
+  assert(JSON.stringify(projectRows[0]) === JSON.stringify(globalRows[0]), 'project and global rows should be identical');
+  assert(projectRows[0].status === 'partial', 'row status partial');
+  assert(projectRows[0].tokens === null, 'partial row tokens null');
+  assert(projectRows[0].cost === null, 'cost null');
+  assert(projectRows[0].warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'partial row warning');
+  assert(!Object.prototype.hasOwnProperty.call(projectRows[0], 'task'), 'usage row must not contain task field');
+});
+
+test('usage finish: failed and aborted outcomes accept only closed reason enum values', () => {
+  const accepted = ['verification_failed', 'user_aborted', 'usage_tracking_failed', 'runtime_error', 'dispatch_failed', 'timeout', 'invalid_usage_request', 'unknown'];
+  for (const reason of accepted) {
+    const ctx = createUsageWorkspace();
+    const started = startUsage(ctx);
+    const result = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome failed --reason ${reason}`, ctx.projectRoot, ctx.env);
+    assert(result.ok, `reason ${reason} should succeed, got ${JSON.stringify(result.data)}`);
+    const row = readJsonl(ctx.projectEvents)[0];
+    assert(row.outcome === 'failed', 'outcome failed');
+    assert(row.outcomeReason === reason, `outcomeReason should be ${reason}`);
+  }
+
+  const abortedCtx = createUsageWorkspace();
+  const abortedStart = startUsage(abortedCtx);
+  const aborted = runInDirWithEnv(`usage finish --invocation-id ${abortedStart.invocationId} --outcome aborted --reason user_aborted`, abortedCtx.projectRoot, abortedCtx.env);
+  assert(aborted.ok, `aborted outcome should succeed, got ${JSON.stringify(aborted.data)}`);
+  assert(readJsonl(abortedCtx.projectEvents)[0].outcome === 'aborted', 'outcome aborted');
+});
+
+test('usage finish: invalid reason forms append no rows and do not finalize pending state', () => {
+  const cases = [
+    { args: '--outcome failed', code: 'INVALID_REASON' },
+    { args: '--outcome aborted --reason not_in_enum', code: 'INVALID_REASON' },
+    { args: '--outcome complete --reason verification_failed', code: 'INVALID_REASON' },
+  ];
+
+  for (const item of cases) {
+    const ctx = createUsageWorkspace();
+    const started = startUsage(ctx);
+    const result = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} ${item.args}`, ctx.projectRoot, ctx.env);
+    assert(!result.ok, `finish should fail for ${item.args}`);
+    assert(result.data.code === item.code, `expected ${item.code}, got ${JSON.stringify(result.data)}`);
+    assert(!fs.existsSync(ctx.projectEvents), 'project events should not exist');
+    assert(!fs.existsSync(ctx.globalEvents), 'global events should not exist');
+    assert(readJson(started.pendingPath).finalizedEvent === null, 'pending should not be finalized');
+  }
+});
+
+test('usage finish: --quiet and config false suppress compact report line', () => {
+  const quietCtx = createUsageWorkspace();
+  const quietStart = startUsage(quietCtx);
+  const quiet = runInDirWithEnv(`usage finish --invocation-id ${quietStart.invocationId} --outcome complete --quiet`, quietCtx.projectRoot, quietCtx.env);
+  assert(quiet.ok, `quiet finish should succeed, got ${JSON.stringify(quiet.data)}`);
+  assert(quiet.data.reportLine === null, 'quiet reportLine null');
+  assert(quiet.data.reportLineSuppressed === true, 'quiet reportLineSuppressed true');
+
+  const cfgCtx = createUsageWorkspace();
+  fs.writeFileSync(path.join(cfgCtx.fixmeDir, 'config.json'), JSON.stringify({ usage: { printAfterFinish: false } }, null, 2));
+  const cfgStart = startUsage(cfgCtx);
+  const cfg = runInDirWithEnv(`usage finish --invocation-id ${cfgStart.invocationId} --outcome complete`, cfgCtx.projectRoot, cfgCtx.env);
+  assert(cfg.ok, `config-suppressed finish should succeed, got ${JSON.stringify(cfg.data)}`);
+  assert(cfg.data.reportLine === null, 'config suppressed reportLine null');
+  assert(cfg.data.reportLineSuppressed === true, 'config suppressed reportLineSuppressed true');
+});
+
+test('usage finish: retry after global append failure writes exact finalized event once', () => {
+  const ctx = createUsageWorkspace();
+  const badHomeFile = path.join(createTmpDir(), 'home-file');
+  fs.writeFileSync(badHomeFile, 'not a directory');
+  const started = startUsage(ctx);
+
+  const first = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, { HOME: badHomeFile });
+  assert(!first.ok, 'first finish should fail because global append path is invalid');
+  assert(first.data.code === 'DESTINATION_APPEND_FAILED', `expected DESTINATION_APPEND_FAILED, got ${JSON.stringify(first.data)}`);
+  assert(readJsonl(ctx.projectEvents).length === 1, 'project row should remain after global failure');
+  const pendingAfterFailure = readJson(started.pendingPath);
+  assert(pendingAfterFailure.finalizedEvent, 'finalized event should be persisted');
+  assert(pendingAfterFailure.appendState.projectWritten === true, 'project should be marked written');
+  assert(pendingAfterFailure.appendState.globalWritten === false, 'global should remain missing');
+
+  const retry = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(retry.ok, `retry should succeed, got ${JSON.stringify(retry.data)}`);
+  assert(readJsonl(ctx.projectEvents).length === 1, 'retry must not duplicate project row');
+  assert(readJsonl(ctx.globalEvents).length === 1, 'retry should write one global row');
+  assert(!fs.existsSync(started.pendingPath), 'pending should be removed after retry converges');
+});
+
+test('usage finish: destination conflict exits non-zero and appends nothing', () => {
+  const ctx = createUsageWorkspace();
+  const badHomeFile = path.join(createTmpDir(), 'home-file');
+  fs.writeFileSync(badHomeFile, 'not a directory');
+  const started = startUsage(ctx);
+  const first = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, { HOME: badHomeFile });
+  assert(!first.ok, 'first finish should leave pending after global failure');
+
+  const conflicting = { ...readJsonl(ctx.projectEvents)[0], status: 'complete', tokens: { totalTokens: 1 } };
+  fs.writeFileSync(ctx.projectEvents, JSON.stringify(conflicting) + '\n');
+  const retry = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(!retry.ok, 'retry should fail on conflicting project row');
+  assert(retry.data.code === 'DESTINATION_EVENT_CONFLICT', `expected conflict, got ${JSON.stringify(retry.data)}`);
+  assert(!fs.existsSync(ctx.globalEvents), 'global row should not be appended after conflict');
+  assert(fs.existsSync(started.pendingPath), 'pending should remain for manual repair');
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 

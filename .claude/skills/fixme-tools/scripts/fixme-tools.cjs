@@ -3445,6 +3445,15 @@ function usageCliError(code, message, extra = {}) {
   process.exit(1);
 }
 
+function usageCliResult(data, exitCode = 0) {
+  if (typeof data === 'string') {
+    process.stdout.write(JSON.stringify(data) + '\n');
+  } else {
+    process.stdout.write(JSON.stringify(data) + '\n');
+  }
+  process.exit(exitCode);
+}
+
 function usageStart(flags, fixmeRoot) {
   if (Object.prototype.hasOwnProperty.call(flags, 'task')) {
     return usageCliError('UNSUPPORTED_USAGE_TASK', '--task is reserved for a future usage schema and is not supported in v1');
@@ -3515,6 +3524,223 @@ function usageStart(flags, fixmeRoot) {
     runtime,
     startedAt,
     finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete`,
+  });
+}
+
+function validateOutcomeAndReason(outcome, rawReason) {
+  if (!USAGE_OUTCOMES.includes(outcome)) {
+    return { ok: false, code: 'INVALID_OUTCOME', message: `Unsupported usage outcome: ${outcome}` };
+  }
+  const hasReason = rawReason !== undefined && rawReason !== true;
+  const reason = hasReason ? String(rawReason).trim() : '';
+  if (outcome === 'complete') {
+    if (hasReason) {
+      return { ok: false, code: 'INVALID_REASON', message: '--reason is forbidden when --outcome complete' };
+    }
+    return { ok: true, outcome, outcomeReason: null };
+  }
+  if (!reason || !USAGE_REASON_VALUES.includes(reason)) {
+    return { ok: false, code: 'INVALID_REASON', message: `--reason is required and must be one of: ${USAGE_REASON_VALUES.join(', ')}` };
+  }
+  return { ok: true, outcome, outcomeReason: reason };
+}
+
+function findPendingPath(invocationId, fixmeRoot) {
+  const id = validateUsageId(invocationId, 'invocationId');
+  if (!id) {
+    const err = new Error('--invocation-id is required');
+    err.code = 'MISSING_INVOCATION_ID';
+    throw err;
+  }
+  return path.join(usagePendingDir(path.join(fixmeRoot, '.fixme')), `${id}.json`);
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function eventsEqual(a, b) {
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+function readUsageRowsForInvocation(eventPath, invocationId) {
+  if (!fs.existsSync(eventPath)) return [];
+  const text = fs.readFileSync(eventPath, 'utf8');
+  return text.split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .filter(row => row && row.invocationId === invocationId);
+}
+
+function destinationState(eventPath, finalizedEvent) {
+  const rows = readUsageRowsForInvocation(eventPath, finalizedEvent.invocationId);
+  if (rows.length === 0) return 'missing';
+  if (rows.some(row => !eventsEqual(row, finalizedEvent))) return 'conflict';
+  return 'same';
+}
+
+function appendUsageEvent(eventPath, finalizedEvent) {
+  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
+  const fd = fs.openSync(eventPath, 'a');
+  try {
+    fs.writeSync(fd, JSON.stringify(finalizedEvent) + '\n');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function buildPartialCounterResult(pending, warningCode, message) {
+  return {
+    status: USAGE_STATUS.PARTIAL,
+    tokens: null,
+    source: pending.sourceSnapshot && pending.sourceSnapshot.source
+      ? pending.sourceSnapshot.source
+      : { kind: `${pending.runtime}_jsonl`, path: null, discovery: 'unavailable' },
+    warnings: [{ code: warningCode, message }],
+  };
+}
+
+function resolveUsageCounters(pending) {
+  return buildPartialCounterResult(
+    pending,
+    USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
+    'Runtime token counters were unavailable; this invocation is not included in total usage.'
+  );
+}
+
+function buildFinalizedUsageEvent(pending, outcomeResult, counterResult) {
+  const finishedAt = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    eventType: 'skill_invocation',
+    eventId: generateUsageId('event'),
+    invocationId: pending.invocationId,
+    parentInvocationId: pending.parentInvocationId,
+    pipelineRunId: pending.pipelineRunId,
+    skill: pending.skill,
+    role: pending.role,
+    runtime: pending.runtime,
+    status: counterResult.status,
+    outcome: outcomeResult.outcome,
+    outcomeReason: outcomeResult.outcomeReason,
+    startedAt: pending.startedAt,
+    finishedAt,
+    durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(pending.startedAt)),
+    projectRoot: pending.projectRoot,
+    fixmeDir: pending.fixmeDir,
+    tokens: counterResult.tokens,
+    cost: null,
+    source: counterResult.source,
+    warnings: counterResult.warnings || [],
+  };
+}
+
+function usagePrintAfterFinish(fixmeRoot) {
+  try {
+    const { config } = readConfigForWrite(fixmeRoot);
+    applyConfigMigration(config);
+    return config.usage.printAfterFinish !== false;
+  } catch (_) {
+    return true;
+  }
+}
+
+function buildPlaceholderUsageReportLine(event) {
+  if (event.status === USAGE_STATUS.PARTIAL) {
+    return `Usage: ${event.skill} unavailable | project total unavailable | not included: 1 invocation`;
+  }
+  return `Usage: ${event.skill} +${event.tokens.totalTokens} tokens | project total unavailable`;
+}
+
+function usageFinish(flags, fixmeRoot) {
+  if (!flags['invocation-id']) {
+    return usageCliError('MISSING_INVOCATION_ID', '--invocation-id is required for usage finish');
+  }
+  if (!flags.outcome) {
+    return usageCliError('MISSING_OUTCOME', '--outcome is required for usage finish');
+  }
+
+  let pendingPath;
+  try {
+    pendingPath = findPendingPath(flags['invocation-id'], fixmeRoot);
+  } catch (e) {
+    return usageCliError(e.code || 'INVALID_USAGE_ID', e.message);
+  }
+  if (!fs.existsSync(pendingPath)) {
+    return usageCliError('PENDING_USAGE_NOT_FOUND', `Pending usage invocation not found: ${flags['invocation-id']}`);
+  }
+
+  const pending = readJsonFileStrict(pendingPath);
+  const outcomeResult = validateOutcomeAndReason(flags.outcome, flags.reason);
+  if (!outcomeResult.ok) {
+    return usageCliError(outcomeResult.code, outcomeResult.message);
+  }
+
+  let finalizedEvent = pending.finalizedEvent;
+  if (!finalizedEvent) {
+    const counterResult = resolveUsageCounters(pending);
+    finalizedEvent = buildFinalizedUsageEvent(pending, outcomeResult, counterResult);
+    pending.finalizedEvent = finalizedEvent;
+    writeJsonAtomic(pendingPath, pending);
+  }
+
+  const projectEventPath = usageProjectEventPath(pending.fixmeDir);
+  const globalEventPath = usageGlobalEventPath();
+
+  let projectState;
+  let globalState;
+  try {
+    projectState = destinationState(projectEventPath, finalizedEvent);
+    globalState = destinationState(globalEventPath, finalizedEvent);
+  } catch (e) {
+    return usageCliError('DESTINATION_READ_FAILED', e.message);
+  }
+
+  if (projectState === 'conflict' || globalState === 'conflict') {
+    return usageCliError('DESTINATION_EVENT_CONFLICT', 'A usage destination already contains a different event for this invocation');
+  }
+
+  try {
+    if (projectState === 'missing') {
+      appendUsageEvent(projectEventPath, finalizedEvent);
+    }
+    pending.appendState.projectWritten = true;
+    writeJsonAtomic(pendingPath, pending);
+  } catch (e) {
+    return usageCliError(USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, `Failed to append project usage event: ${e.message}`);
+  }
+
+  try {
+    if (globalState === 'missing') {
+      appendUsageEvent(globalEventPath, finalizedEvent);
+    }
+    pending.appendState.globalWritten = true;
+    writeJsonAtomic(pendingPath, pending);
+  } catch (e) {
+    return usageCliError(USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, `Failed to append global usage event: ${e.message}`, {
+      warnings: [{ code: USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, message: 'Project usage was written, but global usage is incomplete.' }],
+    });
+  }
+
+  fs.rmSync(pendingPath, { force: true });
+
+  const suppressed = flags.quiet === true || flags.quiet === '' || !usagePrintAfterFinish(fixmeRoot);
+  const reportLine = suppressed ? null : buildPlaceholderUsageReportLine(finalizedEvent);
+  return usageCliResult({
+    eventId: finalizedEvent.eventId,
+    invocationId: finalizedEvent.invocationId,
+    status: finalizedEvent.status,
+    outcome: finalizedEvent.outcome,
+    outcomeReason: finalizedEvent.outcomeReason,
+    projectEventPath,
+    globalEventPath,
+    reportLine,
+    reportLineSuppressed: suppressed,
+    warnings: finalizedEvent.warnings,
   });
 }
 
@@ -3653,6 +3879,7 @@ function main() {
           case 'start':
             return usageStart(flags, fixmeRoot);
           case 'finish':
+            return usageFinish(flags, fixmeRoot);
           case 'report':
             return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'`);
           default:
