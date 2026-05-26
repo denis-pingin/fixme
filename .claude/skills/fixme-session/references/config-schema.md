@@ -1,12 +1,18 @@
-# FixMe Configuration Schema
+# Fixme Configuration Schema
 
 ## Storage
 
 - **File:** `<fixme-dir>/config.json`
-- **Scope:** Per-project (shared across all sessions)
-- **Writer:** `fixme-tools.cjs config ...` commands are the authoritative writer for workflow and config updates. `/fixme-config` must use the CLI instead of rewriting JSON directly so schema validation, migrations, and atomic writes stay centralized.
+- **Scope:** Per project, shared across all fixme sessions
+- **Writer:** `fixme-tools.cjs config ...` commands are the authoritative writer. `/fixme-config` must use those commands instead of rewriting JSON directly so migrations, validation, and atomic writes stay centralized.
 
-## Schema
+Resolve `<fixme-dir>` with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
+```
+
+## Current Shape
 
 ```json
 {
@@ -26,6 +32,13 @@
     "framework": "next.js"
   },
   "ticketBackend": "fixme-tickets-md",
+  "models": {
+    "profile": "quality",
+    "runtime": "claude",
+    "overrides": {
+      "fixme-execute-plan": "sonnet"
+    }
+  },
   "workflows": {
     "default": {
       "outerMaxCycles": 2,
@@ -47,126 +60,32 @@
           }
         }
       ]
-    },
-    "full": {
-      "outerMaxCycles": 2,
-      "phases": [
-        { "name": "investigate", "skills": ["fixme-investigate"] },
-        { "name": "research", "skills": ["fixme-research"] },
-        {
-          "name": "plan",
-          "skills": ["fixme-write-plan"],
-          "review": {
-            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-            "maxCycles": 3
-          }
-        },
-        {
-          "name": "implement",
-          "skills": ["fixme-execute-plan"],
-          "review": {
-            "skills": ["fixme-review-code", "fixme-handle-code-review"],
-            "maxCycles": 2
-          }
-        },
-        { "name": "verify", "skills": ["fixme-browser-verify"] }
-      ]
-    },
-    "quick": {
-      "outerMaxCycles": 2,
-      "phases": [
-        { "name": "plan", "skills": ["fixme-write-plan"] },
-        { "name": "implement", "skills": ["fixme-execute-plan"] }
-      ]
-    },
-    "product-spec": {
-      "outerMaxCycles": 2,
-      "phases": [
-        {
-          "name": "product-spec",
-          "skills": ["fixme-write-product-spec"],
-          "review": {
-            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-            "maxCycles": 3
+    }
+  },
+  "review": {
+    "softness": {
+      "default": "default",
+      "labels": {
+        "strict": 0.0,
+        "default": 0.3,
+        "lenient": 0.6,
+        "tactical": 0.85,
+        "panic": 1.0
+      },
+      "surfaces": {
+        "spec-review": "strict",
+        "plan-review": "lenient",
+        "code-review": "lenient",
+        "pr-comments": "lenient"
+      },
+      "workflows": {
+        "default": {
+          "default": "default",
+          "phases": {
+            "implement": "strict"
           }
         }
-      ]
-    },
-    "technical-spec": {
-      "outerMaxCycles": 2,
-      "phases": [
-        {
-          "name": "technical-spec",
-          "skills": ["fixme-write-technical-spec"],
-          "review": {
-            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-            "maxCycles": 3
-          }
-        }
-      ]
-    },
-    "plan": {
-      "outerMaxCycles": 2,
-      "phases": [
-        {
-          "name": "plan",
-          "skills": ["fixme-write-plan"],
-          "review": {
-            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-            "maxCycles": 3
-          }
-        }
-      ]
-    },
-    "execute": {
-      "outerMaxCycles": 2,
-      "phases": [
-        {
-          "name": "implement",
-          "skills": ["fixme-execute-plan"],
-          "review": {
-            "skills": ["fixme-review-code", "fixme-handle-code-review"],
-            "maxCycles": 2
-          }
-        }
-      ]
-    },
-    "idea-to-production": {
-      "outerMaxCycles": 2,
-      "phases": [
-        {
-          "name": "product-spec",
-          "skills": ["fixme-write-product-spec"],
-          "review": {
-            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-            "maxCycles": 3
-          }
-        },
-        {
-          "name": "technical-spec",
-          "skills": ["fixme-write-technical-spec"],
-          "review": {
-            "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-            "maxCycles": 3
-          }
-        },
-        {
-          "name": "plan",
-          "skills": ["fixme-write-plan"],
-          "review": {
-            "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-            "maxCycles": 3
-          }
-        },
-        {
-          "name": "implement",
-          "skills": ["fixme-execute-plan"],
-          "review": {
-            "skills": ["fixme-review-code", "fixme-handle-code-review"],
-            "maxCycles": 2
-          }
-        }
-      ]
+      }
     }
   },
   "linear": {
@@ -174,6 +93,15 @@
     "teamName": "Engineering",
     "defaultLabels": ["bug"],
     "defaultProject": "project-id-or-name"
+  },
+  "alerts": {
+    "enabled": true,
+    "sounds": {
+      "user_input": "Glass",
+      "task_finished": "Hero",
+      "task_failed": "Basso"
+    },
+    "players": {}
   },
   "ticketTemplate": {
     "default": "standard",
@@ -183,107 +111,142 @@
           { "heading": "Summary", "hint": "Brief description of the issue or feature" },
           { "heading": "Acceptance Criteria", "hint": "What done looks like" }
         ]
-      },
-      "bug": {
-        "sections": [
-          { "heading": "Bug Description", "hint": "What's happening" },
-          { "heading": "Steps to Reproduce", "hint": "Numbered steps" },
-          { "heading": "Expected Behavior", "hint": "What should happen" },
-          { "heading": "Actual Behavior", "hint": "What actually happens" }
-        ]
       }
     }
   }
 }
 ```
 
-## Workflow Object
+Every top-level field is optional unless noted below. Missing standard workflow, review softness, and alert defaults are backfilled by `config migrate` or any write through `config set` / `config workflow configure`.
+
+## Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config ensure
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<workflow-json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
+```
+
+`config ensure` and `config migrate` run the same migration path. They create a missing config file, move legacy `pipelines` and `workflowControls` into `workflows`, add missing standard workflows, add review softness defaults, add alert defaults, and preserve unknown custom fields.
+
+## Project Settings
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `project.devServer.url` | string or null | No | Dev server base URL used by session and browser verification flows. |
+| `project.devServer.command` | string or null | No | Shell command used to start the dev server. |
+| `project.devServer.hmr` | boolean | No | Whether the dev server supports hot module reload. |
+| `project.install` | string or null | No | Dependency install command used before verification baselines. |
+| `project.build` | string or null | No | Build command. |
+| `project.lint` | string or null | No | Lint command. |
+| `project.test` | string, object, or null | No | Test command or structured test config. |
+| `project.test.command` | string or null | No | Test command when using object form. |
+| `project.test.runner` | string or null | No | Test runner label, for example `vitest`, `jest`, `mocha`, or `node`. |
+| `project.framework` | string or null | No | Detected framework label. |
+
+`/fixme-config` updates this section through `context detect`, `context load`, and `context save`.
+
+## Workflows
 
 Each entry under `workflows` is one named workflow. The workflow object owns both the ordered phase list and the workflow-level loop limit.
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
+| --- | --- | --- | --- | --- |
 | `workflows.<workflowName>.phases` | array | Yes | - | Ordered list of phase objects for this workflow. |
-| `workflows.<workflowName>.outerMaxCycles` | number | No | `2` | Max cross-phase cycles for the selected workflow. This controls how many times a later phase, such as code review, can send work back to an earlier phase before escalating to the user. |
-
-## Workflow Phase Object
+| `workflows.<workflowName>.outerMaxCycles` | number | No | `2` | Max cross-phase cycles before escalation. This counts blocking plan-required loops, not implement-only repair loops. |
 
 Each phase in `workflows.<workflowName>.phases` has these fields:
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | string | Yes | - | Phase name. Becomes the ticket state when this phase is active. Must be unique within the workflow. |
-| `enabled` | boolean | No | `true` | When `false`, the phase is skipped by the executor and excluded from state machine derivation. Allows toggling phases without removing config. |
-| `skills` | string[] | Yes | - | Ordered list of skill names to execute for this phase. Run sequentially. |
-| `review` | object | No | - | Review loop configuration. When present and enabled, the phase has an internal review loop: execute skills, then run review chain, route on handler result (CLEAN/HAS_BLOCKING_FIX/HAS_NONBLOCKING_FINDINGS/HAS_ASK_USER). HAS_BLOCKING_FIX loops back to re-execute skills. HAS_NONBLOCKING_FINDINGS reports follow-up items and advances. HAS_ASK_USER triggers on both FIX_UNCLEAR (approach questions) and ASK_USER (validity questions). |
-| `review.enabled` | boolean | No | `true` | When `false`, review is skipped even if `review.skills` is configured. |
-| `review.skills` | string[] | Yes (if review) | - | Review skill chain. Run sequentially after phase skills complete. |
-| `review.maxCycles` | number | No | `3` | Max review loop iterations before escalating to user. |
+| --- | --- | --- | --- | --- |
+| `name` | string | Yes | - | Phase name. Becomes the ticket state while this phase is active. Must be unique within the workflow. |
+| `enabled` | boolean | No | `true` | When `false`, the phase is skipped and excluded from state-machine derivation. |
+| `skills` | string[] | Yes | - | Ordered skill names to execute for this phase. |
+| `review` | object | No | - | Review loop configuration for the phase. |
+| `review.enabled` | boolean | No | `true` | When `false`, review is skipped even if review skills are configured. |
+| `review.skills` | string[] | Yes if review is enabled | - | Ordered review and handler skill chain. |
+| `review.maxCycles` | number | No | `3`, or `2` for `implement` | Max internal review-loop iterations before escalation. |
 
-## State Machine Derivation
+Standard workflows are hardcoded in `fixme-tools.cjs`, `fixme-task`, and `fixme-config`: `default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`.
 
-The state machine is derived from the workflow phase list. Disabled phases (`"enabled": false`) are excluded. Given a workflow with enabled phases `[A, B, C]`:
+Legacy configs with `pipelines.<workflowName>` and `workflowControls.<workflowName>.outerMaxCycles` remain readable. `config migrate` converts them into `workflows.<workflowName>` and removes the legacy keys from the saved file.
 
-- **Structural states** (always exist): `queued`, `done`, `failed`, `skipped`
-- **Phase states**: `A`, `B`, `C` (from enabled phases in the workflow)
-
-**Valid transitions:**
-
-| From | Valid To |
-|------|----------|
-| `queued` | `A` (first phase), `skipped`, `failed` |
-| `A` | `B` (next phase), `failed` |
-| `B` | `C` (next phase), `A` (backward), `failed` |
-| `C` (last) | `done`, `A` (backward), `B` (backward), `failed` |
-| `done` | _(terminal)_ |
-| `failed` | _(terminal)_ |
-| `skipped` | _(terminal)_ |
-
-**Rules:**
-- Forward: each phase can transition to the next phase only (no skipping)
-- Backward: each phase can transition to any earlier phase (for retries)
-- Terminal: `failed` is always valid. `done` is only valid from the last phase. `skipped` is only valid from `queued`.
-- Backward transitions require `--reason` and increment `current_attempt`
-
-## Field Reference
+## Models
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `project` | object | No | Project settings. If absent, auto-detected via `/fixme-config` or `context detect`. |
-| `project.devServer.url` | string | No | Dev server base URL |
-| `project.devServer.command` | string | No | Shell command to start dev server |
-| `project.devServer.hmr` | boolean | No | Whether HMR is supported |
-| `project.install` | string | No | Dependency install command used before verification baselines |
-| `project.build` | string | No | Build command |
-| `project.lint` | string | No | Lint command |
-| `project.test` | string\|object | No | Test command (string) or test config object |
-| `project.test.command` | string | No | Test command (when using object form) |
-| `project.test.runner` | string | No | Test runner: `vitest`, `jest`, `mocha`, or null |
-| `project.framework` | string | No | Detected framework: `next.js`, `nuxt`, `angular`, `svelte`, `vue`, `react` |
-| `ticketBackend` | string | No | Ticket backend skill name. Default: `"fixme-tickets-md"` |
-| `workflows` | object | No | Named workflow definitions. Standard workflows provided if absent. |
-| `workflows.<workflowName>.phases` | array | No | Ordered phase objects for the workflow. |
-| `workflows.<workflowName>.outerMaxCycles` | number | No | Max cross-phase workflow cycles before escalation. Default: `2`. |
-| `linear` | object | No | Linear integration settings. Used by `fixme-ticket` skill. |
-| `linear.teamId` | string | No | Default Linear team ID. If set, skips team selection prompt. |
-| `linear.teamName` | string | No | Default Linear team name. Resolved to team ID via `list_teams` if `teamId` is not set. |
-| `linear.defaultLabels` | string[] | No | Label names applied to new tickets by default. Merged with user-detected labels (deduplicated, case-insensitive). User can override during metadata editing. |
-| `linear.defaultProject` | string | No | Default project ID or name for new tickets. Used only when user text does not explicitly mention a project. User can override during metadata editing. |
-| `ticketTemplate` | object | No | Ticket template configuration. Used by `fixme-ticket` skill. |
-| `ticketTemplate.default` | string | No | Name of the default template (must match a key in `ticketTemplate.templates`). |
-| `ticketTemplate.templates` | object | No | Named template definitions. Each key is a template name, value is a template object. |
-| `ticketTemplate.templates.<name>.sections` | array | Yes (if template) | Ordered list of section objects defining the template structure. |
+| --- | --- | --- | --- |
+| `models.profile` | string | No | One of `quality`, `balanced`, `budget`, or `inherit`. Missing means `quality`; `inherit` omits model and reasoning controls. |
+| `models.runtime` | string | No | Optional CLI default runtime, `claude` or `codex`. Missing means `claude`. |
+| `models.overrides.<agent>` | string | No | Claude-only per-agent override, one of `opus`, `sonnet`, `haiku`, or `inherit`. |
+
+Resolve effective settings with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> [--runtime claude|codex]
+```
+
+Claude dispatch uses short model tags plus agent-specific reasoning effort. Codex dispatch omits model names and passes only the resolved reasoning effort so the user-selected Codex model remains in force.
+
+## Review Softness
+
+Review softness controls how aggressively reviewers and handlers treat marginal findings.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `review.softness.default` | label or float | No | Global fallback. |
+| `review.softness.labels.<label>` | float | No | Label-to-float mapping. Supported built-in labels are `strict`, `default`, `lenient`, `tactical`, and `panic`. |
+| `review.softness.surfaces.<surface>` | label or float | No | Surface default for `spec-review`, `plan-review`, `code-review`, or `pr-comments`. |
+| `review.softness.workflows.<workflow>.default` | label or float | No | Workflow-level override. |
+| `review.softness.workflows.<workflow>.phases.<phase>` | label or float | No | Phase-level override. |
+
+Resolution priority is phase, workflow, surface, global, then builtin default.
+
+## Tickets And Linear
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ticketBackend` | string | No | Ticket backend skill name. Supported values: `fixme-tickets-md`, `fixme-tickets-linear`. Missing means `fixme-tickets-md`. |
+| `linear.teamId` | string or null | No | Linear team ID used by `/fixme-ticket` and the Linear backend. |
+| `linear.teamName` | string or null | No | Human-readable Linear team name. |
+| `linear.defaultLabels` | string[] | No | Optional labels applied to new Linear tickets. Supported by the config schema, but not configured by `/fixme-config`. |
+| `linear.defaultProject` | string or null | No | Optional default Linear project. Supported by the config schema, but not configured by `/fixme-config`. |
+
+`/fixme-config` always attempts Linear team discovery because `/fixme-ticket` uses `linear.teamId` and `linear.teamName` even when `ticketBackend` remains `fixme-tickets-md`. If Linear MCP is unavailable and the backend is markdown, the Linear round is skipped with a warning and existing Linear settings are preserved. If the backend is Linear, missing Linear MCP is a hard stop.
+
+## Alerts
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `alerts.enabled` | boolean | No | Enables or silences all audible alerts. Defaults to `true`. |
+| `alerts.sounds.user_input` | string | No | Sound played before user-input decision gates. Defaults to `Glass` on macOS-compatible catalogs. |
+| `alerts.sounds.task_finished` | string | No | Sound played when a task finishes. Defaults to `Hero`. |
+| `alerts.sounds.task_failed` | string | No | Sound played when a task fails. Defaults to `Basso`. |
+| `alerts.players` | object | No | Optional platform player overrides. |
+
+List platform sounds with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert --list-sounds
+```
+
+## Ticket Templates
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ticketTemplate.default` | string | No | Name of the default template. |
+| `ticketTemplate.templates` | object | No | Named template definitions. |
+| `ticketTemplate.templates.<name>.sections` | array | Yes if template is defined | Ordered section objects. |
 | `ticketTemplate.templates.<name>.sections[].heading` | string | Yes | Section heading text. |
 | `ticketTemplate.templates.<name>.sections[].hint` | string | Yes | Placeholder hint shown when section content is empty. |
 
-## Defaults
+## State Machine Derivation
 
-If `config.json` doesn't exist or `workflows` is absent, fixme-task uses the `"default"` workflow hardcoded in the skill.
+Ticket states are derived from the selected workflow's enabled phases plus structural states:
 
-If `workflows.<workflowName>.outerMaxCycles` is absent, fixme-task uses `outerMaxCycles: 2` for that workflow.
+- Structural states: `queued`, `done`, `failed`, `skipped`
+- Phase states: each enabled phase name in workflow order
 
-Standard workflows (`default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, and `idea-to-production`) are also hardcoded in `fixme-task`. Projects may override them in config.
-
-Legacy config files with `pipelines.<workflowName>` and `workflowControls.<workflowName>.outerMaxCycles` are readable for backward compatibility. `fixme-tools.cjs config migrate` converts them into `workflows.<workflowName>` and removes the legacy keys from the saved config.
-
-If `project` is absent, run `/fixme-config` to auto-detect and configure project settings.
+Forward transitions advance one phase at a time. Backward transitions may go to any earlier phase, require `--reason`, and increment `current_attempt`. `done`, `failed`, and `skipped` are terminal.

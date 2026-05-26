@@ -1,115 +1,123 @@
 # Fixme State Machine Reference
 
-This document is the single source of truth for ticket state transitions. The `fixme-tools.cjs ticket transition` command enforces these rules.
+This document describes the transition rules enforced by:
 
-## State Model
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]
+```
 
-The state machine is **derived from the pipeline configuration**. There are no hardcoded phase states. States come from two sources:
+## State Sources
 
-### Structural States (always exist)
+The markdown backend supports workflow-derived states and a legacy fallback.
+
+### Workflow-Derived States
+
+When a transition includes `--pipeline <name>` or the ticket frontmatter already has `pipeline: <name>`, `fixme-tools.cjs` loads the named workflow from `<fixme-dir>/config.json`.
+
+Resolution order:
+
+1. `workflows.<name>.phases`
+2. Legacy `pipelines.<name>` read support
+3. No workflow found, fall back to the legacy transition matrix
+
+Enabled phase names become valid states. Phases with `"enabled": false` are skipped.
+
+Standard workflow examples:
+
+| Workflow | Phase States |
+| --- | --- |
+| `default` | `plan`, `implement` |
+| `full` | `investigate`, `research`, `plan`, `implement`, `verify` |
+| `quick` | `plan`, `implement` |
+| `product-spec` | `product-spec` |
+| `technical-spec` | `technical-spec` |
+| `execute` | `implement` |
+| `idea-to-production` | `product-spec`, `technical-spec`, `plan`, `implement` |
+
+### Structural States
+
+These states are always present:
 
 | State | Description | Terminal? |
-|-------|-------------|-----------|
-| `queued` | Ticket created, waiting to be picked up | No |
+| --- | --- | --- |
+| `queued` | Ticket created and waiting for work | No |
 | `done` | Work completed successfully | Yes |
-| `failed` | Work could not be completed. Reason in `failure_reason`. | Yes |
-| `skipped` | Ticket skipped. Reason in `failure_reason`. | Yes |
+| `failed` | Work could not be completed. Reason is stored in `failure_reason`. | Yes |
+| `skipped` | Ticket intentionally skipped. Reason is stored in `failure_reason`. | Yes |
 
-### Phase States (from pipeline config)
+### Legacy Fallback States
 
-Each enabled phase in the pipeline definition becomes a valid ticket state. Phases with `"enabled": false` are excluded. For example, the `"full"` pipeline defines phases `[investigate, research, plan, implement, verify]`, so valid phase states are `investigate`, `research`, `plan`, `implement`, `verify`.
+If no workflow can be resolved, the backend uses this historical state chain:
 
-Different pipelines have different phase states:
-- `"default"`: `plan`, `implement`
-- `"full"`: `investigate`, `research`, `plan`, `implement`, `verify`
-- `"quick"`: `plan`, `implement`
+```text
+queued -> investigating -> researching -> planning -> implementing -> verifying -> done
+```
 
-## Transition Rules
+Legacy fallback exists for old tickets and session flows that have not stored `pipeline` yet.
 
-Given a pipeline with enabled phases `[P0, P1, P2, ..., PN]` (phases with `enabled: false` are excluded):
+## Workflow Transition Rules
+
+Given enabled workflow phases `[P0, P1, P2, ..., PN]`:
 
 | From | Valid To States | Notes |
-|------|-----------------|-------|
-| `queued` | `P0`, `skipped`, `failed` | Can only enter at first phase |
-| `Pi` (not last) | `P(i+1)`, any `Pj` where j < i, `failed` | Forward one step, backward any |
-| `PN` (last) | `done`, any `Pj` where j < N, `failed` | Last phase can complete ticket |
-| `done` | _(terminal)_ | |
-| `failed` | _(terminal)_ | |
-| `skipped` | _(terminal)_ | |
+| --- | --- | --- |
+| `queued` | `P0`, `skipped`, `failed` | Can enter only the first enabled phase. |
+| `Pi` before last | `P(i+1)`, any earlier phase, `failed` | Forward one step or retry backward. |
+| `PN` last phase | `done`, any earlier phase, `failed` | Last phase may complete the ticket. |
+| `done` | none | Terminal. |
+| `failed` | none | Terminal. |
+| `skipped` | none | Terminal. |
 
-**Key rules:**
-- **No forward skipping.** `queued -> P2` is invalid if P0 and P1 exist. Must go through enabled phases in order.
-- **Backward transitions allowed.** Any phase can return to any earlier phase (for retries). Backward transitions require `--reason` and increment `current_attempt`.
-- **`skipped` only from `queued`.** Mid-work abandonment uses `failed` with a descriptive reason.
-- **Review cycles don't change state.** Plan review loops stay in the current phase. The ticket state doesn't change during internal review iterations.
+Rules:
 
-## Pipeline Resolution
+- Forward skipping is invalid.
+- Backward transitions are allowed to any earlier phase.
+- Backward transitions require `--reason` and increment `current_attempt`.
+- `failed` always requires `--reason`.
+- `skipped` requires `--reason`.
+- `done` does not require a reason.
 
-When `ticket transition` is called, it resolves the valid transitions in this order:
+## Legacy Transition Rules
 
-1. **`--pipeline` flag** on the command: loads the named pipeline from `<fixme-dir>/config.json`, stores the name in ticket frontmatter
-2. **`pipeline` field in ticket frontmatter**: loads that pipeline from config
-3. **Hardcoded fallback**: uses the legacy transition matrix (backwards compatible with tickets created before this change)
+When no workflow is resolved, valid transitions are:
 
-## Example: Default Pipeline
+| From | Valid To |
+| --- | --- |
+| `queued` | `investigating`, `skipped`, `failed` |
+| `investigating` | `researching`, `skipped`, `failed` |
+| `researching` | `planning`, `failed` |
+| `planning` | `implementing`, `failed` |
+| `implementing` | `verifying`, `failed` |
+| `verifying` | `done`, `planning`, `failed` |
 
-Pipeline: `[plan, implement]`
+In legacy mode, `verifying -> planning` is the only backward retry transition. It requires `--reason` and increments `current_attempt`.
 
-```
-queued -> plan -> implement -> done
-  |        |        |
-  +-> skip +-> fail +-> plan (backward retry)
-  +-> fail          +-> fail
-```
+## Pipeline Storage
 
-## Example: Full Pipeline
+When `ticket transition` receives `--pipeline <name>` and the ticket has no `pipeline` value, the command stores that pipeline name in ticket frontmatter. Later transitions can omit `--pipeline` and will reuse the stored workflow.
 
-Pipeline: `[investigate, research, plan, implement, verify]`
-
-```
-queued -> investigate -> research -> plan -> implement -> verify -> done
-  |           |            |          |          |           |
-  +-> skip    +-> fail     +-> fail   +-> fail   +-> fail    +-> plan (retry)
-  +-> fail                 +-> inv.   +-> inv.   +-> inv.    +-> inv. (retry)
-                                      +-> res.   +-> res.    +-> res. (retry)
-                                                 +-> plan    +-> impl. (retry)
-                                                             +-> fail
-```
-
-## State Transition Ownership
-
-| Transition | Owner |
-|------------|-------|
-| `queued -> <first phase>` | fixme-task (at pipeline start) |
-| `<phase> -> <next phase>` | fixme-task (at phase boundary) |
-| `<phase> -> <earlier phase>` | fixme-task (on review retry) |
-| `<last phase> -> done` | fixme-session (after commit) |
-| `[any non-terminal] -> failed` | fixme-session (cleanup) |
-| `queued -> skipped` | fixme-session (user decision) |
-| `queued -> failed` | fixme-session (crash cleanup) |
-
-**Pattern:** fixme-task owns all phase transitions (forward and backward) during pipeline execution. fixme-session owns terminal transitions (`done`, `failed`, `skipped`) because they require cleanup (git commit/revert).
-
-## Reason Requirements
-
-| Transition Type | Reason Required? |
-|-----------------|-----------------|
-| Forward (next phase) | No |
-| Backward (earlier phase) | **Yes** |
-| To `failed` | **Yes** |
-| To `skipped` | **Yes** |
-| To `done` | No |
+The flag is still named `--pipeline` for backward compatibility, even though the current config object is named `workflows`.
 
 ## Retry Semantics
 
-- **Trigger:** Any backward transition (e.g., `implement -> plan`)
-- **Behavior:** Increments `current_attempt` by 1
-- **Bound:** `current_attempt` must be less than `max_attempts` (default 3). If at limit, backward transition is denied - ticket must be transitioned to `failed`.
-- **Reason:** Required. Should describe what failed (e.g., "Code review found issues: missing error handling")
+| Field | Meaning |
+| --- | --- |
+| `current_attempt` | Incremented on backward transitions. Defaults to `0`. |
+| `max_attempts` | Maximum allowed attempts. Defaults to `3`. |
 
-## Transition Log Format
+If a backward transition would exceed `max_attempts`, `ticket transition` rejects it and the ticket must move to `failed` or wait for user intervention.
 
-Every state change is recorded in the `transitions` array in frontmatter (unchanged from before):
+## Duration Tracking
+
+Every transition updates `durations.<state>`:
+
+- `entered` is set when a state begins.
+- `exited` and `seconds` are set when a state ends.
+- `prior_seconds` preserves accumulated time for states visited more than once.
+
+## Transition Log
+
+Every transition appends an entry to `transitions[]`:
 
 ```yaml
 transitions:
@@ -117,24 +125,27 @@ transitions:
     to: plan
     timestamp: "2026-03-19T14:35:00Z"
     reason: null
-  - from: plan
-    to: implement
-    timestamp: "2026-03-19T14:45:00Z"
-    reason: null
+  - from: implement
+    to: plan
+    timestamp: "2026-03-19T15:02:00Z"
+    reason: "Code review found a plan-level issue"
 ```
 
-## Duration Tracking
+## Ownership
 
-Same as before. The `durations` object tracks `entered`, `exited`, `seconds`, and `prior_seconds` (for phases revisited on retry). fixme-tools.cjs handles this automatically.
-
-## Terminal States
-
-`done`, `failed`, and `skipped` are terminal. No transitions out. If a "done" ticket regresses, create a new ticket.
+| Transition | Owner |
+| --- | --- |
+| `queued -> <first workflow phase>` | `fixme-task` when running with `--ticket`; session pre-investigation may use legacy fallback before pipeline storage. |
+| `<phase> -> <next phase>` | `fixme-task` at phase boundaries. |
+| `<phase> -> <earlier phase>` | `fixme-task` after handler routing requires a retry. |
+| `<last phase> -> done` | `fixme-session` for session tickets; standalone `fixme-task` reports completion without session cleanup. |
+| `[any non-terminal] -> failed` | `fixme-session` for cleanup or `fixme-task` for workflow failure reporting through the backend. |
+| `queued -> skipped` | `fixme-session`. |
 
 ## Enforcement
 
-1. Hard errors on invalid transitions
-2. fixme-tools.cjs is the ONLY way to change state
-3. Reason enforcement on backward and terminal transitions
-4. Max attempts enforcement on backward transitions
-5. Terminal state enforcement
+1. Invalid transitions return a JSON error and exit non-zero.
+2. Terminal states have no outgoing transitions.
+3. Backward and terminal failure/skip transitions enforce reasons.
+4. Retry limits are enforced before the transition is written.
+5. Ticket frontmatter is rewritten atomically through `fixme-tools.cjs`; callers should not hand-edit state.

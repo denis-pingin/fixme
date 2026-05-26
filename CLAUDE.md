@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Fixme is a suite of Claude Code skills for automated bug fixing and task execution. It has two main systems:
+Fixme is a suite of Claude Code skills, Codex-adapted skill copies, and matching agent definitions for automated bug fixing and task execution. It has two main systems:
 
 1. **fixme-session** - A long-lived bug fix session orchestrator. Accepts bug reports, creates tickets, and dispatches fixme-task in the background per ticket. Stays responsive for intake and status queries while tasks execute.
 
-2. **fixme-task** - A config-driven workflow executor. Reads workflow definitions from `.fixme/config.json`, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries.
+2. **fixme-task** - A config-driven workflow executor. Reads workflow definitions from `.fixme/config.json`, falls back to standard workflows or legacy `pipelines`, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries.
 
 ## Commands
 
@@ -33,11 +33,11 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 ### Configuring fixme
 
 ```bash
-# Interactive setup of workflows, workflow skills, loop controls, models, project commands, and Linear backend
+# Interactive setup of workflows, workflow skills, loop controls, models, review softness, project commands, ticket backend, Linear metadata, and alerts
 /fixme-config
 ```
 
-Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. The Linear configuration round runs only when the user selects the Linear backend and requires Linear MCP to be available.
+Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. Linear team discovery is used by `/fixme-ticket` and the Linear ticket backend; when the selected backend is markdown and Linear MCP is unavailable, `/fixme-config` warns, skips only that Linear round, and preserves existing Linear settings. Audible alerts are configured under `alerts.{enabled,sounds,players}`.
 
 ### fixme-tools.cjs CLI
 
@@ -61,10 +61,17 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context load
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context save --data '<json>'
 
 # Config management
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config ensure
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
+
+# Runtime and alerts
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> [--runtime claude|codex]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert <user_input|task_finished|task_failed>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert --list-sounds
 
 # Codex skill and agent installation
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
@@ -83,6 +90,11 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
     references/             # config-schema.md
     docs/                   # data-flow.md
   fixme-task/               # Config-driven workflow executor
+  fixme-alert/              # Audible alerts for user_input, task_finished, and task_failed events
+  fixme-howto-code-comments/ # Shared source-code comment rules
+  fixme-howto-code-map/     # Shared task code map contract
+  fixme-howto-find-fixme-dir/ # Shared <fixme-dir> resolution rule
+  fixme-howto-present-decisions/ # Shared decision presentation format
   fixme-howto-write-product-spec/   # Shared product specification writing rubric
   fixme-howto-write-technical-spec/ # Shared technical specification writing rubric
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use

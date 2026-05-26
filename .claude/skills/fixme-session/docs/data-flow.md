@@ -1,406 +1,156 @@
-# Fixme Skill -- Data Flow Map
+# Fixme Skill Data Flow Map
 
-Complete map of inputs, outputs, shared state, and data flow between all agents.
+This document maps the current session-mode data flow: bug intake, optional browser investigation, background `fixme-task` execution, ticket state, and files shared between agents.
 
 ## Agent Topology
 
 ```
-                                    User
-                                      |
-                                      v
-                               +-----------+
-                               | SKILL.md  |  (Orchestrator)
-                               +-----------+
-                                /    |     \
-                               v     v      v
-                          Intake  Invest.  Fix-Agent
-                                           /   |   \   \
-                                          v    v    v    v
-                                      Resrch Plan Impl Verify
+User
+  |
+  v
+fixme-session
+  |-- fixme-tickets ------------------------> configured ticket backend
+  |                                             default: fixme-tickets-md
+  |
+  |-- intake-agent -------------------------> fills ticket report fields
+  |
+  |-- fixme-investigate --------------------> writes investigation output
+  |
+  `-- fixme-task (background) --------------> dispatches workflow phases
+         |-- fixme-write-product-spec
+         |-- fixme-write-technical-spec
+         |-- fixme-write-plan
+         |-- fixme-execute-plan
+         |-- fixme-review-*
+         |-- fixme-handle-*
+         `-- fixme-browser-verify
 ```
 
-**Dispatch chain:** SKILL.md dispatches 3 top-level agents. Fix-Agent is itself a coordinator that dispatches 4 sub-agents sequentially. All dispatch uses `Task` tool with `subagent_type: "general-purpose"`.
+`fixme-session` is a dispatcher. It owns session lifecycle, intake, browser setup, background-task tracking, and terminal ticket cleanup. `fixme-task` owns workflow phase dispatch and review-loop routing while a task is active.
 
----
+## State Model
 
-## Shared State (Files on Disk)
+Ticket state is stored in ticket frontmatter and changed through `fixme-tickets`, which routes to the configured backend.
 
-All inter-agent communication goes through files. No agent passes data to another via in-memory state.
+There are two supported state shapes:
 
-### 1. Ticket File (`<session-dir>/NNNN-slug/ticket.md`)
+- **Workflow-derived states:** when a ticket has a stored `pipeline` value or a transition uses `--pipeline`, enabled workflow phase names become ticket states. Standard `full` uses `investigate`, `research`, `plan`, `implement`, and `verify`.
+- **Legacy fallback states:** when no pipeline is known yet, the markdown backend still supports the historical state chain `investigating -> researching -> planning -> implementing -> verifying`. This preserves old tickets and session pre-investigation behavior.
 
-The central shared artifact. Every agent reads it; several write to specific sections.
+Structural states always exist: `queued`, `done`, `failed`, and `skipped`.
 
-| Section / Field | Written By | Read By |
-|-----------------|-----------|---------|
-| **Frontmatter: `state`** | `fixme-tools.cjs ticket transition` (called by each agent at Phase 0, and SKILL.md for terminal states) | SKILL.md (after every agent return), Fix-Agent (after sub-agent returns) |
-| **Frontmatter: `number`, `slug`** | `fixme-tools.cjs ticket create` + Intake (rename) | All agents (for logging, file naming) |
-| **Frontmatter: `base_commit`** | Fix-Agent (Step 2, before dispatching researcher) | SKILL.md (on fix failure, for git revert) |
-| **Frontmatter: `files_changed`** | Fix-Agent (after implementer returns, Step 4b) | SKILL.md (for `git add` on commit) |
-| **Frontmatter: `commit_hash`** | SKILL.md (after git commit) | -- |
-| **Frontmatter: `failure_reason`** | `fixme-tools.cjs ticket transition` (on `--reason` flag) | SKILL.md (for user reporting) |
-| **Frontmatter: `current_attempt`** | `fixme-tools.cjs` (auto-incremented on `verifying -> planning` retry) | Fix-Agent (loop control), Fix-Planner (attempt number) |
-| **Frontmatter: `max_attempts`** | Template default (3) | Fix-Agent (loop bound), Investigation-Agent (repro retry limit) |
-| **Frontmatter: `max_timeout_minutes`** | Template default (30) | Fix-Agent (timeout check before each dispatch) |
-| **Frontmatter: `transitions[]`** | `fixme-tools.cjs` (appended on every transition) | -- (audit trail) |
-| **Frontmatter: `durations{}`** | `fixme-tools.cjs` (computed on state exit) | Session summary command |
-| **`<!-- section: original-report -->`** | Intake Agent (Step 2) | Investigation Agent (Phase 1) |
-| **`<!-- section: structured-fields -->`** | Intake Agent (Step 4) | Investigation Agent (Phase 1), fixme-browser-verify |
-| **`<!-- section: investigation -->`** | Investigation Agent (Phase 5, append-only) | Fix-Researcher (Phase 1), Fix-Planner (Phase 1 on retry), fixme-browser-verify |
-| **`<!-- section: fix -->`** | Fix-Agent (status bullets after each sub-agent) | Fix-Planner (Phase 1 on retry -- prior attempt history) |
+## Shared State
 
-**Key pattern:** SKILL.md and Fix-Agent NEVER read ticket body sections. They only interact with frontmatter via `fixme-tools.cjs` commands. Sub-agents read the body sections they need.
+### Ticket File
 
-### 2. Session File (`<session-dir>/session.md`)
+Path: `<session-dir>/NNNN-slug/ticket.md`
 
-| Field | Written By | Read By |
-|-------|-----------|---------|
-| `status` (active/completed) | `fixme-tools.cjs session create` / session close | SKILL.md (resume flow) |
-| `active_intakes[]` | SKILL.md (add on intake dispatch, remove on intake return) | SKILL.md (auto-close check, resume flow) |
-| `tickets_done/failed/skipped/total` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
-| `duration_seconds` | `fixme-tools.cjs session summary` | SKILL.md (summary display) |
+| Field or Section | Written By | Read By | Purpose |
+| --- | --- | --- | --- |
+| `state` | `fixme-tools.cjs ticket transition` via `fixme-tickets` | `fixme-session`, `fixme-task`, ticket backend | Current workflow or terminal state. |
+| `pipeline` | First transition with `--pipeline` | `fixme-tools.cjs ticket transition`, `fixme-task` | Selects workflow-derived transition rules. |
+| `number`, `slug`, `session` | `ticket create` and intake rename | All session components | Stable ticket identity. |
+| `base_commit` | Session/task cleanup flow when a baseline is captured | `fixme-session` | Revert or recovery anchor. |
+| `files_changed` | Execution or completion flow when changed files are known | `fixme-session` | Commit staging scope. |
+| `commit_hash` | `fixme-session` after commit | Status/report flows | Links ticket to committed work. |
+| `failure_reason` | `ticket transition --reason` | Status/report flows | User-facing terminal failure or skip reason. |
+| `current_attempt`, `max_attempts` | Ticket template and transition logic | `fixme-tools.cjs`, `fixme-task` | Retry accounting for backward transitions. |
+| `transitions[]`, `durations{}` | `fixme-tools.cjs ticket transition` | Session summary and audit flows | Transition history and time-in-state data. |
+| `original-report` section | `intake-agent` | `fixme-investigate`, downstream workflow agents | Verbatim user report. |
+| `structured-fields` section | `intake-agent` | `fixme-investigate`, browser verification | Affected URL, component, expected/actual behavior, errors. |
+| `clarifications` section | `fixme-session` / intake flow | Investigation and task context | Follow-up user details. |
+| `investigation` section | Session investigation flow if it writes back to the ticket | `fixme-task`, review context | Human-readable investigation notes. |
+| `fix` section | Session completion/status flow | Status/report flows | Progress notes for the ticket. |
 
-### 3. Project Config (`<fixme-dir>/config.json` `project` section)
+### Session File
 
-| Field | Written By | Read By |
-|-------|-----------|---------|
-| `project.devServer.url` | `context detect` + user confirmation | SKILL.md (browser setup, passed to agents), Investigation Agent, fixme-browser-verify |
-| `project.devServer.command` | `context detect` + user confirmation | SKILL.md (server start) |
-| `project.install` | `context detect` + user confirmation | fixme-rebase, verification baseline setup |
-| `project.build` | `context detect` + user confirmation | fixme-execute-plan |
-| `project.lint` | `context detect` + user confirmation | fixme-execute-plan |
-| `project.test` | `context detect` + user confirmation | fixme-execute-plan |
-| `project.framework`, `project.devServer.hmr` | `context detect` + user confirmation | Investigation Agent (context) |
+Path: `<session-dir>/session.md`
 
-**Lifecycle:** Written once on first session start (with user confirmation). Read silently on subsequent starts. Never modified without user approval.
+| Field | Written By | Read By | Purpose |
+| --- | --- | --- | --- |
+| `status` | Session create/stop/auto-close | `fixme-session` | Active or completed session lifecycle. |
+| `active_intakes[]` | `fixme-session` | `fixme-session` | Intake agents still in flight across context compaction. |
+| `active_task` | `fixme-session` | `fixme-session` | The one background `fixme-task` currently running. Added when needed even though it is not in the template. |
+| `tickets_done`, `tickets_failed`, `tickets_skipped`, `tickets_total` | `session summary` | Status/report flows | Session-level ticket counts. |
+| `duration_seconds` | `session summary` | Status/report flows | Session duration. |
 
-### 4. Research File (`<ticket-folder>/research/NNNN-research.md`)
+### Project Config
 
-| Written By | Read By |
-|-----------|---------|
-| Fix-Researcher (Phase 5, written as last step) | Fix-Planner (Phase 1) |
+Path: `<fixme-dir>/config.json`
 
-Single-write, single-reader. NOT rewritten on retry -- same research is reused across all attempts.
+| Field | Written By | Read By | Purpose |
+| --- | --- | --- | --- |
+| `project` | `/fixme-config` or `context save` | Session setup, execution, verification | Dev server and verification commands. |
+| `ticketBackend` | `/fixme-config` | `fixme-tickets` | Backend routing. |
+| `workflows` | `/fixme-config` or config CLI | `fixme-task`, ticket transition logic | Named phase graphs and review loops. |
+| `models` | `/fixme-config` or config CLI | `resolve-model`, dispatchers | Runtime profile and overrides. |
+| `review.softness` | `/fixme-config` or config CLI | Review handlers and PR comment flows | Finding strictness by surface/workflow/phase. |
+| `linear` | `/fixme-config` | `/fixme-ticket`, Linear backend | Linear team metadata and optional defaults. |
+| `alerts` | `/fixme-config` | Orchestrators and interactive skills | Audible alert preferences. |
 
-### 5. Plan File (`<ticket-folder>/plans/NNNN-plan-N.md`)
+## Artifact Locations
 
-| Written By | Read By |
-|-----------|---------|
-| Fix-Planner (Phase 4, one per attempt) | Fix-Implementer (Phase 1), fixme-execute-plan |
+| Artifact | Written By | Read By | Notes |
+| --- | --- | --- | --- |
+| `<ticket-folder>/assets/` | Intake, investigation, browser verification | Investigation and verification flows | Screenshots and other evidence. |
+| `<ticket-folder>/research/` | `fixme-investigate` in session mode | `fixme-task`, planners, reviewers | Root-cause or reproduction reports. |
+| `<ticket-folder>/verifications/` | Browser verification flow | Session completion/status | Verification evidence for session tickets. |
+| `<fixme-dir>/specs/product/*.md` | `fixme-write-product-spec` | Spec review, technical spec, planning | Product behavior documents. |
+| `<fixme-dir>/specs/technical/*.md` | `fixme-write-technical-spec` | Spec review, planning | Implementation contract documents. |
+| `<fixme-dir>/plans/*.md` | `fixme-write-plan` | Plan review, execution, code review | Implementation plans. |
+| `<fixme-dir>/context/*-code-map.md` | `fixme-write-plan` | Executors and reviewers | Verified codebase context for a specific task. |
+| `<fixme-dir>/decisions.md` | `fixme-task` decision handling | Review handlers and later phases | Persisted user decisions across loops. |
 
-One file per attempt. On retry, a new plan file is created (e.g., `0003-plan-2.md`). Old plans remain as history.
+## Session Flow
 
-### 6. Screenshots / Assets (`<ticket-folder>/assets/`)
+1. `fixme-session` resolves `<fixme-dir>` with `fixme-tools.cjs root`.
+2. `fixme-session` uses `fixme-tickets` for session and ticket operations. It never hardcodes a backend path.
+3. `ticket create` creates the ticket folder, ticket frontmatter, and `assets/`, `research/`, `plans/`, and `verifications/` directories.
+4. `intake-agent` fills the original report and structured fields, then returns the ticket to the queued pool.
+5. `fixme-session` loads project config and prepares the browser when a dev server is configured.
+6. For bug-fix sessions, `fixme-session` may run a synchronous investigation before background task dispatch. Investigation output is written under the ticket folder and can also be appended to the ticket.
+7. `fixme-session` records `active_task` and dispatches `fixme-task` in the background with `--ticket <ticket.md>` and the selected pipeline name.
+8. `fixme-task` resolves the workflow, builds a dispatch manifest, transitions ticket phase state at boundaries, dispatches each phase skill, runs review loops, and writes artifact paths into its own context.
+9. On background task completion, `fixme-session` clears `active_task`, inspects ticket state and task output, runs terminal cleanup, and transitions the ticket to `done`, `failed`, or `skipped`.
 
-| File Pattern | Written By | Read By |
-|-------------|-----------|---------|
-| `repro-*.png` | Investigation Agent (Phase 2) | fixme-browser-verify (comparison reference) |
-| `fix-check-*.png` | Fix-Implementer (Phase 4, optional) | -- (debug aid) |
-| `verify-*.png` | fixme-browser-verify (Phase 5c) | -- (evidence) |
-| User screenshots | Intake Agent (copied from user paths) | Investigation Agent (Phase 1) |
+## Workflow Phase Flow
 
----
+Inside `fixme-task`, data moves by artifact path, not in-memory assumptions:
 
-## Agent-by-Agent I/O
+| Producer | Output Marker or File | Consumer |
+| --- | --- | --- |
+| `fixme-write-product-spec` | `SPEC_PATH: <absolute path>` | `fixme-review-spec`, `fixme-write-technical-spec` |
+| `fixme-write-technical-spec` | `SPEC_PATH: <absolute path>` | `fixme-review-spec`, `fixme-write-plan` |
+| `fixme-write-plan` | `PLAN_PATH: <absolute path>` | `fixme-review-plan`, `fixme-execute-plan`, `fixme-review-code` |
+| `fixme-write-plan` | `CODE_MAP_PATH: <absolute path>` | `fixme-execute-plan`, reviewers, handlers |
+| `fixme-execute-plan` | Execution report and changed files | `fixme-review-code`, completion flow |
+| `fixme-review-*` | Findings report | Matching `fixme-handle-*` |
+| `fixme-handle-*` | `HANDLER_RESULT: ...` plus route scopes | `fixme-task` routing logic |
+| `fixme-browser-verify` | Verification report and screenshots | `fixme-session` or final run summary |
 
-### Intake Agent
+If a required artifact marker is missing, `fixme-task` re-dispatches the producer once to emit the missing path. It must not guess from the newest file in a directory.
 
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Ticket file (edited):
-  - Ticket file path              - original-report section filled
-  - Verbatim bug description      - structured-fields section filled
-  - Assets directory path         - Renamed with descriptive slug
-                                  - Screenshots copied to assets/
-Reads from disk:
-  - Ticket file (template)      Return value:
-  - Codebase (5 Glob/Grep max)   "Queued #NNNN: <Title>"
-```
+## Backend Boundary
 
-**State transitions owned:** None (ticket stays `queued`).
+`fixme-tickets` is the only abstraction `fixme-session` and `fixme-task` use for ticket operations.
 
-### Investigation Agent
+| Operation Family | Markdown Backend Command |
+| --- | --- |
+| Ticket create/list/next/rename/summary/transition | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket ...` |
+| Session create/list/summary | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session ...` |
+| Project context detect/load/save | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context ...` |
 
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Ticket file (appended):
-  - Ticket file path              - investigation section (### Attempt N)
-  - Project config path             - Reproduction steps
-  - Asset directory path             - Reproduction evidence
-  - Dev server URL                   - Affected files + code snippets
-                                     - Root cause hypothesis
-Reads from disk:
-  - Ticket file (report +        Assets:
-    structured fields +             - repro-*.png screenshots
-    prior attempts if retry)
-  - <fixme-dir>/config.json            Return value:
-  - Codebase (Grep/Glob/Read)      "Investigated #NNNN: ..."
-  - Browser (snapshot/console/      or "BLOCKER #NNNN: ..."
-    network via playwright-cli)
-```
+The Linear backend has its own skill boundary. Session and task orchestrators should not reach around `fixme-tickets` to call a concrete backend directly.
 
-**State transitions owned:** `queued -> investigating`
+## Refresh Points
 
-### Fix-Agent (Coordinator)
+State is re-read from disk after every agent return and before every routing decision:
 
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Ticket file (edited):
-  - Ticket folder path            - base_commit frontmatter
-  - Project config path           - files_changed frontmatter
-                                  - fix section (status bullets
-Reads from disk:                    per sub-agent with durations
-  - Ticket frontmatter (via         and work summaries)
-    fixme-tools.cjs)
-  - Research file (existence      Return value:
-    check via Glob)                 { status, ticket_path,
-  - Plan file (existence             commit_hash, attempts,
-    check via Glob)                  duration, summary }
-  - Verification report
-    (existence check + verdict)
-  - git diff --name-only
-    (for files_changed)
-```
+| Reader | When | Reads | Why |
+| --- | --- | --- | --- |
+| `fixme-session` | After intake returns | Session file and ticket list | Remove `active_intakes`, find queued work. |
+| `fixme-session` | After background task returns or on resume | Session file, ticket list, task output | Clear `active_task`, complete or fail the ticket. |
+| `fixme-task` | Before each phase transition | Ticket state through backend | Avoid stale state after compaction or external edits. |
+| Review handlers | Before classification | Artifact files, code map, decision log | Validate findings against current evidence. |
 
-**State transitions owned:** None. All transitions delegated to sub-agents.
-
-### Fix-Researcher
-
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Research file:
-  - Ticket folder path            <ticket>/research/NNNN-research.md
-  - Project config path             - Affected files table
-                                     - Code flow trace
-Reads from disk:                     - Dependencies
-  - Ticket file (investigation       - Risks
-    section -- root cause,           - Approach candidates (1-3)
-    affected files, evidence)
-  - <fixme-dir>/config.json            Return value:
-  - Codebase (max 15 tool calls)    Work summary (~3-8 lines)
-```
-
-**State transitions owned:** `investigating -> researching`
-
-### Fix-Planner
-
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Plan file:
-  - Ticket folder path            <ticket>/plans/NNNN-plan-N.md
-  - Attempt number                   - Approach description
-  - Previous failure feedback        - Files to modify table
-    (path or "first attempt")        - Step-by-step changes
-  - Transition reason (retry)        - Expected outcomes
-                                     (build/lint/test/browser)
-Reads from disk:
-  - Ticket file (investigation    Return value:
-    + fix section history)          Work summary (~3-8 lines)
-  - Research file
-  - Previous plan (on retry)
-  - Previous verification
-    report (on retry)
-  - Codebase (Read/Grep for
-    feasibility validation)
-```
-
-**State transitions owned:** `researching -> planning` (first), `verifying -> planning` (retry, requires `--reason`)
-
-### Fix-Implementer
-
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-Task prompt:                    Source code changes:
-  - Ticket folder path            (files modified per plan)
-  - Plan file path
-  - Project config path          Optional assets:
-  - Verifier feedback (path        fix-check-*.png (visual bugs)
-    or "first cycle")
-                                Return value:
-Reads from disk:                  Work summary (~3-8 lines)
-  - Plan file (step-by-step)
-  - Verification report
-    (on re-cycle)
-  - Source code files
-    (Read before Edit)
-  - Browser (optional visual
-    check via playwright-cli)
-```
-
-**State transitions owned:** `planning -> implementing`
-
-### SKILL.md (Orchestrator)
-
-```
-INPUTS                          OUTPUTS
-----------------------------    ----------------------------
-$ARGUMENTS:                     Session file:
-  - Sub-command (start/resume/    - Created, active_intakes managed
-    status/stop/report)
-  - Session name (optional)     Ticket frontmatter:
-  - Bug description (report)      - commit_hash (after commit)
-
-Reads from disk (via CLI):      Git:
-  - Session list/state             - git commit (on fix success)
-  - Ticket list/state/next         - git revert (on fix failure)
-  - Project config
-                                User-facing:
-Agent return values:              - Status tables
-  - Intake summary                 - Session summaries
-  - Investigation summary          - AskUserQuestion prompts
-  - Fix-Agent result JSON
-```
-
-**State transitions owned:** `verifying -> done`, `[any] -> failed`, `investigating -> skipped`, `queued -> failed/skipped`
-
----
-
-## Complete Happy-Path Data Flow
-
-```
-Step  Agent              Reads                          Writes                         State
-----  -----------------  -----------------------------  ----------------------------   --------
- 1    SKILL.md           --                             session.md (create)            --
- 2    SKILL.md           config.json                    (load or detect+save)          --
- 3    SKILL.md           --                             browser opened, login done     --
- 4    SKILL.md           --                             ticket.md (create template)    queued
- 5    Intake Agent       ticket.md (template)           ticket.md (report, fields)     queued
-                         codebase (5 Glob/Grep)         ticket renamed (new slug)
-                         user screenshot files           assets/ (copied screenshots)
- 6    SKILL.md           ticket list (find next)        active_intakes updated         queued
- 7    Invest. Agent      ticket.md (report, fields)     ticket.md (investigation       investigating
-                         config.json                      section: repro + root cause)
-                         codebase (Grep/Read)           assets/repro-*.png
-                         browser (snapshot/console)
- 8    SKILL.md           ticket list (check state)      --                             investigating
- 9    Fix-Agent          ticket.md (frontmatter)        ticket.md (base_commit)        investigating
-10    Fix-Researcher     ticket.md (investigation)      research/NNNN-research.md      researching
-                         config.json
-                         codebase (15 calls max)
-11    Fix-Agent          Glob (research file exists?)   ticket.md fix section          researching
-                                                          (research bullet + summary)
-12    Fix-Planner        ticket.md (investigation+fix)  plans/NNNN-plan-1.md           planning
-                         research/NNNN-research.md
-                         codebase (feasibility)
-13    Fix-Agent          Glob (plan file exists?)       ticket.md fix section          planning
-                                                          (plan bullet + summary)
-14    Fix-Implementer    plans/NNNN-plan-1.md           SOURCE CODE changes            implementing
-                         source files (Read)
-                         browser (optional check)
-15    Fix-Agent          git diff --name-only           ticket.md fix section          implementing
-                                                          (implement bullet + summary)
-                                                        ticket.md (files_changed)
-16    fixme-browser-verify  plans/NNNN-plan-1.md            assets/verify-*.png            verifying
-                                            ticket.md (repro steps)         (browser verification report)
-                                            config.json                     in agent return value)
-                                            source files (Read)
-17    Fix-Agent          Glob (report exists?)          ticket.md fix section          verifying
-                         verification report (verdict)    (verify bullet + summary)
-18    SKILL.md           ticket list (state=verifying)  git add + git commit           verifying
-                         ticket.md (files_changed,      ticket.md (commit_hash)
-                           title)                       ticket transition -> done       done
-19    SKILL.md           ticket next (no more queued)   session summary                --
-                         session summary command         user output (summary table)
-```
-
----
-
-## Retry Path Data Flow (Verification FAIL)
-
-When the verifier returns FAIL at step 17:
-
-```
-Step  Agent              Reads                          Writes                         State
-----  -----------------  -----------------------------  ----------------------------   --------
-17    Fix-Agent          verification report            ticket.md fix section          verifying
-                           (FAIL verdict + details)       (verify FAIL bullet)
-                                                        Extracts failure summary
-18    Fix-Planner        ticket.md (all history)        plans/NNNN-plan-2.md           planning
-                         research/NNNN-research.md        (different approach)
-                         plans/NNNN-plan-1.md (prior)
-                         verifications/NNNN-verify-1.md
-19    Fix-Agent          Glob (plan-2 exists?)          ticket.md fix section          planning
-20    Fix-Implementer    plans/NNNN-plan-2.md           SOURCE CODE changes            implementing
-                         verifications/NNNN-verify-1.md
-                           (failure details)
-21    Fix-Agent          git diff --name-only           ticket.md (files_changed)      implementing
-22    fixme-browser-verify  plans/NNNN-plan-2.md            assets/verify-*.png            verifying
-                                            ticket.md (repro steps)         (browser verification
-                                            config.json                       report in return value)
-                                            browser
-23    Fix-Agent          verification report            ticket.md fix section          verifying
-                           (PASS or FAIL)
- ...continues to SKILL.md commit (PASS) or next retry / failure...
-```
-
-**Key difference on retry:** Researcher is NOT re-dispatched. The same research file is reused. Planner reads prior plan + verification report to design a different approach.
-
----
-
-## When Is the Ticket File Re-Read from Disk?
-
-| Who | When | What They Read | Why |
-|-----|------|----------------|-----|
-| SKILL.md | After EVERY agent return | `ticket list` (frontmatter only via CLI) | Never trust in-memory state; context compaction may discard earlier reads |
-| SKILL.md | Before commit | `ticket list` (files_changed, title) | Get final state for git operations |
-| Fix-Agent | After EVERY sub-agent return | Glob check (artifact exists?) + ticket list | Verify sub-agent produced output; get state |
-| Fix-Agent | Before each retry | Verification report | Extract failure details for planner prompt |
-| Intake Agent | Step 1 | Full ticket file (template) | Fill in sections |
-| Investigation Agent | Phase 1 | Full ticket file (report + fields + prior attempts) | Understand the bug |
-| Fix-Researcher | Phase 1 | Full ticket file (investigation section) | Root cause + affected files |
-| Fix-Planner | Phase 1 | Full ticket file (investigation + fix history) | Context for plan design |
-| Fix-Planner (retry) | Phase 1 | Full ticket + prior plan + verification report | Understand what failed |
-| fixme-browser-verify | Phase 1 | Plan file | Expected changes |
-| fixme-browser-verify | Phase 5 | Ticket file (repro steps, expected/actual) | Browser verification script |
-
-**Rule:** SKILL.md and Fix-Agent never read ticket body -- only frontmatter via CLI. Sub-agents read the full file because they need body sections.
-
----
-
-## Ticket Folder Structure (Complete)
-
-```
-<fixme-dir>/sessions/<session-name>/
-  session.md                          # Session metadata + active_intakes
-  NNNN-slug/                          # One folder per ticket
-    ticket.md                         # Central ticket file (frontmatter + sections)
-    assets/                           # Screenshots and visual evidence
-      repro-<description>.png         # Investigation screenshots
-      fix-check-<attempt>-<cycle>.png # Implementer sanity check (optional)
-      verify-<description>.png        # Verifier evidence
-      <user-screenshots>.png          # Copied from user-provided paths
-    research/                         # Fix research output
-      NNNN-research.md                # One file, reused across retries
-    plans/                            # Fix plans (one per attempt)
-      NNNN-plan-1.md
-      NNNN-plan-2.md                  # Created on retry
-    verifications/                    # Verification reports (one per attempt)
-      NNNN-verify-1.md
-      NNNN-verify-2.md               # Created on retry
-```
-
----
-
-## Cross-Cutting: `fixme-tools.cjs` CLI
-
-All agents interact with shared state through `fixme-tools.cjs`. Direct frontmatter editing is forbidden (except for `base_commit` and `files_changed` by Fix-Agent).
-
-| Command | Called By | Effect |
-|---------|----------|--------|
-| `ticket create` | SKILL.md (intake dispatch) | Creates ticket folder + template file |
-| `ticket rename` | Intake Agent | Renames ticket file + folder with new slug |
-| `ticket transition` | Each agent (Phase 0), SKILL.md (terminal states) | Validates transition, updates state, logs transition, computes durations |
-| `ticket next` | SKILL.md (dispatch loop) | Returns next `queued` ticket |
-| `ticket list` | SKILL.md (after agent returns), Fix-Agent (after sub-agent returns) | Lists all tickets with frontmatter state |
-| `session create` | SKILL.md (start flow) | Creates session directory + session.md |
-| `session list` | SKILL.md (resume flow) | Lists sessions |
-| `session summary` | SKILL.md (auto-close, graceful stop) | Computes session stats |
-| `context detect` | SKILL.md (first run) | Auto-detects project config |
-| `context load` | SKILL.md (every start/resume) | Reads `<fixme-dir>/config.json` project section |
-| `context save` | SKILL.md (after user confirmation) | Writes `<fixme-dir>/config.json` project section |
+This disk-first rule is what keeps the workflow resumable after context compaction.

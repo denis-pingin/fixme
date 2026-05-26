@@ -1,6 +1,6 @@
 # Fixme
 
-A Claude Code skill suite for automated task execution. Turn a task description into a verified fix through config-driven workflows with plan/review/execute/review cycles, ticket state management, and PR comment resolution.
+A Claude Code and Codex skill suite for automated task execution. Turn a task description into a verified fix through config-driven workflows with specification, plan, execution, review, ticket state management, and PR comment resolution.
 
 Primary entry points:
 
@@ -9,7 +9,8 @@ Primary entry points:
 - **`/fixme-pr-comments`** - Fetch and address unresolved PR review comments through the full plan/execute cycle.
 - **`/fixme-rebase`** - Safe branch rebasing with conflict resolution and verification.
 - **`/fixme-ticket`** - Create Linear tickets from a description or conversation context.
-- **`/fixme-config`** - Interactive configuration for workflows, model profiles, and project settings.
+- **`/fixme-brainstorm`** - Explore a feature, bug fix, or rough idea before choosing a spec, plan, or ticket path.
+- **`/fixme-config`** - Interactive configuration for workflows, model profiles, project settings, Linear, review softness, and alerts.
 
 ## Quick Start
 
@@ -27,7 +28,7 @@ Runs the default pipeline: plan -> review -> execute -> code review. Fully autom
 /fixme-task full investigate why the checkout flow fails on Safari
 ```
 
-Runs the "full" pipeline: investigate -> research -> plan -> execute -> verify. Adds browser reproduction and codebase research before planning.
+Runs the "full" pipeline: investigate -> research -> plan -> implement -> verify. Adds browser reproduction and codebase research before planning.
 
 ### Write specifications explicitly
 
@@ -100,15 +101,25 @@ Safely rebases the current branch onto its base branch (auto-detected from PR ta
 
 Creates a Linear ticket from a description or the current conversation context. Auto-discovers team, project, and label metadata upfront. Supports templates, assignment, status, due dates, and attachments.
 
+### Brainstorm before committing to a path
+
+```text
+/fixme-brainstorm redesign the import flow without breaking existing CSV users
+```
+
+Runs a one-question-at-a-time discovery flow, captures decisions to a brainstorm document, and routes to the next fixme skill when the direction is clear.
+
 ### Configure workflows and models
 
 ```text
 /fixme-config
 ```
 
-Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget), project commands (install/build/lint/test), and Linear backend. Auto-detects project commands from `package.json` on first run.
+Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget/inherit), review softness, project commands (install/build/lint/test), ticket backend, Linear team metadata, and audible alerts. Auto-detects project commands from `package.json` on first run.
 
 `/fixme-config` writes through `fixme-tools.cjs config` commands, not by hand-editing JSON. The tool creates missing config files, backfills newly added standard workflows, validates workflow cycle limits, preserves custom config, and writes atomically.
+
+Linear team discovery is used by `/fixme-ticket` even when the ticket backend stays on markdown files. If Linear MCP is unavailable with the markdown backend, `/fixme-config` skips only that Linear round and leaves existing Linear settings untouched.
 
 ## Architecture
 
@@ -159,9 +170,13 @@ Config CLI:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config ensure
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert <user_input|task_finished|task_failed>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```
@@ -189,10 +204,15 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | ----- | ------- |
 | `fixme-session` | Session orchestrator (intake, dispatch, cleanup) |
 | `fixme-task` | Config-driven pipeline executor |
+| `fixme-alert` | Play configured audible alerts for user-input, task-finished, and task-failed events |
+| `fixme-howto-code-comments` | Shared rules for useful source comments and banned opaque planning comments |
+| `fixme-howto-code-map` | Shared task-scoped code map contract for planners, executors, and reviewers |
+| `fixme-howto-find-fixme-dir` | Shared rule for resolving `<fixme-dir>` instead of hardcoding `.fixme/` paths |
+| `fixme-howto-importance` | Shared importance axes, floor, scoring, suppression, and aggregation rubric |
+| `fixme-howto-present-decisions` | Shared user-facing decision presentation format |
+| `fixme-howto-review-spec` | Shared specification review rubric for reviewers or standalone use |
 | `fixme-howto-write-product-spec` | Shared product specification writing rubric for behavior-first specifications |
 | `fixme-howto-write-technical-spec` | Shared technical specification writing rubric for deterministic implementation contracts |
-| `fixme-howto-review-spec` | Shared specification review rubric for reviewers or standalone use |
-| `fixme-howto-importance` | Shared importance axes, floor, scoring, suppression, and aggregation rubric |
 | `fixme-write-product-spec` | Write product specifications from feature requests or review FIX items |
 | `fixme-write-technical-spec` | Write technical specifications from product specifications, source material, or review FIX items |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
@@ -203,13 +223,14 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-execute-plan` | Execute plans with verification gates |
 | `fixme-review-code` | Review executed code against plan |
 | `fixme-handle-code-review` | Triage code review findings (unified taxonomy) |
+| `fixme-brainstorm` | Socratic exploration before choosing a spec, plan, or ticket workflow |
 | `fixme-investigate` | Browser reproduction + root cause analysis |
 | `fixme-research` | Codebase exploration around a known issue |
 | `fixme-pr-comments` | Fetch, analyze, and address unresolved PR review comments |
 | `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-ticket` | Create Linear tickets from description or conversation context |
-| `fixme-config` | Interactive configuration for workflows, models, and project settings |
+| `fixme-config` | Interactive configuration for workflows, models, review softness, project settings, Linear, and alerts |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |
 | `fixme-tickets-linear` | Linear ticket backend (v2 stub) |
@@ -234,7 +255,7 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 
 ## Requirements
 
-- Claude Code
+- Claude Code or Codex, depending on the installed runtime
 - Node.js 18+
 - Playwright CLI (for browser automation skills)
-- No other external dependencies
+- Linear MCP for `/fixme-ticket` and the Linear ticket backend

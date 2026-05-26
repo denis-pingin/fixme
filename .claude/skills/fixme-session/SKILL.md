@@ -308,7 +308,7 @@ Fire an alert when a background ticket completes, fails, or the session pauses f
 
 | When | Alert |
 | --- | --- |
-| A dispatched fixme-task returns with the ticket in `done` (any terminal-success phase like `verify` or `implement`) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
+| A dispatched fixme-task reports success and leaves the ticket in the last workflow phase, such as `verify` or `implement` | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_finished` |
 | A dispatched fixme-task returns with the ticket in `failed` | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert task_failed` |
 | The session-level intake or status loop pauses for a user decision | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 
@@ -326,7 +326,7 @@ When a background fixme-task completes (notification received or detected on res
 3. **Read task result:**
    Read `<ticket-folder>/task-result.md` for the fixme-task's output summary.
 
-4. **If fixme-task succeeded** (ticket is in the last pipeline phase, e.g., `verify` or `implement`):
+4. **If fixme-task succeeded** (task-result.md reports success and the ticket is in the last workflow phase, e.g., `verify` or `implement`):
    a. Read `files_changed` from task-result.md.
    b. Stage and commit:
       ```bash
@@ -514,7 +514,7 @@ X fixed, Y failed[, Z skipped][, W other]
 - Title: use the `title` field from the summary's `tickets` array (already human-readable)
 - Duration per ticket: format `total_seconds` as `Xm Ys` (e.g., `3m 5s`). For 0 seconds: `0m 0s`
 - Total duration: format `duration_seconds` from the summary. Use `Xh Ym Zs` format if over 1 hour, `Xm Ys` if under
-- Status: use raw state names (done, failed, skipped, queued, investigating, researching, planning, implementing, verifying)
+- Status: use raw state names. Workflow-derived examples include `plan`, `implement`, and `verify`; legacy fallback examples include `investigating`, `researching`, `planning`, `implementing`, and `verifying`.
 - Summary line: show counts for done ("fixed"), failed, and any other states present. Omit zero counts except for "fixed" (always show it even if 0)
 - For early stop (graceful stop with non-terminal tickets): non-terminal states appear as-is in the table and count in the summary line as their state name (e.g., "2 queued")
 
