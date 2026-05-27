@@ -3308,7 +3308,9 @@ function getUsageTrackingBlock(skillName, runtime) {
     '',
     'Store the returned `invocationId`. On normal completion, run `usage finish --invocation-id <invocationId> --outcome complete`. On failure, use `--outcome failed --reason <reason>`. On abort, use `--outcome aborted --reason <reason>`. Reasons must be one of: `verification_failed`, `user_aborted`, `usage_tracking_failed`, `runtime_error`, `dispatch_failed`, `timeout`, `invalid_usage_request`, or `unknown`.',
     '',
-    'If usage start or finish fails, print a warning with the skill name, invocation ID when known, failed operation, and fallback, then continue the normal skill completion path. If `usage finish` returns `reportLine`, relay it. If it is suppressed, do not invent one.',
+    'If usage start or finish fails, print a warning with the skill name, invocation ID when known, failed operation, and fallback, then continue the normal skill completion path.',
+    '',
+    'Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive. The final routing/status directive must remain the last content in the skill output. If `usage finish` is suppressed, do not invent a usage line.',
     FIXME_USAGE_TRACKING_CLOSE,
   ].join('\n');
 }
@@ -4098,6 +4100,12 @@ function runtimeProjectMatches(row, projectRoot) {
       return path.resolve(value);
     }
   }
+  function pathMatchesProjectRoot(value, expected) {
+    if (!value || !expected) return false;
+    if (value === expected) return true;
+    const relative = path.relative(expected, value);
+    return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  }
   const expected = normalizeProjectPath(projectRoot);
   const values = [
     row.cwd,
@@ -4107,7 +4115,7 @@ function runtimeProjectMatches(row, projectRoot) {
     row.payload && row.payload.project_root,
     row.message && row.message.cwd,
   ].map(normalizeProjectPath).filter(Boolean);
-  return values.includes(expected);
+  return values.some(value => pathMatchesProjectRoot(value, expected));
 }
 
 function runtimeAttributionMatches(row, skill) {
@@ -4927,7 +4935,7 @@ function buildCompactUsageReportLine(event, projectEventPath) {
     limit: 20,
   }) : null;
   if (isMeasuredUsageRow(event)) {
-    const base = `Usage: ${event.skill} +${formatTokenCount(event.tokens.totalTokens)} tokens`;
+    const base = `Usage: ${event.skill} ${formatTokenCount(event.tokens.totalTokens)} tokens`;
     if (pipelineReport) {
       return `${base} | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
     }

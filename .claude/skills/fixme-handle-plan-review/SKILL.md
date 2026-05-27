@@ -93,7 +93,7 @@ Apply review level after classification and pattern aggregation, before deriving
 
 Review level applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
 
-Missing or invalid review assessment dimensions route to `decision-needed` for this run and must be reported with a warning.
+Missing or invalid review assessment dimensions route to `decision-needed` for this run and must be reported with a warning. Use warning text like `WARNING: Missing review assessment dimensions: confidence`.
 
 Every classified finding must include:
 
@@ -255,19 +255,3 @@ Routing consistency is mandatory:
 - If `IMPLEMENT_ONLY_COUNT > 0` and `PLAN_REQUIRED_COUNT = 0`, `NEXT_ACTION` MUST be `IMPLEMENT_REPAIR`.
 - Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists.
 - `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the approach.
-
-## Review Level Routing Contract
-
-Resolve review level with:
-
-```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
-```
-
-Every classified finding includes Classification, Validity, Review assessment, Review level, Level route, Route scope, Why, Question, Approach, and Risk.
-
-Missing or invalid review assessment dimensions produce Classification: ASK_USER, Validity: NONE, Level route: decision-needed, Route scope: NONE, and WARNING: Missing review assessment dimensions: confidence.
-
-DISMISSED_COUNT: <number>
-
-Level route values: blocking-fix | follow-up | decision-needed | dismissed

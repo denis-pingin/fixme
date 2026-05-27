@@ -2552,15 +2552,17 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
     'fixme-tickets-md',
     'Ticket backend skill.'
   );
+  createSkillFile(skillsSrc, 'fixme-handle-plan-review', 'Handler.');
   fs.mkdirSync(path.join(ticketsDir, 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(ticketsDir, 'scripts', 'private.cjs'), 'console.log("do not install");\n');
 
   const result = run(`codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`);
   assert(result.ok, `install should succeed, got: ${JSON.stringify(result)}`);
-  assert(result.data.installed === 2, `installed count: ${result.data.installed}`);
+  assert(result.data.installed === 3, `installed count: ${result.data.installed}`);
   assert(result.data.removed === 1, `removed count: ${result.data.removed}`);
 
   const installedTask = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
+  const installedHandler = fs.readFileSync(path.join(codexSkillsDir, 'fixme-handle-plan-review', 'SKILL.md'), 'utf8');
   assert(installedTask.includes('<codex_skill_adapter>'), 'installed skill should include Codex adapter');
   assert(installedTask.includes('spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")'), 'adapter should map Agent dispatch to spawn_agent with reasoning effort');
   assert(installedTask.includes('resolve-model X --runtime codex'), 'adapter should resolve Codex runtime profile settings');
@@ -2578,6 +2580,8 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(!installedTask.includes('--task'), 'usage block must not pass --task');
   assert(installedTask.includes('Only run this block when `fixme-task` is the active skill invocation.'), 'usage block should have active-skill guard');
   assert(installedTask.includes('--role orchestrator'), 'fixme-task should be instrumented as orchestrator');
+  assert(installedTask.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
+  assert(installedHandler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
 
   const usageBlockCount = (installedTask.match(/## Fixme Usage Tracking/g) || []).length;
   assert(usageBlockCount === 1, `usage block should be idempotent, got ${usageBlockCount}`);
@@ -2628,6 +2632,8 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(task.includes('--role orchestrator'), 'fixme-task role mapping');
   assert(reviewer.includes('--role reviewer'), 'fixme-review-* role mapping');
   assert(handler.includes('--role handler'), 'fixme-handle-* role mapping');
+  assert(task.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
+  assert(handler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
   assert(reference.includes('--role reference'), 'fixme-howto-* role mapping');
   assert(reference.includes('Only run this block when `fixme-howto-code-map` is the active skill invocation.'), 'reference guard');
   assert(!fs.existsSync(path.join(claudeSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not install');
@@ -3024,6 +3030,21 @@ test('fixme handlers resolve review level and remove suppression counts', () => 
     assert(!skill.includes('SUPPRESSED_COUNT'), `${skillPath} should remove suppressed count`);
     assert(!skill.includes('config softness resolve'), `${skillPath} should not call obsolete resolver`);
     assert(!skill.includes('Importance: floor / softness'), `${skillPath} should remove old importance output`);
+  }
+});
+
+test('fixme handlers keep one routing directive block after review-level changes', () => {
+  const handlerPaths = [
+    path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md'),
+  ];
+
+  for (const skillPath of handlerPaths) {
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    const dismissedCountDirectives = skill.match(/^DISMISSED_COUNT: <number>$/gm) || [];
+    assert(dismissedCountDirectives.length === 1, `${skillPath} should declare DISMISSED_COUNT exactly once in the routing block`);
+    assert(!skill.includes('## Review Level Routing Contract'), `${skillPath} should not append a second routing contract after the directive`);
   }
 });
 
@@ -3495,6 +3516,29 @@ test('usage finish: missing counters appends one unmeasured row to project and g
   assert(projectRows[0].cost === null, 'cost null');
   assert(projectRows[0].warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'unmeasured row warning');
   assert(!Object.prototype.hasOwnProperty.call(projectRows[0], 'task'), 'usage row must not contain task field');
+});
+
+test('usage finish: measured compact report line has no delta plus prefix', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-report-line.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 },
+      { input_tokens: 10, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 40, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 45 },
+      { input_tokens: 30, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 35 }
+    ),
+  ]);
+  const result = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(result.ok, `usage finish should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.reportLine === 'Usage: fixme-write-plan 35 tokens | project total 35 tokens', `unexpected report line: ${result.data.reportLine}`);
+  assert(!result.data.reportLine.includes('+35 tokens'), `report line should not include plus prefix: ${result.data.reportLine}`);
 });
 
 test('usage finish: failed and aborted outcomes accept only closed reason enum values', () => {
@@ -4053,6 +4097,34 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
   assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
   assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
+});
+
+test('runtime adapter: inferred Codex session under project subdirectory matches project root', () => {
+  const ctx = createUsageWorkspace();
+  const subProjectRoot = path.join(ctx.projectRoot, 'alpha-2');
+  fs.mkdirSync(subProjectRoot, { recursive: true });
+  const sourcePath = codexSessionPath(ctx, 'rollout-subproject');
+  appendJsonl(sourcePath, [
+    codexSessionMeta(subProjectRoot),
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourcePath, 'source path should identify the subproject session');
 });
 
 test('runtime adapter: inferred Codex discovery parses complete long first JSONL line', () => {
