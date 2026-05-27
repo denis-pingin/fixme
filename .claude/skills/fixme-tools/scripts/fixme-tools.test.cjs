@@ -2265,7 +2265,8 @@ test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL
   assert(skill.includes('run the selected report command once as a pre-finalization measurement pass'), 'skill should perform a measurement report before quiet finish');
   assert(skill.includes('usage finish --invocation-id <invocationId> --outcome complete --quiet'), 'skill should finish quietly before rendering report');
   assert(skill.includes('Render only the displayed report JSON'), 'skill should render only the post-finalization report');
-  assert(skill.includes('first row labeled `**Total**`'), 'overview By Skill table should include a total row');
+  assert(skill.includes('last row labeled `**Total**`'), 'overview By Skill table should put total row at the bottom');
+  assert(skill.includes('| **Total** | **3** | **2** | **1** | **165,000** |'), 'overview By Skill total row should bold every cell');
   assert(skill.includes('`totalUsage.totalTokens` from the report JSON'), 'total row should use report totalUsage');
   assert(skill.includes('| Skill | Invocations | Measured | Unmeasured | Total usage |'), 'usage table should use Measured/Unmeasured labels');
   assert(skill.includes('Never parse JSONL directly.'), 'skill should not parse JSONL');
