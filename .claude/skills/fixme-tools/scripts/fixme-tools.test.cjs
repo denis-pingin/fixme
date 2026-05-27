@@ -3514,6 +3514,61 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
 });
 
+test('runtime adapter: inferred Codex discovery parses complete long first JSONL line', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = codexSessionPath(ctx, 'rollout-long-first-line');
+  appendJsonl(sourcePath, [
+    { ...codexSessionMeta(ctx.projectRoot), padding: 'x'.repeat(30000) },
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
+});
+
+test('runtime adapter: usage finish reuses inferred source captured at start', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = codexSessionPath(ctx, 'rollout-mtime-drift');
+  appendJsonl(sourcePath, [
+    codexSessionMeta(ctx.projectRoot),
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+  const future = new Date(Date.now() + 60000);
+  fs.utimesSync(sourcePath, future, future);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.discovery === 'inferred', `expected inferred source, got ${row.source && row.source.discovery}`);
+  assert(row.source.path === sourcePath, 'finish should use the source captured at start');
+});
+
 test('runtime adapter: inferred Codex last_token_usage excludes rows before invocation start', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = codexSessionPath(ctx, 'rollout-last-window');

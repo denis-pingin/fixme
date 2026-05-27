@@ -259,6 +259,7 @@ const USAGE_WARNING_CODES = Object.freeze({
   DESTINATION_APPEND_FAILED: 'DESTINATION_APPEND_FAILED',
 });
 const USAGE_SOURCE_SNAPSHOT_SCAN_BYTES = 1024 * 1024;
+const USAGE_SOURCE_DISCOVERY_SCAN_BYTES = 256 * 1024;
 const USAGE_TOKEN_BUCKETS = Object.freeze([
   'inputTokens',
   'cachedInputTokens',
@@ -3676,6 +3677,33 @@ function readJsonlSlice(filePath, startByte = 0, endByte = null) {
   }).filter(Boolean);
 }
 
+function readJsonlHeadRows(filePath, maxBytes) {
+  const stat = fs.statSync(filePath);
+  const length = Math.min(stat.size, maxBytes);
+  if (length <= 0) return [];
+  const fd = fs.openSync(filePath, 'r');
+  let text;
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, 0);
+    text = buffer.toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (length < stat.size && !text.endsWith('\n')) {
+    const lastNewline = text.lastIndexOf('\n');
+    if (lastNewline === -1) return [];
+    text = text.slice(0, lastNewline + 1);
+  }
+  return text.split('\n').filter(Boolean).map(line => {
+    try {
+      return sanitizeRuntimeRow(JSON.parse(line));
+    } catch (_) {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
 function tokenValue(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -3895,7 +3923,7 @@ function discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, f
       stat = fs.statSync(filePath);
       if (windowStart !== null && stat.mtimeMs < windowStart) continue;
       if (windowEnd !== null && stat.mtimeMs > windowEnd) continue;
-      rows = readJsonlSlice(filePath, 0, Math.min(stat.size, 4096));
+      rows = readJsonlHeadRows(filePath, USAGE_SOURCE_DISCOVERY_SCAN_BYTES);
     } catch (_) {
       continue;
     }
@@ -4111,14 +4139,35 @@ function resolveUsageCounters(pending) {
   const explicitPath = pending.sourceSnapshot && pending.sourceSnapshot.explicitPath
     ? pending.sourceSnapshot.explicitPath
     : explicitUsageSourcePath(pending.runtime, null);
-  const discovery = discoverRuntimeCounterSources(
-    pending.runtime,
-    pending.projectRoot,
-    pending.skill,
-    pending.startedAt,
-    finishedAt,
-    explicitPath
-  );
+  const persistedSource = pending.sourceSnapshot && pending.sourceSnapshot.source && pending.sourceSnapshot.source.path
+    ? pending.sourceSnapshot.source
+    : null;
+  let discovery;
+  if (!explicitPath && persistedSource) {
+    if (fs.existsSync(persistedSource.path)) {
+      const stat = fs.statSync(persistedSource.path);
+      discovery = {
+        status: 'one',
+        candidates: [{
+          path: persistedSource.path,
+          cursor: { size: stat.size, mtimeMs: stat.mtimeMs },
+          discovery: persistedSource.discovery || 'inferred',
+          attributionSkill: persistedSource.attributionSkill,
+        }],
+      };
+    } else {
+      discovery = { status: 'none', candidates: [] };
+    }
+  } else {
+    discovery = discoverRuntimeCounterSources(
+      pending.runtime,
+      pending.projectRoot,
+      pending.skill,
+      pending.startedAt,
+      finishedAt,
+      explicitPath
+    );
+  }
   const kind = `${pending.runtime}_jsonl`;
   if (discovery.status === 'error') {
     return counterPartial(
