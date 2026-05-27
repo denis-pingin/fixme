@@ -1414,7 +1414,12 @@ test('config migrate renames legacy workflow names and moves legacy full bugfix 
       default: workflowWithPhases([{ name: 'legacy-standard', skills: ['legacy-standard-skill'] }], { outerMaxCycles: 7 }),
       plan: workflowWithPhases([{ name: 'legacy-plan', skills: ['legacy-plan-skill'] }]),
       execute: workflowWithPhases([{ name: 'legacy-execute', skills: ['legacy-execute-skill'] }]),
-      'idea-to-production': workflowWithPhases([{ name: 'legacy-full', skills: ['legacy-full-skill'] }]),
+      'idea-to-production': workflowWithPhases([
+        { name: 'product-spec', skills: ['fixme-write-product-spec'] },
+        { name: 'technical-spec', skills: ['fixme-write-technical-spec'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+      ]),
       full: workflowWithPhases([
         { name: 'investigate', skills: ['fixme-investigate'] },
         { name: 'research', skills: ['fixme-research'] },
@@ -1433,10 +1438,49 @@ test('config migrate renames legacy workflow names and moves legacy full bugfix 
   assert(config.workflows.standard.outerMaxCycles === 7, 'renamed standard should keep outerMaxCycles');
   assert(config.workflows['plan-only'].phases[0].name === 'legacy-plan', 'plan should rename to plan-only');
   assert(config.workflows['execute-only'].phases[0].name === 'legacy-execute', 'execute should rename to execute-only');
-  assert(config.workflows.full.phases[0].name === 'legacy-full', 'idea-to-production should rename to final full');
+  assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', 'idea-to-production should rename to final full and add verify');
   assert(config.workflows.bugfix.phases[0].name === 'investigate', 'old full bugfix workflow should move to bugfix');
   assert(!config.workflows.default && !config.workflows.plan && !config.workflows.execute && !config.workflows['idea-to-production'], 'legacy workflow keys should be removed');
   assert(result.data.renamedWorkflows.some(entry => entry.from === 'full' && entry.to === 'bugfix'), 'migration result should report full -> bugfix move');
+});
+
+test('config migrate upgrades legacy feature full workflow by adding verify', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      full: workflowWithPhases([
+        { name: 'product-spec', skills: ['fixme-write-product-spec'] },
+        { name: 'technical-spec', skills: ['fixme-write-technical-spec'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+      ]),
+    },
+  });
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
+
+  assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', `full phases should add verify, got ${phaseNames(config.workflows.full)}`);
+  assert(config.workflows.full.phases[4].skills[0] === 'fixme-browser-verify', 'added verify phase should use browser verification skill');
+});
+
+test('config migrate rejects custom idea-to-production instead of writing invalid full workflow', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      'idea-to-production': workflowWithPhases([{ name: 'legacy-full', skills: ['legacy-full-skill'] }]),
+    },
+  });
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+  assert(!result.ok, 'custom idea-to-production should fail instead of becoming reserved full');
+  assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
+  assert(result.data.workflow === 'full', `expected full workflow conflict, got ${JSON.stringify(result.data)}`);
+  assert(!('from' in result.data) || result.data.from !== result.data.to, `reserved workflow conflict should not report a self-rename: ${JSON.stringify(result.data)}`);
+  assert(before === after, 'failed migration should not write config');
 });
 
 test('config migrate aborts conflicting custom full workflow without writing', () => {

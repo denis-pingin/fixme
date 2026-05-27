@@ -1388,34 +1388,64 @@ function ensureUsageConfig(config) {
   return changed;
 }
 
-function isOldBugfixWorkflow(workflow) {
-  if (!hasWorkflowPhases(workflow)) return false;
-  const tuples = workflow.phases.map(phase => [
+const OLD_BUGFIX_FULL_WORKFLOW_TUPLES = [
+  ['investigate', 'fixme-investigate'],
+  ['research', 'fixme-research'],
+  ['plan', 'fixme-write-plan'],
+  ['implement', 'fixme-execute-plan'],
+  ['verify', 'fixme-browser-verify'],
+];
+
+const FINAL_FULL_WORKFLOW_TUPLES = [
+  ['product-spec', 'fixme-write-product-spec'],
+  ['technical-spec', 'fixme-write-technical-spec'],
+  ['plan', 'fixme-write-plan'],
+  ['implement', 'fixme-execute-plan'],
+  ['verify', 'fixme-browser-verify'],
+];
+
+const LEGACY_FEATURE_FULL_WORKFLOW_TUPLES = FINAL_FULL_WORKFLOW_TUPLES.slice(0, 4);
+
+function workflowPrimarySkillTuples(workflow) {
+  return workflow.phases.map(phase => [
     phase && phase.name,
     Array.isArray(phase && phase.skills) ? phase.skills[0] : null,
-  ]);
-  return jsonEqual(tuples, [
-    ['investigate', 'fixme-investigate'],
-    ['research', 'fixme-research'],
-    ['plan', 'fixme-write-plan'],
-    ['implement', 'fixme-execute-plan'],
-    ['verify', 'fixme-browser-verify'],
   ]);
 }
 
-function isFinalFullWorkflow(workflow) {
+function workflowMatchesTuples(workflow, tuples) {
   if (!hasWorkflowPhases(workflow)) return false;
-  const tuples = workflow.phases.map(phase => [
-    phase && phase.name,
-    Array.isArray(phase && phase.skills) ? phase.skills[0] : null,
-  ]);
-  return jsonEqual(tuples, [
-    ['product-spec', 'fixme-write-product-spec'],
-    ['technical-spec', 'fixme-write-technical-spec'],
-    ['plan', 'fixme-write-plan'],
-    ['implement', 'fixme-execute-plan'],
-    ['verify', 'fixme-browser-verify'],
-  ]);
+  return jsonEqual(workflowPrimarySkillTuples(workflow), tuples);
+}
+
+function isOldBugfixWorkflow(workflow) {
+  return workflowMatchesTuples(workflow, OLD_BUGFIX_FULL_WORKFLOW_TUPLES);
+}
+
+function isFinalFullWorkflow(workflow) {
+  return workflowMatchesTuples(workflow, FINAL_FULL_WORKFLOW_TUPLES);
+}
+
+function isLegacyFeatureFullWorkflow(workflow) {
+  return workflowMatchesTuples(workflow, LEGACY_FEATURE_FULL_WORKFLOW_TUPLES);
+}
+
+function ensureFinalFullWorkflow(config, result) {
+  const workflow = config.workflows && config.workflows.full;
+  if (!hasWorkflowPhases(workflow)) return;
+  if (isLegacyFeatureFullWorkflow(workflow)) {
+    workflow.phases.push(cloneJson(STANDARD_PIPELINES.full[4]));
+    result.migrated = true;
+    return;
+  }
+  if (!isFinalFullWorkflow(workflow)) {
+    throw new CliJsonError({
+      error: 'workflow_name_conflict',
+      path: result.configPath,
+      workflow: 'full',
+      reason: 'reserved_workflow_shape_mismatch',
+    });
+  }
 }
 
 function setReviewLevel(target, level) {
@@ -1658,14 +1688,16 @@ function applyConfigMigration(config, configPath = null) {
   if (hasWorkflowPhases(config.workflows.full)) {
     if (isOldBugfixWorkflow(config.workflows.full)) {
       moveWorkflow(config, 'full', 'bugfix', result, workflowMoveMap);
-    } else if (!isFinalFullWorkflow(config.workflows.full)) {
-      throw new CliJsonError({ error: 'workflow_name_conflict', path: configPath, from: 'full', to: 'full' });
+    } else {
+      ensureFinalFullWorkflow(config, result);
     }
   }
 
   for (const [from, to] of Object.entries(LEGACY_WORKFLOW_ALIASES)) {
     moveWorkflow(config, from, to, result, workflowMoveMap);
   }
+
+  ensureFinalFullWorkflow(config, result);
 
   if (!isPlainObject(config.review)) {
     config.review = {};
