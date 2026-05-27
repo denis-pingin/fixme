@@ -109,6 +109,7 @@ Not included in total: 1 invocation with unavailable exact counters
 ### By Skill
 | Skill | Invocations | Complete | Partial | Total usage |
 | --- | ---: | ---: | ---: | ---: |
+| **Total** | 3 | 2 | 1 | 165,000 |
 | fixme-write-plan | 2 | 2 | 0 | 42,000 |
 
 ### Recent Invocations
@@ -121,6 +122,8 @@ Not included in total: 1 invocation with unavailable exact counters
 | --- | ---: |
 | COUNTERS_UNAVAILABLE | 1 |
 ```
+
+The `### By Skill` table must always include a first row labeled `**Total**`. Its `Invocations`, `Complete`, and `Partial` cells are the sums across all visible `bySkill[]` rows. Its `Total usage` cell is `totalUsage.totalTokens` from the report JSON, not a recalculated value from rendered rows.
 
 Omit the `Not included in total` line when the count is zero. Omit `### Warnings` when no warnings exist.
 
