@@ -3296,7 +3296,7 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(!Object.prototype.hasOwnProperty.call(recent, 'warnings'), 'recent rows should not expose raw warnings field');
 
   const bySkill = result.data.bySkill.find(row => row.skill === 'fixme-write-plan');
-  assert(bySkill.invocationCount === 3, `bySkill invocationCount should include complete, partial, and conflict groups, got ${bySkill.invocationCount}`);
+  assert(bySkill.invocationCount === 2, `bySkill invocationCount should exclude duplicate-conflict groups, got ${bySkill.invocationCount}`);
   assert(bySkill.completeCount === 1, `bySkill completeCount ${bySkill.completeCount}`);
   assert(bySkill.partialCount === 1, `bySkill partialCount ${bySkill.partialCount}`);
   assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
@@ -3304,7 +3304,7 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose legacy invocations field');
 
   const byPipeline = result.data.byPipeline.find(row => row.pipelineRunId === pipelineRunId);
-  assert(byPipeline.invocationCount === 3, `byPipeline invocationCount should include complete, partial, and conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
+  assert(byPipeline.invocationCount === 2, `byPipeline invocationCount should exclude duplicate-conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
   assert(byPipeline.completeCount === 1, `byPipeline completeCount ${byPipeline.completeCount}`);
   assert(byPipeline.partialCount === 1, `byPipeline partialCount ${byPipeline.partialCount}`);
   assert(byPipeline.notIncludedInTotal.invocationCount === 2, `byPipeline excluded count ${byPipeline.notIncludedInTotal.invocationCount}`);
@@ -3386,6 +3386,39 @@ test('runtime adapter: Codex cumulative total_token_usage deltas are authoritati
   assert(row.tokens.reasoningOutputTokens === 10, `reasoning delta ${row.tokens.reasoningOutputTokens}`);
   assert(row.tokens.totalTokens === 190, `total delta ${row.tokens.totalTokens}`);
   assert(row.source.kind === 'codex_jsonl', 'source kind');
+});
+
+test('runtime adapter: Codex finish uses bounded persisted cumulative start snapshot', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-large-prefix.jsonl');
+  const sparsePrefixBytes = 5 * 1024 * 1024 * 1024;
+  const startSnapshot = codexTokenCount(
+    { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 135 },
+    { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 135 }
+  );
+  const startLine = `\n${JSON.stringify(startSnapshot)}\n`;
+  const fd = fs.openSync(sourcePath, 'w');
+  try {
+    fs.writeSync(fd, startLine, sparsePrefixBytes - Buffer.byteLength(startLine), 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 250, cached_input_tokens: 55, output_tokens: 40, reasoning_output_tokens: 15, total_tokens: 360 },
+      { input_tokens: 150, cached_input_tokens: 35, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 225 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish should not read the unbounded pre-start prefix, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.tokens.totalTokens === 225, `expected bounded cumulative delta 225, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.tokens.inputTokens === 150, `input delta ${row.tokens.inputTokens}`);
 });
 
 test('runtime adapter: Codex negative cumulative deltas create partial row', () => {

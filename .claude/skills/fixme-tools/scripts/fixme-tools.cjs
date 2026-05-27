@@ -258,6 +258,7 @@ const USAGE_WARNING_CODES = Object.freeze({
   TRAILING_PARTIAL_LINE: 'TRAILING_PARTIAL_LINE',
   DESTINATION_APPEND_FAILED: 'DESTINATION_APPEND_FAILED',
 });
+const USAGE_SOURCE_SNAPSHOT_SCAN_BYTES = 1024 * 1024;
 const USAGE_TOKEN_BUCKETS = Object.freeze([
   'inputTokens',
   'cachedInputTokens',
@@ -3556,6 +3557,20 @@ function explicitUsageSourcePath(runtime, explicitPath) {
     || null;
 }
 
+function captureCodexCumulativeStartSnapshot(sourcePath, cursor) {
+  if (!sourcePath || !cursor || !cursor.size || cursor.size <= 0 || !fs.existsSync(sourcePath)) return null;
+  const endByte = cursor.size;
+  const startByte = Math.max(0, endByte - USAGE_SOURCE_SNAPSHOT_SCAN_BYTES);
+  const rows = readJsonlSlice(sourcePath, startByte, endByte);
+  const cumulative = [];
+  for (const row of rows) {
+    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info && row.payload.info.total_token_usage) {
+      cumulative.push(normalizeCodexUsage(row.payload.info.total_token_usage));
+    }
+  }
+  return cumulative.length > 0 ? cumulative[cumulative.length - 1] : null;
+}
+
 function captureSourceSnapshot(runtime, explicitPath, projectRoot, skill, startedAt) {
   const sourcePath = explicitUsageSourcePath(runtime, explicitPath);
   const snapshot = {
@@ -3565,6 +3580,7 @@ function captureSourceSnapshot(runtime, explicitPath, projectRoot, skill, starte
     cursor: sourcePath && fs.existsSync(sourcePath)
       ? { path: sourcePath, size: fs.statSync(sourcePath).size, mtimeMs: fs.statSync(sourcePath).mtimeMs }
       : null,
+    codexCumulativeStartTokens: null,
   };
   if (!sourcePath && projectRoot) {
     try {
@@ -3583,6 +3599,13 @@ function captureSourceSnapshot(runtime, explicitPath, projectRoot, skill, starte
     } catch (_) {
       snapshot.source = null;
       snapshot.cursor = null;
+    }
+  }
+  if (runtime === 'codex' && snapshot.cursor) {
+    try {
+      snapshot.codexCumulativeStartTokens = captureCodexCumulativeStartSnapshot(snapshot.cursor.path, snapshot.cursor);
+    } catch (_) {
+      snapshot.codexCumulativeStartTokens = null;
     }
   }
   return snapshot;
@@ -3753,19 +3776,12 @@ function sourceMetadata(kind, sourcePath, discovery, candidateCount, extra = {})
   return { kind, path: sourcePath, discovery, candidateCount, ...extra };
 }
 
-function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source) {
+function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, cumulativeStartTokens) {
   const startByte = startCursor && startCursor.size ? startCursor.size : 0;
-  const beforeStartRows = readJsonlSlice(sourcePath, 0, startByte);
   const afterStartRows = readJsonlSlice(sourcePath, startByte, null);
-  const cumulativeBefore = [];
   const cumulativeAfter = [];
   const afterStartUsages = [];
   const execUsages = [];
-  for (const row of beforeStartRows) {
-    if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
-      if (row.payload.info.total_token_usage) cumulativeBefore.push(normalizeCodexUsage(row.payload.info.total_token_usage));
-    }
-  }
   for (const row of afterStartRows) {
     if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
       if (row.payload.info.total_token_usage) cumulativeAfter.push(normalizeCodexUsage(row.payload.info.total_token_usage));
@@ -3782,8 +3798,19 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source) {
 
   const summedLast = sumTokenUsageFromList(afterStartUsages);
   if (cumulativeAfter.length > 0) {
-    const startSnapshot = cumulativeBefore.length > 0 ? cumulativeBefore[cumulativeBefore.length - 1] : null;
     const finishSnapshot = cumulativeAfter[cumulativeAfter.length - 1];
+    const startSnapshot = cumulativeStartTokens || null;
+    if (!startSnapshot && startByte > 0) {
+      if (summedLast && hasPositiveToken(summedLast)) {
+        return completeCounterResult(summedLast, source);
+      }
+      return {
+        status: USAGE_STATUS.PARTIAL,
+        tokens: null,
+        source,
+        warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Cumulative runtime counters require a bounded start snapshot, but none was captured.' }],
+      };
+    }
     const delta = subtractTokenUsage(finishSnapshot, startSnapshot);
     if (delta.negative) {
       return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
@@ -4125,7 +4152,10 @@ function resolveUsageCounters(pending) {
   const source = sourceMetadata(kind, candidate.path, candidate.discovery, 1, candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {});
   try {
     if (pending.runtime === 'codex') {
-      return extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source);
+      const startTokens = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
+        ? pending.sourceSnapshot.codexCumulativeStartTokens
+        : null;
+      return extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source, startTokens);
     }
     if (pending.runtime === 'claude') {
       return extractClaudeCountersFromJsonl(candidate.path, startCursor, source);
@@ -4489,7 +4519,6 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     const first = conflict.rows[0] || {};
     const groups = [groupForSkill(first.skill), groupForPipeline(first.pipelineRunId)].filter(Boolean);
     for (const item of groups) {
-      item.invocationCount++;
       item.notIncludedInTotal.invocationCount++;
       for (const eventId of conflict.eventIds) {
         if (eventId) item.notIncludedInTotal.eventIds.push(eventId);
