@@ -23,6 +23,30 @@ Use the returned `fixme_dir` value as the current project Fixme directory. Do no
 
 This skill is instrumented by the generated usage tracking install block like every other active Fixme skill. Do not add separate recording logic here.
 
+Because this skill reports usage data, do not render from a report generated before the active `fixme-usage` row is finalized. After parsing valid arguments, run the selected report command once as a pre-finalization measurement pass, then finalize the active row quietly, then run the same report command again and render markdown from the second JSON result.
+
+Pre-finalization report command:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope <project|global> --format json [--limit 20] [--skill <skill-name>] [--pipeline-run-id <pipeline-run-id>]
+```
+
+Quiet finalization command:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage finish --invocation-id <invocationId> --outcome complete --quiet
+```
+
+Displayed report command:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope <project|global> --format json [--limit 20] [--skill <skill-name>] [--pipeline-run-id <pipeline-run-id>]
+```
+
+Do not render or relay the pre-finalization report or the quiet finish result. Render only the displayed report JSON. This prevents the displayed table from being stale by one invocation or contradicting the compact finish line.
+
+For invalid argument forms, finish with `--outcome failed --reason invalid_usage_request` before printing the supported forms. If the report command exits non-zero, finish with `--outcome failed --reason runtime_error` before stopping. If the row has already been finalized, do not call `usage finish` again.
+
 ## Supported Forms
 
 ```text
@@ -55,7 +79,7 @@ Parse `$ARGUMENTS` as whitespace-separated tokens:
 
 ## Report Command
 
-Run exactly one report command for the selected view. Always request JSON and render markdown from the returned JSON:
+Use this command shape for both the pre-finalization and displayed report commands. Always request JSON and render markdown only from the displayed report JSON:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope <project|global> --format json [--limit 20] [--skill <skill-name>] [--pipeline-run-id <pipeline-run-id>]

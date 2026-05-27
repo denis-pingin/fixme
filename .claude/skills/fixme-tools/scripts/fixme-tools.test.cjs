@@ -2262,6 +2262,9 @@ test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL
   assert(skill.includes('name: fixme-usage'), 'frontmatter name');
   assert(skill.includes('allowed-tools: Bash'), 'only Bash is required');
   assert(skill.includes('usage report --scope'), 'skill should call usage report');
+  assert(skill.includes('run the selected report command once as a pre-finalization measurement pass'), 'skill should perform a measurement report before quiet finish');
+  assert(skill.includes('usage finish --invocation-id <invocationId> --outcome complete --quiet'), 'skill should finish quietly before rendering report');
+  assert(skill.includes('Render only the displayed report JSON'), 'skill should render only the post-finalization report');
   assert(skill.includes('Never parse JSONL directly.'), 'skill should not parse JSONL');
   assert(skill.includes('Never inspect runtime transcripts directly.'), 'skill should not inspect transcripts');
   assert(skill.includes('Do not display `outcomeReason`'), 'markdown reports should hide outcomeReason');
