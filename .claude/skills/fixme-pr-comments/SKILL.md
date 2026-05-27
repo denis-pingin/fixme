@@ -324,6 +324,22 @@ For each unresolved `review_item`:
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
    - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal. **Note**: file-level overlap with another PR (existing, planned, or stack-mate) is not on its own a defer reason - it must be the *specific code path* the comment flags that another PR replaces or makes obsolete. "Same file" is not "same problem."
 
+## Review Claim Verification Gate
+
+Run this gate before assigning `VERDICT: FIX`, `VERDICT: FIX_UNCLEAR`, `VERDICT: FOLLOWUP_ONLY`, or `ROUTE: CURRENT_PR_FIX`.
+
+A reviewer claim is a hypothesis, not evidence. The reviewer's wording can point to a real issue, but it cannot prove code behavior, API semantics, duplication, reachability, or fix safety by itself.
+
+Break the finding into atomic premises before assigning any FIX or CURRENT_PR_FIX route. Premises include: the current code state, external API/tool semantics, semantic equivalence or duplication, reachability, user/system impact, and whether the suggested change is safe.
+
+For each premise, record Evidence receipts. Each receipt must name the source checked and the fact observed: current source or tests, dependency source/types, installed binary `--help`, rendered config/manifests, official docs for the actual project version, a controlled reproduction, or a recorded user decision.
+
+For duplicate, redundant, or equivalent-parameter claims, prove semantic equivalence before accepting the finding. Identify the exact downstream consumer, prove both values feed the same semantic slot, prove no caller or runtime layer depends on the distinction, and prove the suggested removal or merge would not change behavior. Lexical similarity is not evidence of duplication. Similar names, matching literals, adjacent arguments, or the same IP/port surface are search leads only.
+
+If an essential premise is unverified, contradicted, or only supported by lexical similarity, do not route the item to implementation. Use `REJECT_FALSE_POSITIVE` when evidence contradicts the premise. Use `ASK_USER` when the missing premise depends on private intent or unavailable authority. Use `FIX_UNCLEAR` only when validity is proven but the implementation approach is ambiguous.
+
+Before recommending removal, merging, or renaming of an argument, config key, protocol flag, service, or generated value, trace the consuming code and name the verification that would catch a wrong merge. If that proof is missing, the route is not `CURRENT_PR_FIX`.
+
 Edge-Case Validity Gate:
 
 Run this gate for any PR review item about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.
@@ -356,15 +372,17 @@ Future-work classification rule:
    - `COMPLEXITY: LOW | MEDIUM | HIGH`
    - `CONFIDENCE: HIGH | MEDIUM | LOW`
    - `EDGE_VALIDITY: FIX_FAIL_FAST | ASK_USER_VALIDITY | REJECT_IMPOSSIBLE | REJECT_UNSUPPORTED | NONE`
-   - `IMPORTANCE_AXES: harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>`
-   - `IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible`
+   - `EVIDENCE_RECEIPTS: source -> observed fact; source -> observed fact`
+   - `REVIEW_ASSESSMENT: reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+   - `REVIEW_LEVEL: <level>`
+   - `LEVEL_ROUTE: blocking-fix | follow-up | decision-needed | dismissed`
    - `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false`
    - `ROUTE: CURRENT_PR_FIX | DECISION | FOLLOWUP | NO_ACTION`
    - `ROUTE_SCOPE: PLAN_REQUIRED | IMPLEMENT_ONLY | NONE`
 
-Use `fixme-howto-importance` for the exact axis values, floor list, deterministic scoring formula, and pattern aggregation rule.
+Use `fixme-howto-importance` for the exact assessment dimensions, review-level routes, and pattern aggregation rule.
 
-Do not write `IMPORTANCE: floor` for non-floor project-rule violations, cleanup, doc/comment mismatch, raw JSON.parse usage by itself, or generic test-hygiene findings. For non-floor findings, compute and print the numeric score so softness can visibly decide survives vs suppressed.
+Do not route nonblocking project-rule violations, cleanup, doc/comment mismatch, raw JSON.parse usage by itself, or generic test-hygiene findings as `blocking-fix` without concrete impact evidence.
 
 Keep the dimensions independent: severity decides importance, complexity decides execution shape, confidence decides autonomy. Do not use severity as a substitute for validity, and do not use low complexity as a substitute for importance. Severity itself is multi-dimensional - weight user impact, frequency, and reversibility together; do not let one topic match anchor the verdict.
 
@@ -412,19 +430,19 @@ An issue that is internal-only, fires only during an existing outage, and is tri
 
 **Anti-pattern self-check for `FOLLOWUP_ONLY`.** Before finalizing this verdict, scan your draft justification for these tokens: `touches`, `touches heavily`, `area is being reworked`, `same file`, `pr-N touches`, `stack-mate`. If they appear without naming the *specific code path* the other work supersedes, STOP. File overlap is not a defer reason. Either name the exact line range/symbol another PR replaces, or drop the stack reasoning and judge the finding on its own merits (severity, complexity, scope fit).
 
-**Softness routing**:
+**Review level routing**:
 
-Resolve PR-comment softness with:
+Resolve PR-comment review level with:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --surface pr-comments
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --path pullRequestComments
 ```
 
-Softness-suppressed groups use FOLLOWUP_ONLY and ROUTE: FOLLOWUP. The suppressed ledger must include the source IDs, resolved softness value, computed importance, and full `IMPORTANCE_AXES`.
+LEVEL_ROUTE=follow-up uses VERDICT: FOLLOWUP_ONLY and ROUTE: FOLLOWUP. The follow-up ledger must include the source IDs, resolved review level value, and full `REVIEW_ASSESSMENT`.
 
-Every triaged item and deduplicated group must include the `IMPORTANCE` line. Use `not-eligible` for ASK_USER, REJECT_*, REJECT_ALREADY_FIXED, and file-overlap-only deferral candidates.
+Every triaged item and deduplicated group must include `REVIEW_ASSESSMENT`, `REVIEW_LEVEL`, and `LEVEL_ROUTE`. Use `decision-needed` for ASK_USER, `dismissed` for REJECT_* and REJECT_ALREADY_FIXED, and `follow-up` for file-overlap-only deferral candidates.
 
-file-overlap-only deferral candidates are never softness-suppressed. If `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true`, keep the item visible and explain that softness cannot bypass the file-overlap-only deferral ban.
+file-overlap-only deferral candidates are never hidden by review level. If `FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true`, keep the item visible and explain that review level cannot bypass the file-overlap-only deferral ban.
 
 **Distinguishing FIX vs FIX_UNCLEAR**: A fix is `FIX` when there is exactly one
 reasonable way to address it (e.g., "add missing null check", "fix typo in variable name",
@@ -493,7 +511,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 
 {If there are no `FIX_UNCLEAR`, `ASK_USER`, or `ROUTE: DECISION` groups, write "None." and skip this section.}
 
-{For each decision group, put `**Importance**: {IMPORTANCE}` immediately before the decision card.}
+{For each decision group, put `**Review route**: {REVIEW_LEVEL}; {LEVEL_ROUTE}` immediately before the decision card.}
 
 {For each decision group, use `fixme-howto-present-decisions` exactly. Do not restate, summarize, or locally redefine its decision-card fields in this skill.}
 
@@ -507,7 +525,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 
 **G{N}. {Issue title}** [`{VERDICT}`] [`{SEVERITY}`] [`{COMPLEXITY}`] [`{CONFIDENCE}`] [`{ROUTE_SCOPE}`]
 
-**Importance**: {IMPORTANCE}
+**Review route**: {REVIEW_LEVEL}; {LEVEL_ROUTE}
 
 **Problem**: {The actual problem in one sentence. Do not start with a file path or implementation detail.}
 
@@ -518,6 +536,8 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 **Recommended action**: {The intended fix behavior, including test/codegen/verification expectation when relevant.}
 
 **Why this route**: {Why this is CURRENT_PR_FIX over FOLLOWUP_ONLY. Must point to one of: (a) reviewer-blocking pressure on this PR, (b) cohesion with files already touched in this PR's diff, or (c) concrete operational pain. "The workflow is waiting" or "the reviewer left a comment" are NOT valid reasons - those are tautologies. If none of (a)/(b)/(c) apply, the verdict is FOLLOWUP_ONLY, not CURRENT_PR_FIX.}
+
+**Evidence receipts**: {Source -> observed fact for the essential premises. For duplicate/equivalent-parameter claims, include the consumer contract and semantic-equivalence proof.}
 
 **Sources**: {N source items: T1 reviewer, I2 claude[bot], R1 chatgpt-codex-connector[bot]. Include clickable file references.}
 
@@ -540,7 +560,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 
 **G{N}. {Issue title}** [`FOLLOWUP_ONLY`] [`{SEVERITY}`] [`{COMPLEXITY}`]
 
-**Importance**: {IMPORTANCE}
+**Review route**: {REVIEW_LEVEL}; {LEVEL_ROUTE}
 
 **Problem**: {The valid concern in one sentence.}
 
@@ -558,7 +578,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 - **Decisions needed**: {G1 (T22, I3), G2 (T24) or None}
 - **Current PR fixes**: {G3 (T15), G4 (T7, I2) or None}
 - **Follow-up only**: {G5 (T9) or None}
-- **Suppressed by softness: {number suppressed, with group IDs or None}**
+- **Follow-up by review level: {number routed to follow-up, with group IDs or None}**
 - **Already fixed**: {G6 (T1, T2, T5)... or None. One short reason per group, e.g. "fixed in commit abc123"}
 - **Not actionable**: {G7 (T11, I4)... or None. One short reason per group, e.g. "false positive: code already validates input"}
 ```
@@ -770,7 +790,7 @@ and wait for explicit user confirmation before proceeding.
 **PR**: [{owner}/{repo}#{pr_number}](https://github.com/{owner}/{repo}/pull/{pr_number})
 
 {For each current PR fix group, one line:}
-{N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] [{IMPORTANCE}] - {the planned fix action} -> [{files affected}]
+{N}. **{Issue title}** [`{severity}`] [`{complexity}`] [`{ROUTE_SCOPE}`] [{REVIEW_LEVEL}; {LEVEL_ROUTE}] - {the planned fix action} -> [{files affected}]
 
 Only CURRENT_PR_FIX groups will be dispatched to fixme-task (plan -> execute -> review). Follow-up groups will be replied to but will not consume this pipeline. Proceed? (yes / no / modify)
 ```
@@ -1053,3 +1073,17 @@ reviewer who leaves actionable findings in the review body instead of inline thr
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
 - **fixme-task invocation**: uses `Skill("fixme-task")` to run the pipeline inline in the current session. fixme-task dispatches its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) via the Agent tool at depth 1. This avoids the platform constraint that agents cannot dispatch other agents.
+
+## Review-Level PR Comment Metadata
+
+Resolve with `config review-level resolve --path pullRequestComments`.
+
+Each normalized review item includes `REVIEW_ASSESSMENT`, `REVIEW_LEVEL`, and `LEVEL_ROUTE`.
+
+Routes:
+- LEVEL_ROUTE=blocking-fix -> ROUTE: CURRENT_PR_FIX
+- LEVEL_ROUTE=follow-up -> VERDICT: FOLLOWUP_ONLY and ROUTE: FOLLOWUP
+- LEVEL_ROUTE=decision-needed -> ROUTE: DECISION
+- LEVEL_ROUTE=dismissed -> ROUTE: NO_ACTION unless a reply is still needed
+
+Follow-up by review level: {number followed up, with group IDs or None}

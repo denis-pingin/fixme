@@ -55,10 +55,10 @@ Parse current values (defaults if not present):
 - `models.overrides` - Claude-only per-agent model tag overrides (default: `{}`)
 - `ticketBackend` - ticket backend (default: `fixme-tickets-md`)
 - `workflows` - named workflow definitions. Each workflow has `phases` and `outerMaxCycles` (default: absent, meaning standard workflows)
-- `review.softness.default` - global review softness label or float (default: `default`)
-- `review.softness.labels` - label-to-float mapping (default: `strict=0.0`, `default=0.3`, `lenient=0.6`, `tactical=0.85`, `panic=1.0`)
-- `review.softness.surfaces` - review-surface defaults (default: `spec-review=strict`, `plan-review=lenient`, `code-review=lenient`, `pr-comments=lenient`)
-- `review.softness.workflows` - workflow and phase softness overrides (default: `{}`)
+- `review.level` - global review level (default: `standard`)
+- `workflows.<workflow>.review.level` - workflow review level override (default: absent)
+- `phase.review.level` - phase review level override inside a workflow phase (default: absent)
+- `pullRequestComments.review.level` - pull request comment review level (default: absent)
 - `project.devServer.url` - dev server URL (default: null)
 - `project.devServer.command` - dev server start command (default: null)
 - `project.devServer.hmr` - Hot Module Replacement support (default: false)
@@ -129,11 +129,12 @@ Map answers:
 
 Workflow option rules:
 
-- A workflow is one named object under `workflows`, for example `default`, `product-spec`, or `idea-to-production`.
+- A workflow is one named object under `workflows`, for example `standard`, `bugfix`, or `full`.
 - Present configured workflows first, preserving config order.
-- Then present standard workflows not already configured: `default`, `full`, `quick`, `product-spec`, `technical-spec`, `plan`, `execute`, `idea-to-production`.
-- Put the recommended workflow first. If the user did not name a workflow, recommend `default` when present; otherwise recommend the first configured workflow; otherwise recommend `default`.
+- Then present standard workflows not already configured: `standard`, `quick`, `full`, `bugfix`, `product-spec`, `technical-spec`, `plan-only`, `execute-only`.
+- Put the recommended workflow first. If the user did not name a workflow, recommend `standard` when present; otherwise recommend the first configured workflow; otherwise recommend `standard`.
 - Every option description must summarize the workflow shape: `phase -> phase`, execute skills, review skills, per-phase review cycles, and outer workflow cycles.
+- Review cycles default to `3` for code and implement review phases.
 - If more workflows exist than fit comfortably in AskUserQuestion, print the full numbered workflow list before the question, show the three most likely choices in AskUserQuestion, and use Other/free-text for a workflow name or number from the printed list.
 - This question only selects the workflow to configure now. It does not configure all workflows in one run.
 
@@ -256,73 +257,41 @@ AskUserQuestion([
 
 Use Other/free-text for any positive integer. Empty free-text means "Keep current". Store the result at `workflows[selectedWorkflow].outerMaxCycles`.
 
-#### Step 4c: Configure Review softness
+#### Step 4c: Configure Review level
 
-Review softness controls which valid findings remain loud enough to appear in the main report or trigger another review loop.
+Review level controls whether valid findings route as blocking fixes, follow-up, decision-needed, or dismissed under the current workflow.
 
-Softness accepts either a label or a raw float in [0.0, 1.0].
-
-The shipped label mapping is:
-
-- `strict` -> `0.0`
-- `default` -> `0.3`
-- `lenient` -> `0.6`
-- `tactical` -> `0.85`
-- `panic` -> `1.0`
+Valid values are exactly `strict | standard | lenient | fast-track | critical`.
 
 The first option in every question preserves the current value.
 
-Ask whether the user wants to configure review softness:
+Ask whether the user wants to configure review level:
 
 ```
 AskUserQuestion([
   {
-    question: "Review softness?",
-    header: "Softness",
+    question: "Review level?",
+    header: "Review",
     multiSelect: false,
     options: [
-      { label: "Keep current (Recommended)", description: "Use the current global, workflow, phase, and label mapping values" },
+      { label: "Keep current (Recommended)", description: "Use the current global, workflow, phase, and PR comment values" },
       { label: "Set global default", description: "Applies when no workflow, phase, or surface value overrides it" },
-      { label: "Set review surfaces", description: "Configure defaults for spec-review, plan-review, code-review, or pr-comments" },
       { label: "Set selected workflow", description: "Applies to all review phases in {selectedWorkflow} unless a phase override exists" },
-      { label: "Set selected phases", description: "Configure one or more phase-specific softness values in {selectedWorkflow}" }
-    ]
-  },
-  {
-    question: "Edit softness label mapping?",
-    header: "Labels",
-    multiSelect: false,
-    options: [
-      { label: "Keep current (Recommended)", description: "Leave strict/default/lenient/tactical/panic floats unchanged" },
-      { label: "Edit mapping", description: "Change one or more label float values" }
+      { label: "Set selected phases", description: "Configure one or more phase-specific review levels in {selectedWorkflow}" },
+      { label: "Set PR comments", description: "Configure pullRequestComments.review.level" }
     ]
   }
 ])
 ```
 
-For each selected softness value, collect a label or float. Valid labels are exactly `strict`, `default`, `lenient`, `tactical`, and `panic`. Valid floats are inclusive from `0.0` to `1.0`.
-
-Suggested defaults:
-
-- `spec-review` surface: `strict`
-- `plan-review` surface: `lenient`
-- `code-review` surface: `lenient`
-- `pr-comments` surface: `lenient`
-
-Map workflow phases to review surfaces when explaining the impact:
-
-- phases using `fixme-review-spec` + `fixme-handle-spec-review` resolve with `--surface spec-review`
-- phases using `fixme-review-plan` + `fixme-handle-plan-review` resolve with `--surface plan-review`
-- phases using `fixme-review-code` + `fixme-handle-code-review` resolve with `--surface code-review`
-- `/fixme-pr-comments` resolves with `--surface pr-comments`
+For each selected value, collect one of `strict`, `standard`, `lenient`, `fast-track`, or `critical`.
 
 Stage the selected values in memory:
 
-- `review.softness.default = <label-or-float>` for global default changes
-- `review.softness.surfaces[surface] = <label-or-float>` for review surface changes
-- `review.softness.workflows[selectedWorkflow].default = <label-or-float>` for selected workflow changes
-- `review.softness.workflows[selectedWorkflow].phases[phase.name] = <label-or-float>` for selected phase changes
-- `review.softness.labels[label] = <float>` for label mapping changes
+- `review.level = <review-level>` for global default changes
+- `workflows[selectedWorkflow].review.level = <review-level>` for selected workflow changes
+- `workflows[selectedWorkflow].phases[index].review.level = <review-level>` for selected phase changes
+- `pullRequestComments.review.level = <review-level>` for PR comment changes
 
 #### Step 4d: Stage workflow update
 
@@ -609,9 +578,8 @@ Before writing, validate the config:
 6. **Review config** `maxCycles` must be a positive integer if present
 7. **Workflow outer loop** `workflows.<workflow>.outerMaxCycles` must be a positive integer if present
 8. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
-9. **Review softness** values must be either a known label (`strict`, `default`, `lenient`, `tactical`, `panic`) or a float in `[0.0, 1.0]`
-10. **Review softness label mapping** values must be floats in `[0.0, 1.0]`
-11. **Linear fields** (only if Step 6 resolved a team in this run, i.e. Linear MCP was available):
+9. **Review level** values must be one of `strict`, `standard`, `lenient`, `fast-track`, or `critical`
+10. **Linear fields** (only if Step 6 resolved a team in this run, i.e. Linear MCP was available):
    - `linear.teamId` must be a non-empty string
    - `linear.teamName` must be a non-empty string
 
@@ -653,25 +621,21 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 }
 ```
 
-Write review softness only for values changed in Step 4c:
+Write review level only for values changed in Step 4c:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.default '<json-label-or-float>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.surfaces.<surface> '<json-label-or-float>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.labels.<label> '<json-float>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.workflows.<selectedWorkflow>.default '<json-label-or-float>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.workflows.<selectedWorkflow>.phases.<phase> '<json-label-or-float>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.level '<json-review-level>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set workflows.<selectedWorkflow>.review.level '<json-review-level>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set pullRequestComments.review.level '<json-review-level>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <selectedWorkflow> --data '<workflow-json-object>'
 ```
 
 Examples:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.default '"lenient"'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.default 0.45
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.surfaces.pr-comments '"tactical"'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.labels.lenient 0.5
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.workflows.default.default '"strict"'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.softness.workflows.default.phases.implement 0.8
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set review.level '"lenient"'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set workflows.<selectedWorkflow>.review.level '"strict"'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set pullRequestComments.review.level '"fast-track"'
 ```
 
 When Step 6 resolved a Linear team in this run (regardless of backend), write the resolved team:
@@ -741,27 +705,38 @@ Config saved to <fixme-dir>/config.json
 
 ## Pipeline Definitions
 
-When seeding a missing standard workflow or offering "Use standard default", use these definitions. Each standard workflow also has this workflow-level default:
+When seeding a missing standard workflow or offering "Use standard workflow", use these definitions. Each standard workflow also has this workflow-level default:
 
 ```json
 { "outerMaxCycles": 2 }
 ```
 
-**default:**
+**standard:**
 ```json
 [
   { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } }
 ]
 ```
 
 **full:**
 ```json
 [
+  { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+  { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } },
+  { "name": "verify", "skills": ["fixme-browser-verify"] }
+]
+```
+
+**bugfix:**
+```json
+[
   { "name": "investigate", "skills": ["fixme-investigate"] },
   { "name": "research", "skills": ["fixme-research"] },
   { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } },
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } },
   { "name": "verify", "skills": ["fixme-browser-verify"] }
 ]
 ```
@@ -788,26 +763,16 @@ When seeding a missing standard workflow or offering "Use standard default", use
 ]
 ```
 
-**plan:**
+**plan-only:**
 ```json
 [
   { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } }
 ]
 ```
 
-**execute:**
+**execute-only:**
 ```json
 [
-  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
-]
-```
-
-**idea-to-production:**
-```json
-[
-  { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
-  { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
-  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+  { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } }
 ]
 ```

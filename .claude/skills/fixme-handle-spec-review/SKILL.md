@@ -44,6 +44,22 @@ If the packet and an artifact disagree, trust the artifact after verifying it di
 - **REJECT_WONT_FIX** - the finding is valid but intentionally out of scope, acceptable for this specification, contradicts a confirmed locked decision without new concrete risk, or would make the specification worse.
 - **REJECT_ALREADY_FIXED** - the issue is already addressed by the current specification or by a prior decision recorded in the decision log.
 
+## Review Claim Verification Gate
+
+Run this gate before classifying any finding as `FIX`, `FIX_UNCLEAR`, or nonblocking follow-up.
+
+A reviewer claim is a hypothesis, not evidence. Treat the reviewer's characterization and suggested specification change as inputs to test against the specification, directly referenced context, docs, and user decisions.
+
+Break the finding into atomic premises before assigning any FIX or revision route. Premises include: the specified behavior, external API/tool semantics when the specification cites them, semantic equivalence or duplication, reachability, support contract, user/system impact, and whether the suggested specification change is safe.
+
+For each essential premise, record Evidence receipts. Each receipt must name the source checked and the observed fact: specification text, referenced context documents, current source when the specification cites it as authority, dependency source/types, installed binary `--help`, rendered config/manifests, official docs for the actual project version, a controlled reproduction, or a recorded user decision.
+
+For duplicate, redundant, or equivalent-parameter claims, prove semantic equivalence before accepting the finding. Identify the exact downstream consumer or specification contract, prove both values feed the same semantic slot, prove no user journey or runtime layer depends on the distinction, and prove the suggested removal or merge would not change behavior. Lexical similarity is not evidence of duplication. Similar names, matching literals, adjacent arguments, or the same IP/port surface are search leads only.
+
+If an essential premise is unverified, contradicted, or only supported by lexical similarity, do not route the item to specification revision. Classify `REJECT_FALSE_POSITIVE` when evidence contradicts the premise. Classify `ASK_USER` when the missing premise depends on private intent or unavailable authority. Classify `FIX_UNCLEAR` only when validity is proven but the specification behavior or wording is ambiguous.
+
+Before a Specification update removes, merges, or renames an argument, config key, protocol flag, service, or generated value, trace the consuming contract and name the verification that would catch a wrong merge. If that proof is missing, do not classify as `FIX`.
+
 For edge-case findings, also assign an edge-case validity classification:
 
 - **FIX_FAIL_FAST** - the reported state is reachable but should not be supported as a normal downstream behavior. The correct specification update is to reject, constrain, parse, type-narrow, or fail earlier so later behavior never depends on the invalid state.
@@ -67,34 +83,30 @@ MINOR and INFO findings never trigger a revision loop by themselves. If a findin
 
 If the spec reviewer's per-finding verdict uses `BLOCK | FLAG | NOTE`, treat `BLOCK` as `BLOCKER` (or `MAJOR` when implementable with a single dominant interpretation), `FLAG` as `MAJOR` or `MINOR` based on the finding's blast radius, and `NOTE` as `INFO`.
 
-## Softness Routing
+## Review level Routing
 
 Use the shared `fixme-howto-importance` rubric after classification.
 
-Resolve softness with:
+Resolve review level with:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface spec-review
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
 ```
 
-Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
+Apply review level after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
 
-Softness applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
+Review level applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
 
-Floor findings from `fixme-howto-importance` are never softness-suppressed. Missing or invalid importance axes are treated as floor-equivalent for this run and must be reported with a warning.
+Missing or invalid review assessment dimensions route to `decision-needed` for this run and must be reported with a warning.
 
-Every classified finding must include one of these `Importance` outputs:
+Every classified finding must include:
 
-- `Importance: floor / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> suppressed`
-- `Importance: not-eligible / softness <resolved_float> -> not-eligible`
+- `Review level: <level>`
+- `Review assessment: reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+- `Level route: blocking-fix | follow-up | decision-needed | dismissed`
+- `Route scope: PLAN_REQUIRED | IMPLEMENT_ONLY | FOLLOWUP | NONE`
 
-For every suppressed item, add it to the suppressed ledger using this wording:
-
-`Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
-
-Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, BLOCKING_FIX_COUNT, NONBLOCKING_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
+Items with `Level route: follow-up` contribute to NONBLOCKING_COUNT. Items with `Level route: dismissed` contribute only to DISMISSED_COUNT.
 
 ## Edge-Case Validity Gate
 
@@ -143,7 +155,8 @@ Use this shape for each finding:
 - **Validity**: FIX_FAIL_FAST | ASK_USER_VALIDITY | REJECT_IMPOSSIBLE | REJECT_UNSUPPORTED | NONE
 - **Severity**: BLOCKER | MAJOR | MINOR | INFO
 - **Confidence**: HIGH | MEDIUM | LOW
-- **Importance**: Importance: floor / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> survives OR Importance: <score> / softness <resolved_float> -> suppressed OR Importance: not-eligible / softness <resolved_float> -> not-eligible
+- **Review route**: Review level: <level>; Level route: blocking-fix | follow-up | decision-needed | dismissed
+- **Evidence receipts**: Source -> observed fact for each essential premise. For duplicate/equivalent-parameter claims, include the consumer contract and semantic-equivalence proof
 - **Why**: {1-2 sentences grounded in the specification}
 - **Specification evidence**: {clickable specification location, or nearest section for absence}
 - **Question**: {ASK_USER and FIX_UNCLEAR only; full decision card from fixme-howto-present-decisions}
@@ -187,7 +200,7 @@ REJECT_IMPOSSIBLE_COUNT: <number>
 REJECT_UNSUPPORTED_COUNT: <number>
 BLOCKING_FIX_COUNT: <number>
 NONBLOCKING_COUNT: <number>
-SUPPRESSED_COUNT: <number>
+DISMISSED_COUNT: <number>
 NEXT_ACTION: DONE | SPEC_REVISION | ASK_USER_BATCH | FOLLOWUP_ONLY
 ```
 
@@ -213,9 +226,26 @@ If the configured phase has no execute skill capable of revising the specificati
 ## Rules
 
 - Read the specification before classifying. Do not trust the finding's characterization.
+- Do not accept the reviewer's stated premise as truth. Verify the premise first, then classify the finding.
 - Every `FIX` must include concrete specification text or exact specification-edit instructions.
 - Every `FIX_UNCLEAR` or `ASK_USER` must include a full decision card from `fixme-howto-present-decisions`.
 - If the user must decide whether the issue is real, classify `ASK_USER`.
 - If the issue is real but the behavior or wording is a choice, classify `FIX_UNCLEAR`.
 - If unsure between `FIX` and `REJECT_*`, classify `ASK_USER` unless the specification evidence resolves it.
 - Never skip the routing directive.
+
+## Review Level Routing Contract
+
+Resolve review level with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
+```
+
+Every classified finding includes Classification, Validity, Review assessment, Review level, Level route, Route scope, Why, Question, Approach, and Risk.
+
+Missing or invalid review assessment dimensions produce Classification: ASK_USER, Validity: NONE, Level route: decision-needed, Route scope: NONE, and WARNING: Missing review assessment dimensions: confidence.
+
+DISMISSED_COUNT: <number>
+
+Level route values: blocking-fix | follow-up | decision-needed | dismissed

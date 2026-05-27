@@ -10,7 +10,7 @@ Primary entry points:
 - **`/fixme-rebase`** - Safe branch rebasing with conflict resolution and verification.
 - **`/fixme-ticket`** - Create Linear tickets from a description or conversation context.
 - **`/fixme-brainstorm`** - Explore a feature, bug fix, or rough idea before choosing a spec, plan, or ticket path.
-- **`/fixme-config`** - Interactive configuration for workflows, model profiles, project settings, Linear, review softness, and alerts.
+- **`/fixme-config`** - Interactive configuration for workflows, model profiles, project settings, Linear, review level, and alerts.
 - **`/fixme-usage`** - Show project, global, per-skill, and per-pipeline token usage reports.
 
 ## Quick Start
@@ -21,15 +21,15 @@ Primary entry points:
 /fixme-task fix the login button being unresponsive on mobile
 ```
 
-Runs the default pipeline: plan -> review -> execute -> code review. Fully automated with review loops that catch issues before they ship.
+Runs the standard workflow: plan -> review -> execute -> code review. Fully automated with review loops that catch issues before they ship.
 
 ### Fix a task with a specific pipeline
 
 ```text
-/fixme-task full investigate why the checkout flow fails on Safari
+/fixme-task bugfix investigate why the checkout flow fails on Safari
 ```
 
-Runs the "full" pipeline: investigate -> research -> plan -> implement -> verify. Adds browser reproduction and codebase research before planning.
+Runs the `bugfix` workflow: investigate -> research -> plan -> implement -> verify. `full` is the product-spec -> technical-spec -> plan -> implement -> verify feature lifecycle.
 
 ### Write specifications explicitly
 
@@ -49,7 +49,7 @@ Runs the "full" pipeline: investigate -> research -> plan -> implement -> verify
 /fixme-task --idea-to-production describe the full feature
 ```
 
-`--plan` runs the planning loop from source material. `--execute` runs implementation and code review from an existing plan. `--idea-to-production` runs product specification -> technical specification -> plan -> implementation with review loops at every stage.
+`--plan` runs the `plan-only` loop from source material. `--execute` runs `execute-only` implementation and code review from an existing plan. `--idea-to-production` remains an alias for `full`.
 
 ### Let fixme-task auto-detect the next step
 
@@ -59,7 +59,7 @@ Runs the "full" pipeline: investigate -> research -> plan -> implement -> verify
 /fixme-task /absolute/path/to/plan.md
 ```
 
-When no pipeline is named, `fixme-task` detects the artifact type from the path and headings. Product specifications continue to `technical-spec`, technical specifications continue to `plan`, and implementation plans continue to `execute`.
+When no pipeline is named, `fixme-task` detects the artifact type from the path and headings. Product specifications continue to `technical-spec`, technical specifications continue to `plan-only`, and implementation plans continue to `execute-only`.
 
 ### Run a bug fix session
 
@@ -116,7 +116,7 @@ Runs a one-question-at-a-time discovery flow, captures decisions to a brainstorm
 /fixme-config
 ```
 
-Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget/inherit), review softness, project commands (install/build/lint/test), ticket backend, Linear team metadata, and audible alerts. Auto-detects project commands from `package.json` on first run.
+Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget/inherit), review level, project commands (install/build/lint/test), ticket backend, Linear team metadata, and audible alerts. Auto-detects project commands from `package.json` on first run.
 
 `/fixme-config` writes through `fixme-tools.cjs config` commands, not by hand-editing JSON. The tool creates missing config files, backfills newly added standard workflows, validates workflow cycle limits, preserves custom config, and writes atomically.
 
@@ -147,11 +147,11 @@ Workflows are defined in `.fixme/config.json`:
 ```json
 {
   "workflows": {
-    "default": {
+    "standard": {
       "outerMaxCycles": 2,
       "phases": [
         { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } }
       ]
     },
     "product-spec": {
@@ -160,20 +160,29 @@ Workflows are defined in `.fixme/config.json`:
         { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } }
       ]
     },
-    "idea-to-production": {
+    "bugfix": {
       "outerMaxCycles": 2,
       "phases": [
-        { "name": "product-spec", "skills": ["fixme-write-product-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
-        { "name": "technical-spec", "skills": ["fixme-write-technical-spec"], "review": { "skills": ["fixme-review-spec", "fixme-handle-spec-review"], "maxCycles": 3 } },
+        { "name": "investigate", "skills": ["fixme-investigate"] },
+        { "name": "research", "skills": ["fixme-research"] },
         { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
-        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 2 } }
+        { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } },
+        { "name": "verify", "skills": ["fixme-browser-verify"] }
       ]
+    }
+  },
+  "review": {
+    "level": "standard"
+  },
+  "pullRequestComments": {
+    "review": {
+      "level": "standard"
     }
   }
 }
 ```
 
-No config file? Falls back to standard workflows built into `fixme-task`. Plain `/fixme-task ...` uses the default workflow unless the input clearly contains a product specification, technical specification, or implementation plan.
+No config file? Falls back to standard workflows built into `fixme-task`. Plain `/fixme-task ...` uses the `standard` workflow unless the input clearly contains a product specification, technical specification, or implementation plan. Review level values are `strict | standard | lenient | fast-track | critical`, configured through `review.level`, `workflows.<workflow>.review.level`, phase `review.level`, and `pullRequestComments.review.level`.
 
 Legacy configs using `pipelines` plus `workflowControls` are migrated to `workflows` by `fixme-tools.cjs config migrate`.
 
@@ -185,7 +194,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config ensure
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert <user_input|task_finished|task_failed>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
@@ -242,7 +251,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-ticket` | Create Linear tickets from description or conversation context |
-| `fixme-config` | Interactive configuration for workflows, models, review softness, project settings, Linear, and alerts |
+| `fixme-config` | Interactive configuration for workflows, models, review level, project settings, Linear, and alerts |
 | `fixme-usage` | Show project, global, per-skill, and per-pipeline token usage reports |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |

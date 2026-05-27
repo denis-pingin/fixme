@@ -1,129 +1,69 @@
 ---
 name: fixme-howto-importance
-description: Shared review-importance and softness rubric for fixme reviewers, handlers, and PR comment triage. Defines axes, floor findings, scoring, suppression, and aggregation.
+description: Shared review assessment and review-level gate rubric for fixme reviewers, handlers, and PR comment triage.
 ---
 
-# Review Importance and Softness
+# Review Assessment and Review Level Gate
 
-Review softness controls which valid findings remain loud enough to show in the main report or route into another fix loop. It does not reduce review coverage.
+Review assessment is the evidence-backed dimension block emitted for every finding before judgement. Review level is the configured gate that turns a classified finding into one of four visible routes.
 
-softness 0.0 is loudest and softness 1.0 is most permissive. At 0.0, every valid finding survives softness. At 1.0, only floor findings survive.
+## Required Dimensions
 
-## Required Importance Axes
+Every review finding must carry these dimensions exactly:
 
-Every review finding must carry these axes exactly:
+- `reachability`
+- `state_contract`
+- `trigger_window`
+- `target_scale`
+- `impact`
+- `fix_risk`
+- `confidence`
 
-- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
-- `user_impact: user-visible | internal-shippable | internal-dev-only`
-- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
-- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
-- `confidence: HIGH | MEDIUM | LOW`
-- `fix_risk: localized | cross-cutting | speculative-rewrite`
+Use this compact output shape:
 
-If a reviewer cannot assign one axis from evidence, it must say so in the finding. The handler treats missing or invalid axes as floor-equivalent for that run, keeps the finding visible, and reports a warning.
+```text
+Review assessment: reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>
+```
 
-All harm classes are valid emissions from spec review, plan review, code review, and PR comment triage. For example, a spec review can emit `test-fakeness` when the specification asks for tests that copy business logic instead of exercising production code.
+Reviewers do not assign handler classification or level-route metadata.
 
-## Floor Findings
+## Dimension Meanings
 
-The floor is the non-negotiable set of harm classes that softness cannot suppress:
+- `reachability`: whether the issue can execute or affect the reviewed workflow.
+- `state_contract`: whether the reported state is supported, unsupported, impossible, or unclear.
+- `trigger_window`: when the issue can occur, such as always, common path, rare path, or only during an existing failure.
+- `target_scale`: who or what is affected, such as one item, one workflow, many users, or project-wide behavior.
+- `impact`: `blocking`, `incorrect`, `data-loss`, `security`, `privacy`, `migration`, `test-validity`, `maintainability`, or `none`.
+- `fix_risk`: `localized`, `cross-cutting`, or `speculative-rewrite`.
+- `confidence`: `high`, `medium`, or `low`.
 
-- `correctness`
-- `security`
-- `privacy`
-- `data-loss`
-- `migration`
-- `test-fakeness`
-- `stub-claimed-complete`
-- `locked-decision-violation`
+Malformed assessment data routes to decision-needed. Missing or invalid dimensions produce a warning naming the dimensions, and the handler must not silently choose a fix route.
 
-Floor findings always appear in the main report and always route through normal handler rules. A floor finding can still be rejected as a false positive or wont-fix if the handler proves that classification independently; softness is not involved in that decision.
+## Level Routes
 
-A finding is floor only when the issue itself would ship one of the explicit floor harms. The floor is not a priority label, a reviewer pressure label, or a synonym for "valid".
+Level route values are:
 
-BLOCKER severity does not imply floor. Severity decides how urgent or blocking the issue is; `harm_class` decides whether softness can suppress it.
+```text
+blocking-fix | follow-up | decision-needed | dismissed
+```
 
-Do not assign a floor harm_class for project-rule violations, style cleanup, duplicated branches, doc/comment mismatch, ordinary maintainability, generic test hygiene, or raw JSON parsing by itself. Those are normally `harm_class=none` unless the evidence proves a concrete correctness, security, privacy, data-loss, migration, test-fakeness, stub-claimed-complete, or locked-decision-violation harm.
+- `blocking-fix`: fix in the current workflow before advancing.
+- `follow-up`: record visibly for later work; do not hide it.
+- `decision-needed`: ask the user because validity, supported behavior, or fix approach cannot be selected safely from evidence.
+- `dismissed`: no action because the item is false positive, already fixed, out of scope with no required current action, impossible by construction, or `impact=none`.
 
-`correctness` is narrow: shipped behavior is wrong, silently dropped, crashes, corrupts state, or fails a required workflow under a credible trigger condition. A code smell, cleanup, project convention violation, or confusing branch is not correctness by itself.
+## Review-Level Gate
 
-`test-fakeness` is narrow: tests that copy production or business logic, assert a reimplementation instead of exercising production code, or pass without the production behavior being wired. A missing test, missing mock, noisy test logger, or generic test hygiene issue is not `test-fakeness` by itself.
+Handlers apply the active review level after classification and assessment validation.
 
-## Deterministic Importance Score
+- `strict`: valid blocking, incorrect, data-loss, security, privacy, migration, and test-validity findings route to `blocking-fix`; lower-impact valid findings route to `follow-up`.
+- `standard`: valid user-visible or shippable correctness and safety findings route to `blocking-fix`; localized maintainability findings route to `follow-up`.
+- `lenient`: only high-confidence shippable correctness and safety findings route to `blocking-fix`; the rest route to `follow-up`.
+- `fast-track`: only severe high-confidence findings route to `blocking-fix`; most valid findings route to `follow-up`.
+- `critical`: only data-loss, security, privacy, migration blockers, or unusable workflows route to `blocking-fix`.
 
-Handlers compute importance for non-floor findings from the axes. Reviewers do not assign numeric importance directly.
+Follow-up visibility is mandatory. A follow-up route must preserve enough evidence for a later ticket, PR comment reply, or run summary entry.
 
-Use this deterministic formula for non-floor findings:
+## Aggregation
 
-1. Start at `0.0`.
-2. Add user impact:
-   - `user-visible`: `0.35`
-   - `internal-shippable`: `0.20`
-   - `internal-dev-only`: `0.05`
-3. Add fire rate:
-   - `hot-path`: `0.25`
-   - `warm-path`: `0.15`
-   - `rare-path`: `0.05`
-   - `only-during-existing-failure`: `0.0`
-4. Add reversibility:
-   - `irreversible-once-shipped`: `0.25`
-   - `costly-later`: `0.15`
-   - `cheap-later`: `0.05`
-5. Add confidence:
-   - `HIGH`: `0.10`
-   - `MEDIUM`: `0.0`
-   - `LOW`: `-0.10`
-6. Subtract fix risk:
-   - `localized`: `0.0`
-   - `cross-cutting`: `0.10`
-   - `speculative-rewrite`: `0.25`
-7. Clamp the result to `[0.0, 0.99]`.
-
-The `0.99` cap is intentional: softness=1.0 suppresses every non-floor finding regardless of computed importance.
-
-## Suppression Rule
-
-Softness applies to FIX and FIX_UNCLEAR only.
-
-ASK_USER and all REJECT_* classifications stay visible through their existing paths. ASK_USER is about missing validity or scope context; softness cannot answer that question. REJECT_* items are already non-actionable or already handled; softness does not change their classification.
-
-For every non-floor FIX or FIX_UNCLEAR finding:
-
-- if `importance >= active_softness` and `active_softness < 1.0`, keep it in the main report and include it in routing counts
-- if `importance < active_softness`, suppress it into the ledger and remove it from routing counts
-- if `active_softness = 1.0`, suppress it into the ledger regardless of computed importance
-
-Suppression is never silent. Every suppressed record must include the finding ID, configured softness, resolved softness float, importance score, all axes, and the full finding body or a durable pointer to that body.
-
-Every classified review item must include an `Importance` line. This applies to FIX, FIX_UNCLEAR, ASK_USER, REJECT_*, FOLLOWUP_ONLY, and already-fixed items. Reviewers emit axes; handlers and PR comment triage emit the resolved importance result.
-
-Use one of these exact output shapes:
-
-- `Importance: floor / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> suppressed`
-- `Importance: not-eligible / softness <resolved_float> -> not-eligible`
-
-Use ASCII `->` exactly. Do not use Unicode arrows.
-
-Use `not-eligible` for ASK_USER, REJECT_*, already-fixed items, and file-overlap-only deferral candidates. Keep those items visible through their normal route; softness does not decide them.
-
-Use this ledger wording:
-
-`Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
-
-## Pattern Aggregation
-
-Aggregate before suppression.
-
-Aggregate only findings that share severity, category, surface, and harm_class. When 5 or more findings share those keys in a single review phase, collapse them into one aggregated MAJOR finding before computing importance.
-
-The aggregate inherits the shared `harm_class`. The aggregate references every original finding ID so the user can recover the individual bodies on demand.
-
-Do not aggregate across review phases. Do not stream-aggregate while findings are still being discovered. Aggregation runs once after all findings for that phase are emitted and before importance scoring.
-
-## File-Overlap Deferral Guard
-
-Softness cannot bypass the PR comment rule that file overlap alone is not a valid deferral reason.
-
-If a PR comment's only reason for deferral is "same file", "area is being reworked", "stack-mate", or similar file-overlap wording without a named code path being superseded, it is not eligible for softness suppression. Keep it visible and mark why it failed the softness eligibility gate.
+Aggregate only findings that share route, severity, category, impact, and affected workflow. Do not aggregate findings that need different user decisions or different implementation approaches.

@@ -198,13 +198,13 @@ This is the core execution cycle. Repeat until the user stops the session or the
    The intake-agent should already have run via the Intake Dispatch Procedure. If the ticket is in `queued` state with a populated title/description, intake has completed. If the ticket is bare (no title), something went wrong - transition to failed.
 
 4. **Determine pipeline:**
-   Read `<fixme-dir>/config.json` to determine which pipeline to use for this ticket. Default: `"full"` for bug fix sessions (has investigate + research + plan + implement + verify). The pipeline name will be passed to fixme-task.
+   Read `<fixme-dir>/config.json` to determine which workflow to use for this ticket. Default: `"bugfix"` for bug fix sessions (investigate -> research -> plan -> implement -> verify). Store the selected workflow name for both fixme-task dispatch and the pre-pipeline ticket transition command.
 
 5. **Optionally dispatch pre-pipeline phases (synchronous):**
    If the pipeline has an `investigate` phase AND the session has a browser environment, dispatch the investigation agent synchronously (it needs the live browser).
 
-   **Before dispatching, transition the ticket to investigating:**
-   Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md investigating`
+   **Before dispatching, transition the ticket to investigate:**
+   Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md investigate --pipeline <pipeline name from step 4>`
    If the transition fails, transition to failed and skip to next ticket (go to step 2).
 
    **Resolve runtime settings and print visibility banner before dispatch:**

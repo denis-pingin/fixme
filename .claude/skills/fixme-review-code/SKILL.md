@@ -99,7 +99,25 @@ The duplication this principle covers is not limited to byte-identical functions
 - **Type/alias renames** - an alias that renames an existing type without adding meaning
 - **Speculative split** - two names introduced for "future divergence" with no divergence in the bodies today
 
-The question is never "could these legitimately diverge later?" - it is "do they differ today?" Speculative future divergence is not a license to ship duplication. Split when divergence actually arrives, not before.
+The question is never "could these legitimately diverge later?" - it is "do they differ today in behavior, contract, or documented semantics?" Speculative future divergence is not a license to ship duplication. A verified present-day semantic distinction is.
+
+## Semantic Equivalence Gate for Duplication Findings
+
+Do not report duplicate, redundant, or equivalent parameters until semantic equivalence is proven. This gate applies to CLI flags, Helm values, environment variables, config keys, service ports, protocol selectors, API arguments, type aliases, constants, and any other values where two names or literals look like they might represent the same thing.
+
+Two values that look similar may encode different protocol versions, transports, network roles, runtime layers, or consumer contracts. A numeric suffix, matching literal, similar name, adjacent declaration, or shared destination file is a search lead, not proof.
+
+Before emitting any DRY-AND-SIMPLICITY finding that proposes removing, merging, renaming, or parameterizing one value into another, prove all of these:
+
+1. **Same consumer contract** - identify the exact downstream parser, binary, API, chart template, generated manifest, or runtime code that consumes both values.
+2. **Same semantic slot** - prove both values feed the same meaning in that consumer, not separate meanings such as protocol version, verbosity level, transport, endpoint role, tenant, environment, or discovery mode.
+3. **Same runtime effect** - verify from local source/types, installed binary `--help`, official docs for the project version, rendered config, or a controlled reproduction that removing one value does not change behavior.
+4. **No distinct caller obligation** - trace call sites and deployment wiring to prove no caller, service, or operator depends on the distinction.
+5. **Safe suggested change** - if the suggestion removes or merges a value, state which tests, renders, or runtime probes would catch a wrong merge.
+
+Evidence receipts are mandatory for this gate. Each receipt names the source checked and the observed fact, for example: `binary --help: -v5 selects discovery v5`, `chart render: --verbosity=5 is passed to log level`, or `source: both flags map to the same parser field`.
+
+Lexical similarity is not evidence of duplication. If semantic equivalence is not proven, do not emit a finding. If a distinction is unclear but the risk looks real, put it in Questions instead of recommending a fix.
 
 **Dimension 9: DRY and Simplicity** operationalizes this principle. Despite its position in the list, it is checked first - the Findings ordering rule places `DRY-AND-SIMPLICITY` ahead of every other category, and the Rules section makes its findings BLOCKER by default.
 
@@ -368,18 +386,18 @@ The Suggestion must classify which case applies based on the plan's intent. When
 
 **The review is a two-pass process. Do not emit findings as you discover them.**
 
-## Importance axes
+## Review assessment
 
 Use the shared `fixme-howto-importance` rubric for every finding. Every finding must include:
 
-- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
-- `user_impact: user-visible | internal-shippable | internal-dev-only`
-- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
-- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
-- `confidence: HIGH | MEDIUM | LOW`
-- `fix_risk: localized | cross-cutting | speculative-rewrite`
+- `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+- ``
+- ``
+- ``
+- ``
+- ``
 
-Assign axes from verified implementation, plan, specification, test, and codebase evidence. Do not assign a numeric importance score; the handler computes that deterministically from these axes.
+Assign axes from verified implementation, plan, specification, test, and codebase evidence. Do not assign a numeric assessment route; the handler computes that deterministically from these axes.
 
 ### Pass 1: Investigation (internal, not in output)
 
@@ -460,7 +478,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | **Evidence** | The code that demonstrates the problem. For test issues: show both the test code and the production code it should be exercising |
 | **Suggestion** | How to fix it. Concrete: name the file, the function, what to change. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
 | **Confidence** | HIGH / MEDIUM / LOW |
-| **Importance axes** | `harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>` from `fixme-howto-importance`. Do not emit a numeric importance score. |
+| **Review assessment** | `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>` from `fixme-howto-importance`. Reviewers do not assign handler classification, level route, numeric scores, or suppression. |
 
 ### Report Structure
 

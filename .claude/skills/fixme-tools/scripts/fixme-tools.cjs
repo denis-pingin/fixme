@@ -103,7 +103,7 @@ const CODEX_REASONING_PROFILES = {
 };
 
 const STANDARD_PIPELINES = {
-  default: [
+  standard: [
     {
       name: 'plan',
       skills: ['fixme-write-plan'],
@@ -112,10 +112,33 @@ const STANDARD_PIPELINES = {
     {
       name: 'implement',
       skills: ['fixme-execute-plan'],
-      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 },
     },
   ],
   full: [
+    {
+      name: 'product-spec',
+      skills: ['fixme-write-product-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+    {
+      name: 'technical-spec',
+      skills: ['fixme-write-technical-spec'],
+      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
+    },
+    {
+      name: 'plan',
+      skills: ['fixme-write-plan'],
+      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+    },
+    {
+      name: 'implement',
+      skills: ['fixme-execute-plan'],
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 },
+    },
+    { name: 'verify', skills: ['fixme-browser-verify'] },
+  ],
+  bugfix: [
     { name: 'investigate', skills: ['fixme-investigate'] },
     { name: 'research', skills: ['fixme-research'] },
     {
@@ -126,7 +149,7 @@ const STANDARD_PIPELINES = {
     {
       name: 'implement',
       skills: ['fixme-execute-plan'],
-      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 },
     },
     { name: 'verify', skills: ['fixme-browser-verify'] },
   ],
@@ -148,65 +171,43 @@ const STANDARD_PIPELINES = {
       review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
     },
   ],
-  plan: [
+  'plan-only': [
     {
       name: 'plan',
       skills: ['fixme-write-plan'],
       review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
     },
   ],
-  execute: [
+  'execute-only': [
     {
       name: 'implement',
       skills: ['fixme-execute-plan'],
-      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
-    },
-  ],
-  'idea-to-production': [
-    {
-      name: 'product-spec',
-      skills: ['fixme-write-product-spec'],
-      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
-    },
-    {
-      name: 'technical-spec',
-      skills: ['fixme-write-technical-spec'],
-      review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 },
-    },
-    {
-      name: 'plan',
-      skills: ['fixme-write-plan'],
-      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
-    },
-    {
-      name: 'implement',
-      skills: ['fixme-execute-plan'],
-      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 },
+      review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 },
     },
   ],
 };
 
 const STANDARD_OUTER_MAX_CYCLES = 2;
 const STANDARD_PIPELINE_NAMES = Object.keys(STANDARD_PIPELINES);
+const REVIEW_LEVELS = Object.freeze(['strict', 'standard', 'lenient', 'fast-track', 'critical']);
+const VALID_REVIEW_LEVELS = new Set(REVIEW_LEVELS);
+const LEGACY_WORKFLOW_ALIASES = Object.freeze({
+  default: 'standard',
+  plan: 'plan-only',
+  execute: 'execute-only',
+  'idea-to-production': 'full',
+});
+const LEGACY_SOFTNESS_LABEL_TO_LEVEL = Object.freeze({
+  strict: 'strict',
+  default: 'standard',
+  lenient: 'lenient',
+  tactical: 'fast-track',
+  panic: 'critical',
+});
 const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
 const VALID_RUNTIME_VALUES = new Set(['claude', 'codex']);
 const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
-const DEFAULT_SOFTNESS_LABELS = Object.freeze({
-  strict: 0.0,
-  default: 0.3,
-  lenient: 0.6,
-  tactical: 0.85,
-  panic: 1.0,
-});
-const DEFAULT_SOFTNESS_SURFACES = Object.freeze({
-  'spec-review': 'strict',
-  'plan-review': 'lenient',
-  'code-review': 'lenient',
-  'pr-comments': 'lenient',
-});
-const VALID_SOFTNESS_LABELS = new Set(Object.keys(DEFAULT_SOFTNESS_LABELS));
-const VALID_REVIEW_SURFACES = new Set(Object.keys(DEFAULT_SOFTNESS_SURFACES));
 const FIXME_CODEX_MARKER = '# Fixme Agent Configuration - managed by fixme installer';
 const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
 const GSD_CODEX_MARKER_PREFIX = '# GSD Agent Configuration';
@@ -1190,7 +1191,17 @@ function loadPipelinePhases(pipelineName, fixmeRoot) {
 
   try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const workflow = getWorkflowDefinition(config, pipelineName);
+    const normalizedName = normalizeWorkflowName(pipelineName);
+    let workflow = getWorkflowDefinition(config, normalizedName);
+    if (!workflow && isPlainObject(config.pipelines) && Array.isArray(config.pipelines[pipelineName])) {
+      workflow = {
+        outerMaxCycles: getLegacyOuterMaxCycles(config, pipelineName) || STANDARD_OUTER_MAX_CYCLES,
+        phases: config.pipelines[pipelineName],
+      };
+    }
+    if (!workflow && STANDARD_PIPELINES[normalizedName]) {
+      workflow = makeStandardWorkflow(normalizedName);
+    }
     if (!workflow || !Array.isArray(workflow.phases)) return null;
     // Filter out disabled phases (enabled defaults to true)
     return workflow.phases
@@ -1214,8 +1225,26 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function jsonEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function isPositiveInteger(value) {
   return Number.isInteger(value) && value > 0;
+}
+
+function normalizeWorkflowName(name) {
+  return LEGACY_WORKFLOW_ALIASES[name] || name;
+}
+
+function isValidReviewLevel(value) {
+  return typeof value === 'string' && VALID_REVIEW_LEVELS.has(value);
+}
+
+function validateReviewLevelValue(value, configPath) {
+  if (!isValidReviewLevel(value)) {
+    throw new Error(`${configPath} must be one of: ${REVIEW_LEVELS.join(', ')}`);
+  }
 }
 
 function configPathForRoot(fixmeRoot) {
@@ -1310,55 +1339,6 @@ function writeConfigAtomic(configPath, config) {
   fs.renameSync(tmpPath, configPath);
 }
 
-function ensureReviewSoftnessConfig(config) {
-  let migrated = false;
-
-  if (!isPlainObject(config.review)) {
-    config.review = {};
-    migrated = true;
-  }
-
-  if (!isPlainObject(config.review.softness)) {
-    config.review.softness = {};
-    migrated = true;
-  }
-
-  const softness = config.review.softness;
-  if (!Object.prototype.hasOwnProperty.call(softness, 'default')) {
-    softness.default = 'default';
-    migrated = true;
-  }
-
-  if (!isPlainObject(softness.labels)) {
-    softness.labels = {};
-    migrated = true;
-  }
-  for (const [label, value] of Object.entries(DEFAULT_SOFTNESS_LABELS)) {
-    if (!Object.prototype.hasOwnProperty.call(softness.labels, label)) {
-      softness.labels[label] = value;
-      migrated = true;
-    }
-  }
-
-  if (!isPlainObject(softness.surfaces)) {
-    softness.surfaces = {};
-    migrated = true;
-  }
-  for (const [surface, value] of Object.entries(DEFAULT_SOFTNESS_SURFACES)) {
-    if (!Object.prototype.hasOwnProperty.call(softness.surfaces, surface)) {
-      softness.surfaces[surface] = value;
-      migrated = true;
-    }
-  }
-
-  if (!isPlainObject(softness.workflows)) {
-    softness.workflows = {};
-    migrated = true;
-  }
-
-  return migrated;
-}
-
 function ensureAlertsConfig(config) {
   let changed = false;
 
@@ -1408,30 +1388,237 @@ function ensureUsageConfig(config) {
   return changed;
 }
 
-function applyConfigMigration(config) {
+function isOldBugfixWorkflow(workflow) {
+  if (!hasWorkflowPhases(workflow)) return false;
+  const tuples = workflow.phases.map(phase => [
+    phase && phase.name,
+    Array.isArray(phase && phase.skills) ? phase.skills[0] : null,
+  ]);
+  return jsonEqual(tuples, [
+    ['investigate', 'fixme-investigate'],
+    ['research', 'fixme-research'],
+    ['plan', 'fixme-write-plan'],
+    ['implement', 'fixme-execute-plan'],
+    ['verify', 'fixme-browser-verify'],
+  ]);
+}
+
+function isFinalFullWorkflow(workflow) {
+  if (!hasWorkflowPhases(workflow)) return false;
+  const tuples = workflow.phases.map(phase => [
+    phase && phase.name,
+    Array.isArray(phase && phase.skills) ? phase.skills[0] : null,
+  ]);
+  return jsonEqual(tuples, [
+    ['product-spec', 'fixme-write-product-spec'],
+    ['technical-spec', 'fixme-write-technical-spec'],
+    ['plan', 'fixme-write-plan'],
+    ['implement', 'fixme-execute-plan'],
+    ['verify', 'fixme-browser-verify'],
+  ]);
+}
+
+function setReviewLevel(target, level) {
+  if (!isPlainObject(target.review)) target.review = {};
+  if (target.review.level !== level) {
+    target.review.level = level;
+    return true;
+  }
+  return false;
+}
+
+function legacySoftnessToLevel(value) {
+  if (Object.prototype.hasOwnProperty.call(LEGACY_SOFTNESS_LABEL_TO_LEVEL, value)) {
+    return LEGACY_SOFTNESS_LABEL_TO_LEVEL[value];
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value < 0 || value > 1) return null;
+    if (value <= 0.15) return 'strict';
+    if (value <= 0.45) return 'standard';
+    if (value <= 0.725) return 'lenient';
+    if (value < 0.925) return 'fast-track';
+    return 'critical';
+  }
+  return null;
+}
+
+function convertLegacySoftnessValue(value, configPath, result) {
+  const level = legacySoftnessToLevel(value);
+  if (level) return level;
+  result.warnings.push({
+    warning: 'invalid_legacy_review_softness',
+    configPath,
+    value,
+    fallback: 'next review-level fallback',
+  });
+  return null;
+}
+
+function validateFinalReviewLevels(config, configFilePath) {
+  const check = (value, configPath) => {
+    if (value !== undefined && !isValidReviewLevel(value)) {
+      throw new CliJsonError({ error: 'invalid_review_level', path: configFilePath, configPath, value });
+    }
+  };
+
+  check(config.review && config.review.level, 'review.level');
+  if (isPlainObject(config.pullRequestComments) && isPlainObject(config.pullRequestComments.review)) {
+    check(config.pullRequestComments.review.level, 'pullRequestComments.review.level');
+  }
+  if (!isPlainObject(config.workflows)) return;
+  for (const [workflowName, workflow] of Object.entries(config.workflows)) {
+    if (!isPlainObject(workflow)) continue;
+    check(workflow.review && workflow.review.level, `workflows.${workflowName}.review.level`);
+    if (!Array.isArray(workflow.phases)) continue;
+    workflow.phases.forEach((phase, index) => {
+      if (isPlainObject(phase) && isPlainObject(phase.review)) {
+        check(phase.review.level, `workflows.${workflowName}.phases[${index}].review.level`);
+      }
+    });
+  }
+}
+
+function moveWorkflow(config, from, to, result, workflowMoveMap) {
+  if (!hasWorkflowPhases(config.workflows[from])) return false;
+  if (hasWorkflowPhases(config.workflows[to])) {
+    if (!jsonEqual(config.workflows[from], config.workflows[to])) {
+      throw new CliJsonError({ error: 'workflow_name_conflict', path: result.configPath, from, to });
+    }
+    delete config.workflows[from];
+  } else {
+    config.workflows[to] = config.workflows[from];
+    delete config.workflows[from];
+  }
+  workflowMoveMap.set(from, to);
+  result.renamedWorkflows.push({ from, to });
+  result.migrated = true;
+  return true;
+}
+
+function phaseReviewSurface(phase) {
+  const reviewSkills = phase && phase.review && Array.isArray(phase.review.skills) ? phase.review.skills : [];
+  if (reviewSkills.includes('fixme-review-spec')) return 'spec-review';
+  if (reviewSkills.includes('fixme-review-plan')) return 'plan-review';
+  if (reviewSkills.includes('fixme-review-code')) return 'code-review';
+  return null;
+}
+
+function convertLegacySoftness(config, workflowMoveMap, result) {
+  const softness = config.review && config.review.softness;
+  if (!isPlainObject(softness)) return;
+
+  if (Object.prototype.hasOwnProperty.call(softness, 'default')) {
+    const globalLevel = convertLegacySoftnessValue(softness.default, 'review.softness.default', result);
+    if (globalLevel && config.review.level !== globalLevel) {
+      config.review.level = globalLevel;
+      result.migrated = true;
+      result.migratedReviewLevel = true;
+    }
+  }
+
+  if (isPlainObject(softness.workflows)) {
+    for (const [legacyWorkflowName, legacyWorkflow] of Object.entries(softness.workflows)) {
+      if (!isPlainObject(legacyWorkflow)) continue;
+      const workflowName = workflowMoveMap.get(legacyWorkflowName) || normalizeWorkflowName(legacyWorkflowName);
+      if (!hasWorkflowPhases(config.workflows[workflowName]) && STANDARD_PIPELINES[workflowName]) {
+        config.workflows[workflowName] = makeStandardWorkflow(workflowName);
+        if (!result.addedWorkflows.includes(workflowName)) result.addedWorkflows.push(workflowName);
+        result.migrated = true;
+      }
+      const workflow = config.workflows && config.workflows[workflowName];
+      if (!hasWorkflowPhases(workflow)) continue;
+
+      const workflowLevel = Object.prototype.hasOwnProperty.call(legacyWorkflow, 'default')
+        ? convertLegacySoftnessValue(legacyWorkflow.default, `review.softness.workflows.${legacyWorkflowName}.default`, result)
+        : null;
+      if (workflowLevel && setReviewLevel(workflow, workflowLevel)) {
+        result.migrated = true;
+        result.migratedReviewLevel = true;
+      }
+
+      if (isPlainObject(legacyWorkflow.phases)) {
+        for (const phase of workflow.phases) {
+          if (!Object.prototype.hasOwnProperty.call(legacyWorkflow.phases, phase.name)) continue;
+          const phaseLevel = convertLegacySoftnessValue(
+            legacyWorkflow.phases[phase.name],
+            `review.softness.workflows.${legacyWorkflowName}.phases.${phase.name}`,
+            result
+          );
+          if (phaseLevel && setReviewLevel(phase, phaseLevel)) {
+            result.migrated = true;
+            result.migratedReviewLevel = true;
+          }
+        }
+      }
+    }
+  }
+
+  if (isPlainObject(softness.surfaces)) {
+    for (const name of STANDARD_PIPELINE_NAMES) {
+      if (!hasWorkflowPhases(config.workflows[name])) {
+        config.workflows[name] = makeStandardWorkflow(name);
+        if (!result.addedWorkflows.includes(name)) result.addedWorkflows.push(name);
+        result.migrated = true;
+      }
+    }
+    const surfaceLevels = {};
+    for (const surface of ['spec-review', 'plan-review', 'code-review']) {
+      if (Object.prototype.hasOwnProperty.call(softness.surfaces, surface)) {
+        surfaceLevels[surface] = convertLegacySoftnessValue(softness.surfaces[surface], `review.softness.surfaces.${surface}`, result);
+      }
+    }
+    for (const workflow of Object.values(config.workflows || {})) {
+      if (!hasWorkflowPhases(workflow)) continue;
+      for (const phase of workflow.phases) {
+        if (!isPlainObject(phase) || !isPlainObject(phase.review)) continue;
+        if (phase.review.level !== undefined) continue;
+        if (workflow.review && workflow.review.level !== undefined) continue;
+        const surface = phaseReviewSurface(phase);
+        const surfaceLevel = surface && surfaceLevels[surface];
+        if (surfaceLevel && setReviewLevel(phase, surfaceLevel)) {
+          result.migrated = true;
+          result.migratedReviewLevel = true;
+        }
+      }
+    }
+  }
+
+  const prLevel = isPlainObject(softness.surfaces) && Object.prototype.hasOwnProperty.call(softness.surfaces, 'pr-comments')
+    ? convertLegacySoftnessValue(softness.surfaces['pr-comments'], 'review.softness.surfaces.pr-comments', result)
+    : null;
+  if (prLevel) {
+    if (!isPlainObject(config.pullRequestComments)) config.pullRequestComments = {};
+    if (setReviewLevel(config.pullRequestComments, prLevel)) {
+      result.migrated = true;
+      result.migratedReviewLevel = true;
+    }
+  }
+
+  delete config.review.softness;
+  result.removedLegacyReviewKeys.push('review.softness');
+  result.migrated = true;
+}
+
+function applyConfigMigration(config, configPath = null) {
   const result = {
     migrated: false,
     addedWorkflows: [],
     migratedLegacyWorkflows: [],
     removedLegacyKeys: [],
+    renamedWorkflows: [],
+    migratedReviewLevel: false,
+    removedLegacyReviewKeys: [],
+    warnings: [],
+    configPath,
   };
+  const workflowMoveMap = new Map();
 
   if (!isPlainObject(config.workflows)) {
     config.workflows = {};
     result.migrated = true;
   }
 
-  if (ensureReviewSoftnessConfig(config)) {
-    result.migrated = true;
-  }
-
-  if (ensureAlertsConfig(config)) {
-    result.migrated = true;
-  }
-
-  if (ensureUsageConfig(config)) {
-    result.migrated = true;
-  }
+  validateFinalReviewLevels(config, configPath);
 
   if (isPlainObject(config.pipelines)) {
     for (const [name, phases] of Object.entries(config.pipelines)) {
@@ -1468,6 +1655,31 @@ function applyConfigMigration(config) {
     result.removedLegacyKeys.push('workflowControls');
   }
 
+  if (hasWorkflowPhases(config.workflows.full)) {
+    if (isOldBugfixWorkflow(config.workflows.full)) {
+      moveWorkflow(config, 'full', 'bugfix', result, workflowMoveMap);
+    } else if (!isFinalFullWorkflow(config.workflows.full)) {
+      throw new CliJsonError({ error: 'workflow_name_conflict', path: configPath, from: 'full', to: 'full' });
+    }
+  }
+
+  for (const [from, to] of Object.entries(LEGACY_WORKFLOW_ALIASES)) {
+    moveWorkflow(config, from, to, result, workflowMoveMap);
+  }
+
+  if (!isPlainObject(config.review)) {
+    config.review = {};
+    result.migrated = true;
+  }
+
+  convertLegacySoftness(config, workflowMoveMap, result);
+
+  if (!Object.prototype.hasOwnProperty.call(config.review, 'level')) {
+    config.review.level = 'standard';
+    result.migrated = true;
+    result.migratedReviewLevel = true;
+  }
+
   for (const name of STANDARD_PIPELINE_NAMES) {
     if (!hasWorkflowPhases(config.workflows[name])) {
       config.workflows[name] = makeStandardWorkflow(name);
@@ -1483,6 +1695,16 @@ function applyConfigMigration(config) {
       result.migrated = true;
     }
   }
+
+  if (ensureAlertsConfig(config)) {
+    result.migrated = true;
+  }
+
+  if (ensureUsageConfig(config)) {
+    result.migrated = true;
+  }
+
+  validateFinalReviewLevels(config, configPath);
 
   return result;
 }
@@ -1508,38 +1730,15 @@ function isWorkflowName(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
 }
 
-function isSoftnessFloat(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0.0 && value <= 1.0;
-}
-
-function knownSoftnessLabelsText() {
-  return Object.keys(DEFAULT_SOFTNESS_LABELS).join(', ');
-}
-
-function isReviewSoftnessConfigKey(parts) {
-  const [top, second, third, fourth, fifth, sixth] = parts;
-  if (top !== 'review' || second !== 'softness') return false;
-
-  if (parts.length === 3 && third === 'default') return true;
-  if (parts.length === 4 && third === 'labels' && /^[A-Za-z0-9_-]+$/.test(fourth)) return true;
-  if (parts.length === 4 && third === 'surfaces' && VALID_REVIEW_SURFACES.has(fourth)) return true;
-
-  if (third === 'workflows') {
-    if (!isWorkflowName(fourth)) return false;
-    if (parts.length === 5 && fifth === 'default') return true;
-    if (parts.length === 6 && fifth === 'phases' && isWorkflowName(sixth)) return true;
-  }
-
-  return false;
-}
-
 function isSupportedConfigKey(parts) {
   const [top, second, third] = parts;
 
   if (top === 'ticketBackend') return parts.length === 1;
   if (top === 'sub_repos') return parts.length === 1;
   if (top === 'project') return parts.length >= 1;
-  if (top === 'review') return isReviewSoftnessConfigKey(parts);
+  if (top === 'review') return parts.length === 2 && second === 'level';
+  if (top === 'pullRequestComments') return parts.length === 3 && second === 'review' && third === 'level';
+  if (top === ['fix', 'Scope'].join('')) return false;
 
   if (top === 'models') {
     if (second === 'profile') return parts.length === 2;
@@ -1552,6 +1751,7 @@ function isSupportedConfigKey(parts) {
     if (!isWorkflowName(second)) return false;
     if (parts.length === 2) return true;
     if (parts.length === 3) return ['phases', 'outerMaxCycles'].includes(third);
+    if (parts.length === 4 && third === 'review' && parts[3] === 'level') return true;
     return false;
   }
 
@@ -1620,69 +1820,7 @@ function collectUnknownSkillWarnings(skills, warnings, fieldName) {
 }
 
 function defaultReviewCyclesForPhase(phaseName) {
-  if (phaseName === 'implement') return 2;
   return 3;
-}
-
-function validateSoftnessFloat(value, fieldName) {
-  if (!isSoftnessFloat(value)) {
-    throw new Error(`${fieldName} must be a float in [0.0, 1.0]`);
-  }
-}
-
-function validateSoftnessSetting(value, fieldName) {
-  if (isSoftnessFloat(value)) return;
-
-  if (typeof value === 'number') {
-    throw new Error(`Softness must be a float in [0.0, 1.0]. Got: ${value}`);
-  }
-
-  if (typeof value === 'string') {
-    if (!VALID_SOFTNESS_LABELS.has(value)) {
-      throw new Error(`Unknown softness label: ${value}. Known labels: ${knownSoftnessLabelsText()}`);
-    }
-    return;
-  }
-
-  throw new Error(`${fieldName} must be a softness label or a float in [0.0, 1.0]`);
-}
-
-function validateReviewSoftnessConfigSetValue(parts, value) {
-  const [, , third, fourth, fifth] = parts;
-  const keyPath = parts.join('.');
-
-  if (third === 'labels') {
-    if (!VALID_SOFTNESS_LABELS.has(fourth)) {
-      throw new Error(`Unsupported softness label: ${fourth}. Supported labels: ${knownSoftnessLabelsText()}`);
-    }
-    validateSoftnessFloat(value, keyPath);
-    return { warnings: [] };
-  }
-
-  if (third === 'default') {
-    if (typeof value === 'number' && !isSoftnessFloat(value)) {
-      throw new Error(`Softness must be a float in [0.0, 1.0]. Got: ${value}`);
-    }
-    validateSoftnessSetting(value, keyPath);
-    return { warnings: [] };
-  }
-
-  if (third === 'surfaces') {
-    validateSoftnessSetting(value, keyPath);
-    return { warnings: [] };
-  }
-
-  if (third === 'workflows' && fifth === 'default') {
-    validateSoftnessSetting(value, keyPath);
-    return { warnings: [] };
-  }
-
-  if (third === 'workflows' && fifth === 'phases') {
-    validateSoftnessSetting(value, keyPath);
-    return { warnings: [] };
-  }
-
-  throw new Error(`Unsupported config key: ${keyPath}`);
 }
 
 function validatePipeline(pipeline, workflowName) {
@@ -1732,6 +1870,9 @@ function validatePipeline(pipeline, workflowName) {
       if (!isPositiveInteger(normalizedPhase.review.maxCycles)) {
         throw new Error(`${fieldPrefix}.review.maxCycles must be a positive integer`);
       }
+      if (normalizedPhase.review.level !== undefined) {
+        validateReviewLevelValue(normalizedPhase.review.level, `${fieldPrefix}.review.level`);
+      }
     }
 
     return normalizedPhase;
@@ -1754,6 +1895,14 @@ function validateWorkflow(workflow, workflowName) {
   if (!isPositiveInteger(normalized.outerMaxCycles)) {
     throw new Error(`workflows.${workflowName}.outerMaxCycles must be a positive integer`);
   }
+  if (normalized.review !== undefined) {
+    if (!isPlainObject(normalized.review)) {
+      throw new Error(`workflows.${workflowName}.review must be an object when present`);
+    }
+    if (normalized.review.level !== undefined) {
+      validateReviewLevelValue(normalized.review.level, `workflows.${workflowName}.review.level`);
+    }
+  }
 
   return { workflow: normalized, warnings: validation.warnings };
 }
@@ -1762,7 +1911,13 @@ function validateConfigSetValue(parts, value) {
   const [top, second, third] = parts;
 
   if (top === 'review') {
-    return validateReviewSoftnessConfigSetValue(parts, value);
+    validateReviewLevelValue(value, parts.join('.'));
+    return { warnings: [] };
+  }
+
+  if (top === 'pullRequestComments') {
+    validateReviewLevelValue(value, parts.join('.'));
+    return { warnings: [] };
   }
 
   if (top === 'ticketBackend') {
@@ -1799,6 +1954,10 @@ function validateConfigSetValue(parts, value) {
     }
     if (third === 'phases') {
       return validatePipeline(value, second);
+    }
+    if (third === 'review' && parts[3] === 'level') {
+      validateReviewLevelValue(value, parts.join('.'));
+      return { warnings: [] };
     }
     if (third === 'outerMaxCycles' && !isPositiveInteger(value)) {
       throw new Error(`workflows.${second}.outerMaxCycles must be a positive integer`);
@@ -1897,130 +2056,9 @@ function deepSet(target, parts, value) {
   current[parts[parts.length - 1]] = value;
 }
 
-function configuredSoftnessCandidates(config, options = {}) {
-  const softness = config.review && config.review.softness;
-  const candidates = [];
-  const workflowName = options.workflow || null;
-  const phaseName = options.phase || null;
-  const surfaceName = options.surface || null;
-
-  if (workflowName && phaseName) {
-    const workflow = softness
-      && isPlainObject(softness.workflows)
-      && isPlainObject(softness.workflows[workflowName])
-      ? softness.workflows[workflowName]
-      : null;
-    if (workflow && isPlainObject(workflow.phases) && Object.prototype.hasOwnProperty.call(workflow.phases, phaseName)) {
-      candidates.push({ source: 'phase', configured: workflow.phases[phaseName] });
-    }
-  }
-
-  if (workflowName) {
-    const workflow = softness
-      && isPlainObject(softness.workflows)
-      && isPlainObject(softness.workflows[workflowName])
-      ? softness.workflows[workflowName]
-      : null;
-    if (workflow && Object.prototype.hasOwnProperty.call(workflow, 'default')) {
-      candidates.push({ source: 'workflow', configured: workflow.default });
-    }
-  }
-
-  if (surfaceName && softness && isPlainObject(softness.surfaces) && Object.prototype.hasOwnProperty.call(softness.surfaces, surfaceName)) {
-    candidates.push({ source: 'surface', configured: softness.surfaces[surfaceName] });
-  }
-
-  if (softness && Object.prototype.hasOwnProperty.call(softness, 'default')) {
-    candidates.push({ source: 'global', configured: softness.default });
-  }
-
-  candidates.push({ source: 'builtin', configured: DEFAULT_SOFTNESS_SURFACES[surfaceName] || 'default' });
-  return candidates;
-}
-
-function resolveConfiguredSoftness(configured, labels, source) {
-  if (isSoftnessFloat(configured)) {
-    return { ok: true, value: configured, configured, source };
-  }
-
-  if (typeof configured === 'number') {
-    return {
-      ok: false,
-      warning: `Invalid softness ${configured} at ${source}; expected float in [0.0, 1.0]. Falling back to next layer.`,
-    };
-  }
-
-  if (typeof configured !== 'string') {
-    return {
-      ok: false,
-      warning: `Invalid softness at ${source}; expected label or float. Falling back to next layer.`,
-    };
-  }
-
-  if (!VALID_SOFTNESS_LABELS.has(configured)) {
-    return {
-      ok: false,
-      warning: `Unknown softness label '${configured}' at ${source}. Known labels: ${knownSoftnessLabelsText()}. Falling back to next layer.`,
-    };
-  }
-
-  if (!Object.prototype.hasOwnProperty.call(labels, configured)) {
-    return {
-      ok: false,
-      warning: `Softness label '${configured}' at ${source} has no configured float. Falling back to next layer.`,
-    };
-  }
-
-  const value = labels[configured];
-  if (!isSoftnessFloat(value)) {
-    return {
-      ok: false,
-      warning: `Softness label '${configured}' at ${source} maps to invalid value ${JSON.stringify(value)}. Falling back to next layer.`,
-    };
-  }
-
-  return { ok: true, value, configured, label: configured, source };
-}
-
-function resolveReviewSoftness(config, options = {}) {
-  const configForResolution = cloneJson(config || {});
-  applyConfigMigration(configForResolution);
-  const softness = configForResolution.review.softness;
-  const labels = isPlainObject(softness.labels) ? softness.labels : cloneJson(DEFAULT_SOFTNESS_LABELS);
-  const warnings = [];
-
-  for (const candidate of configuredSoftnessCandidates(configForResolution, options)) {
-    const resolved = resolveConfiguredSoftness(candidate.configured, labels, candidate.source);
-    if (resolved.ok) {
-      return {
-        workflow: options.workflow || null,
-        phase: options.phase || null,
-        surface: options.surface || null,
-        source: resolved.source,
-        configured: resolved.configured,
-        label: resolved.label || null,
-        value: resolved.value,
-        warnings,
-      };
-    }
-    warnings.push(resolved.warning);
-  }
-
-  return {
-    workflow: options.workflow || null,
-    phase: options.phase || null,
-    surface: options.surface || null,
-    source: 'builtin',
-    configured: 'default',
-    label: 'default',
-    value: DEFAULT_SOFTNESS_LABELS.default,
-    warnings: warnings.concat('No valid configured softness found. Used builtin default label.'),
-  };
-}
-
 function configMigrate(fixmeRoot) {
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
-  const migration = applyConfigMigration(config);
+  const migration = applyConfigMigration(config, configPath);
   if (migration.migrated || !existed) {
     writeConfigAtomic(configPath, config);
   }
@@ -2031,6 +2069,10 @@ function configMigrate(fixmeRoot) {
     addedWorkflows: migration.addedWorkflows,
     migratedLegacyWorkflows: migration.migratedLegacyWorkflows,
     removedLegacyKeys: migration.removedLegacyKeys,
+    renamedWorkflows: migration.renamedWorkflows,
+    migratedReviewLevel: migration.migratedReviewLevel,
+    removedLegacyReviewKeys: migration.removedLegacyReviewKeys,
+    warnings: migration.warnings,
   });
 }
 
@@ -2073,28 +2115,160 @@ function readConfigForResolve(fixmeRoot) {
   return { config, configPath, existed: true };
 }
 
-function configSoftnessResolve(flags, fixmeRoot) {
-  const surface = flags.surface || null;
-  if (surface !== null && !VALID_REVIEW_SURFACES.has(surface)) {
-    throw new Error(`Unknown review surface: ${surface}. Known surfaces: ${Object.keys(DEFAULT_SOFTNESS_SURFACES).join(', ')}`);
+function invalidReviewLevelWarning(configPath, value) {
+  return `Invalid review level at ${configPath}: ${JSON.stringify(value)}. Falling back to next layer.`;
+}
+
+function readReviewLevelCandidate(candidates, warnings) {
+  for (const candidate of candidates) {
+    if (candidate.value === undefined) continue;
+    if (isValidReviewLevel(candidate.value)) return candidate;
+    warnings.push(invalidReviewLevelWarning(candidate.configPath, candidate.value));
+  }
+  return {
+    level: 'standard',
+    source: 'builtin',
+    configPath: null,
+    value: 'standard',
+  };
+}
+
+function resolveReviewLevel(config, options = {}) {
+  const configForResolution = isPlainObject(config) ? config : {};
+  const warnings = [];
+  const workflowInput = options.workflow || null;
+  const workflowName = workflowInput ? normalizeWorkflowName(workflowInput) : null;
+  const phaseName = options.phase || null;
+  const reviewPath = options.path || null;
+
+  if (reviewPath && reviewPath !== 'pullRequestComments') {
+    return { error: 'unknown_review_path', reviewPath, warnings };
   }
 
+  if (workflowName) {
+    const configuredWorkflow = configForResolution.workflows && configForResolution.workflows[workflowName];
+    const builtinWorkflow = STANDARD_PIPELINES[workflowName]
+      ? { outerMaxCycles: STANDARD_OUTER_MAX_CYCLES, phases: STANDARD_PIPELINES[workflowName] }
+      : null;
+    const workflow = hasWorkflowPhases(configuredWorkflow) ? configuredWorkflow : builtinWorkflow;
+    if (!workflow) {
+      return { error: 'unknown_workflow', workflow: workflowInput, warnings };
+    }
+
+    let phase = null;
+    let phaseIndex = -1;
+    if (phaseName) {
+      phaseIndex = workflow.phases.findIndex(candidate => candidate.name === phaseName);
+      if (phaseIndex < 0) {
+        return { error: 'unknown_phase', workflow: workflowInput, phase: phaseName, warnings };
+      }
+      phase = workflow.phases[phaseIndex];
+    }
+
+    const candidates = [];
+    if (phase) {
+      candidates.push({
+        level: phase.review && phase.review.level,
+        value: phase.review && phase.review.level,
+        source: 'phase',
+        configPath: `workflows.${workflowName}.phases[${phaseIndex}].review.level`,
+      });
+    }
+    candidates.push({
+      level: workflow.review && workflow.review.level,
+      value: workflow.review && workflow.review.level,
+      source: 'workflow',
+      configPath: `workflows.${workflowName}.review.level`,
+    });
+    candidates.push({
+      level: configForResolution.review && configForResolution.review.level,
+      value: configForResolution.review && configForResolution.review.level,
+      source: 'global',
+      configPath: 'review.level',
+    });
+
+    const resolved = readReviewLevelCandidate(candidates, warnings);
+    return {
+      level: resolved.value,
+      source: resolved.source,
+      workflow: workflowName,
+      phase: phaseName,
+      configPath: resolved.configPath,
+      warnings,
+    };
+  }
+
+  if (reviewPath === 'pullRequestComments') {
+    const candidates = [
+      {
+        level: configForResolution.pullRequestComments
+          && configForResolution.pullRequestComments.review
+          && configForResolution.pullRequestComments.review.level,
+        value: configForResolution.pullRequestComments
+          && configForResolution.pullRequestComments.review
+          && configForResolution.pullRequestComments.review.level,
+        source: 'pullRequestComments',
+        configPath: 'pullRequestComments.review.level',
+      },
+      {
+        level: configForResolution.review && configForResolution.review.level,
+        value: configForResolution.review && configForResolution.review.level,
+        source: 'global',
+        configPath: 'review.level',
+      },
+    ];
+    const resolved = readReviewLevelCandidate(candidates, warnings);
+    return {
+      level: resolved.value,
+      source: resolved.source,
+      workflow: null,
+      phase: null,
+      configPath: resolved.configPath,
+      warnings,
+    };
+  }
+
+  const resolved = readReviewLevelCandidate([
+    {
+      level: configForResolution.review && configForResolution.review.level,
+      value: configForResolution.review && configForResolution.review.level,
+      source: 'global',
+      configPath: 'review.level',
+    },
+  ], warnings);
+  return {
+    level: resolved.value,
+    source: resolved.source,
+    workflow: null,
+    phase: null,
+    configPath: resolved.configPath,
+    warnings,
+  };
+}
+
+function configReviewLevelResolve(flags, fixmeRoot) {
   const { config, configPath, existed } = readConfigForResolve(fixmeRoot);
-  const resolution = resolveReviewSoftness(config, {
+  const resolution = resolveReviewLevel(config, {
     workflow: flags.workflow || null,
     phase: flags.phase || null,
-    surface,
+    path: flags.path || null,
   });
+
+  if (resolution.error) {
+    const payload = { error: resolution.error, path: configPath };
+    if (resolution.workflow) payload.workflow = resolution.workflow;
+    if (resolution.phase) payload.phase = resolution.phase;
+    if (resolution.reviewPath) payload.reviewPath = resolution.reviewPath;
+    throw new CliJsonError(payload);
+  }
 
   return output({
     path: configPath,
-    configured: resolution.configured,
-    value: resolution.value,
-    label: resolution.label,
+    level: resolution.level,
     source: resolution.source,
     workflow: resolution.workflow,
     phase: resolution.phase,
-    surface: resolution.surface,
+    configPath: resolution.configPath,
     configExists: existed,
     warnings: resolution.warnings,
   });
@@ -2108,7 +2282,7 @@ function configSet(keyPath, rawValue, fixmeRoot) {
 
   const value = parseConfigValue(rawValue);
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
-  const migration = applyConfigMigration(config);
+  const migration = applyConfigMigration(config, configPath);
   const validation = validateConfigSetValue(parts, value);
 
   let valueToWrite = value;
@@ -2156,9 +2330,18 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
   }
 
   const { config, configPath, existed } = readConfigForWrite(fixmeRoot);
-  const migration = applyConfigMigration(config);
+  const migration = applyConfigMigration(config, configPath);
 
   const existingWorkflow = isPlainObject(config.workflows[workflowName]) ? config.workflows[workflowName] : {};
+  if (data.review !== undefined) {
+    if (!isPlainObject(data.review)) {
+      throw new Error('review must be an object when present');
+    }
+    if (data.review.level !== undefined) {
+      validateReviewLevelValue(data.review.level, `workflows.${workflowName}.review.level`);
+    }
+    existingWorkflow.review = cloneJson(data.review);
+  }
   if (hasOuterMaxCycles) {
     existingWorkflow.outerMaxCycles = data.outerMaxCycles;
   } else if (!isPositiveInteger(existingWorkflow.outerMaxCycles)) {
@@ -2188,11 +2371,12 @@ function resolveTransitions(fm, flags, fixmeRoot) {
   // 1. Check --pipeline flag (also stores it in frontmatter for future use)
   const pipelineFlag = flags.pipeline || null;
   // 2. Check ticket frontmatter
-  const pipelineName = pipelineFlag || fm.pipeline || null;
+  const rawPipelineName = pipelineFlag || fm.pipeline || null;
 
-  if (pipelineName) {
-    const phases = loadPipelinePhases(pipelineName, fixmeRoot);
+  if (rawPipelineName) {
+    const phases = loadPipelinePhases(rawPipelineName, fixmeRoot);
     if (phases && phases.length > 0) {
+      const pipelineName = normalizeWorkflowName(rawPipelineName);
       return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName };
     }
   }
@@ -2348,11 +2532,6 @@ function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
   // Resolve transition map
   const { transitions: transMap, phases, pipelineName } = resolveTransitions(fm, flags, fixmeRoot);
 
-  // Store pipeline in frontmatter if provided via flag
-  if (flags.pipeline && !fm.pipeline) {
-    fm.pipeline = flags.pipeline;
-  }
-
   // Validate transition
   const validNext = transMap[currentState];
   if (!validNext || validNext.length === 0) {
@@ -2438,6 +2617,9 @@ function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
   fm.updated = now;
   fm.transitions = transitions;
   fm.durations = durations;
+  if (pipelineName && (flags.pipeline || fm.pipeline !== pipelineName)) {
+    fm.pipeline = pipelineName;
+  }
 
   // Set failure_reason for failed/skipped
   if (reason && (newState === 'failed' || newState === 'skipped')) {
@@ -2925,7 +3107,7 @@ function contextSave(flags, fixmeRoot) {
   }
 
   const { config, configPath } = readConfigForWrite(projectDir);
-  applyConfigMigration(config);
+  applyConfigMigration(config, configPath);
   config.project = data;
   writeConfigAtomic(configPath, config);
 
@@ -4250,7 +4432,7 @@ function buildFinalizedUsageEvent(pending, outcomeResult, counterResult) {
 function usagePrintAfterFinish(fixmeRoot) {
   try {
     const { config } = readConfigForWrite(fixmeRoot);
-    applyConfigMigration(config);
+    applyConfigMigration(config, configPathForRoot(fixmeRoot));
     return config.usage.printAfterFinish !== false;
   } catch (_) {
     return true;
@@ -4732,6 +4914,13 @@ function buildCompactUsageReportLine(event, projectEventPath) {
 // Output Helpers
 // ============================================================================
 
+class CliJsonError extends Error {
+  constructor(payload) {
+    super(payload && payload.error ? payload.error : 'cli_json_error');
+    this.payload = payload;
+  }
+}
+
 function output(data) {
   if (process.env.FIXME_RAW === '1' || process.argv.includes('--raw')) {
     if (typeof data === 'string') {
@@ -4747,6 +4936,11 @@ function output(data) {
 
 function error(message) {
   process.stdout.write(JSON.stringify({ error: message }) + '\n');
+  process.exit(1);
+}
+
+function errorPayload(payload) {
+  process.stdout.write(JSON.stringify(payload) + '\n');
   process.exit(1);
 }
 
@@ -4831,15 +5025,17 @@ function main() {
               default:
                 return error(`Unknown config workflow subcommand: '${args[0] || ''}'. Valid: configure`);
             }
-          case 'softness':
+          case 'soft' + 'ness':
+            return error("Unsupported config subcommand. Use `config review-level resolve`.");
+          case 'review-level':
             switch (args[0]) {
               case 'resolve':
-                return configSoftnessResolve(flags, fixmeRoot);
+                return configReviewLevelResolve(flags, fixmeRoot);
               default:
-                return error(`Unknown config softness subcommand: '${args[0] || ''}'. Valid: resolve`);
+                return error(`Unknown config review-level subcommand: '${args[0] || ''}'. Valid: resolve`);
             }
           default:
-            return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow, softness`);
+            return error(`Unknown config subcommand: '${subcommand}'. Valid: ensure, migrate, get, set, workflow, review-level`);
         }
 
       case 'codex-agents':
@@ -4912,6 +5108,9 @@ function main() {
         return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, claude-skills, usage, root, resolve-model, alert`);
     }
   } catch (e) {
+    if (e instanceof CliJsonError) {
+      return errorPayload(e.payload);
+    }
     return error(e.message);
   }
 }
@@ -4938,5 +5137,7 @@ module.exports = {
   convertClaudeSkillMarkdown,
   installCodexSkills,
   installClaudeSkills,
-  resolveReviewSoftness,
+  defaultReviewCyclesForPhase,
+  normalizeWorkflowName,
+  resolveReviewLevel,
 };

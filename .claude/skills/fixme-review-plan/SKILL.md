@@ -26,18 +26,18 @@ Read the plan fully before proceeding. If a specification, context document, or 
 
 **The review is a two-pass process. Do not emit findings as you discover them.**
 
-## Importance axes
+## Review assessment
 
 Use the shared `fixme-howto-importance` rubric for every finding. Every finding must include:
 
-- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
-- `user_impact: user-visible | internal-shippable | internal-dev-only`
-- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
-- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
-- `confidence: HIGH | MEDIUM | LOW`
-- `fix_risk: localized | cross-cutting | speculative-rewrite`
+- `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+- ``
+- ``
+- ``
+- ``
+- ``
 
-Assign axes from verified plan, specification, and codebase evidence. Do not assign a numeric importance score; the handler computes that deterministically from these axes.
+Assign axes from verified plan, specification, and codebase evidence. Do not assign a numeric assessment route; the handler computes that deterministically from these axes.
 
 ### Pass 1: Investigation (internal, not in output)
 
@@ -114,6 +114,24 @@ The plan-level failure modes this principle covers:
 The forcing rule for the plan reviewer: **whenever a plan introduces a new named entity, the plan must answer two questions concretely.** (1) What does this entity do that no existing entity already does? (2) If a sibling entity is introduced in the same patch, what is the behavioral delta between them? If the plan does not answer both questions, the plan is incomplete and the executor will fill the gap with duplication.
 
 The dimension that operationalizes this principle is **Dimension 11: DRY and Simplicity (Plan-Level)**. Despite its number, it is checked first - the Findings ordering rule places `DRY-AND-SIMPLICITY` ahead of every other category.
+
+## Semantic Equivalence Gate for Plan-Level Duplication Findings
+
+Do not report plan-level duplicate, redundant, or equivalent parameters until semantic equivalence is proven. This gate applies to planned CLI flags, Helm values, environment variables, config keys, service ports, protocol selectors, API arguments, type aliases, constants, and any other planned values where two names or literals look like they might represent the same thing.
+
+Two planned values that look similar may encode different protocol versions, transports, network roles, runtime layers, or consumer contracts. A numeric suffix, matching literal, similar name, adjacent declaration, or shared destination file is a search lead, not proof.
+
+Before emitting any DRY-AND-SIMPLICITY finding that tells the planner to remove, merge, rename, or parameterize one value into another, prove all of these:
+
+1. **Same consumer contract** - identify the exact downstream parser, binary, API, chart template, generated manifest, or runtime code that would consume both planned values.
+2. **Same semantic slot** - prove both values would feed the same meaning in that consumer, not separate meanings such as protocol version, verbosity level, transport, endpoint role, tenant, environment, or discovery mode.
+3. **Same runtime effect** - verify from local source/types, installed binary `--help`, official docs for the project version, rendered config, or a controlled reproduction that removing one value would not change behavior.
+4. **No distinct caller obligation** - trace planned call sites and deployment wiring to prove no caller, service, or operator depends on the distinction.
+5. **Safe suggested change** - if the suggestion removes or merges a value, state which tests, renders, or runtime probes would catch a wrong merge.
+
+Evidence receipts are mandatory for this gate. Each receipt names the source checked and the observed fact, for example: `binary --help: -v5 selects discovery v5`, `chart render: --verbosity=5 is passed to log level`, or `source: both flags map to the same parser field`.
+
+Lexical similarity is not evidence of duplication. If semantic equivalence is not proven, do not emit a finding. If the distinction is unclear but the risk looks real, put it in Questions instead of recommending a plan change.
 
 ## Verification Dimensions
 
@@ -410,7 +428,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
 | **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
 | **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKER severity |
-| **Importance axes** | `harm_class=<value>; user_impact=<value>; fire_rate=<value>; reversibility=<value>; confidence=<value>; fix_risk=<value>` from `fixme-howto-importance`. Do not emit a numeric importance score. |
+| **Review assessment** | `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>` from `fixme-howto-importance`. Reviewers do not assign handler classification, level route, numeric scores, or suppression. |
 
 ### Final Output Structure
 

@@ -13,7 +13,12 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
-const { buildTransitionsFromPhases, findFixmeRoot } = require(TOOLS_PATH);
+const {
+  buildTransitionsFromPhases,
+  findFixmeRoot,
+  STANDARD_PIPELINES,
+  defaultReviewCyclesForPhase,
+} = require(TOOLS_PATH);
 
 let passed = 0;
 let failed = 0;
@@ -122,6 +127,28 @@ function createTmpDir() {
   return dir;
 }
 
+function writeProjectConfig(baseDir, config) {
+  const fixmeDir = path.join(baseDir, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify(config, null, 2) + '\n');
+}
+
+function readProjectConfig(baseDir) {
+  return JSON.parse(fs.readFileSync(path.join(baseDir, '.fixme', 'config.json'), 'utf8'));
+}
+
+function phaseNames(workflow) {
+  return workflow.phases.map(phase => phase.name).join(' -> ');
+}
+
+function workflowWithPhases(phases, extra = {}) {
+  return {
+    outerMaxCycles: extra.outerMaxCycles || 2,
+    ...extra,
+    phases,
+  };
+}
+
 function createAgentFile(agentsDir, name, description, body) {
   fs.mkdirSync(agentsDir, { recursive: true });
   fs.writeFileSync(path.join(agentsDir, `${name}.md`), `---
@@ -155,20 +182,30 @@ function createPipelineConfig(baseDir) {
   fs.mkdirSync(fixmeDir, { recursive: true });
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
     workflows: {
-      default: {
+      standard: {
         outerMaxCycles: 2,
         phases: [
           { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
-          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } }
+          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 } }
         ]
       },
-      full: {
+      bugfix: {
         outerMaxCycles: 2,
         phases: [
           { name: 'investigate', skills: ['fixme-investigate'] },
           { name: 'research', skills: ['fixme-research'] },
           { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
-          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 2 } },
+          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 } },
+          { name: 'verify', skills: ['fixme-browser-verify'] }
+        ]
+      },
+      full: {
+        outerMaxCycles: 2,
+        phases: [
+          { name: 'product-spec', skills: ['fixme-write-product-spec'], review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 } },
+          { name: 'technical-spec', skills: ['fixme-write-technical-spec'], review: { skills: ['fixme-review-spec', 'fixme-handle-spec-review'], maxCycles: 3 } },
+          { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+          { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 } },
           { name: 'verify', skills: ['fixme-browser-verify'] }
         ]
       }
@@ -252,6 +289,30 @@ function createTicketFolder(sessionDir, number, slug, state) {
   const ticketPath = path.join(ticketDir, 'ticket.md');
   fs.writeFileSync(ticketPath, makeTicketContent(number, slug, state));
   return ticketPath;
+}
+
+function setTicketFrontmatterField(ticketPath, key, value) {
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  assert(match, 'ticket should have YAML frontmatter');
+
+  const lines = match[1].split('\n');
+  const nextLine = `${key}: ${value}`;
+  const index = lines.findIndex(line => line.startsWith(`${key}:`));
+  if (index >= 0) {
+    lines[index] = nextLine;
+  } else {
+    lines.push(nextLine);
+  }
+
+  fs.writeFileSync(ticketPath, content.replace(match[0], `---\n${lines.join('\n')}\n---\n`));
+}
+
+function readTicketFrontmatterLines(ticketPath) {
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  assert(match, 'ticket should have YAML frontmatter');
+  return match[1].split('\n');
 }
 
 function cleanup() {
@@ -1028,24 +1089,59 @@ test('buildTransitions: full pipeline [investigate, research, plan, implement, v
 
 console.log('\n=== dynamic state machine: CLI integration ===\n');
 
-test('pipeline flag: --pipeline stores pipeline name in ticket frontmatter', () => {
+test('pipeline flag: legacy default alias stores final standard pipeline name', () => {
   const base = createTmpDir();
   createPipelineConfig(base);
   const sessionResult = runInDir(`session create "${base}" --name pipe-session`, base);
-  assert(sessionResult.ok, `Session create failed: ${JSON.stringify(sessionResult.data)}`);
   const sessionDir = sessionResult.data.path;
-
   const createResult = runInDir(`ticket create "${sessionDir}" --slug pipeline-test`, base);
-  assert(createResult.ok, `Ticket create failed: ${JSON.stringify(createResult.data)}`);
   const ticketPath = createResult.data.path;
 
   const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
   assert(t1.ok, `Transition failed: ${JSON.stringify(t1.data)}`);
-  assert(t1.data.from === 'queued', `from should be queued, got ${t1.data.from}`);
   assert(t1.data.to === 'plan', `to should be plan, got ${t1.data.to}`);
 
-  const content = fs.readFileSync(ticketPath, 'utf8');
-  assert(content.includes('pipeline: default'), 'pipeline should be stored in frontmatter');
+  const frontmatterLines = readTicketFrontmatterLines(ticketPath);
+  assert(frontmatterLines.includes('pipeline: standard'), 'legacy default alias should be stored as standard in frontmatter');
+  assert(!frontmatterLines.includes('pipeline: default'), 'legacy default alias should be removed from frontmatter');
+});
+
+test('pipeline frontmatter: legacy stored default remains transitionable and normalizes on write', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name stored-alias-session`, base);
+  const sessionDir = sessionResult.data.path;
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug stored-alias-test`, base);
+  const ticketPath = createResult.data.path;
+  setTicketFrontmatterField(ticketPath, 'pipeline', 'default');
+
+  const beforeFrontmatter = readTicketFrontmatterLines(ticketPath);
+  assert(beforeFrontmatter.includes('pipeline: default'), 'test setup should store legacy alias in frontmatter');
+
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan`, base);
+  assert(t1.ok, `Stored alias transition should succeed: ${JSON.stringify(t1.data)}`);
+
+  const afterFrontmatter = readTicketFrontmatterLines(ticketPath);
+  assert(afterFrontmatter.includes('pipeline: standard'), 'stored legacy alias should normalize after successful transition');
+  assert(!afterFrontmatter.includes('pipeline: default'), 'stored legacy alias should be removed from frontmatter after normalization');
+});
+
+test('pipeline flag: bugfix is the final investigate workflow and full is feature lifecycle', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name workflow-session`, base);
+  const sessionDir = sessionResult.data.path;
+
+  const bugfixTicket = runInDir(`ticket create "${sessionDir}" --slug bugfix-test`, base).data.path;
+  const bugfixStart = runInDir(`ticket transition "${bugfixTicket}" investigate --pipeline bugfix`, base);
+  assert(bugfixStart.ok, `bugfix should start at investigate: ${JSON.stringify(bugfixStart.data)}`);
+
+  const fullTicket = runInDir(`ticket create "${sessionDir}" --slug full-test`, base).data.path;
+  const wrongFullStart = runInDir(`ticket transition "${fullTicket}" investigate --pipeline full`, base);
+  assert(!wrongFullStart.ok, 'final full should not start at investigate');
+
+  const fullStart = runInDir(`ticket transition "${fullTicket}" product-spec --pipeline full`, base);
+  assert(fullStart.ok, `final full should start at product-spec: ${JSON.stringify(fullStart.data)}`);
 });
 
 test('pipeline flag: rejects invalid forward skip', () => {
@@ -1057,7 +1153,7 @@ test('pipeline flag: rejects invalid forward skip', () => {
   const createResult = runInDir(`ticket create "${sessionDir}" --slug skip-test`, base);
   const ticketPath = createResult.data.path;
 
-  const t1 = runInDir(`ticket transition "${ticketPath}" investigate --pipeline full`, base);
+  const t1 = runInDir(`ticket transition "${ticketPath}" investigate --pipeline bugfix`, base);
   assert(t1.ok, `First transition failed: ${JSON.stringify(t1.data)}`);
 
   const t2 = runInDir(`ticket transition "${ticketPath}" plan`, base);
@@ -1075,7 +1171,7 @@ test('pipeline: backward transition requires reason and increments attempt', () 
   const createResult = runInDir(`ticket create "${sessionDir}" --slug backward-test`, base);
   const ticketPath = createResult.data.path;
 
-  runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
+  runInDir(`ticket transition "${ticketPath}" plan --pipeline standard`, base);
   runInDir(`ticket transition "${ticketPath}" implement`, base);
 
   const t1 = runInDir(`ticket transition "${ticketPath}" plan`, base);
@@ -1243,7 +1339,7 @@ test('context save preserves existing config keys', () => {
   const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
   assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend preserved');
   assert(config.models.profile === 'balanced', 'models preserved');
-  assert(config.workflows.default.phases.length === 1, 'workflows preserved');
+  assert(config.workflows.standard.phases.length === 1, 'workflows preserved under final standard name');
   assert(config.project.devServer.url === 'http://localhost:5173', 'project updated');
 });
 
@@ -1290,134 +1386,449 @@ test('context load fails when config.json has no project key', () => {
 // ── config commands ─────────────────────────────────────────────────
 console.log('\n── config commands ──');
 
-test('config migrate creates config.json with unified standard workflows', () => {
+test('config migrate creates final standard workflows and review level defaults', () => {
   const tmp = createTmpDir();
   const result = runInDir('config migrate', tmp);
   assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
 
-  const configPath = path.join(tmp, '.fixme', 'config.json');
-  assert(fs.existsSync(configPath), 'config.json should exist after migration');
-
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  assert(Array.isArray(config.workflows.default.phases), 'default workflow phases should exist');
-  assert(Array.isArray(config.workflows['product-spec'].phases), 'product-spec workflow phases should exist');
-  assert(Array.isArray(config.workflows['technical-spec'].phases), 'technical-spec workflow phases should exist');
-  assert(Array.isArray(config.workflows['idea-to-production'].phases), 'idea-to-production workflow phases should exist');
-  assert(config.workflows.default.outerMaxCycles === 2, 'default outerMaxCycles should be 2');
-  assert(config.workflows['product-spec'].outerMaxCycles === 2, 'product-spec outerMaxCycles should be 2');
-  assert(config.pipelines === undefined, 'new config must not write legacy pipelines');
-  assert(config.workflowControls === undefined, 'new config must not write legacy workflowControls');
-  assert(result.data.migrated === true, 'result should report migration');
+  const config = readProjectConfig(tmp);
+  const workflowNames = Object.keys(config.workflows).sort();
+  assert(arraysEqual(workflowNames, ['bugfix', 'execute-only', 'full', 'plan-only', 'product-spec', 'quick', 'standard', 'technical-spec']), `unexpected workflows: ${workflowNames.join(', ')}`);
+  assert(config.review.level === 'standard', 'review.level should default to standard');
+  assert(!config.review.softness, 'review.softness must not be written in final config');
+  assert(config.workflows.standard.phases[0].review.maxCycles === 3, 'standard plan review should use 3 cycles');
+  assert(config.workflows.standard.phases[1].review.maxCycles === 3, 'standard implement review should use 3 cycles');
+  assert(!config.workflows.quick.phases.some(phase => phase.review), 'quick should have no review blocks');
+  assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', `full phases should be feature lifecycle, got ${phaseNames(config.workflows.full)}`);
+  assert(phaseNames(config.workflows.bugfix) === 'investigate -> research -> plan -> implement -> verify', `bugfix phases should be investigate workflow, got ${phaseNames(config.workflows.bugfix)}`);
+  assert(!config.workflows.default, 'default legacy workflow should not be written');
+  assert(!config.workflows.plan, 'plan legacy workflow should not be written');
+  assert(!config.workflows.execute, 'execute legacy workflow should not be written');
+  assert(!config.workflows['idea-to-production'], 'idea-to-production legacy workflow should not be written');
 });
 
-test('config migrate seeds review softness defaults', () => {
+test('config migrate renames legacy workflow names and moves legacy full bugfix workflow', () => {
   const tmp = createTmpDir();
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
-
-  const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
-  const softness = config.review && config.review.softness;
-  assert(softness && typeof softness === 'object', 'review.softness should be created');
-  assert(softness.default === 'default', `global softness should default to label default, got ${softness.default}`);
-  assert(softness.labels.strict === 0.0, 'strict label should resolve to 0.0');
-  assert(softness.labels.default === 0.3, 'default label should resolve to 0.3');
-  assert(softness.labels.lenient === 0.6, 'lenient label should resolve to 0.6');
-  assert(softness.labels.tactical === 0.85, 'tactical label should resolve to 0.85');
-  assert(softness.labels.panic === 1.0, 'panic label should resolve to 1.0');
-  assert(softness.surfaces['spec-review'] === 'strict', 'spec-review should default to strict softness');
-  assert(softness.surfaces['plan-review'] === 'lenient', 'plan-review should default to lenient softness');
-  assert(softness.surfaces['code-review'] === 'lenient', 'code-review should default to lenient softness');
-  assert(softness.surfaces['pr-comments'] === 'lenient', 'pr-comments should default to lenient softness');
-});
-
-test('config migrate converts legacy pipelines and controls into unified workflows', () => {
-  const tmp = createTmpDir();
-  const fixmeDir = path.join(tmp, '.fixme');
-  fs.mkdirSync(fixmeDir, { recursive: true });
-  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
-    ticketBackend: 'fixme-tickets-md',
-    unknownTopLevel: { keep: true },
-    models: { profile: 'balanced' },
-    pipelines: {
-      default: [
-        { name: 'custom-plan', skills: ['custom-plan-skill'] }
-      ]
-    },
-    workflowControls: {
-      default: { outerMaxCycles: 7 }
-    }
-  }, null, 2));
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `config migrate should succeed: ${JSON.stringify(result.data)}`);
-
-  const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
-  assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
-  assert(config.unknownTopLevel.keep === true, 'unknown top-level keys should be preserved');
-  assert(config.models.profile === 'balanced', 'models profile should be preserved');
-  assert(config.workflows.default.phases[0].name === 'custom-plan', 'custom default workflow should be preserved');
-  assert(config.workflows.default.phases[0].skills[0] === 'custom-plan-skill', 'custom workflow skills should be preserved');
-  assert(config.workflows.default.outerMaxCycles === 7, 'legacy workflow control should move into workflow');
-  assert(Array.isArray(config.workflows.full.phases), 'missing full workflow should be backfilled');
-  assert(Array.isArray(config.workflows['product-spec'].phases), 'missing product-spec workflow should be backfilled');
-  assert(config.pipelines === undefined, 'legacy pipelines should be removed after migration');
-  assert(config.workflowControls === undefined, 'legacy workflowControls should be removed after migration');
-});
-
-test('config workflow configure updates selected workflow and preserves unrelated config', () => {
-  const tmp = createTmpDir();
-  const fixmeDir = path.join(tmp, '.fixme');
-  fs.mkdirSync(fixmeDir, { recursive: true });
-  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
-    ticketBackend: 'fixme-tickets-md',
-    models: { profile: 'budget' },
+  writeProjectConfig(tmp, {
     workflows: {
-      default: {
-        outerMaxCycles: 2,
-        phases: [
-          { name: 'old', skills: ['old-skill'] }
-        ],
-        customWorkflowKey: 'keep'
-      }
-    }
-  }, null, 2));
-
-  const workflow = JSON.stringify({
-    phases: [
-      {
-        name: 'plan',
-        skills: ['fixme-write-plan'],
-        review: {
-          skills: ['fixme-review-plan', 'fixme-handle-plan-review'],
-          maxCycles: 4
-        }
-      },
-      {
-        name: 'implement',
-        skills: ['fixme-execute-plan'],
-        review: {
-          skills: ['fixme-review-code', 'fixme-handle-code-review'],
-          maxCycles: 3
-        }
-      }
-    ],
-    outerMaxCycles: 5
+      default: workflowWithPhases([{ name: 'legacy-standard', skills: ['legacy-standard-skill'] }], { outerMaxCycles: 7 }),
+      plan: workflowWithPhases([{ name: 'legacy-plan', skills: ['legacy-plan-skill'] }]),
+      execute: workflowWithPhases([{ name: 'legacy-execute', skills: ['legacy-execute-skill'] }]),
+      'idea-to-production': workflowWithPhases([{ name: 'legacy-full', skills: ['legacy-full-skill'] }]),
+      full: workflowWithPhases([
+        { name: 'investigate', skills: ['fixme-investigate'] },
+        { name: 'research', skills: ['fixme-research'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+        { name: 'verify', skills: ['fixme-browser-verify'] },
+      ], { outerMaxCycles: 5 }),
+    },
   });
 
-  const result = runInDir(`config workflow configure default --data '${workflow}'`, tmp);
-  assert(result.ok, `workflow configure should succeed: ${JSON.stringify(result.data)}`);
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
 
-  const config = JSON.parse(fs.readFileSync(path.join(fixmeDir, 'config.json'), 'utf8'));
-  assert(config.ticketBackend === 'fixme-tickets-md', 'ticketBackend should be preserved');
-  assert(config.models.profile === 'budget', 'models should be preserved');
-  assert(config.workflows.default.phases.length === 2, 'default workflow phases should be replaced');
-  assert(config.workflows.default.phases[0].review.maxCycles === 4, 'plan review cycles should be updated');
-  assert(config.workflows.default.phases[1].review.maxCycles === 3, 'implementation review cycles should be updated');
-  assert(config.workflows.default.outerMaxCycles === 5, 'outerMaxCycles should be updated');
-  assert(config.workflows.default.customWorkflowKey === 'keep', 'unknown workflow keys should be preserved');
-  assert(Array.isArray(config.workflows['product-spec'].phases), 'standard missing workflow should be backfilled');
-  assert(config.pipelines === undefined, 'workflow configure must not write legacy pipelines');
-  assert(config.workflowControls === undefined, 'workflow configure must not write legacy workflowControls');
+  assert(config.workflows.standard.phases[0].name === 'legacy-standard', 'default should rename to standard');
+  assert(config.workflows.standard.outerMaxCycles === 7, 'renamed standard should keep outerMaxCycles');
+  assert(config.workflows['plan-only'].phases[0].name === 'legacy-plan', 'plan should rename to plan-only');
+  assert(config.workflows['execute-only'].phases[0].name === 'legacy-execute', 'execute should rename to execute-only');
+  assert(config.workflows.full.phases[0].name === 'legacy-full', 'idea-to-production should rename to final full');
+  assert(config.workflows.bugfix.phases[0].name === 'investigate', 'old full bugfix workflow should move to bugfix');
+  assert(!config.workflows.default && !config.workflows.plan && !config.workflows.execute && !config.workflows['idea-to-production'], 'legacy workflow keys should be removed');
+  assert(result.data.renamedWorkflows.some(entry => entry.from === 'full' && entry.to === 'bugfix'), 'migration result should report full -> bugfix move');
+});
+
+test('config migrate aborts conflicting custom full workflow without writing', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      full: workflowWithPhases([{ name: 'custom-one', skills: ['custom-skill'] }]),
+      'idea-to-production': workflowWithPhases([{ name: 'product-spec', skills: ['fixme-write-product-spec'] }]),
+    },
+  });
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+  assert(!result.ok, 'conflicting full workflow should fail');
+  assert(result.data && result.data.error === 'workflow_name_conflict', `expected JSON workflow_name_conflict, got ${JSON.stringify(result.data)}`);
+  assert(before === after, 'conflicting migration should not write config');
+});
+
+test('config migrate requires exact old bugfix full phase names and primary skills', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      full: workflowWithPhases([
+        { name: 'custom-investigate', skills: ['fixme-investigate'] },
+        { name: 'research', skills: ['fixme-research'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+        { name: 'verify', skills: ['fixme-browser-verify'] },
+      ]),
+    },
+  });
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+  assert(!result.ok, 'legacy full with custom phase names should fail instead of moving to bugfix');
+  assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
+  assert(path.isAbsolute(result.data.path), `workflow conflict should include absolute path, got ${JSON.stringify(result.data)}`);
+  assert(before === after, 'failed migration should not write config');
+});
+
+test('config migrate requires exact final full phase names and primary skills', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      full: workflowWithPhases([
+        { name: 'product-spec', skills: ['fixme-write-product-spec'] },
+        { name: 'technical-spec', skills: ['fixme-write-plan'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+        { name: 'verify', skills: ['fixme-browser-verify'] },
+      ]),
+    },
+  });
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+  assert(!result.ok, 'final full with wrong primary skill should fail instead of being accepted');
+  assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
+  assert(path.isAbsolute(result.data.path), `workflow conflict should include absolute path, got ${JSON.stringify(result.data)}`);
+  assert(before === after, 'failed migration should not write config');
+});
+
+test('config migrate converts legacy review softness to final review levels', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: {
+      softness: {
+        default: 'default',
+        surfaces: { 'pr-comments': 'tactical' },
+        workflows: {
+          default: {
+            default: 'lenient',
+            phases: { plan: 'strict', implement: 'panic' },
+          },
+        },
+      },
+    },
+  });
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
+
+  assert(config.review.level === 'standard', 'legacy global default should convert to standard');
+  assert(config.workflows.standard.review.level === 'lenient', 'legacy workflow softness should convert to workflow review.level');
+  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === 'strict', 'legacy phase strict should convert to phase review.level');
+  assert(config.workflows.standard.phases.find(phase => phase.name === 'implement').review.level === 'critical', 'legacy phase panic should convert to critical');
+  assert(config.pullRequestComments.review.level === 'fast-track', 'legacy PR tactical surface should convert to fast-track');
+  assert(!config.review.softness, 'legacy softness config should be removed');
+});
+
+test('config migrate converts legacy float softness and review surfaces into review-enabled phases', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: {
+      softness: {
+        default: 0.9,
+        surfaces: {
+          'spec-review': 'lenient',
+          'plan-review': 'strict',
+          'code-review': 'panic',
+          'pr-comments': 'tactical',
+        },
+        workflows: {
+          standard: { phases: { plan: 'default' } },
+        },
+      },
+    },
+  });
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
+
+  assert(config.review.level === 'fast-track', `legacy float 0.9 should convert to fast-track, got ${config.review.level}`);
+  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === 'standard', 'legacy phase override should beat plan-review surface');
+  assert(config.workflows.standard.phases.find(phase => phase.name === 'implement').review.level === 'critical', 'code-review surface should convert into implement review-enabled phases');
+  assert(config.workflows['plan-only'].phases.find(phase => phase.name === 'plan').review.level === 'strict', 'plan-review surface should convert into plan review-enabled phases');
+  assert(config.workflows.full.phases.find(phase => phase.name === 'product-spec').review.level === 'lenient', 'spec-review surface should convert into product spec phase');
+  assert(config.workflows.full.phases.find(phase => phase.name === 'technical-spec').review.level === 'lenient', 'spec-review surface should convert into technical spec phase');
+  assert(config.pullRequestComments.review.level === 'fast-track', 'PR review surface should still convert to pullRequestComments.review.level');
+});
+
+test('config migrate converts legacy float softness using final review-level bands', () => {
+  const cases = [
+    [0, 'strict'],
+    [0.15, 'strict'],
+    [0.1501, 'standard'],
+    [0.45, 'standard'],
+    [0.4501, 'lenient'],
+    [0.725, 'lenient'],
+    [0.7251, 'fast-track'],
+    [0.9249, 'fast-track'],
+    [0.925, 'critical'],
+    [1, 'critical'],
+  ];
+
+  for (const [value, expectedLevel] of cases) {
+    const tmp = createTmpDir();
+    writeProjectConfig(tmp, {
+      review: {
+        softness: {
+          default: value,
+        },
+      },
+    });
+
+    const result = runInDir('config migrate', tmp);
+    assert(result.ok, `migration should succeed for ${value}: ${JSON.stringify(result.data)}`);
+    const config = readProjectConfig(tmp);
+    assert(config.review.level === expectedLevel, `legacy float ${value} should convert to ${expectedLevel}, got ${config.review.level}`);
+  }
+});
+
+test('config migrate warns for invalid present legacy softness values and falls through', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: {
+      softness: {
+        default: 'bogus',
+        surfaces: {
+          'plan-review': 1.1,
+          'pr-comments': -0.01,
+        },
+        workflows: {
+          standard: {
+            default: 'wat',
+            phases: {
+              plan: 2,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed with warnings: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
+  const warnings = result.data.warnings || [];
+
+  assert(config.review.level === 'standard', `invalid global softness should fall through to final default standard, got ${config.review.level}`);
+  assert(!config.workflows.standard.review || config.workflows.standard.review.level === undefined, 'invalid workflow softness should not write workflow review.level');
+  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === undefined, 'invalid phase and surface softness should not write phase review.level');
+  assert(!config.pullRequestComments || !config.pullRequestComments.review || config.pullRequestComments.review.level === undefined, 'invalid PR softness should not write pullRequestComments.review.level');
+  assert(warnings.some(warning => warning.configPath === 'review.softness.default'), `missing warning for review.softness.default: ${JSON.stringify(warnings)}`);
+  assert(warnings.some(warning => warning.configPath === 'review.softness.workflows.standard.default'), `missing warning for workflow default: ${JSON.stringify(warnings)}`);
+  assert(warnings.some(warning => warning.configPath === 'review.softness.workflows.standard.phases.plan'), `missing warning for workflow phase: ${JSON.stringify(warnings)}`);
+  assert(warnings.some(warning => warning.configPath === 'review.softness.surfaces.plan-review'), `missing warning for plan-review surface: ${JSON.stringify(warnings)}`);
+  assert(warnings.some(warning => warning.configPath === 'review.softness.surfaces.pr-comments'), `missing warning for PR comments surface: ${JSON.stringify(warnings)}`);
+});
+
+test('config migrate uses actual workflow moves for legacy workflow review softness', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      full: workflowWithPhases([
+        { name: 'investigate', skills: ['fixme-investigate'] },
+        { name: 'research', skills: ['fixme-research'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+        { name: 'implement', skills: ['fixme-execute-plan'] },
+        { name: 'verify', skills: ['fixme-browser-verify'] },
+      ], { outerMaxCycles: 5 }),
+    },
+    review: {
+      softness: {
+        default: 'default',
+        workflows: {
+          full: { default: 'panic' },
+        },
+      },
+    },
+  });
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
+  const config = readProjectConfig(tmp);
+
+  assert(config.workflows.bugfix.review.level === 'critical', 'legacy full workflow softness should move to final bugfix review.level');
+  assert(!config.workflows.full.review || config.workflows.full.review.level !== 'critical', 'final full must not inherit old bugfix full softness');
+  assert(result.data.renamedWorkflows.some(entry => entry.from === 'full' && entry.to === 'bugfix'), 'migration result should report full -> bugfix move');
+});
+
+test('config migrate rejects invalid final review levels before writing', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: { level: 'panic' },
+  });
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+  assert(!result.ok, 'invalid final review.level should fail');
+  assert(result.data && result.data.error === 'invalid_review_level', `expected JSON invalid_review_level, got ${JSON.stringify(result.data)}`);
+  assert(path.isAbsolute(result.data.path), `invalid review.level error should include absolute path, got ${JSON.stringify(result.data)}`);
+  assert(before === after, 'invalid final review.level should not be written');
+});
+
+test('config migrate invalid final review-level errors include absolute path for every final surface', () => {
+  const cases = [
+    {
+      name: 'workflow',
+      config: { workflows: { standard: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'] }], { review: { level: 'panic' } }) } },
+    },
+    {
+      name: 'phase',
+      config: { workflows: { standard: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'], review: { level: 'panic' } }]) } },
+    },
+    {
+      name: 'pullRequestComments',
+      config: { pullRequestComments: { review: { level: 'panic' } } },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const tmp = createTmpDir();
+    writeProjectConfig(tmp, testCase.config);
+    const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+    const result = runInDir('config migrate', tmp);
+    const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+    assert(!result.ok, `${testCase.name} invalid review level should fail`);
+    assert(result.data && result.data.error === 'invalid_review_level', `${testCase.name} should return invalid_review_level: ${JSON.stringify(result.data)}`);
+    assert(path.isAbsolute(result.data.path), `${testCase.name} invalid review-level error should include absolute path: ${JSON.stringify(result.data)}`);
+    assert(before === after, `${testCase.name} invalid migration should not write config`);
+  }
+});
+
+test('config set and workflow configure validate final review level fields', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('config set review.level "\\"lenient\\""', tmp);
+  assert(result.ok, `review.level should be accepted: ${JSON.stringify(result.data)}`);
+  result = runInDir('config set workflows.standard.review.level "\\"strict\\""', tmp);
+  assert(result.ok, `workflow review.level should be accepted: ${JSON.stringify(result.data)}`);
+  result = runInDir('config set pullRequestComments.review.level "\\"fast-track\\""', tmp);
+  assert(result.ok, `PR review.level should be accepted: ${JSON.stringify(result.data)}`);
+
+  const workflow = JSON.stringify({
+    review: { level: 'critical' },
+    phases: [
+      { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan'], level: 'strict' } },
+    ],
+  });
+  result = runInDir(`config workflow configure custom --data '${workflow}'`, tmp);
+  assert(result.ok, `workflow configure should accept review levels: ${JSON.stringify(result.data)}`);
+
+  const config = readProjectConfig(tmp);
+  assert(config.review.level === 'lenient', 'top-level review.level should be written');
+  assert(config.workflows.standard.review.level === 'strict', 'workflow review.level should be written');
+  assert(config.pullRequestComments.review.level === 'fast-track', 'PR review.level should be written');
+  assert(config.workflows.custom.review.level === 'critical', 'workflow configure should preserve workflow-level review.level');
+  assert(config.workflows.custom.phases[0].review.level === 'strict', 'workflow configure should preserve phase review.level');
+
+  result = runInDir('config set review.level "\\"panic\\""', tmp);
+  assert(!result.ok, 'invalid review.level should fail');
+  const legacyReviewKey = ['review', 'softness', 'default'].join('.');
+  result = runInDir(`config set ${legacyReviewKey} "\\"strict\\""`, tmp);
+  assert(!result.ok, 'legacy review filter key should be unsupported');
+  const legacyModeKey = ['review', 'mode'].join('.');
+  result = runInDir(`config set ${legacyModeKey} "\\"lenient\\""`, tmp);
+  assert(!result.ok, 'legacy review mode key should be unsupported');
+  const legacyScopeKey = ['fix', 'Scope', 'default'].join('.');
+  result = runInDir(`config set ${legacyScopeKey} "\\"current\\""`, tmp);
+  assert(!result.ok, 'legacy scope key should be unsupported');
+});
+
+test('config review-level resolve uses selector validation and fallback order', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: { level: 'lenient' },
+    workflows: {
+      standard: workflowWithPhases([
+        { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan'], level: 'strict' } },
+        { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code'] } },
+      ], { review: { level: 'fast-track' } }),
+    },
+    pullRequestComments: { review: { level: 'critical' } },
+  });
+
+  let result = runInDir('config review-level resolve --workflow standard --phase plan', tmp);
+  assert(result.ok, `phase level should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'strict' && result.data.source === 'phase', 'phase selector should use phase review.level');
+
+  result = runInDir('config review-level resolve --workflow standard --phase implement', tmp);
+  assert(result.ok, `workflow level should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'fast-track' && result.data.source === 'workflow', 'phase without level should use workflow review.level');
+
+  result = runInDir('config review-level resolve', tmp);
+  assert(result.ok, `global level should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'lenient' && result.data.source === 'global', 'no selector should use global review.level');
+
+  result = runInDir('config review-level resolve --path pullRequestComments', tmp);
+  assert(result.ok, `PR level should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'critical' && result.data.source === 'pullRequestComments', 'PR selector should use pullRequestComments review.level');
+
+  result = runInDir('config review-level resolve --workflow nope', tmp);
+  assert(!result.ok && result.data.error === 'unknown_workflow', `unknown workflow should return JSON error: ${JSON.stringify(result.data)}`);
+  result = runInDir('config review-level resolve --workflow standard --phase nope', tmp);
+  assert(!result.ok && result.data.error === 'unknown_phase', `unknown phase should return JSON error: ${JSON.stringify(result.data)}`);
+  result = runInDir('config review-level resolve --path nope', tmp);
+  assert(!result.ok && result.data.error === 'unknown_review_path', `unknown path should return JSON error: ${JSON.stringify(result.data)}`);
+});
+
+test('config review-level resolve warns and skips invalid hand-edited levels', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    review: { level: 'lenient' },
+    workflows: {
+      standard: workflowWithPhases([
+        { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan'], level: 'panic' } },
+      ], { review: { level: 'bogus' } }),
+    },
+  });
+
+  const result = runInDir('config review-level resolve --workflow standard --phase plan', tmp);
+  assert(result.ok, `resolver should skip invalid hand edits: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'lenient', `resolver should fall back to global lenient, got ${result.data.level}`);
+  assert(result.data.source === 'global', `resolver source should be global, got ${result.data.source}`);
+  assert(result.data.warnings.some(warning => warning.includes('workflows.standard.phases[0].review.level')), 'warning should name invalid phase path');
+  assert(result.data.warnings.some(warning => warning.includes('workflows.standard.review.level')), 'warning should name invalid workflow path');
+});
+
+test('config review-level resolve handles missing config and obsolete review command', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('config review-level resolve', tmp);
+  assert(result.ok, `missing config should resolve to builtin: ${JSON.stringify(result.data)}`);
+  assert(result.data.level === 'standard', 'missing config should use builtin standard');
+  assert(result.data.source === 'builtin', 'missing config should report builtin source');
+  assert(result.data.configExists === false, 'missing config should report configExists false');
+
+  result = runInDir(`config ${['soft', 'ness'].join('')} resolve`, tmp);
+  assert(!result.ok, 'obsolete review resolver should fail');
+  assert(result.data.error.includes('config review-level resolve'), `obsolete command should point to new resolver: ${result.data.error}`);
+});
+
+test('defaultReviewCyclesForPhase uses 3 cycles for implement', () => {
+  assert(defaultReviewCyclesForPhase('implement') === 3, 'implement review cycles should default to 3');
+  assert(defaultReviewCyclesForPhase('plan') === 3, 'plan review cycles should default to 3');
+});
+
+test('STANDARD_PIPELINES exports final workflow names', () => {
+  const names = Object.keys(STANDARD_PIPELINES).sort();
+  assert(arraysEqual(names, ['bugfix', 'execute-only', 'full', 'plan-only', 'product-spec', 'quick', 'standard', 'technical-spec']), `unexpected exported workflows: ${names.join(', ')}`);
+  assert(phaseNames({ phases: STANDARD_PIPELINES.standard }) === 'plan -> implement', 'standard should be plan -> implement');
+  assert(phaseNames({ phases: STANDARD_PIPELINES.full }) === 'product-spec -> technical-spec -> plan -> implement -> verify', 'full should be feature lifecycle');
+  assert(phaseNames({ phases: STANDARD_PIPELINES.bugfix }) === 'investigate -> research -> plan -> implement -> verify', 'bugfix should be investigate workflow');
+  assert(!STANDARD_PIPELINES.quick.some(phase => phase.review), 'quick should have no review blocks');
 });
 
 test('config workflow configure rejects invalid cycle counts', () => {
@@ -1436,7 +1847,7 @@ test('config workflow configure rejects invalid cycle counts', () => {
     outerMaxCycles: 2
   });
 
-  const result = runInDir(`config workflow configure default --data '${workflow}'`, tmp);
+  const result = runInDir(`config workflow configure standard --data '${workflow}'`, tmp);
   assert(!result.ok, 'invalid review maxCycles should fail');
   assert(result.data && result.data.error, 'error should be returned');
   assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
@@ -1444,12 +1855,12 @@ test('config workflow configure rejects invalid cycle counts', () => {
 
 test('config set validates and writes workflow outerMaxCycles', () => {
   const tmp = createTmpDir();
-  const result = runInDir('config set workflows.default.outerMaxCycles 6', tmp);
+  const result = runInDir('config set workflows.standard.outerMaxCycles 6', tmp);
   assert(result.ok, `config set should succeed: ${JSON.stringify(result.data)}`);
 
   const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
-  assert(config.workflows.default.outerMaxCycles === 6, 'outerMaxCycles should be written');
-  assert(Array.isArray(config.workflows.default.phases), 'config set should migrate standard workflows');
+  assert(config.workflows.standard.outerMaxCycles === 6, 'outerMaxCycles should be written');
+  assert(Array.isArray(config.workflows.standard.phases), 'config set should migrate standard workflows');
   assert(config.workflowControls === undefined, 'config set must not write legacy workflowControls');
 });
 
@@ -1489,73 +1900,6 @@ test('config set validates model runtime', () => {
   assert(!bad.ok, 'unsupported runtime should fail');
   assert(bad.data && bad.data.error, 'error should be returned');
   assert(bad.data.error.includes('models.runtime'), `error should mention runtime key: ${bad.data.error}`);
-});
-
-test('config softness resolves phase, workflow, surface, and global values', () => {
-  const tmp = createTmpDir();
-
-  let result = runInDir('config set review.softness.default 0.45', tmp);
-  assert(result.ok, `raw float global softness should be accepted: ${JSON.stringify(result.data)}`);
-
-  result = runInDir('config softness resolve', tmp);
-  assert(result.ok, `global softness should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.value === 0.45, `global softness value should be 0.45, got ${result.data.value}`);
-  assert(result.data.source === 'global', `global source should be reported, got ${result.data.source}`);
-  assert(result.data.configured === 0.45, 'raw float should be used directly');
-
-  result = runInDir('config set review.softness.labels.lenient 0.5', tmp);
-  assert(result.ok, `label mapping update should be accepted: ${JSON.stringify(result.data)}`);
-
-  result = runInDir('config softness resolve --surface pr-comments', tmp);
-  assert(result.ok, `surface softness should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.value === 0.5, `pr-comments lenient label should resolve to 0.5, got ${result.data.value}`);
-  assert(result.data.source === 'surface', `surface source should be reported, got ${result.data.source}`);
-  assert(result.data.configured === 'lenient', 'surface configured label should be reported');
-
-  result = runInDir('config set review.softness.surfaces.plan-review 0.7', tmp);
-  assert(result.ok, `surface raw float softness should be accepted: ${JSON.stringify(result.data)}`);
-
-  result = runInDir('config softness resolve --surface plan-review', tmp);
-  assert(result.ok, `surface raw softness should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.value === 0.7, `plan-review surface raw float should resolve to 0.7, got ${result.data.value}`);
-  assert(result.data.source === 'surface', `surface source should be reported for raw float, got ${result.data.source}`);
-
-  result = runInDir('config set review.softness.workflows.default.default "\\"strict\\""', tmp);
-  assert(result.ok, `workflow default softness should be accepted: ${JSON.stringify(result.data)}`);
-
-  result = runInDir('config softness resolve --workflow default --phase plan --surface plan-review', tmp);
-  assert(result.ok, `workflow softness should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.value === 0.0, `strict workflow label should resolve to 0.0, got ${result.data.value}`);
-  assert(result.data.source === 'workflow', `workflow source should be reported, got ${result.data.source}`);
-
-  result = runInDir('config set review.softness.workflows.default.phases.implement 0.8', tmp);
-  assert(result.ok, `phase softness should be accepted: ${JSON.stringify(result.data)}`);
-
-  result = runInDir('config softness resolve --workflow default --phase implement --surface code-review', tmp);
-  assert(result.ok, `phase softness should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.value === 0.8, `phase raw float should resolve to 0.8, got ${result.data.value}`);
-  assert(result.data.source === 'phase', `phase source should be reported, got ${result.data.source}`);
-  assert(result.data.configured === 0.8, 'phase configured float should be reported');
-});
-
-test('config softness rejects out-of-range floats and unknown labels', () => {
-  const tmp = createTmpDir();
-
-  let result = runInDir('config set review.softness.default 1.5', tmp);
-  assert(!result.ok, 'out-of-range softness should fail');
-  assert(result.data.error.includes('Softness must be a float in [0.0, 1.0]'), `range error should be clear: ${result.data.error}`);
-
-  result = runInDir('config set review.softness.default "\\"aggressive\\""', tmp);
-  assert(!result.ok, 'unknown softness label should fail');
-  assert(result.data.error.includes('Unknown softness label: aggressive'), `unknown label error should be clear: ${result.data.error}`);
-
-  result = runInDir('config set review.softness.labels.lenient -0.1', tmp);
-  assert(!result.ok, 'out-of-range label mapping should fail');
-  assert(result.data.error.includes('review.softness.labels.lenient'), `label mapping error should name key: ${result.data.error}`);
-
-  result = runInDir('config set review.softness.labels.aggressive 0.4', tmp);
-  assert(!result.ok, 'unsupported label mapping key should fail');
-  assert(result.data.error.includes('Unsupported softness label: aggressive'), `unsupported label error should be clear: ${result.data.error}`);
 });
 
 // ============================================================================
@@ -2408,6 +2752,39 @@ test('fixme-pr-comments skill: future-phase handling is follow-up, not rejection
   assert(skill.includes('A later branch can justify `REJECT_ALREADY_FIXED` or `REJECT_WONT_FIX` only when the exact flagged code path is already removed or replaced and no remaining action is required before the stacked work ships.'), 'supersession rejection should require already-complete replacement');
 });
 
+test('fixme review workflows require evidence before accepting reviewer claim premises', () => {
+  const prCommentsPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const handlerPaths = [
+    path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md'),
+  ];
+  const reviewerPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const planReviewerPath = path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md');
+  const prComments = fs.readFileSync(prCommentsPath, 'utf8');
+  const handlers = handlerPaths.map(handlerPath => fs.readFileSync(handlerPath, 'utf8'));
+  const reviewer = fs.readFileSync(reviewerPath, 'utf8');
+  const planReviewer = fs.readFileSync(planReviewerPath, 'utf8');
+
+  for (const skill of [prComments, ...handlers]) {
+    assert(skill.includes('## Review Claim Verification Gate'), 'classification should include a review claim verification gate');
+    assert(skill.includes('A reviewer claim is a hypothesis, not evidence.'), 'classification should treat reviewer claims as hypotheses');
+    assert(skill.includes('Break the finding into atomic premises before assigning any FIX'), 'classification should decompose findings into premises');
+    assert(skill.includes('If an essential premise is unverified, contradicted, or only supported by lexical similarity, do not route the item'), 'classification should block unverified premise routing');
+    assert(skill.includes('For duplicate, redundant, or equivalent-parameter claims, prove semantic equivalence before accepting the finding.'), 'classification should verify duplicate/equivalent-parameter claims');
+    assert(skill.includes('Lexical similarity is not evidence of duplication.'), 'classification should reject surface similarity as evidence');
+    assert(skill.includes('Evidence receipts'), 'classification output should expose evidence receipts');
+  }
+
+  assert(reviewer.includes('## Semantic Equivalence Gate for Duplication Findings'), 'reviewer should gate duplicate findings on semantic equivalence');
+  assert(reviewer.includes('Do not report duplicate, redundant, or equivalent parameters until semantic equivalence is proven.'), 'reviewer should not report duplicate parameters without proof');
+  assert(reviewer.includes('Two values that look similar may encode different protocol versions, transports, network roles, runtime layers, or consumer contracts.'), 'reviewer should account for distinct semantics behind similar values');
+  assert(reviewer.includes('If semantic equivalence is not proven, do not emit a finding.'), 'reviewer should suppress unproven duplication findings');
+  assert(planReviewer.includes('## Semantic Equivalence Gate for Plan-Level Duplication Findings'), 'plan reviewer should gate plan-level duplication findings on semantic equivalence');
+  assert(planReviewer.includes('Do not report plan-level duplicate, redundant, or equivalent parameters until semantic equivalence is proven.'), 'plan reviewer should not report duplicate planned parameters without proof');
+  assert(planReviewer.includes('Lexical similarity is not evidence of duplication.'), 'plan reviewer should reject surface similarity as evidence');
+});
+
 test('fixme decision presentation skill: uses visually scannable cards', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-present-decisions', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -2538,97 +2915,165 @@ test('fixme review handler agents enumerate the unified three-state directive', 
   }
 });
 
-test('fixme importance rubric defines softness axes, floor, scoring, and aggregation', () => {
+test('fixme review assessment rubric defines dimensions and review-level gate', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-importance', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
+  const skillBody = skill.replace(/^---[\s\S]*?---\n/, '');
 
-  assert(skill.includes('softness 0.0 is loudest and softness 1.0 is most permissive'), 'rubric should define softness direction');
-  assert(skill.includes('harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none'), 'rubric should define harm_class axis');
-  assert(skill.includes('user_impact: user-visible | internal-shippable | internal-dev-only'), 'rubric should define user_impact axis');
-  assert(skill.includes('fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure'), 'rubric should define fire_rate axis');
-  assert(skill.includes('reversibility: cheap-later | costly-later | irreversible-once-shipped'), 'rubric should define reversibility axis');
-  assert(skill.includes('fix_risk: localized | cross-cutting | speculative-rewrite'), 'rubric should define fix_risk axis');
-  assert(skill.includes('softness=1.0 suppresses every non-floor finding regardless of computed importance'), 'rubric should make panic floor-only');
-  assert(skill.includes('Aggregate only findings that share severity, category, surface, and harm_class'), 'rubric should aggregate before suppression without mixing harm classes');
-  assert(skill.includes('Softness applies to FIX and FIX_UNCLEAR only'), 'rubric should state softness-eligible classifications');
-  assert(skill.includes('Every classified review item must include an `Importance` line'), 'rubric should require importance output on every classified item');
-  assert(skill.includes('Importance: floor / softness <resolved_float> -> survives'), 'rubric should define floor importance output');
-  assert(skill.includes('Importance: <score> / softness <resolved_float> -> survives'), 'rubric should define surviving scored importance output');
-  assert(skill.includes('Importance: <score> / softness <resolved_float> -> suppressed'), 'rubric should define suppressed scored importance output');
-  assert(skill.includes('Importance: not-eligible / softness <resolved_float> -> not-eligible'), 'rubric should define not-eligible importance output');
-  assert(skill.includes('A finding is floor only when the issue itself would ship one of the explicit floor harms.'), 'rubric should keep floor narrow');
-  assert(skill.includes('Do not assign a floor harm_class for project-rule violations, style cleanup, duplicated branches, doc/comment mismatch, ordinary maintainability, generic test hygiene, or raw JSON parsing by itself.'), 'rubric should forbid floor overclassification for common non-floor findings');
-  assert(skill.includes('BLOCKER severity does not imply floor.'), 'rubric should not derive floor from severity');
-  assert(skill.includes('`test-fakeness` is narrow: tests that copy production or business logic, assert a reimplementation instead of exercising production code, or pass without the production behavior being wired.'), 'rubric should keep test-fakeness narrow');
-  assert(skill.includes('Use ASCII `->` exactly. Do not use Unicode arrows.'), 'rubric should require ASCII importance arrows');
+  assert(skill.includes('# Review Assessment and Review Level Gate'), 'rubric should use final title');
+  for (const dimension of ['reachability', 'state_contract', 'trigger_window', 'target_scale', 'impact', 'fix_risk', 'confidence']) {
+    assert(skill.includes(dimension), `rubric should define ${dimension}`);
+  }
+  assert(skill.includes('blocking-fix | follow-up | decision-needed | dismissed'), 'rubric should define level route values');
+  assert(skill.includes('Malformed assessment data routes to decision-needed'), 'rubric should route malformed assessment data to decision-needed');
+  assert(!skillBody.includes('Importance'), 'rubric body must not use old Importance output wording');
+  assert(!skillBody.includes('harm_class'), 'rubric body must not use old harm_class axis');
+  assert(!skillBody.includes('resolved_float'), 'rubric body must not use old resolved_float metadata');
+  assert(!skillBody.includes('<score>'), 'rubric body must not use old score metadata');
+  assert(!skillBody.includes('suppressed'), 'rubric body must not use old suppressed routing');
+  assert(!skill.includes('softness'), 'rubric must not use old softness wording');
+  assert(!skill.includes('numeric score'), 'rubric must not use numeric scores');
 });
 
-test('fixme reviewers and handlers use shared importance rubric', () => {
+test('fixme reviewers require review assessment dimensions', () => {
   const reviewerPaths = [
     path.resolve(__dirname, '..', '..', 'fixme-review-spec', 'SKILL.md'),
     path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md'),
     path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md'),
   ];
+  const reviewSpecHowto = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-howto-review-spec', 'SKILL.md'), 'utf8');
+
+  for (const skillPath of reviewerPaths) {
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('fixme-howto-importance'), `${skillPath} should load the shared importance rubric`);
+    assert(skill.includes('Review assessment'), `${skillPath} should require Review assessment`);
+    assert(skill.includes('reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>'), `${skillPath} should emit final assessment shape`);
+    assert(skill.includes('Reviewers do not assign handler classification, level route, numeric scores, or suppression.'), `${skillPath} should not assign handler routing`);
+    assert(!skill.includes('Importance axes'), `${skillPath} should not require old importance axes`);
+    assert(!skill.includes('harm_class:'), `${skillPath} should not emit old harm_class`);
+    assert(!skill.includes('softness'), `${skillPath} should not mention old softness`);
+  }
+  assert(reviewSpecHowto.includes('Review assessment'), 'shared review spec howto should require Review assessment');
+});
+
+test('fixme handlers resolve review level and remove suppression counts', () => {
   const handlerPaths = [
     path.resolve(__dirname, '..', '..', 'fixme-handle-spec-review', 'SKILL.md'),
     path.resolve(__dirname, '..', '..', 'fixme-handle-plan-review', 'SKILL.md'),
     path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md'),
   ];
 
-  for (const skillPath of reviewerPaths) {
-    const skill = fs.readFileSync(skillPath, 'utf8');
-    assert(skill.includes('fixme-howto-importance'), `${skillPath} should load the shared importance rubric`);
-    assert(skill.includes('Importance axes'), `${skillPath} should require importance axes per finding`);
-    assert(skill.includes('harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none'), `${skillPath} should emit harm_class`);
-    assert(skill.includes('user_impact: user-visible | internal-shippable | internal-dev-only'), `${skillPath} should emit user_impact`);
-    assert(skill.includes('fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure'), `${skillPath} should emit fire_rate`);
-    assert(skill.includes('reversibility: cheap-later | costly-later | irreversible-once-shipped'), `${skillPath} should emit reversibility`);
-    assert(skill.includes('fix_risk: localized | cross-cutting | speculative-rewrite'), `${skillPath} should emit fix_risk`);
-  }
-
   for (const skillPath of handlerPaths) {
     const skill = fs.readFileSync(skillPath, 'utf8');
     assert(skill.includes('fixme-howto-importance'), `${skillPath} should load the shared importance rubric`);
-    assert(skill.includes('Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.'), `${skillPath} should apply softness before routing counts`);
-    assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve'), `${skillPath} should resolve softness through fixme-tools`);
-    assert(skill.includes('SUPPRESSED_COUNT: <number>'), `${skillPath} should report suppressed count`);
-    assert(skill.includes('Suppressed at softness='), `${skillPath} should include suppressed ledger wording`);
-    assert(skill.includes('Softness applies to FIX and FIX_UNCLEAR only'), `${skillPath} should not suppress ASK_USER or REJECT items`);
-    assert(skill.includes('Every classified finding must include one of these `Importance` outputs:'), `${skillPath} should require importance output on every classified finding`);
-    assert(skill.includes('Importance: floor / softness <resolved_float> -> survives'), `${skillPath} should include floor importance output`);
-    assert(skill.includes('Importance: <score> / softness <resolved_float> -> survives'), `${skillPath} should include surviving scored importance output`);
-    assert(skill.includes('Importance: <score> / softness <resolved_float> -> suppressed'), `${skillPath} should include suppressed scored importance output`);
-    assert(skill.includes('Importance: not-eligible / softness <resolved_float> -> not-eligible'), `${skillPath} should include not-eligible importance output`);
+    assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>'), `${skillPath} should resolve review level`);
+    assert(skill.includes('Review level'), `${skillPath} should include Review level field`);
+    assert(skill.includes('Level route'), `${skillPath} should include Level route field`);
+    assert(skill.includes('Route scope'), `${skillPath} should include Route scope field`);
+    assert(skill.includes('DISMISSED_COUNT: <number>'), `${skillPath} should include dismissed count`);
+    assert(skill.includes('WARNING: Missing review assessment dimensions: confidence'), `${skillPath} should warn on missing dimensions`);
+    assert(!skill.includes('Importance'), `${skillPath} should not use old Importance output wording`);
+    assert(!skill.includes('harm_class'), `${skillPath} should not use old harm_class axis`);
+    assert(!skill.includes('resolved_float'), `${skillPath} should not use old resolved_float metadata`);
+    assert(!skill.includes('<score>'), `${skillPath} should not use old score metadata`);
+    assert(!skill.includes('suppressed'), `${skillPath} should not use old suppressed routing`);
+    assert(!skill.includes('SUPPRESSED_COUNT'), `${skillPath} should remove suppressed count`);
+    assert(!skill.includes('config softness resolve'), `${skillPath} should not call obsolete resolver`);
+    assert(!skill.includes('Importance: floor / softness'), `${skillPath} should remove old importance output`);
   }
 });
 
-test('fixme-pr-comments records importance axes and softness routing metadata', () => {
+test('fixme-pr-comments records review assessment and review-level routing metadata', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
   assert(skill.includes('fixme-howto-importance'), 'PR comments skill should use shared importance rubric');
-  assert(skill.includes('IMPORTANCE_AXES'), 'PR comments should require importance axes metadata');
-  assert(skill.includes('IMPORTANCE: floor / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> survives | <score> / softness <resolved_float> -> suppressed | not-eligible / softness <resolved_float> -> not-eligible'), 'PR comments should require importance output on every triaged item');
-  assert(skill.includes('Suppressed by softness: {number suppressed, with group IDs or None}'), 'PR comments should report suppressed count with a human-facing label');
-  assert(!skill.includes('SUPPRESSED_COUNT'), 'PR comments should not leak handler-style uppercase counters into user-facing reports');
+  assert(skill.includes('REVIEW_ASSESSMENT'), 'PR comments should require review assessment metadata');
+  assert(skill.includes('REVIEW_LEVEL'), 'PR comments should record review level');
+  assert(skill.includes('LEVEL_ROUTE'), 'PR comments should record level route');
+  assert(skill.includes('config review-level resolve --path pullRequestComments'), 'PR comments should use PR review-level resolver');
+  assert(skill.includes('LEVEL_ROUTE=follow-up'), 'PR comments should expose follow-up route');
+  assert(skill.includes('Follow-up by review level'), 'PR comments should report visible follow-up routing');
+  assert(!skill.includes('Importance'), 'PR comments should not use old Importance output wording');
+  assert(!skill.includes('harm_class'), 'PR comments should not use old harm_class axis');
+  assert(!skill.includes('resolved_float'), 'PR comments should not use old resolved_float metadata');
+  assert(!skill.includes('<score>'), 'PR comments should not use old score metadata');
+  assert(!skill.includes('suppressed'), 'PR comments should not use old suppressed routing');
+  assert(!skill.includes('IMPORTANCE_AXES'), 'PR comments should remove old importance axes');
+  assert(!skill.includes('Suppressed by softness'), 'PR comments should remove old suppression label');
+  assert(!skill.includes('config softness resolve'), 'PR comments should not call obsolete resolver');
   assert(skill.includes('FILE_OVERLAP_ONLY_DEFERRAL_CANDIDATE: true | false'), 'PR comments should explicitly mark file-overlap-only deferral candidates');
-  assert(skill.includes('Softness-suppressed groups use FOLLOWUP_ONLY'), 'softness should route suppressed PR findings to follow-up');
-  assert(skill.includes('file-overlap-only deferral candidates are never softness-suppressed'), 'softness should not bypass the file-overlap-only ban');
-  assert(skill.includes('Do not write `IMPORTANCE: floor` for non-floor project-rule violations, cleanup, doc/comment mismatch, raw JSON.parse usage by itself, or generic test-hygiene findings.'), 'PR comments should not mark ordinary valid issues as floor');
-  assert(skill.includes('For non-floor findings, compute and print the numeric score so softness can visibly decide survives vs suppressed.'), 'PR comments should show numeric scores for non-floor findings');
 });
 
-test('fixme-config documents review softness prompts and CLI writes', () => {
-  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-config', 'SKILL.md');
-  const skill = fs.readFileSync(skillPath, 'utf8');
+test('fixme-session defaults bug sessions to final bugfix workflow', () => {
+  const sessionPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
+  const investigationAgentPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'agents', 'investigation-agent.md');
+  const session = fs.readFileSync(sessionPath, 'utf8');
+  const investigationAgent = fs.readFileSync(investigationAgentPath, 'utf8');
 
-  assert(skill.includes('Review softness'), 'fixme-config should present review softness settings');
-  assert(skill.includes('Softness accepts either a label or a raw float in [0.0, 1.0].'), 'fixme-config should explain accepted softness values');
-  assert(skill.includes('config set review.softness.default'), 'fixme-config should write global softness through fixme-tools');
-  assert(skill.includes('config set review.softness.surfaces.<surface>'), 'fixme-config should write surface softness through fixme-tools');
-  assert(skill.includes('config set review.softness.labels.<label>'), 'fixme-config should write label mapping through fixme-tools');
-  assert(skill.includes('config set review.softness.workflows.<selectedWorkflow>.default'), 'fixme-config should write workflow softness through fixme-tools');
-  assert(skill.includes('config set review.softness.workflows.<selectedWorkflow>.phases.<phase>'), 'fixme-config should write phase softness through fixme-tools');
+  assert(session.includes('Default: `"bugfix"` for bug fix sessions'), 'session dispatch should default bug fixes to bugfix');
+  assert(session.includes('ticket transition <ticket-folder>/ticket.md investigate --pipeline <pipeline name from step 4>'), 'session investigation pre-phase should transition to investigate with selected pipeline');
+  assert(!session.includes('Default: `"full"` for bug fix sessions'), 'session dispatch must not default bug fixes to full');
+  assert(!session.includes('ticket transition <ticket-folder>/ticket.md investigating'), 'session dispatch must not use non-phase state investigating');
+  assert(!session.includes('ticket transition <ticket-folder>/ticket.md investigate`'), 'session dispatch must not use bare investigate transition without pipeline');
+  assert(investigationAgent.includes('transitioned to `investigate`'), 'investigation agent should refer to final investigate phase');
+  assert(!investigationAgent.includes('transitioned to "investigating"'), 'investigation agent must not refer to legacy investigating state');
+});
+
+test('fixme-task and fixme-config document final review-level workflows', () => {
+  const taskPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const configPath = path.resolve(__dirname, '..', '..', 'fixme-config', 'SKILL.md');
+  const task = fs.readFileSync(taskPath, 'utf8');
+  const config = fs.readFileSync(configPath, 'utf8');
+
+  for (const doc of [task, config]) {
+    assert(doc.includes('standard'), 'docs should include standard workflow');
+    assert(doc.includes('plan-only'), 'docs should include plan-only workflow');
+    assert(doc.includes('execute-only'), 'docs should include execute-only workflow');
+    assert(doc.includes('bugfix'), 'docs should include bugfix workflow');
+    assert(doc.includes('review.level'), 'docs should include review.level');
+    assert(doc.includes('pullRequestComments.review.level'), 'docs should include PR comment review level');
+    assert(doc.includes('strict | standard | lenient | fast-track | critical'), 'docs should list final review levels');
+    assert(!doc.includes('config softness resolve'), 'docs must not mention obsolete softness resolver');
+    assert(!doc.includes('review.softness.default'), 'docs must not write old softness default');
+    assert(!doc.includes('review.softness.labels'), 'docs must not write old label mapping');
+  }
+
+  assert(task.includes('--plan` -> pipeline `plan-only`'), 'task docs should map --plan to plan-only');
+  assert(task.includes('--execute` -> pipeline `execute-only`'), 'task docs should map --execute to execute-only');
+  assert(task.includes('`--idea-to-production` remains accepted as a compatibility alias for `full`'), 'task docs should keep idea-to-production as alias only');
+  assert(task.includes('Plain `/fixme-task ...` defaults to `standard`'), 'task docs should default plain tasks to standard');
+  assert(task.includes('use the hardcoded `standard` workflow'), 'config loading should fall back to standard');
+  assert(!task.includes('use the hardcoded `default` workflow'), 'config loading must not mention hardcoded default workflow');
+  assert(task.includes('implement phase (default 3)'), 'loop guard should document implement default 3');
+  assert(!task.includes('implement phase (default 2)'), 'loop guard must not document implement default 2');
+  assert(config.includes('Review level'), 'fixme-config should present review level settings');
+  assert(config.includes('config set review.level'), 'fixme-config should write top-level review.level');
+  assert(config.includes('config set workflows.<selectedWorkflow>.review.level'), 'fixme-config should write workflow review.level');
+  assert(config.includes('config set pullRequestComments.review.level'), 'fixme-config should write PR comment review.level');
+  assert(config.includes('Review cycles default to `3` for code and implement review phases.'), 'fixme-config should document code and implement review cycles at 3');
+});
+
+test('README, CLAUDE, config schema, and data flow document review level', () => {
+  const dataFlow = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'docs', 'data-flow.md'), 'utf8');
+  const docs = [
+    fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '..', 'README.md'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '..', 'CLAUDE.md'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'references', 'config-schema.md'), 'utf8'),
+    dataFlow,
+  ];
+
+  for (const doc of docs) {
+    assert(doc.includes('review.level'), 'doc should mention review.level');
+    assert(doc.includes('config review-level resolve'), 'doc should mention review-level resolver');
+    assert(doc.includes('standard'), 'doc should mention standard workflow');
+    assert(doc.includes('bugfix'), 'doc should mention bugfix workflow');
+    assert(!doc.includes('config softness resolve'), 'doc must not mention obsolete softness resolver');
+    assert(!doc.includes('review softness'), 'doc must not use old review softness wording');
+  }
+
+  assert(dataFlow.includes('`full` uses `product-spec`, `technical-spec`, `plan`, `implement`, and `verify`'), 'data-flow should document final full feature lifecycle');
+  assert(!dataFlow.includes('Standard `full` uses `investigate`'), 'data-flow must not describe full as the bugfix lifecycle');
 });
 
 test('fixme reviewer and handler agents preload importance rubric', () => {

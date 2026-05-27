@@ -21,16 +21,16 @@ Review a specification before implementation planning. The goal is to decide whe
 - **Use the shared decision presentation rubric.** This agent preloads `fixme-howto-present-decisions`; if running standalone, read `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md` before asking the user to decide anything.
 - **Every finding must cite specification evidence.** If the issue is an absence, cite the nearest section where the behavior should have been defined.
 
-## Importance axes
+## Review assessment
 
 Every finding must include the shared `fixme-howto-importance` axes:
 
-- `harm_class: correctness | security | privacy | data-loss | migration | test-fakeness | stub-claimed-complete | locked-decision-violation | none`
-- `user_impact: user-visible | internal-shippable | internal-dev-only`
-- `fire_rate: hot-path | warm-path | rare-path | only-during-existing-failure`
-- `reversibility: cheap-later | costly-later | irreversible-once-shipped`
-- `confidence: HIGH | MEDIUM | LOW`
-- `fix_risk: localized | cross-cutting | speculative-rewrite`
+- `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+- ``
+- ``
+- ``
+- ``
+- ``
 
 Assign axes from specification evidence, not from a numeric gut feel. If one axis cannot be assigned from evidence, keep the finding visible and state which axis is missing so the handler can treat it as floor-equivalent for that run.
 
@@ -101,7 +101,7 @@ Return the report in this structure:
 4. **Verdict**: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the shared verdict rules.
 5. **Decisions**: only include unresolved questions that are needed to complete review, formatted as decision cards from `fixme-howto-present-decisions`.
 
-Every finding must include the `Importance axes:` field from `fixme-howto-review-spec`. Do not emit a numeric importance score; the handler computes it after classification.
+Every finding must include the `Review assessment:` field from `fixme-howto-review-spec`. Reviewers do not assign handler classification, level route, numeric scores, or suppression.
 
 If there are no findings, say the specification passes and list the surfaces and acceptance criteria you verified.
 

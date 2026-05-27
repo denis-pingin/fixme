@@ -26,13 +26,16 @@ Standard workflow examples:
 
 | Workflow | Phase States |
 | --- | --- |
-| `default` | `plan`, `implement` |
-| `full` | `investigate`, `research`, `plan`, `implement`, `verify` |
+| `standard` | `plan`, `implement` |
 | `quick` | `plan`, `implement` |
+| `full` | `product-spec`, `technical-spec`, `plan`, `implement`, `verify` |
+| `bugfix` | `investigate`, `research`, `plan`, `implement`, `verify` |
 | `product-spec` | `product-spec` |
 | `technical-spec` | `technical-spec` |
-| `execute` | `implement` |
-| `idea-to-production` | `product-spec`, `technical-spec`, `plan`, `implement` |
+| `plan-only` | `plan` |
+| `execute-only` | `implement` |
+
+Legacy ticket pipeline values `default`, `plan`, `execute`, and `idea-to-production` are accepted as aliases and normalized to final names on the next successful ticket write.
 
 ### Structural States
 

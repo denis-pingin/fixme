@@ -34,7 +34,7 @@ Ticket state is stored in ticket frontmatter and changed through `fixme-tickets`
 
 There are two supported state shapes:
 
-- **Workflow-derived states:** when a ticket has a stored `pipeline` value or a transition uses `--pipeline`, enabled workflow phase names become ticket states. Standard `full` uses `investigate`, `research`, `plan`, `implement`, and `verify`.
+- **Workflow-derived states:** when a ticket has a stored `pipeline` value or a transition uses `--pipeline`, enabled workflow phase names become ticket states. `full` uses `product-spec`, `technical-spec`, `plan`, `implement`, and `verify`; `bugfix` uses `investigate`, `research`, `plan`, `implement`, and `verify`.
 - **Legacy fallback states:** when no pipeline is known yet, the markdown backend still supports the historical state chain `investigating -> researching -> planning -> implementing -> verifying`. This preserves old tickets and session pre-investigation behavior.
 
 Structural states always exist: `queued`, `done`, `failed`, and `skipped`.
@@ -84,9 +84,11 @@ Path: `<fixme-dir>/config.json`
 | `ticketBackend` | `/fixme-config` | `fixme-tickets` | Backend routing. |
 | `workflows` | `/fixme-config` or config CLI | `fixme-task`, ticket transition logic | Named phase graphs and review loops. |
 | `models` | `/fixme-config` or config CLI | `resolve-model`, dispatchers | Runtime profile and overrides. |
-| `review.softness` | `/fixme-config` or config CLI | Review handlers and PR comment flows | Finding strictness by surface/workflow/phase. |
+| `review.level` | `/fixme-config` or config CLI | Review handlers and PR comment flows | Finding routing by global, workflow, phase, or PR comment override. |
 | `linear` | `/fixme-config` | `/fixme-ticket`, Linear backend | Linear team metadata and optional defaults. |
 | `alerts` | `/fixme-config` | Orchestrators and interactive skills | Audible alert preferences. |
+
+Review level is resolved with `config review-level resolve`. Standard workflows include `standard` and `bugfix`.
 
 ## Artifact Locations
 

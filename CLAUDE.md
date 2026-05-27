@@ -33,11 +33,13 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 ### Configuring fixme
 
 ```bash
-# Interactive setup of workflows, workflow skills, loop controls, models, review softness, project commands, ticket backend, Linear metadata, and alerts
+# Interactive setup of workflows, workflow skills, loop controls, models, review level, project commands, ticket backend, Linear metadata, and alerts
 /fixme-config
 ```
 
 Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. Linear team discovery is used by `/fixme-ticket` and the Linear ticket backend; when the selected backend is markdown and Linear MCP is unavailable, `/fixme-config` warns, skips only that Linear round, and preserves existing Linear settings. Audible alerts are configured under `alerts.{enabled,sounds,players}`.
+
+Review strictness is configured with `review.level`, optional `workflows.<workflow>.review.level`, optional phase `review.level`, and optional `pullRequestComments.review.level`. Standard workflows include `standard`, `quick`, `full`, `bugfix`, `product-spec`, `technical-spec`, `plan-only`, and `execute-only`.
 
 ### fixme-tools.cjs CLI
 
@@ -66,7 +68,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get [key.path]
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> '<json-value>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface <surface>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
 
 # Runtime and alerts
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> [--runtime claude|codex]

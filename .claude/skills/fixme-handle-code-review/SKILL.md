@@ -42,6 +42,22 @@ If the packet/code map and an artifact disagree, trust the artifact after verify
 - **REJECT_WONT_FIX** - finding is technically valid but implementing it would make things worse, contradicts the plan's approach (which is not demonstrably broken), contradicts a locked decision, or adds regression risk for marginal benefit.
 - **REJECT_ALREADY_FIXED** - the issue described is already addressed in the current implementation or was fixed in a prior iteration.
 
+## Review Claim Verification Gate
+
+Run this gate before classifying any finding as `FIX`, `FIX_UNCLEAR`, or `FOLLOWUP`.
+
+A reviewer claim is a hypothesis, not evidence. Treat the reviewer's characterization and suggested fix as inputs to test against the codebase, docs, runtime behavior, and user decisions.
+
+Break the finding into atomic premises before assigning any FIX or CURRENT_PR_FIX route. Premises include: the current code behavior, external API/tool semantics, semantic equivalence or duplication, reachability, support contract, user/system impact, and whether the suggested change is safe.
+
+For each essential premise, record Evidence receipts. Each receipt must name the source checked and the observed fact: current source or tests, dependency source/types, installed binary `--help`, rendered config/manifests, official docs for the actual project version, a controlled reproduction, or a recorded user decision.
+
+For duplicate, redundant, or equivalent-parameter claims, prove semantic equivalence before accepting the finding. Identify the exact downstream consumer, prove both values feed the same semantic slot, prove no caller or runtime layer depends on the distinction, and prove the suggested removal or merge would not change behavior. Lexical similarity is not evidence of duplication. Similar names, matching literals, adjacent arguments, or the same IP/port surface are search leads only.
+
+If an essential premise is unverified, contradicted, or only supported by lexical similarity, do not route the item to implementation. Classify `REJECT_FALSE_POSITIVE` when evidence contradicts the premise. Classify `ASK_USER` when the missing premise depends on private intent or unavailable authority. Classify `FIX_UNCLEAR` only when validity is proven but the implementation approach is ambiguous.
+
+Before an Approach removes, merges, or renames an argument, config key, protocol flag, service, or generated value, trace the consuming code and name the verification that would catch a wrong merge. If that proof is missing, do not classify as `FIX`.
+
 For edge-case findings, also assign an edge-case validity classification:
 
 - **FIX_FAIL_FAST** - the reported state is reachable but should not be supported downstream. The correct fix is to reject, constrain, parse, type-narrow, or fail earlier so later code never handles the invalid state.
@@ -70,34 +86,30 @@ Every finding must include both severity and route scope. Classification answers
 
 MINOR and INFO findings never trigger a revision loop by themselves. Most valid code review fixes should be `IMPLEMENT_ONLY`; use `PLAN_REQUIRED` only when the implementation exposes a plan-level defect, ambiguous scope, or architecture problem that the executor should not decide alone.
 
-## Softness Routing
+## Review level Routing
 
 Use the shared `fixme-howto-importance` rubric after classification.
 
-Resolve softness with:
+Resolve review level with:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config softness resolve --workflow <workflow> --phase <phase> --surface code-review
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
 ```
 
-Apply softness after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
+Apply review level after classification and pattern aggregation, before deriving HANDLER_RESULT counts.
 
-Softness applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
+Review level applies to FIX and FIX_UNCLEAR only. ASK_USER and REJECT_* items stay visible through their existing paths.
 
-Floor findings from `fixme-howto-importance` are never softness-suppressed. Missing or invalid importance axes are treated as floor-equivalent for this run and must be reported with a warning.
+Missing or invalid review assessment dimensions route to `decision-needed` for this run and must be reported with a warning.
 
-Every classified finding must include one of these `Importance` outputs:
+Every classified finding must include:
 
-- `Importance: floor / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> survives`
-- `Importance: <score> / softness <resolved_float> -> suppressed`
-- `Importance: not-eligible / softness <resolved_float> -> not-eligible`
+- `Review level: <level>`
+- `Review assessment: reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>`
+- `Level route: blocking-fix | follow-up | decision-needed | dismissed`
+- `Route scope: PLAN_REQUIRED | IMPLEMENT_ONLY | FOLLOWUP | NONE`
 
-For every suppressed item, add it to the suppressed ledger using this wording:
-
-`Suppressed at softness=<resolved_float> with importance=<score>, axes={harm_class=..., user_impact=..., fire_rate=..., reversibility=..., confidence=..., fix_risk=...}`
-
-Suppressed items do not contribute to FIX_COUNT, FIX_UNCLEAR_COUNT, ASK_USER_COUNT, BLOCKING_FIX_COUNT, NONBLOCKING_COUNT, PLAN_REQUIRED_COUNT, IMPLEMENT_ONLY_COUNT, or HANDLER_RESULT. They only contribute to SUPPRESSED_COUNT.
+Items with `Level route: follow-up` contribute to NONBLOCKING_COUNT. Items with `Level route: dismissed` contribute only to DISMISSED_COUNT.
 
 ## Edge-Case Validity Gate
 
@@ -186,7 +198,11 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 | **Severity** | BLOCKER / MAJOR / MINOR / INFO |
 | **Route Scope** | PLAN_REQUIRED / IMPLEMENT_ONLY / FOLLOWUP / NONE |
 | **Confidence** | HIGH / MEDIUM / LOW |
-| **Importance** | `Importance: floor / softness <resolved_float> -> survives` OR `Importance: <score> / softness <resolved_float> -> survives` OR `Importance: <score> / softness <resolved_float> -> suppressed` OR `Importance: not-eligible / softness <resolved_float> -> not-eligible` |
+| **Review assessment** | `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>` |
+| **Review level** | `strict | standard | lenient | fast-track | critical` |
+| **Level route** | `blocking-fix | follow-up | decision-needed | dismissed` |
+Level route: blocking-fix` OR `Level route: blocking-fix` OR `Level route: follow-up` OR `Level route: dismissed` |
+| **Evidence receipts** | Source -> observed fact for each essential premise. For duplicate/equivalent-parameter claims, include the consumer contract and semantic-equivalence proof |
 | **Why** | 1-2 sentences. For FIX: what's actually wrong and why fixing it improves things. For FIX_UNCLEAR: what's wrong AND what makes the fix approach ambiguous (name the competing approaches). For REJECT_*: why the finding is wrong, irrelevant, or harmful to apply. For ASK_USER: what's unknown and why it matters |
 | **Question** | (ASK_USER and FIX_UNCLEAR only) For ASK_USER: a self-contained briefing on whether this is a real issue. For FIX_UNCLEAR: a self-contained briefing presenting the competing fix approaches. See Question Guidelines below |
 | **Approach** | (FIX only) Concrete steps to resolve - name files, functions, what to change. Must not break existing passing tests. For FIX_UNCLEAR: omitted (user chooses approach first) |
@@ -221,6 +237,7 @@ Operational requirements:
 ## Rules
 
 - Read the actual code, plan, AND spec before classifying. A finding classified without full context is likely wrong.
+- Do not accept the reviewer's stated premise as truth. Verify the premise first, then classify the finding.
 - A finding that's technically correct but would make the code worse is REJECT_WONT_FIX. Explain the tradeoff.
 - A finding that contradicts the plan's explicit approach is REJECT_WONT_FIX unless the plan's approach is demonstrably broken in practice (not just "could be better").
 - If two findings would be resolved by the same change, group them.
@@ -245,7 +262,7 @@ REJECT_IMPOSSIBLE_COUNT: <number>
 REJECT_UNSUPPORTED_COUNT: <number>
 BLOCKING_FIX_COUNT: <number>
 NONBLOCKING_COUNT: <number>
-SUPPRESSED_COUNT: <number>
+DISMISSED_COUNT: <number>
 PLAN_REQUIRED_COUNT: <number>
 IMPLEMENT_ONLY_COUNT: <number>
 NEXT_ACTION: DONE | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY
@@ -269,3 +286,19 @@ Routing consistency is mandatory:
 - If `IMPLEMENT_ONLY_COUNT > 0` and `PLAN_REQUIRED_COUNT = 0`, `NEXT_ACTION` MUST be `IMPLEMENT_REPAIR`.
 - Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists.
 - `FIX_UNCLEAR` never means no-fix. It means the finding is valid and the user must choose the approach.
+
+## Review Level Routing Contract
+
+Resolve review level with:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --workflow <workflow> --phase <phase>
+```
+
+Every classified finding includes Classification, Validity, Review assessment, Review level, Level route, Route scope, Why, Question, Approach, and Risk.
+
+Missing or invalid review assessment dimensions produce Classification: ASK_USER, Validity: NONE, Level route: decision-needed, Route scope: NONE, and WARNING: Missing review assessment dimensions: confidence.
+
+DISMISSED_COUNT: <number>
+
+Level route values: blocking-fix | follow-up | decision-needed | dismissed

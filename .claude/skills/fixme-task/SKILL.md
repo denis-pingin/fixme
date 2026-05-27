@@ -85,18 +85,21 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
 ### Argument Parsing
 
 ```
-/fixme-task full fix the login button                 -> pipeline="full", task="fix the login button"
-/fixme-task fix the login button                      -> pipeline="default", task="fix the login button"
-/fixme-task --ticket <path> fix the login             -> pipeline="default", ticket=<path>, task="fix the login"
+/fixme-task full build import flow                    -> pipeline="full", task="build import flow"
+/fixme-task bugfix fix the login button               -> pipeline="bugfix", task="fix the login button"
+/fixme-task fix the login button                      -> pipeline="standard", task="fix the login button"
+/fixme-task --ticket <path> fix the login             -> pipeline="standard", ticket=<path>, task="fix the login"
 /fixme-task full --ticket <path> fix login            -> pipeline="full", ticket=<path>, task="fix login"
 /fixme-task --product-spec build import flow          -> pipeline="product-spec", task="build import flow"
 /fixme-task --tech-spec <product-spec-path>           -> pipeline="technical-spec", task="<product-spec-path>"
 /fixme-task --technical-spec <product-spec-path>      -> pipeline="technical-spec", task="<product-spec-path>"
-/fixme-task --plan <technical-spec-path>              -> pipeline="plan", task="<technical-spec-path>"
-/fixme-task --execute <plan-path>                     -> pipeline="execute", task="<plan-path>"
-/fixme-task --idea-to-production build import flow    -> pipeline="idea-to-production", task="build import flow"
+/fixme-task --plan <technical-spec-path>              -> pipeline="plan-only", task="<technical-spec-path>"
+/fixme-task --execute <plan-path>                     -> pipeline="execute-only", task="<plan-path>"
+/fixme-task --idea-to-production build import flow    -> pipeline="full", task="build import flow"
 /fixme-task --pipeline product-spec build import flow -> pipeline="product-spec", task="build import flow"
 ```
+
+Plain `/fixme-task ...` defaults to `standard`.
 
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
@@ -106,9 +109,9 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
    - `--technical-spec` -> pipeline `technical-spec`
-   - `--plan` -> pipeline `plan`
-   - `--execute` -> pipeline `execute`
-   - `--idea-to-production` -> pipeline `idea-to-production`
+   - `--plan` -> pipeline `plan-only`
+   - `--execute` -> pipeline `execute-only`
+   - `--idea-to-production` remains accepted as a compatibility alias for `full`
 5. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
 6. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
 7. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
@@ -140,22 +143,23 @@ Run auto-detection only when no explicit pipeline was selected by `--pipeline`, 
 - **Product specification source** -> pipeline `technical-spec`
   - Path contains `/specs/product/` or `/product-spec`.
   - Content title or headings indicate a product specification: `# Product Specification`, `# [Feature Name]` with `Product Requirements`, `User Journeys`, or `Users, Roles, and Permissions`.
-- **Technical specification source** -> pipeline `plan`
+- **Technical specification source** -> pipeline `plan-only`
   - Path contains `/specs/technical/`, `/technical-spec`, or `/tech-spec`.
   - Content headings indicate a technical specification: `Architecture and Ownership`, `Interfaces and Data Contracts`, `Persistence, Migration, and Backfill`, or `Workflow, Concurrency, and Failure Semantics`.
-- **Implementation plan source** -> pipeline `execute`
+- **Implementation plan source** -> pipeline `execute-only`
   - Path contains `/plans/`.
   - Content title or headings indicate an implementation plan: `Implementation Plan`, `File Map`, `Tasks`, or `> Execute with`.
 - **Explicit prose intent** -> matching pipeline
   - User asks to write a product specification -> `product-spec`.
   - User asks to write a technical specification or tech spec -> `technical-spec`.
-  - User asks to write a plan -> `plan`.
-  - User asks to execute or implement an existing plan -> `execute`.
-  - User asks for idea to production or end-to-end from idea -> `idea-to-production`.
+  - User asks to write a plan -> `plan-only`.
+  - User asks to execute or implement an existing plan -> `execute-only`.
+  - User asks for idea to production or end-to-end from idea -> `full`.
+  - User reports a bug that needs investigation -> `bugfix`.
 
 **Default detection:**
 
-- If the input is a loose bug fix, feature request, or implementation task and no artifact type is clear, use `default`.
+- If the input is a loose implementation task and no artifact type is clear, use `standard`.
 
 **Ambiguous detection:**
 
@@ -178,8 +182,8 @@ Detect where to enter the selected pipeline based on what already exists **for t
 - **Product specification exists** and selected pipeline is `product-spec`: skip the writer phase, enter at the product-spec phase's review step. If the phase has no review, run summary.
 - **Product specification exists** and selected pipeline is `technical-spec`: start from the technical-spec writer phase with the product specification path as input.
 - **Technical specification exists** and selected pipeline is `technical-spec`: skip the writer phase, enter at the technical-spec phase's review step. If the phase has no review, run summary.
-- **Technical specification exists** and selected pipeline is `plan`: start from the plan writer phase with the technical specification path as input.
-- **Plan exists** and selected pipeline is `execute`: set `planPath` and start from the implement phase's execute skill.
+- **Technical specification exists** and selected pipeline is `plan-only`: start from the plan writer phase with the technical specification path as input.
+- **Plan exists** and selected pipeline is `execute-only`: set `planPath` and start from the implement phase's execute skill.
 - **Plan exists** and selected pipeline has a `plan` phase: set `planPath`, skip the plan-writing phase, and enter at the plan phase's **review** step. If the plan phase has no review, skip it entirely and enter at the next phase.
 - **Plan exists + already reviewed** (review findings provided): enter at the plan phase's **review handler**.
 - **Plan exists + already executed** (execution results or code changes present): enter at the implement phase's **review** step (if it has one).
@@ -247,7 +251,7 @@ Load the workflow definition and project settings (using `<fixme-dir>` resolved 
 2. **Extract the selected workflow** from `workflows.<pipelineName>.phases`
 3. **If `workflows.<pipelineName>` is missing but legacy `pipelines.<pipelineName>` exists**, read that legacy array as the phase list and read `workflowControls.<pipelineName>.outerMaxCycles` as the legacy outer loop limit.
 4. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
-5. **If no config or no workflow/pipeline key and no explicit pipeline was selected**, use the hardcoded `default` workflow.
+5. **If no config or no workflow key and no explicit pipeline was selected**, use the hardcoded `standard` workflow.
 6. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
 
 ### Standard Workflow Metadata
@@ -264,7 +268,9 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
 
 ### Standard Pipelines
 
-`default`:
+Review levels use `strict | standard | lenient | fast-track | critical`. The top-level default is `review.level`; workflow overrides use `workflows.<workflow>.review.level`; phase overrides use `phase.review.level`; PR comment handling uses `pullRequestComments.review.level`.
+
+`standard`:
    ```json
    [
      {
@@ -280,13 +286,57 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
        "skills": ["fixme-execute-plan"],
        "review": {
          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-         "maxCycles": 2
+         "maxCycles": 3
        }
      }
    ]
    ```
 
+`quick` has the same `plan -> implement` phase order as `standard` and no `review` blocks.
+
 `full`:
+   ```json
+   [
+     {
+       "name": "product-spec",
+       "skills": ["fixme-write-product-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "technical-spec",
+       "skills": ["fixme-write-technical-spec"],
+       "review": {
+         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "plan",
+       "skills": ["fixme-write-plan"],
+       "review": {
+         "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "implement",
+       "skills": ["fixme-execute-plan"],
+       "review": {
+         "skills": ["fixme-review-code", "fixme-handle-code-review"],
+         "maxCycles": 3
+       }
+     },
+     {
+       "name": "verify",
+       "skills": ["fixme-browser-verify"]
+     }
+   ]
+   ```
+
+`bugfix`:
    ```json
    [
      {
@@ -310,26 +360,12 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
        "skills": ["fixme-execute-plan"],
        "review": {
          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-         "maxCycles": 2
+         "maxCycles": 3
        }
      },
      {
        "name": "verify",
        "skills": ["fixme-browser-verify"]
-     }
-   ]
-   ```
-
-`quick`:
-   ```json
-   [
-     {
-       "name": "plan",
-       "skills": ["fixme-write-plan"]
-     },
-     {
-       "name": "implement",
-       "skills": ["fixme-execute-plan"]
      }
    ]
    ```
@@ -362,7 +398,7 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
    ]
    ```
 
-`plan`:
+`plan-only`:
    ```json
    [
      {
@@ -376,7 +412,7 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
    ]
    ```
 
-`execute`:
+`execute-only`:
    ```json
    [
      {
@@ -384,45 +420,7 @@ Every workflow has workflow-scoped metadata. `outerMaxCycles` is independent of 
        "skills": ["fixme-execute-plan"],
        "review": {
          "skills": ["fixme-review-code", "fixme-handle-code-review"],
-         "maxCycles": 2
-       }
-     }
-   ]
-   ```
-
-`idea-to-production`:
-   ```json
-   [
-     {
-       "name": "product-spec",
-       "skills": ["fixme-write-product-spec"],
-       "review": {
-         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
          "maxCycles": 3
-       }
-     },
-     {
-       "name": "technical-spec",
-       "skills": ["fixme-write-technical-spec"],
-       "review": {
-         "skills": ["fixme-review-spec", "fixme-handle-spec-review"],
-         "maxCycles": 3
-       }
-     },
-     {
-       "name": "plan",
-       "skills": ["fixme-write-plan"],
-       "review": {
-         "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
-         "maxCycles": 3
-       }
-     },
-     {
-       "name": "implement",
-       "skills": ["fixme-execute-plan"],
-       "review": {
-         "skills": ["fixme-review-code", "fixme-handle-code-review"],
-         "maxCycles": 2
        }
      }
    ]
@@ -516,7 +514,7 @@ Tag each entry with its phase name and step type: `[phase-name]` for execute ste
 
 ### Example: Default Pipeline Manifest
 
-For the hardcoded default pipeline (no ticket):
+For the hardcoded standard pipeline (no ticket):
 
 ```
 Step 1  [plan]              Dispatch fixme-write-plan
@@ -1317,7 +1315,7 @@ If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: 
 ## Loop Guards
 
 - **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). Count only blocking revision loops. If blocking FIX items remain after max cycles, escalate to user using the format below.
-- **Implementation repair loop**: max `phase.review.maxCycles` iterations for the implement phase (default 2). Count only blocking `IMPLEMENT_ONLY` repair loops. If blocking implementation-only FIX items remain after max cycles, escalate to user using the format below.
+- **Implementation repair loop**: max `phase.review.maxCycles` iterations for the implement phase (default 3). Count only blocking `IMPLEMENT_ONLY` repair loops. If blocking implementation-only FIX items remain after max cycles, escalate to user using the format below.
 - **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). Count only blocking `PLAN_REQUIRED` cross-phase loops. If blocking plan-required FIX items remain after the configured number of full cycles, escalate to user using the format below.
 - **Stall detection**: track unresolved blocking issue count for each comparable loop route (`PLAN_REQUIRED` and `IMPLEMENT_ONLY`). If the unresolved blocking issue count is not lower than the previous comparable cycle, stop the loop and escalate as stalled.
 

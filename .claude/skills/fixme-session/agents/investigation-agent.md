@@ -24,7 +24,7 @@ You receive four things via your prompt:
 
 ### Phase 1: Read Ticket and Build Task Description
 
-Note: The ticket has already been transitioned to "investigating" by the orchestrator (fixme-session) before dispatching this agent.
+Note: The ticket has already been transitioned to `investigate` by the orchestrator (fixme-session) before dispatching this agent.
 
 - Read the ticket file using the Read tool
 - Extract from structured fields: affected URL, expected vs actual behavior, error messages, title, ticket number
