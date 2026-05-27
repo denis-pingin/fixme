@@ -236,7 +236,12 @@ const KNOWN_FIXME_SKILLS = new Set([
 const USAGE_RUNTIMES = Object.freeze(['claude', 'codex', 'auto']);
 const USAGE_ROLES = Object.freeze(['skill', 'orchestrator', 'reviewer', 'handler', 'reporter', 'reference']);
 const USAGE_OUTCOMES = Object.freeze(['complete', 'failed', 'aborted']);
-const USAGE_STATUS = Object.freeze({ COMPLETE: 'complete', PARTIAL: 'partial' });
+const USAGE_STATUS = Object.freeze({
+  MEASURED: 'measured',
+  UNMEASURED: 'unmeasured',
+  LEGACY_COMPLETE: 'complete',
+  LEGACY_PARTIAL: 'partial',
+});
 const USAGE_REASON_VALUES = Object.freeze([
   'verification_failed',
   'user_aborted',
@@ -255,7 +260,7 @@ const USAGE_WARNING_CODES = Object.freeze({
   AMBIGUOUS_COUNTER_SOURCE: 'AMBIGUOUS_COUNTER_SOURCE',
   DUPLICATE_INVOCATION_CONFLICT: 'DUPLICATE_INVOCATION_CONFLICT',
   CORRUPT_JSONL_LINE: 'CORRUPT_JSONL_LINE',
-  TRAILING_PARTIAL_LINE: 'TRAILING_PARTIAL_LINE',
+  TRAILING_INCOMPLETE_LINE: 'TRAILING_INCOMPLETE_LINE',
   DESTINATION_APPEND_FAILED: 'DESTINATION_APPEND_FAILED',
 });
 const USAGE_SOURCE_SNAPSHOT_SCAN_BYTES = 1024 * 1024;
@@ -3790,14 +3795,14 @@ function tokensEqual(a, b) {
   return true;
 }
 
-function counterPartial(pending, code, message, source) {
-  const result = buildPartialCounterResult(pending, code, message);
+function counterUnmeasured(pending, code, message, source) {
+  const result = buildUnmeasuredCounterResult(pending, code, message);
   if (source) result.source = source;
   return result;
 }
 
-function completeCounterResult(tokens, source) {
-  return { status: USAGE_STATUS.COMPLETE, tokens, source, warnings: [] };
+function measuredCounterResult(tokens, source) {
+  return { status: USAGE_STATUS.MEASURED, tokens, source, warnings: [] };
 }
 
 function sourceMetadata(kind, sourcePath, discovery, candidateCount, extra = {}) {
@@ -3821,7 +3826,7 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
 
   if (execUsages.length > 0) {
     const execTotal = sumTokenUsageFromList(execUsages);
-    if (execTotal && hasPositiveToken(execTotal)) return completeCounterResult(execTotal, source);
+    if (execTotal && hasPositiveToken(execTotal)) return measuredCounterResult(execTotal, source);
   }
 
   const summedLast = sumTokenUsageFromList(afterStartUsages);
@@ -3830,10 +3835,10 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
     const startSnapshot = cumulativeStartTokens || null;
     if (!startSnapshot && startByte > 0) {
       if (summedLast && hasPositiveToken(summedLast)) {
-        return completeCounterResult(summedLast, source);
+        return measuredCounterResult(summedLast, source);
       }
       return {
-        status: USAGE_STATUS.PARTIAL,
+        status: USAGE_STATUS.UNMEASURED,
         tokens: null,
         source,
         warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Cumulative runtime counters require a bounded start snapshot, but none was captured.' }],
@@ -3841,23 +3846,23 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
     }
     const delta = subtractTokenUsage(finishSnapshot, startSnapshot);
     if (delta.negative) {
-      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
+      return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
     }
     const modelWork = !String(skill || '').startsWith('fixme-howto-');
     if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLast)) {
-      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
+      return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
     }
     if (summedLast && hasPositiveToken(summedLast) && !tokensEqual(delta.result, summedLast)) {
-      return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
+      return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
     }
-    return completeCounterResult(delta.result, source);
+    return measuredCounterResult(delta.result, source);
   }
 
   if (summedLast && hasPositiveToken(summedLast)) {
-    return completeCounterResult(summedLast, source);
+    return measuredCounterResult(summedLast, source);
   }
 
-  return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
+  return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
 }
 
 function extractClaudeCountersFromJsonl(sourcePath, startCursor, source) {
@@ -3866,8 +3871,8 @@ function extractClaudeCountersFromJsonl(sourcePath, startCursor, source) {
     .filter(row => row.message && row.message.usage)
     .map(row => normalizeClaudeUsage(row.message.usage));
   const tokens = sumTokenUsageFromList(usages);
-  if (tokens && hasPositiveToken(tokens)) return completeCounterResult(tokens, source);
-  return { status: USAGE_STATUS.PARTIAL, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
+  if (tokens && hasPositiveToken(tokens)) return measuredCounterResult(tokens, source);
+  return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, message: 'Runtime token counters were unavailable.' }] };
 }
 
 function runtimeProjectMatches(row, projectRoot) {
@@ -4123,9 +4128,9 @@ function appendUsageEvent(eventPath, finalizedEvent) {
   }
 }
 
-function buildPartialCounterResult(pending, warningCode, message) {
+function buildUnmeasuredCounterResult(pending, warningCode, message) {
   return {
-    status: USAGE_STATUS.PARTIAL,
+    status: USAGE_STATUS.UNMEASURED,
     tokens: null,
     source: pending.sourceSnapshot && pending.sourceSnapshot.source
       ? pending.sourceSnapshot.source
@@ -4170,7 +4175,7 @@ function resolveUsageCounters(pending) {
   }
   const kind = `${pending.runtime}_jsonl`;
   if (discovery.status === 'error') {
-    return counterPartial(
+    return counterUnmeasured(
       pending,
       USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
       `Runtime counter source discovery failed: ${discovery.error.message}`,
@@ -4178,7 +4183,7 @@ function resolveUsageCounters(pending) {
     );
   }
   if (discovery.status === 'none') {
-    return counterPartial(
+    return counterUnmeasured(
       pending,
       USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
       'Runtime token counters were unavailable; this invocation is not included in total usage.',
@@ -4186,7 +4191,7 @@ function resolveUsageCounters(pending) {
     );
   }
   if (discovery.status === 'many') {
-    return counterPartial(
+    return counterUnmeasured(
       pending,
       USAGE_WARNING_CODES.AMBIGUOUS_COUNTER_SOURCE,
       'Multiple runtime counter sources matched this invocation; no source was guessed.',
@@ -4210,9 +4215,9 @@ function resolveUsageCounters(pending) {
       return extractClaudeCountersFromJsonl(candidate.path, startCursor, source);
     }
   } catch (e) {
-    return counterPartial(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, `Runtime counter extraction failed: ${e.message}`, source);
+    return counterUnmeasured(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, `Runtime counter extraction failed: ${e.message}`, source);
   }
-  return counterPartial(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, 'Runtime token counters were unavailable.', source);
+  return counterUnmeasured(pending, USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE, 'Runtime token counters were unavailable.', source);
 }
 
 function buildFinalizedUsageEvent(pending, outcomeResult, counterResult) {
@@ -4360,23 +4365,39 @@ function formatTokenCount(value) {
   return Number(value || 0).toLocaleString('en-US');
 }
 
+function normalizeUsageStatus(status) {
+  if (status === USAGE_STATUS.LEGACY_PARTIAL) return USAGE_STATUS.UNMEASURED;
+  if (status === USAGE_STATUS.LEGACY_COMPLETE) return USAGE_STATUS.MEASURED;
+  return status;
+}
+
+function normalizeUsageRowForReport(row) {
+  const status = normalizeUsageStatus(row.status);
+  return status === row.status ? row : { ...row, status };
+}
+
+function isMeasuredUsageRow(row) {
+  return normalizeUsageStatus(row.status) === USAGE_STATUS.MEASURED && !!row.tokens;
+}
+
 function usageSummaryRow(event) {
+  const normalizedEvent = normalizeUsageRowForReport(event);
   return {
-    eventId: event.eventId,
-    invocationId: event.invocationId,
-    skill: event.skill,
-    role: event.role,
-    runtime: event.runtime,
-    status: event.status,
-    outcome: event.outcome,
-    outcomeReason: event.outcomeReason,
-    startedAt: event.startedAt,
-    finishedAt: event.finishedAt,
-    durationMs: event.durationMs,
-    pipelineRunId: event.pipelineRunId,
-    parentInvocationId: event.parentInvocationId,
-    totalTokens: event.tokens && typeof event.tokens.totalTokens === 'number' ? event.tokens.totalTokens : null,
-    warningCodes: (event.warnings || []).map(warning => warning.code).filter(Boolean),
+    eventId: normalizedEvent.eventId,
+    invocationId: normalizedEvent.invocationId,
+    skill: normalizedEvent.skill,
+    role: normalizedEvent.role,
+    runtime: normalizedEvent.runtime,
+    status: normalizedEvent.status,
+    outcome: normalizedEvent.outcome,
+    outcomeReason: normalizedEvent.outcomeReason,
+    startedAt: normalizedEvent.startedAt,
+    finishedAt: normalizedEvent.finishedAt,
+    durationMs: normalizedEvent.durationMs,
+    pipelineRunId: normalizedEvent.pipelineRunId,
+    parentInvocationId: normalizedEvent.parentInvocationId,
+    totalTokens: normalizedEvent.tokens && typeof normalizedEvent.tokens.totalTokens === 'number' ? normalizedEvent.tokens.totalTokens : null,
+    warningCodes: (normalizedEvent.warnings || []).map(warning => warning.code).filter(Boolean),
   };
 }
 
@@ -4414,7 +4435,7 @@ function readUsageEventFile(eventPath) {
       rows.push(JSON.parse(line));
     } catch (e) {
       const code = (!endsWithNewline && i === lines.length - 1)
-        ? USAGE_WARNING_CODES.TRAILING_PARTIAL_LINE
+        ? USAGE_WARNING_CODES.TRAILING_INCOMPLETE_LINE
         : USAGE_WARNING_CODES.CORRUPT_JSONL_LINE;
       warnings.push({ code, message: `${code} in ${eventPath} at line ${i + 1}` });
     }
@@ -4475,6 +4496,7 @@ function warningSummaryFromWarnings(warnings) {
 function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit }) {
   const filtered = filterUsageRows(rows, filters);
   const normalized = normalizeUsageRows(filtered);
+  const reportRows = normalized.rows.map(normalizeUsageRowForReport);
   const totalUsage = emptyTokenUsage();
   const notIncludedEventIds = [];
   const warningEvents = [...fileWarnings];
@@ -4490,9 +4512,9 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     });
   }
 
-  for (const row of normalized.rows) {
+  for (const row of reportRows) {
     for (const warning of row.warnings || []) warningEvents.push({ ...warning, eventId: row.eventId });
-    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
+    if (isMeasuredUsageRow(row)) {
       addTokenUsage(totalUsage, row.tokens);
       completeRows.push(row);
     } else {
@@ -4504,8 +4526,8 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     return {
       [keyName]: keyValue,
       invocationCount: 0,
-      completeCount: 0,
-      partialCount: 0,
+      measuredCount: 0,
+      unmeasuredCount: 0,
       totalUsage: emptyTokenUsage(),
       notIncludedInTotal: { invocationCount: 0, eventIds: [] },
       warningSummary: [],
@@ -4543,14 +4565,14 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
   function addRowToGroup(item, row) {
     if (!item) return;
     item.invocationCount++;
-    if (row.status === USAGE_STATUS.COMPLETE && row.tokens) {
-      item.completeCount++;
+    if (isMeasuredUsageRow(row)) {
+      item.measuredCount++;
       addTokenUsage(item.totalUsage, row.tokens);
       if (Object.prototype.hasOwnProperty.call(item, 'orchestratorUsage')) {
         addTokenUsage(row.role === 'orchestrator' ? item.orchestratorUsage : item.childUsage, row.tokens);
       }
     } else {
-      item.partialCount++;
+      item.unmeasuredCount++;
       item.notIncludedInTotal.invocationCount++;
       if (row.eventId) item.notIncludedInTotal.eventIds.push(row.eventId);
     }
@@ -4559,7 +4581,7 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     }
   }
 
-  for (const row of normalized.rows) {
+  for (const row of reportRows) {
     addRowToGroup(groupForSkill(row.skill), row);
     addRowToGroup(groupForPipeline(row.pipelineRunId), row);
   }
@@ -4580,7 +4602,7 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     }
   }
 
-  const recent = normalized.rows
+  const recent = reportRows
     .slice()
     .sort((a, b) => Date.parse(b.finishedAt || '') - Date.parse(a.finishedAt || ''))
     .slice(0, limit || 20)
@@ -4597,7 +4619,7 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     totalUsage,
     notIncludedInTotal: {
       invocationCount: new Set(notIncludedEventIds.filter(Boolean).map(eventId => {
-        const row = [...normalized.rows, ...filtered].find(item => item.eventId === eventId);
+        const row = [...reportRows, ...filtered].find(item => item.eventId === eventId);
         return row ? row.invocationId : eventId;
       })).size,
       eventIds: [...new Set(notIncludedEventIds.filter(Boolean))],
@@ -4690,7 +4712,7 @@ function buildCompactUsageReportLine(event, projectEventPath) {
     filters: { since: null, until: null, skill: null, pipelineRunId: event.pipelineRunId },
     limit: 20,
   }) : null;
-  if (event.status === USAGE_STATUS.COMPLETE && event.tokens) {
+  if (isMeasuredUsageRow(event)) {
     const base = `Usage: ${event.skill} +${formatTokenCount(event.tokens.totalTokens)} tokens`;
     if (pipelineReport) {
       return `${base} | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;

@@ -60,7 +60,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage finish --invocat
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
 ```
 
-`usage start` creates pending invocation state. `usage finish` extracts runtime counters when available, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, partial-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
+`usage start` creates pending invocation state. `usage finish` extracts runtime counters when available, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
 
 ## Ownership
 

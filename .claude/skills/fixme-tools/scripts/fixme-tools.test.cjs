@@ -2267,6 +2267,7 @@ test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL
   assert(skill.includes('Render only the displayed report JSON'), 'skill should render only the post-finalization report');
   assert(skill.includes('first row labeled `**Total**`'), 'overview By Skill table should include a total row');
   assert(skill.includes('`totalUsage.totalTokens` from the report JSON'), 'total row should use report totalUsage');
+  assert(skill.includes('| Skill | Invocations | Measured | Unmeasured | Total usage |'), 'usage table should use Measured/Unmeasured labels');
   assert(skill.includes('Never parse JSONL directly.'), 'skill should not parse JSONL');
   assert(skill.includes('Never inspect runtime transcripts directly.'), 'skill should not inspect transcripts');
   assert(skill.includes('Do not display `outcomeReason`'), 'markdown reports should hide outcomeReason');
@@ -2983,14 +2984,14 @@ function startUsage(ctx, extra = '') {
   return result.data;
 }
 
-test('usage finish: missing counters appends one partial row to project and global events', () => {
+test('usage finish: missing counters appends one unmeasured row to project and global events', () => {
   const ctx = createUsageWorkspace();
   const started = startUsage(ctx);
   const result = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(result.ok, `usage finish should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.status === 'partial', `expected partial, got ${result.data.status}`);
+  assert(result.data.status === 'unmeasured', `expected unmeasured, got ${result.data.status}`);
   assert(result.data.outcomeReason === null, 'complete outcomeReason should be null');
-  assert(result.data.reportLine && result.data.reportLine.includes('Usage: fixme-write-plan unavailable'), 'partial report line should be present');
+  assert(result.data.reportLine && result.data.reportLine.includes('Usage: fixme-write-plan unavailable'), 'unmeasured report line should be present');
   assert(result.data.reportLineSuppressed === false, 'report line should not be suppressed by default');
   assert(!fs.existsSync(started.pendingPath), 'pending file should be removed after both appends complete');
 
@@ -2999,10 +3000,10 @@ test('usage finish: missing counters appends one partial row to project and glob
   assert(projectRows.length === 1, `project rows: ${projectRows.length}`);
   assert(globalRows.length === 1, `global rows: ${globalRows.length}`);
   assert(JSON.stringify(projectRows[0]) === JSON.stringify(globalRows[0]), 'project and global rows should be identical');
-  assert(projectRows[0].status === 'partial', 'row status partial');
-  assert(projectRows[0].tokens === null, 'partial row tokens null');
+  assert(projectRows[0].status === 'unmeasured', 'row status unmeasured');
+  assert(projectRows[0].tokens === null, 'unmeasured row tokens null');
   assert(projectRows[0].cost === null, 'cost null');
-  assert(projectRows[0].warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'partial row warning');
+  assert(projectRows[0].warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'unmeasured row warning');
   assert(!Object.prototype.hasOwnProperty.call(projectRows[0], 'task'), 'usage row must not contain task field');
 });
 
@@ -3091,7 +3092,7 @@ test('usage finish: destination conflict exits non-zero and appends nothing', ()
   const first = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, { HOME: badHomeFile });
   assert(!first.ok, 'first finish should leave pending after global failure');
 
-  const conflicting = { ...readJsonl(ctx.projectEvents)[0], status: 'complete', tokens: { totalTokens: 1 } };
+  const conflicting = { ...readJsonl(ctx.projectEvents)[0], status: 'measured', tokens: { totalTokens: 1 } };
   fs.writeFileSync(ctx.projectEvents, JSON.stringify(conflicting) + '\n');
   const retry = runInDirWithEnv(`usage finish --invocation-id ${started.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(!retry.ok, 'retry should fail on conflicting project row');
@@ -3119,7 +3120,7 @@ function usageEvent(overrides = {}) {
     skill: overrides.skill || 'fixme-write-plan',
     role: overrides.role || 'skill',
     runtime: overrides.runtime || 'codex',
-    status: overrides.status || 'complete',
+    status: overrides.status || 'measured',
     outcome: overrides.outcome || 'complete',
     outcomeReason: overrides.outcomeReason === undefined ? null : overrides.outcomeReason,
     startedAt: overrides.startedAt || '2026-05-26T10:00:00Z',
@@ -3147,26 +3148,66 @@ function writeUsageEvents(filePath, rows, trailing = true) {
   fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + (trailing ? '\n' : ''));
 }
 
-test('usage report: project totals exclude partial rows and include not-included count', () => {
+test('usage report: project totals exclude unmeasured rows and include not-included count', () => {
   const ctx = createUsageWorkspace();
   const complete = usageEvent({ eventId: 'event_complete', invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
-  const partial = usageEvent({
-    eventId: 'event_partial',
-    invocationId: 'usage_partial',
+  const unmeasured = usageEvent({
+    eventId: 'event_unmeasured',
+    invocationId: 'usage_unmeasured',
     projectRoot: ctx.projectRoot,
     fixmeDir: ctx.fixmeDir,
-    status: 'partial',
+    status: 'unmeasured',
     tokens: null,
     warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
   });
-  writeUsageEvents(ctx.projectEvents, [complete, partial]);
+  writeUsageEvents(ctx.projectEvents, [complete, unmeasured]);
 
   const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
   assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
   assert(result.data.totalUsage.totalTokens === 135, `total tokens should be 135, got ${result.data.totalUsage.totalTokens}`);
-  assert(result.data.notIncludedInTotal.invocationCount === 1, 'one partial invocation excluded');
-  assert(result.data.notIncludedInTotal.eventIds.includes('event_partial'), 'partial event listed');
-  assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes partial warning');
+  assert(result.data.notIncludedInTotal.invocationCount === 1, 'one unmeasured invocation excluded');
+  assert(result.data.notIncludedInTotal.eventIds.includes('event_unmeasured'), 'unmeasured event listed');
+  assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes unmeasured warning');
+});
+
+test('usage report: legacy partial rows are displayed as unmeasured', () => {
+  const ctx = createUsageWorkspace();
+  writeUsageEvents(ctx.projectEvents, [
+    usageEvent({
+      eventId: 'event_legacy_partial',
+      invocationId: 'usage_legacy_partial',
+      projectRoot: ctx.projectRoot,
+      fixmeDir: ctx.fixmeDir,
+      status: 'partial',
+      tokens: null,
+      warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+    }),
+  ]);
+
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.recent[0].status === 'unmeasured', `legacy partial should report as unmeasured, got ${result.data.recent[0].status}`);
+  assert(result.data.bySkill[0].unmeasuredCount === 1, 'legacy partial row should count as unmeasured');
+  assert(!Object.prototype.hasOwnProperty.call(result.data.bySkill[0], 'partialCount'), 'report should not expose partialCount');
+});
+
+test('usage report: legacy complete rows are displayed as measured', () => {
+  const ctx = createUsageWorkspace();
+  writeUsageEvents(ctx.projectEvents, [
+    usageEvent({
+      eventId: 'event_legacy_complete',
+      invocationId: 'usage_legacy_complete',
+      projectRoot: ctx.projectRoot,
+      fixmeDir: ctx.fixmeDir,
+      status: 'complete',
+    }),
+  ]);
+
+  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.recent[0].status === 'measured', `legacy complete should report as measured, got ${result.data.recent[0].status}`);
+  assert(result.data.bySkill[0].measuredCount === 1, 'legacy complete row should count as measured');
+  assert(!Object.prototype.hasOwnProperty.call(result.data.bySkill[0], 'completeCount'), 'report should not expose completeCount');
 });
 
 test('usage report: identical duplicates count once and conflicting duplicates are excluded', () => {
@@ -3240,7 +3281,7 @@ test('usage report: text output uses required Total usage language', () => {
   const ctx = createUsageWorkspace();
   writeUsageEvents(ctx.projectEvents, [
     usageEvent({ invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir }),
-    usageEvent({ eventId: 'event_partial', invocationId: 'usage_partial', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir, status: 'partial', tokens: null, warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }] }),
+    usageEvent({ eventId: 'event_unmeasured', invocationId: 'usage_unmeasured', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir, status: 'unmeasured', tokens: null, warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }] }),
   ]);
   const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
   assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
@@ -3249,7 +3290,7 @@ test('usage report: text output uses required Total usage language', () => {
   assert(result.data.includes('Not included in total: 1 invocation with unavailable exact counters'), `missing not-included line: ${result.data}`);
 });
 
-test('usage report: corrupt and trailing partial JSONL lines are skipped with warnings', () => {
+test('usage report: corrupt and trailing incomplete JSONL lines are skipped with warnings', () => {
   const ctx = createUsageWorkspace();
   fs.mkdirSync(path.dirname(ctx.projectEvents), { recursive: true });
   fs.writeFileSync(ctx.projectEvents, JSON.stringify(usageEvent({ projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir })) + '\n{"bad":\n{"trailing"');
@@ -3257,7 +3298,7 @@ test('usage report: corrupt and trailing partial JSONL lines are skipped with wa
   assert(result.ok, `corrupt report should succeed, got ${JSON.stringify(result.data)}`);
   assert(result.data.totalUsage.totalTokens === 135, 'valid row should still count');
   assert(result.data.warnings.some(w => w.code === 'CORRUPT_JSONL_LINE'), 'corrupt line warning');
-  assert(result.data.warnings.some(w => w.code === 'TRAILING_PARTIAL_LINE'), 'trailing partial warning');
+  assert(result.data.warnings.some(w => w.code === 'TRAILING_INCOMPLETE_LINE'), 'trailing incomplete warning');
 });
 
 test('usage report: JSON grouping schema includes documented counts and exclusions', () => {
@@ -3271,12 +3312,12 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
     projectRoot: ctx.projectRoot,
     fixmeDir: ctx.fixmeDir,
   });
-  const partial = usageEvent({
-    eventId: 'event_schema_partial',
-    invocationId: 'usage_schema_partial',
+  const unmeasured = usageEvent({
+    eventId: 'event_schema_unmeasured',
+    invocationId: 'usage_schema_unmeasured',
     skill: 'fixme-write-plan',
     pipelineRunId,
-    status: 'partial',
+    status: 'unmeasured',
     tokens: null,
     projectRoot: ctx.projectRoot,
     fixmeDir: ctx.fixmeDir,
@@ -3291,29 +3332,34 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
     fixmeDir: ctx.fixmeDir,
   });
   const conflictOther = { ...conflict, eventId: 'event_schema_conflict_other', tokens: { ...conflict.tokens, totalTokens: 999 } };
-  writeUsageEvents(ctx.projectEvents, [complete, partial, conflict, conflictOther]);
+  writeUsageEvents(ctx.projectEvents, [complete, unmeasured, conflict, conflictOther]);
 
   const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
   assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
-  const recent = result.data.recent.find(row => row.eventId === 'event_schema_partial');
+  const recent = result.data.recent.find(row => row.eventId === 'event_schema_unmeasured');
   assert(recent && Object.prototype.hasOwnProperty.call(recent, 'outcomeReason'), 'recent rows include outcomeReason');
   assert(Array.isArray(recent.warningCodes), 'recent rows include warningCodes array');
   assert(!Object.prototype.hasOwnProperty.call(recent, 'warnings'), 'recent rows should not expose raw warnings field');
+  assert(recent.status === 'unmeasured', `recent unmeasured row status ${recent.status}`);
 
   const bySkill = result.data.bySkill.find(row => row.skill === 'fixme-write-plan');
   assert(bySkill.invocationCount === 2, `bySkill invocationCount should exclude duplicate-conflict groups, got ${bySkill.invocationCount}`);
-  assert(bySkill.completeCount === 1, `bySkill completeCount ${bySkill.completeCount}`);
-  assert(bySkill.partialCount === 1, `bySkill partialCount ${bySkill.partialCount}`);
+  assert(bySkill.measuredCount === 1, `bySkill measuredCount ${bySkill.measuredCount}`);
+  assert(bySkill.unmeasuredCount === 1, `bySkill unmeasuredCount ${bySkill.unmeasuredCount}`);
+  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'completeCount'), 'bySkill should not expose completeCount');
+  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'partialCount'), 'bySkill should not expose partialCount');
   assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
   assert(bySkill.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'bySkill warning summary includes duplicate conflict group');
   assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose legacy invocations field');
 
   const byPipeline = result.data.byPipeline.find(row => row.pipelineRunId === pipelineRunId);
   assert(byPipeline.invocationCount === 2, `byPipeline invocationCount should exclude duplicate-conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
-  assert(byPipeline.completeCount === 1, `byPipeline completeCount ${byPipeline.completeCount}`);
-  assert(byPipeline.partialCount === 1, `byPipeline partialCount ${byPipeline.partialCount}`);
+  assert(byPipeline.measuredCount === 1, `byPipeline measuredCount ${byPipeline.measuredCount}`);
+  assert(byPipeline.unmeasuredCount === 1, `byPipeline unmeasuredCount ${byPipeline.unmeasuredCount}`);
+  assert(!Object.prototype.hasOwnProperty.call(byPipeline, 'completeCount'), 'byPipeline should not expose completeCount');
+  assert(!Object.prototype.hasOwnProperty.call(byPipeline, 'partialCount'), 'byPipeline should not expose partialCount');
   assert(byPipeline.notIncludedInTotal.invocationCount === 2, `byPipeline excluded count ${byPipeline.notIncludedInTotal.invocationCount}`);
-  assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes partial warning');
+  assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes unmeasured warning');
   assert(byPipeline.orchestratorUsage.totalTokens === 0, 'byPipeline includes orchestratorUsage subtotal object');
   assert(byPipeline.childUsage.totalTokens === 135, 'byPipeline includes childUsage subtotal object');
 });
@@ -3384,7 +3430,7 @@ test('runtime adapter: Codex cumulative total_token_usage deltas are authoritati
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.inputTokens === 150, `input delta ${row.tokens.inputTokens}`);
   assert(row.tokens.cachedInputTokens === 35, `cached delta ${row.tokens.cachedInputTokens}`);
   assert(row.tokens.outputTokens === 30, `output delta ${row.tokens.outputTokens}`);
@@ -3421,12 +3467,12 @@ test('runtime adapter: Codex finish uses bounded persisted cumulative start snap
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(finished.ok, `finish should not read the unbounded pre-start prefix, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 225, `expected bounded cumulative delta 225, got ${row.tokens && row.tokens.totalTokens}`);
   assert(row.tokens.inputTokens === 150, `input delta ${row.tokens.inputTokens}`);
 });
 
-test('runtime adapter: Codex negative cumulative deltas create partial row', () => {
+test('runtime adapter: Codex negative cumulative deltas create unmeasured row', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-negative-delta.jsonl');
   appendJsonl(sourcePath, [
@@ -3444,14 +3490,14 @@ test('runtime adapter: Codex negative cumulative deltas create partial row', () 
     ),
   ]);
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
-  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'negative cumulative delta should be partial');
-  assert(row.tokens === null, 'partial tokens null');
+  assert(row.status === 'unmeasured', 'negative cumulative delta should be unmeasured');
+  assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'NEGATIVE_DELTA'), 'NEGATIVE_DELTA warning expected');
 });
 
-test('runtime adapter: Codex zero cumulative deltas create NO_NEW_USAGE partial row', () => {
+test('runtime adapter: Codex zero cumulative deltas create NO_NEW_USAGE unmeasured row', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-zero-delta.jsonl');
   const snapshot = { input_tokens: 200, cached_input_tokens: 40, output_tokens: 30, reasoning_output_tokens: 20, total_tokens: 290 };
@@ -3464,10 +3510,10 @@ test('runtime adapter: Codex zero cumulative deltas create NO_NEW_USAGE partial 
     codexTokenCount(snapshot, undefined),
   ]);
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
-  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'zero cumulative delta should be partial');
-  assert(row.tokens === null, 'partial tokens null');
+  assert(row.status === 'unmeasured', 'zero cumulative delta should be unmeasured');
+  assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'NO_NEW_USAGE'), 'NO_NEW_USAGE warning expected');
   assert(!row.warnings.some(w => w.code === 'NEGATIVE_DELTA'), 'zero delta must not be classified as NEGATIVE_DELTA');
   assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'zero delta without after-start usage must not be classified as COUNTER_CONFLICT');
@@ -3486,7 +3532,7 @@ test('runtime adapter: Codex sums each last_token_usage event when cumulative sn
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', 'last usage rows should produce complete counters');
+  assert(row.status === 'measured', 'last usage rows should produce measured counters');
   assert(row.tokens.totalTokens === 42, `expected 42, got ${row.tokens.totalTokens}`);
 });
 
@@ -3511,7 +3557,7 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens.totalTokens}`);
   assert(row.source.kind === 'codex_jsonl', 'source kind');
   assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
@@ -3540,7 +3586,7 @@ test('runtime adapter: inferred Codex discovery parses complete long first JSONL
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
 });
 
@@ -3568,7 +3614,7 @@ test('runtime adapter: usage finish reuses inferred source captured at start', (
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
   assert(row.source.discovery === 'inferred', `expected inferred source, got ${row.source && row.source.discovery}`);
   assert(row.source.path === sourcePath, 'finish should use the source captured at start');
@@ -3590,11 +3636,11 @@ test('runtime adapter: inferred Codex last_token_usage excludes rows before invo
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 15, `inferred source should count only after-start last usage, got ${row.tokens.totalTokens}`);
 });
 
-test('runtime adapter: source discovery failures append partial row instead of failing finish', () => {
+test('runtime adapter: source discovery failures append unmeasured row instead of failing finish', () => {
   const ctx = createUsageWorkspace();
   const sessionsPath = path.join(ctx.homeDir, '.codex', 'sessions');
   fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
@@ -3603,20 +3649,20 @@ test('runtime adapter: source discovery failures append partial row instead of f
   assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
 
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should append partial row after source discovery failure, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row after source discovery failure, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'source discovery failure should produce partial row');
-  assert(row.tokens === null, 'partial tokens null');
+  assert(row.status === 'unmeasured', 'source discovery failure should produce unmeasured row');
+  assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
 });
 
-test('usage finish: partial pipeline compact line uses pipeline not-included count', () => {
+test('usage finish: unmeasured pipeline compact line uses pipeline not-included count', () => {
   const ctx = createUsageWorkspace();
   writeUsageEvents(ctx.projectEvents, [
     usageEvent({
       eventId: 'event_other_partial',
       invocationId: 'usage_other_partial',
-      status: 'partial',
+      status: 'unmeasured',
       tokens: null,
       projectRoot: ctx.projectRoot,
       fixmeDir: ctx.fixmeDir,
@@ -3629,7 +3675,7 @@ test('usage finish: partial pipeline compact line uses pipeline not-included cou
   assert(finished.data.reportLine.includes('not included: 1 invocation(s)'), `pipeline compact line should use pipeline exclusion count: ${finished.data.reportLine}`);
 });
 
-test('runtime adapter: Codex cumulative and summed last usage conflicts create partial row', () => {
+test('runtime adapter: Codex cumulative and summed last usage conflicts create unmeasured row', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-conflict.jsonl');
   appendJsonl(sourcePath, [codexTokenCount({ input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 }, { input_tokens: 0, total_tokens: 0 })]);
@@ -3642,9 +3688,9 @@ test('runtime adapter: Codex cumulative and summed last usage conflicts create p
     ),
   ]);
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
-  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'conflicting counters should be partial');
+  assert(row.status === 'unmeasured', 'conflicting counters should be unmeasured');
   assert(row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'COUNTER_CONFLICT warning expected');
 });
 
@@ -3659,7 +3705,7 @@ test('runtime adapter: Codex exec turn.completed.usage maps normalized tokens', 
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', 'exec usage should produce complete row');
+  assert(row.status === 'measured', 'exec usage should produce measured row');
   assert(row.tokens.totalTokens === 11, 'exec total tokens');
 });
 
@@ -3676,7 +3722,7 @@ test('runtime adapter: Claude message.usage maps cache buckets and derived cache
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', 'Claude usage should produce complete row');
+  assert(row.status === 'measured', 'Claude usage should produce measured row');
   assert(row.tokens.inputTokens === 12, 'Claude input sum');
   assert(row.tokens.cacheCreationInputTokens === 3, 'Claude cache creation sum');
   assert(row.tokens.cacheReadInputTokens === 5, 'Claude cache read sum');
@@ -3699,7 +3745,7 @@ test('runtime adapter: inferred Claude transcript under HOME projects is used wh
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 10, `expected inferred total 10, got ${row.tokens.totalTokens}`);
   assert(row.source.kind === 'claude_jsonl', 'source kind');
   assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
@@ -3722,7 +3768,7 @@ test('runtime adapter: Claude subagent transcript attribution is used for the ac
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'complete', `expected complete, got ${row.status}`);
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 13, `expected subagent total 13, got ${row.tokens.totalTokens}`);
   assert(row.source.kind === 'claude_jsonl', 'source kind');
   assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
@@ -3731,19 +3777,19 @@ test('runtime adapter: Claude subagent transcript attribution is used for the ac
   assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
 });
 
-test('runtime adapter: no inferred runtime source appends partial row', () => {
+test('runtime adapter: no inferred runtime source appends unmeasured row', () => {
   const ctx = createUsageWorkspace();
   const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
   assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'missing runtime source should be partial');
-  assert(row.tokens === null, 'partial tokens null');
+  assert(row.status === 'unmeasured', 'missing runtime source should be unmeasured');
+  assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
 });
 
-test('runtime adapter: ambiguous inferred runtime sources append partial row without guessing', () => {
+test('runtime adapter: ambiguous inferred runtime sources append unmeasured row without guessing', () => {
   const ctx = createUsageWorkspace();
   const sourceOne = codexSessionPath(ctx, 'rollout-one');
   const sourceTwo = codexSessionPath(ctx, 'rollout-two');
@@ -3754,10 +3800,10 @@ test('runtime adapter: ambiguous inferred runtime sources append partial row wit
   appendJsonl(sourceOne, [codexTokenCount({ input_tokens: 1, total_tokens: 1 }, { input_tokens: 1, total_tokens: 1 })]);
   appendJsonl(sourceTwo, [codexTokenCount({ input_tokens: 2, total_tokens: 2 }, { input_tokens: 2, total_tokens: 2 })]);
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should append partial row, got ${JSON.stringify(finished.data)}`);
+  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'partial', 'ambiguous runtime sources should be partial');
-  assert(row.tokens === null, 'partial tokens null');
+  assert(row.status === 'unmeasured', 'ambiguous runtime sources should be unmeasured');
+  assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'AMBIGUOUS_COUNTER_SOURCE'), 'AMBIGUOUS_COUNTER_SOURCE warning expected');
   assert(row.source.candidateCount === 2, 'candidate count should be recorded without source paths');
   assert(row.source.path === null, 'ambiguous source path should be null');

@@ -107,7 +107,7 @@ Total usage: 165,000 tokens
 Not included in total: 1 invocation with unavailable exact counters
 
 ### By Skill
-| Skill | Invocations | Complete | Partial | Total usage |
+| Skill | Invocations | Measured | Unmeasured | Total usage |
 | --- | ---: | ---: | ---: | ---: |
 | **Total** | 3 | 2 | 1 | 165,000 |
 | fixme-write-plan | 2 | 2 | 0 | 42,000 |
@@ -115,7 +115,7 @@ Not included in total: 1 invocation with unavailable exact counters
 ### Recent Invocations
 | Finished | Skill | Runtime | Status | Total usage |
 | --- | --- | --- | --- | ---: |
-| 2026-05-26T19:55:01Z | fixme-write-plan | codex | complete | 42,000 |
+| 2026-05-26T19:55:01Z | fixme-write-plan | codex | measured | 42,000 |
 
 ### Warnings
 | Code | Count |
@@ -123,7 +123,7 @@ Not included in total: 1 invocation with unavailable exact counters
 | COUNTERS_UNAVAILABLE | 1 |
 ```
 
-The `### By Skill` table must always include a first row labeled `**Total**`. Its `Invocations`, `Complete`, and `Partial` cells are the sums across all visible `bySkill[]` rows. Its `Total usage` cell is `totalUsage.totalTokens` from the report JSON, not a recalculated value from rendered rows.
+The `### By Skill` table must always include a first row labeled `**Total**`. Its `Invocations`, `Measured`, and `Unmeasured` cells are the sums across all visible `bySkill[]` rows. Its `Total usage` cell is `totalUsage.totalTokens` from the report JSON, not a recalculated value from rendered rows.
 
 Omit the `Not included in total` line when the count is zero. Omit `### Warnings` when no warnings exist.
 
@@ -145,6 +145,6 @@ Use heading `## Usage Report: <pipeline-run-id>`, show pipeline total usage, orc
 - Show token numbers with comma grouping.
 - Show `unavailable` for rows whose `totalTokens` is `null`.
 - Do not display `outcomeReason` in markdown reports.
-- Include warning summaries for partial rows, duplicate invocation conflicts, corrupt JSONL rows, and trailing partial lines.
+- Include warning summaries for unmeasured rows, duplicate invocation conflicts, corrupt JSONL rows, and trailing incomplete JSONL lines.
 - Include the active usage file path from the report JSON.
 - Do not display prompt text, response text, tool arguments, tool outputs, file contents, or secrets.
