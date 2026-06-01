@@ -17,6 +17,7 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
+- **Save mode is terminal.** When the user asks to save a deferred task, write only the task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.
 
 ## Audible Alerts
 
@@ -97,6 +98,8 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
 /fixme-task --execute <plan-path>                     -> pipeline="execute-only", task="<plan-path>"
 /fixme-task --idea-to-production build import flow    -> pipeline="full", task="build import flow"
 /fixme-task --pipeline product-spec build import flow -> pipeline="product-spec", task="build import flow"
+/fixme-task --save build import flow                  -> saveMode=true, task="build import flow"
+/fixme-task standard --save build import flow         -> saveMode=true, pipelineHint="standard", task="build import flow"
 ```
 
 Plain `/fixme-task ...` defaults to `standard`.
@@ -105,18 +108,19 @@ Plain `/fixme-task ...` defaults to `standard`.
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
 2. Extract `--pipeline <name>` if present. Remove it from remaining args.
 3. Extract `--nested` if present (boolean flag). Remove it from remaining args. When set, this skill is being invoked inline by a parent skill (typically `fixme-pr-comments`) that owns its own todo list. The dispatch manifest is built in nested mode - see "Creating the Manifest with TodoWrite" below.
-4. Extract intent flags if present. Supported flags:
+4. Extract `--save` if present (boolean flag). Remove it from remaining args. Also set `saveMode=true` when the user asks in prose to "save this as a fixme-task", "save this a fixme-task", or equivalent. Save mode writes a deferred task brief and stops; it does not execute the pipeline.
+5. Extract intent flags if present. Supported flags:
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
    - `--technical-spec` -> pipeline `technical-spec`
    - `--plan` -> pipeline `plan-only`
    - `--execute` -> pipeline `execute-only`
    - `--idea-to-production` remains accepted as a compatibility alias for `full`
-5. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
-6. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
-7. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
-8. The remaining args are the task description.
-9. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
+6. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
+7. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
+8. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
+9. The remaining args are the task description.
+10. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
 
 ### Task Resolution
 
@@ -133,6 +137,144 @@ Resolve the task description in this order - stop at the first match:
 **The filesystem is never a source of tasks.** `<fixme-dir>/plans/` is checked only in the "Start From" step below, and only to find a plan **for the already-resolved task** - never to discover what the task is. If you cannot resolve the task from arguments, IDE selection, or conversation context, the answer is rule 5 (ask the user). Listing `<fixme-dir>/plans/` to find "something to work on" is a pipeline violation.
 
 **Failure mode to avoid**: when conversation context already specifies the task (rule 4), do not then go scan `<fixme-dir>/plans/` and treat the most recent file as relevant. Old plans in that directory are for past tasks. They will mislead the pipeline. The "Start From" check below is for finding a plan that matches the current task - if no plan in conversation matches, start fresh.
+
+## Save Mode
+
+Use save mode when `saveMode=true`, including `/fixme-task --save ...`, `$fixme-task --save ...`, or a conversational request such as "save this as a fixme-task". Save mode captures the previously discussed task, issue, solution approach, or implementation shape so it can be planned and executed later.
+
+Save to `<fixme-dir>/tasks/<date>-<slug>.md`. Use ISO date format `YYYY-MM-DD`. Use a short lowercase slug derived from the generated title. Create `<fixme-dir>/tasks` if it does not exist.
+
+Every saved task gets a project-scoped label in the form `FIXME-<number>`. Label: `FIXME-<number>`. The label is assigned from `<fixme-dir>/tasks/.counter`, which belongs to the resolved Fixme directory and is therefore per project.
+
+The counter file stores the next available task number. Read `<fixme-dir>/tasks/.counter` before assigning the label. If the counter file is missing, use `1` as the next number. If the counter file exists but is not a positive integer, abort with this user note and do not write a task file:
+
+```text
+The saved-task counter at <absolute path to counter> is invalid. Fix it to contain the next positive integer, then run `fixme-task --save` again.
+```
+
+After assigning label `FIXME-N`, write `N + 1` plus a trailing newline back to `<fixme-dir>/tasks/.counter`. Gaps are acceptable if task writing fails after counter reservation; duplicate labels are not.
+
+### Save Mode Context Resolution
+
+Resolve the saved task context from the same sources as Task Resolution, with one difference: save mode never asks the user to invent missing scope.
+
+1. Use the explicit task argument if present.
+2. Use IDE selection context if it contains a task, issue, plan, specification, or agreed approach.
+3. Use conversation context if the task, issue, solution approach, or agreed shape was discussed earlier.
+4. If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort with this user note:
+
+   ```text
+   I do not have a task, issue, or agreed solution approach to save yet. Discuss the work first, then say `fixme-task --save`.
+   ```
+
+Do not search `<fixme-dir>/plans/`, `<fixme-dir>/specs/`, or any source directories to discover a task to save. Save mode preserves context already provided; it never guesses from filesystem recency.
+
+### Save Mode Title And Filename
+
+The title is always auto-generated from the resolved task context. Do not ask the user for a title.
+
+Generate the title from the concrete outcome, affected system, and saved approach. Prefer a concise imperative or noun phrase, for example `Save Deferred Fixme Task` or `Add Usage Report Pipeline Summary`. If the user supplied a title in prose, treat it as context, not as an instruction to copy it verbatim; normalize it to the same style as other generated titles.
+
+Generate the filename slug from the title:
+
+- lowercase ASCII
+- words separated by `-`
+- omit filler words when the slug would be too long
+- no ticket, requirement, acceptance, migration, or phase codes unless needed to disambiguate the saved work
+
+### Save Mode Document Structure
+
+Write this document shape:
+
+```markdown
+---
+title: "<auto-generated title>"
+label: "FIXME-<number>"
+slug: "<auto-generated-slug>"
+created: "<YYYY-MM-DD>"
+updated: "<YYYY-MM-DD>"
+status: saved
+source: conversation
+pipeline_hint: "<standard|quick|full|bugfix|product-spec|technical-spec|plan-only|execute-only|auto>"
+tags: []
+---
+
+# FIXME-<number>: <auto-generated title>
+
+## Task Goal
+
+One sentence describing the outcome, not the implementation steps.
+
+## Agreed Approach
+
+- The concrete solution shape already agreed.
+- Important design choices and rejected alternatives when relevant.
+- How this should be planned or executed later.
+
+## User-Visible Behavior
+
+- What changes for a user, operator, reviewer, or developer.
+- Expected success behavior.
+- Expected failure, edge, or recovery behavior.
+
+## Scope
+
+### In Scope
+
+- Specific behaviors, files, systems, workflows, or docs included in the saved work.
+
+### Out Of Scope
+
+- Adjacent cleanup, future work, or rejected expansions.
+
+## Locked Decisions
+
+1. **Decision title**
+   - **Answer:** What was agreed.
+   - **Reason:** Why this choice won.
+   - **Status:** confirmed
+
+## Constraints
+
+- Project rules, compatibility constraints, verification requirements, style constraints, and "must not" behavior.
+
+## Known Context
+
+- Relevant facts from the conversation.
+- Existing artifacts or file paths if already known.
+- Do not invent codebase facts here.
+
+## Open Questions
+
+- Questions that must be answered before planning.
+- Omit this section if there are none.
+
+## Suggested Pipeline
+
+`<pipeline hint>`
+
+## Later Planning Notes
+
+- What `fixme-write-plan` should pay special attention to.
+- Risks likely to need codebase verification.
+- Tests likely needed, without writing exact test code unless it was already agreed.
+```
+
+### Save Mode Output
+
+Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading.
+
+After writing the file, output a short confirmation and end with:
+
+```markdown
+Saved [FIXME-<number>](<absolute path to saved task brief>)
+```
+
+```text
+TASK_PATH: <absolute path to saved task brief>
+```
+
+If usage tracking is active in the installed runtime, finish usage normally with outcome `complete` before the `TASK_PATH` directive.
 
 ### Pipeline Auto-Detection
 
@@ -479,12 +621,12 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
-- **Write** - ONLY on `<fixme-dir>/decisions.md`
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/tasks/.counter`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
+- **Write** - ONLY on `<fixme-dir>/decisions.md`, `<fixme-dir>/tasks/.counter`, and `<fixme-dir>/tasks/*.md`
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch; installed Codex skills pass `--runtime codex`)
-  - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
+  - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/tasks`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
 - **TodoWrite** - to create and track the dispatch manifest steps

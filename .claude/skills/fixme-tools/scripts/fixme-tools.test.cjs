@@ -2699,6 +2699,27 @@ test('fixme-task skill: Run Summary includes usage block backed by usage report'
   assert(skill.includes('v1 does not include per-phase usage'), 'per-phase usage should remain out of scope');
 });
 
+test('fixme-task skill: --save writes deferred task briefs without entering the pipeline', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('## Save Mode'), 'fixme-task should document save mode');
+  assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
+  assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-<slug>.md`'), 'saved tasks should use the tasks directory');
+  assert(skill.includes('The title is always auto-generated from the resolved task context.'), 'title generation should be automatic');
+  assert(skill.includes('Do not ask the user for a title.'), 'save mode should not prompt for titles');
+  assert(skill.includes('If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort'), 'save mode should abort when there is no task context');
+  assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading.'), 'save mode should be terminal');
+  assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
+  assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');
+  assert(skill.includes('The counter file stores the next available task number.'), 'save mode should define counter semantics');
+  assert(skill.includes('Read `<fixme-dir>/tasks/.counter`'), 'save mode should read a per-project counter');
+  assert(skill.includes('If the counter file is missing, use `1` as the next number.'), 'save mode should initialize missing counters');
+  assert(skill.includes('If the counter file exists but is not a positive integer, abort'), 'save mode should not guess on corrupt counters');
+  assert(skill.includes('Saved [FIXME-<number>](<absolute path to saved task brief>)'), 'save mode should print a clickable label link');
+  assert(skill.includes('mkdir -p <fixme-dir>/tasks'), 'orchestrator allowlist should permit creating the tasks directory');
+  assert(skill.includes('<fixme-dir>/tasks/.counter'), 'orchestrator allowlist should permit the per-project counter file');
+});
+
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
