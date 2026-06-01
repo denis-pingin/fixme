@@ -234,6 +234,26 @@ const KNOWN_FIXME_SKILLS = new Set([
   'fixme-write-technical-spec',
 ]);
 
+const KNOWN_FIXME_AGENTS = new Set([
+  'fixme-browser-verify',
+  'fixme-execute-plan',
+  'fixme-handle-code-review',
+  'fixme-handle-plan-review',
+  'fixme-handle-spec-review',
+  'fixme-investigate',
+  'fixme-research',
+  'fixme-review-code',
+  'fixme-review-plan',
+  'fixme-review-spec',
+  'fixme-task',
+  'fixme-write-plan',
+  'fixme-write-product-spec',
+  'fixme-write-technical-spec',
+]);
+
+const RUN_STATES = Object.freeze(['running', 'waiting', 'blocked', 'completed', 'failed']);
+const RUN_CHECKPOINTS = Object.freeze(['dispatched', 'started', 'working', 'waiting', 'finalizing', 'done']);
+
 const USAGE_RUNTIMES = Object.freeze(['claude', 'codex', 'auto']);
 const USAGE_ROLES = Object.freeze(['skill', 'orchestrator', 'reviewer', 'handler', 'reporter', 'reference']);
 const USAGE_OUTCOMES = Object.freeze(['complete', 'failed', 'aborted']);
@@ -3311,6 +3331,31 @@ function getUsageTrackingBlock(skillName, runtime) {
     'If usage start or finish fails, print a warning with the skill name, invocation ID when known, failed operation, and fallback, then continue the normal skill completion path.',
     '',
     'Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive. The final routing/status directive must remain the last content in the skill output. If `usage finish` is suppressed, do not invent a usage line.',
+    '',
+    '## Fixme Agent Liveness',
+    '',
+    'If the dispatch prompt does not include `status_id`, skip this liveness block.',
+    '',
+    'If the dispatch prompt includes `status_id`, use the `Fixme dir:` value from the `<project>` block as `<fixme-dir>`. Ping liveness through the same installed runtime tool path:',
+    '',
+    '```bash',
+    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <status_id> --state running --checkpoint started --current-command null`,
+    '```',
+    '',
+    'Use only these states: `running`, `waiting`, `blocked`, `completed`, `failed`.',
+    'Use only these checkpoints: `dispatched`, `started`, `working`, `waiting`, `finalizing`, `done`.',
+    '',
+    'Ping `running/working` before main work. Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
+    '',
+    'Before pausing for user input or parent instruction, ping `waiting/waiting`. If blocked, ping `blocked/waiting`. Before normal final output, ping `completed/done`. On failure, ping `failed/done`.',
+    '',
+    'Do not relay liveness command JSON to the user unless it fails. If a liveness ping fails, print a warning with the skill name, `status_id`, failed operation, and fallback, then continue the normal skill path.',
+    '',
+    'Example ping shape:',
+    '',
+    '```bash',
+    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <status_id> --state running --checkpoint working --current-command "yarn test"`,
+    '```',
     FIXME_USAGE_TRACKING_CLOSE,
   ].join('\n');
 }
@@ -3770,6 +3815,127 @@ function writeJsonAtomic(filePath, value) {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n');
   fs.renameSync(tmp, filePath);
+}
+
+// ============================================================================
+// Subcommands: run
+// ============================================================================
+
+function validateRunFixmeDir(rawFixmeDir) {
+  if (!rawFixmeDir || rawFixmeDir === true) {
+    throw new Error('--fixme-dir is required');
+  }
+  if (!path.isAbsolute(rawFixmeDir)) {
+    throw new Error('--fixme-dir must be an absolute path');
+  }
+  return rawFixmeDir;
+}
+
+function validateRunAgent(agent) {
+  if (!agent || agent === true) {
+    throw new Error('--agent is required');
+  }
+  if (!KNOWN_FIXME_AGENTS.has(agent)) {
+    throw new Error(`Unsupported run agent: ${agent}`);
+  }
+  return agent;
+}
+
+function validateRequiredRunId(rawStatusId) {
+  const statusId = validateUsageId(rawStatusId, 'status_id');
+  if (!statusId) {
+    throw new Error('--status-id is required');
+  }
+  return statusId;
+}
+
+function validateRunState(state) {
+  if (!state || state === true) {
+    throw new Error('--state is required');
+  }
+  if (!RUN_STATES.includes(state)) {
+    throw new Error(`Unsupported run state: ${state}`);
+  }
+  return state;
+}
+
+function validateRunCheckpoint(checkpoint) {
+  if (!checkpoint || checkpoint === true) {
+    throw new Error('--checkpoint is required');
+  }
+  if (!RUN_CHECKPOINTS.includes(checkpoint)) {
+    throw new Error(`Unsupported run checkpoint: ${checkpoint}`);
+  }
+  return checkpoint;
+}
+
+function normalizeRunCurrentCommand(rawCurrentCommand) {
+  if (rawCurrentCommand === undefined) {
+    throw new Error('--current-command is required');
+  }
+  if (rawCurrentCommand === true || rawCurrentCommand === '' || rawCurrentCommand === 'null') {
+    return null;
+  }
+  return String(rawCurrentCommand);
+}
+
+function runStatusPath(fixmeDir, statusId) {
+  return path.join(fixmeDir, 'runs', statusId, 'status.json');
+}
+
+function writeRunStatus(statusPath, status) {
+  writeJsonAtomic(statusPath, status);
+  return { ...status, status_path: statusPath };
+}
+
+function runStart(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const agent = validateRunAgent(flags.agent);
+  const statusId = generateUsageId('run');
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  return output(writeRunStatus(statusPath, {
+    schema_version: 1,
+    status_id: statusId,
+    agent,
+    state: 'running',
+    checkpoint: 'dispatched',
+    current_command: null,
+    updated_at: new Date().toISOString(),
+  }));
+}
+
+function runPing(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const state = validateRunState(flags.state);
+  const checkpoint = validateRunCheckpoint(flags.checkpoint);
+  const currentCommand = normalizeRunCurrentCommand(flags['current-command']);
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    return error(`Run status not found: ${statusId}`);
+  }
+
+  const previous = readJsonFileStrict(statusPath);
+  const next = {
+    schema_version: 1,
+    status_id: statusId,
+    agent: validateRunAgent(previous.agent),
+    state,
+    checkpoint,
+    current_command: currentCommand,
+    updated_at: new Date().toISOString(),
+  };
+  return output(writeRunStatus(statusPath, next));
+}
+
+function runStatus(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    return error(`Run status not found: ${statusId}`);
+  }
+  return output({ ...readJsonFileStrict(statusPath), status_path: statusPath });
 }
 
 function explicitUsageSourcePath(runtime, explicitPath) {
@@ -5114,6 +5280,18 @@ function main() {
             return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start`);
         }
 
+      case 'run':
+        switch (subcommand) {
+          case 'start':
+            return runStart(flags);
+          case 'ping':
+            return runPing(flags);
+          case 'status':
+            return runStatus(flags);
+          default:
+            return error(`Unknown run subcommand: '${subcommand}'. Valid: start, ping, status`);
+        }
+
       case 'root':
         return rootCommand();
 
@@ -5145,7 +5323,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, claude-skills, usage, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {
@@ -5180,4 +5358,7 @@ module.exports = {
   defaultReviewCyclesForPhase,
   normalizeWorkflowName,
   resolveReviewLevel,
+  KNOWN_FIXME_AGENTS,
+  RUN_STATES,
+  RUN_CHECKPOINTS,
 };

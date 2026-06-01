@@ -24,6 +24,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Register Fixme agents in Codex `config.toml`
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from workflow config
+- Record dispatched-agent liveness under `<fixme-dir>/runs/<status_id>/status.json`
 - Record usage start and finish events with pending state, runtime counter extraction, and append-only project/global usage JSONL
 - Aggregate token usage reports from project and global usage JSONL
 
@@ -61,6 +62,16 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope p
 ```
 
 `usage start` creates pending invocation state. `usage finish` extracts runtime counters when available, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
+
+## Run Liveness Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <absolute-fixme-dir> --agent <agent-name>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <absolute-fixme-dir> --status-id <status-id> --state <running|waiting|blocked|completed|failed> --checkpoint <dispatched|started|working|waiting|finalizing|done> --current-command <string|null>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <absolute-fixme-dir> --status-id <status-id>
+```
+
+`run start` creates `<fixme-dir>/runs/<status_id>/status.json` with `state=running`, `checkpoint=dispatched`, and `current_command=null`. `run ping` atomically updates that same JSON file. `run status` reads the current JSON file. Liveness is independent of usage tracking; it works even when usage IDs are unavailable.
 
 ## Ownership
 

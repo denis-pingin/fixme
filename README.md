@@ -198,6 +198,9 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level re
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert <user_input|task_finished|task_failed>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <absolute-fixme-dir> --agent <agent-name>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <absolute-fixme-dir> --status-id <status-id> --state <running|waiting|blocked|completed|failed> --checkpoint <dispatched|started|working|waiting|finalizing|done> --current-command <string|null>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <absolute-fixme-dir> --status-id <status-id>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```

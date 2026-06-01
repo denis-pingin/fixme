@@ -626,6 +626,7 @@ The orchestrator may ONLY use these tools:
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch; installed Codex skills pass `--runtime codex`)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <agent-name>` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/tasks`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
@@ -866,7 +867,21 @@ node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-na
 
 Codex results intentionally return `model: null`. Codex dispatch must preserve the user-selected Codex model and pass only `reasoning_effort` when the resolver returns one.
 
-Step 2 - Print the banner as a single line of user-visible text before the Agent tool call:
+Step 2 - Create liveness status for the dispatched agent:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <agent-name>
+```
+
+Installed Codex skills use the Codex-installed tool path:
+
+```bash
+node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <agent-name>
+```
+
+Store the returned `status_id` as the dispatched agent's liveness status. Do not dispatch the agent if `run start` fails. Surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+
+Step 3 - Print the banner as a single line of user-visible text before the Agent tool call:
 
 ```
 → dispatching fixme-write-plan (runtime: claude, model: opus, reasoning: xhigh, profile: quality, source: profile)
@@ -874,7 +889,7 @@ Step 2 - Print the banner as a single line of user-visible text before the Agent
 
 The banner is the user's only window into runtime selection. If you dispatch without it, you are hiding state the user needs to audit runtime behavior.
 
-Step 3 - Dispatch with the resolved runtime settings:
+Step 4 - Dispatch with the resolved runtime settings and liveness id:
 
 ```
 Agent(
@@ -895,6 +910,10 @@ Agent(
     pipeline_run_id: <pipelineRunId>
     parent_invocation_id: <usageInvocationId>
     </usage>
+
+    <liveness>
+    status_id: <status_id from run start>
+    </liveness>
   "
 )
 ```
@@ -902,6 +921,8 @@ Agent(
 When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
 
 Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipeline_run_id` and the dispatching `fixme-task` `parent_invocation_id`; non-pipeline direct skill invocations omit both fields.
+
+Always include the `<liveness>` block for every Agent dispatch after `run start` succeeds. The receiving agent uses `status_id` plus the `Fixme dir:` value in the `<project>` block to ping `fixme-tools.cjs run ping`.
 
 The agent's role and operational procedures are already loaded by its agent definition. The dispatch prompt only contains task-specific inputs.
 
@@ -984,7 +1005,7 @@ Ticket transitions are dispatched through the `fixme-tickets` abstraction skill,
 
 For phases using the standard skills, these are the input contracts:
 
-Custom skills and standard skills also receive the `<usage>` block when `pipelineRunId` and `usageInvocationId` are known.
+Custom skills and standard skills also receive the `<liveness>` block. They also receive the `<usage>` block when `pipelineRunId` and `usageInvocationId` are known.
 
 **fixme-write-plan** (in `plan` phase):
 - Fresh mode (first invocation): original task description

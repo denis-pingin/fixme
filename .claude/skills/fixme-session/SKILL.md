@@ -109,7 +109,7 @@ When sub-command is `resume`:
 3. **Set up browser environment:** Follow the Session Environment Setup procedure below.
 
 4. **Check state:**
-   - If `active_task` is set in session.md frontmatter: a background fixme-task was running. Read the ticket state from disk to determine if it completed. Handle the completion (see Completion Handling).
+   - If `active_task` is set in session.md frontmatter: a background fixme-task was running. If `active_run_status_id` is set, read liveness with `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>`, then read the ticket state from disk to determine if it completed. Handle the completion (see Completion Handling).
    - Invoke fixme-tickets: `ticket next <session-dir>`
    - If queued tickets exist: enter the dispatch loop.
    - If no queued tickets: use AskUserQuestion: "All tickets have been processed. What would you like to do?" with options "Report another bug" / "End session".
@@ -177,7 +177,7 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 **Runtime settings:** Resolve every dispatched Fixme agent with `fixme-tools.cjs resolve-model` before calling Agent. Claude dispatch uses the resolved short model tag plus the resolved reasoning effort. Codex-installed skills pass `--runtime codex`, omit model, and pass only the resolved reasoning effort so the user-selected Codex model remains in force.
 
-**Concurrent task limit (v1):** Only one background fixme-task at a time. Track the active task's ticket path in session.md frontmatter (`active_task` field). This prevents git state conflicts. Future: multiple concurrent tasks using git worktrees.
+**Concurrent task limit (v1):** Only one background fixme-task at a time. Track the active task's ticket path in session.md frontmatter (`active_task` field) and the active background agent liveness id in `active_run_status_id`. This prevents git state conflicts and lets status queries read durable progress without source inspection. Future: multiple concurrent tasks using git worktrees.
 
 **State transition ownership:** fixme-task owns all phase transitions during pipeline execution. fixme-session owns terminal transitions (`done`, `failed`, `skipped`) and crash cleanup. See `state-machine.md` for the full ownership table.
 
@@ -185,8 +185,9 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
 1. **Check active task:**
    If `active_task` is set in session.md frontmatter, a background fixme-task is already running. Do NOT dispatch another. Instead:
+   - If `active_run_status_id` is set, read liveness with `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>` and use it for status output.
    - Wait for completion notifications or handle user input (bug reports, status queries, commands).
-   - When the background task completes, handle it (see Completion Handling), clear `active_task`, then continue the loop.
+   - When the background task completes, handle it (see Completion Handling), clear `active_task` and `active_run_status_id`, then continue the loop.
 
 2. **Find next ticket:**
    Invoke fixme-tickets: `ticket next <session-dir>`
@@ -213,6 +214,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-investigate
    ```
 
+   **Create liveness status before dispatch:**
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-investigate
+   ```
+
+   Store the returned `status_id` for the investigation dispatch. If this command fails, do not dispatch the agent; report the JSON error and transition the ticket to failed.
+
    Print a one-line banner to the user (before calling the Agent tool):
 
    ```
@@ -233,6 +242,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
        - Dev server URL: <devServer.url from project config>
        - Output directory: <ticket-folder>/research/
        </task>
+
+       <project>
+       Fixme dir: <fixme-dir>
+       </project>
+
+       <liveness>
+       status_id: <status_id from run start>
+       </liveness>
    )
    ```
 
@@ -258,6 +275,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
    ```bash
    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-task
    ```
+
+   **Create liveness status before dispatch:**
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
+   ```
+
+   Store the returned `status_id` in session.md frontmatter as `active_run_status_id`. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
 
    Print a one-line banner to the user:
 
@@ -288,6 +313,14 @@ This is the core execution cycle. Repeat until the user stops the session or the
        - summary: <one-line description of what was done>
        - failure_reason: <if failed, why>
        </task>
+
+       <project>
+       Fixme dir: <fixme-dir>
+       </project>
+
+       <liveness>
+       status_id: <status_id from run start>
+       </liveness>
    )
    ```
 
@@ -318,7 +351,7 @@ Alerts are fire-and-forget and never block. See `fixme-alert/SKILL.md` for event
 
 When a background fixme-task completes (notification received or detected on resume):
 
-1. **Clear active_task** in session.md frontmatter. Use the Edit tool to set `active_task:` to empty/null.
+1. **Clear active_task and active_run_status_id** in session.md frontmatter. Use the Edit tool to set `active_task:` and `active_run_status_id:` to empty/null.
 
 2. **Read ticket state from disk:**
    Invoke fixme-tickets: `ticket list <session-dir>`
@@ -489,7 +522,7 @@ When the dispatch loop finds no queued tickets AND no background tasks are runni
 
 1. If a background fixme-task is running, it will be abandoned. Transition the active ticket to failed:
    Invoke fixme-tickets: `ticket transition <ticket-folder>/ticket.md failed --reason "Session aborted by user"`
-2. Clear `active_task` in session.md frontmatter.
+2. Clear `active_task` and `active_run_status_id` in session.md frontmatter.
 3. Run session summary:
    Invoke fixme-tickets: `session summary <session-dir>`
 4. **Format and display session summary** using the Session Summary Format below.
@@ -534,7 +567,13 @@ When the user asks for status or types `status`:
    | 0003 | form-validation-missing | queued |
    ```
 
-3. **Show active task:** If `active_task` is set, indicate which ticket has a background fixme-task running.
+3. **Show active task:** If `active_task` is set, indicate which ticket has a background fixme-task running. If `active_run_status_id` is also set, read liveness with:
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>
+   ```
+
+   Show the active agent, state, checkpoint, current command, and `updated_at`. If `run status` fails, print a warning with `active_run_status_id` and continue showing ticket state.
 
 4. **Show session stats:** Total tickets, done, failed, skipped, in-progress.
 

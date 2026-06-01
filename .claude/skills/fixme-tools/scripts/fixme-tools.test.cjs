@@ -673,6 +673,96 @@ test('session summary: scans NNNN-slug/ticket.md', () => {
 });
 
 // ============================================================================
+// Test Suite: run liveness status
+// ============================================================================
+
+console.log('\n=== run liveness status tests ===\n');
+
+test('run start: creates dispatched status for a known fixme agent', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const result = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-review-code`);
+
+  assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
+  assert(/^run_[A-Za-z0-9_-]+$/.test(result.data.status_id), `status_id should be generated run id, got ${result.data.status_id}`);
+  assert(result.data.status_path === path.join(fixmeDir, 'runs', result.data.status_id, 'status.json'), `status_path should be under fixme runs dir, got ${result.data.status_path}`);
+  assert(fs.existsSync(result.data.status_path), 'status.json should exist');
+
+  const status = readJson(result.data.status_path);
+  assert(status.schema_version === 1, 'schema_version should be 1');
+  assert(status.status_id === result.data.status_id, 'status_id should match');
+  assert(status.agent === 'fixme-review-code', `agent should be fixme-review-code, got ${status.agent}`);
+  assert(status.state === 'running', `state should be running, got ${status.state}`);
+  assert(status.checkpoint === 'dispatched', `checkpoint should be dispatched, got ${status.checkpoint}`);
+  assert(status.current_command === null, 'current_command should be null');
+  assert(typeof status.updated_at === 'string' && !Number.isNaN(Date.parse(status.updated_at)), `updated_at should be ISO timestamp, got ${status.updated_at}`);
+});
+
+test('run ping and status: updates and reads current liveness status', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-execute-plan`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state running --checkpoint working --current-command "yarn test"`);
+  assert(pinged.ok, `run ping should succeed, got: ${JSON.stringify(pinged.data)}`);
+  assert(pinged.data.status_path === started.data.status_path, 'ping should return same status_path');
+
+  const read = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id}`);
+  assert(read.ok, `run status should succeed, got: ${JSON.stringify(read.data)}`);
+  assert(read.data.status_id === started.data.status_id, 'status_id should match');
+  assert(read.data.agent === 'fixme-execute-plan', `agent should be preserved, got ${read.data.agent}`);
+  assert(read.data.state === 'running', `state should be running, got ${read.data.state}`);
+  assert(read.data.checkpoint === 'working', `checkpoint should be working, got ${read.data.checkpoint}`);
+  assert(read.data.current_command === 'yarn test', `current_command should be yarn test, got ${read.data.current_command}`);
+  assert(read.data.updated_at >= started.data.updated_at, 'updated_at should not move backwards');
+});
+
+test('run ping: accepts null current command and terminal state', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state completed --checkpoint done --current-command null`);
+
+  assert(pinged.ok, `run ping should succeed, got: ${JSON.stringify(pinged.data)}`);
+  assert(pinged.data.state === 'completed', `state should be completed, got ${pinged.data.state}`);
+  assert(pinged.data.checkpoint === 'done', `checkpoint should be done, got ${pinged.data.checkpoint}`);
+  assert(pinged.data.current_command === null, 'current_command should be null');
+});
+
+test('run start: rejects non-agent skills and invalid fixme-dir paths', () => {
+  const invalidAgent = run('run start --fixme-dir "/tmp/fixme-test" --agent fixme-usage');
+  assert(!invalidAgent.ok, 'fixme-usage should not be accepted as a run agent');
+  assert(invalidAgent.data.error.includes('Unsupported run agent'), `error should mention unsupported agent, got ${invalidAgent.data.error}`);
+
+  const relativeDir = run('run start --fixme-dir ".fixme" --agent fixme-task');
+  assert(!relativeDir.ok, 'relative fixme-dir should be rejected');
+  assert(relativeDir.data.error.includes('--fixme-dir must be an absolute path'), `error should mention absolute fixme-dir, got ${relativeDir.data.error}`);
+});
+
+test('run ping: rejects invalid state and checkpoint values', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const badState = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state paused --checkpoint working --current-command null`);
+  assert(!badState.ok, 'invalid state should be rejected');
+  assert(badState.data.error.includes('Unsupported run state'), `error should mention unsupported state, got ${badState.data.error}`);
+
+  const badCheckpoint = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state running --checkpoint task-execution --current-command null`);
+  assert(!badCheckpoint.ok, 'invalid checkpoint should be rejected');
+  assert(badCheckpoint.data.error.includes('Unsupported run checkpoint'), `error should mention unsupported checkpoint, got ${badCheckpoint.data.error}`);
+});
+
+// ============================================================================
 // Test Suite: new state transitions -- happy path through all 9 states
 // ============================================================================
 
@@ -2575,6 +2665,9 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('~/.codex/rules/spec-review-rules.md'), 'tilde Claude paths should rewrite to Codex paths');
   assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');
   assert(installedTask.includes('## Fixme Usage Tracking'), 'installed Codex skill should include usage tracking block');
+  assert(installedTask.includes('## Fixme Agent Liveness'), 'installed Codex skill should include liveness block');
+  assert(installedTask.includes('run ping --fixme-dir <fixme-dir> --status-id <status_id>'), 'Codex liveness block should use run ping');
+  assert(installedTask.includes('If the dispatch prompt does not include `status_id`, skip this liveness block.'), 'Codex liveness block should be optional when no status_id exists');
   assert(installedTask.includes('--runtime codex'), 'Codex usage block should pass --runtime codex');
   assert(!installedTask.includes('--runtime auto'), 'Codex usage block should not pass --runtime auto');
   assert(!installedTask.includes('--task'), 'usage block must not pass --task');
@@ -2582,9 +2675,12 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('--role orchestrator'), 'fixme-task should be instrumented as orchestrator');
   assert(installedTask.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
   assert(installedHandler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
+  assert(installedHandler.includes('## Fixme Agent Liveness'), 'handler should include liveness block');
 
   const usageBlockCount = (installedTask.match(/## Fixme Usage Tracking/g) || []).length;
   assert(usageBlockCount === 1, `usage block should be idempotent, got ${usageBlockCount}`);
+  const livenessBlockCount = (installedTask.match(/## Fixme Agent Liveness/g) || []).length;
+  assert(livenessBlockCount === 1, `liveness block should be idempotent, got ${livenessBlockCount}`);
 
   const installedReference = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'references', 'dispatch.md'), 'utf8');
   assert(installedReference.includes('.codex/skills/fixme-task/SKILL.md'), 'markdown references should be path-converted');
@@ -2626,6 +2722,9 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   const reference = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-howto-code-map', 'SKILL.md'), 'utf8');
 
   assert(task.includes('## Fixme Usage Tracking'), 'Claude task skill should include usage tracking block');
+  assert(task.includes('## Fixme Agent Liveness'), 'Claude task skill should include liveness block');
+  assert(task.includes('run ping --fixme-dir <fixme-dir> --status-id <status_id>'), 'Claude liveness block should use run ping');
+  assert(task.includes('If the dispatch prompt does not include `status_id`, skip this liveness block.'), 'Claude liveness block should be optional when no status_id exists');
   assert(task.includes('--runtime claude'), 'Claude usage block should pass --runtime claude');
   assert(!task.includes('--runtime auto'), 'Claude usage block should not pass --runtime auto');
   assert(!task.includes('--task'), 'usage block must not pass --task');
@@ -2634,6 +2733,8 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(handler.includes('--role handler'), 'fixme-handle-* role mapping');
   assert(task.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
   assert(handler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
+  assert(reviewer.includes('## Fixme Agent Liveness'), 'reviewer should include liveness block');
+  assert(handler.includes('## Fixme Agent Liveness'), 'handler should include liveness block');
   assert(reference.includes('--role reference'), 'fixme-howto-* role mapping');
   assert(reference.includes('Only run this block when `fixme-howto-code-map` is the active skill invocation.'), 'reference guard');
   assert(!fs.existsSync(path.join(claudeSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not install');
@@ -2643,6 +2744,8 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   const reinstalledTask = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
   const blockCount = (reinstalledTask.match(/## Fixme Usage Tracking/g) || []).length;
   assert(blockCount === 1, `usage block should be idempotent, got ${blockCount}`);
+  const livenessBlockCount = (reinstalledTask.match(/## Fixme Agent Liveness/g) || []).length;
+  assert(livenessBlockCount === 1, `liveness block should be idempotent, got ${livenessBlockCount}`);
 });
 
 // ============================================================================
@@ -2677,6 +2780,9 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('usage start --skill'), 'fixme-tools skill should document usage start');
   assert(toolsSkill.includes('usage finish --invocation-id'), 'fixme-tools skill should document usage finish');
   assert(toolsSkill.includes('usage report --scope'), 'fixme-tools skill should document usage report');
+  assert(toolsSkill.includes('run start --fixme-dir'), 'fixme-tools skill should document run start');
+  assert(toolsSkill.includes('run ping --fixme-dir'), 'fixme-tools skill should document run ping');
+  assert(toolsSkill.includes('run status --fixme-dir'), 'fixme-tools skill should document run status');
 });
 
 test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {
@@ -2687,6 +2793,24 @@ test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', (
   assert(skill.includes('pipeline_run_id: <pipelineRunId>'), 'child prompts should include pipeline_run_id');
   assert(skill.includes('parent_invocation_id: <usageInvocationId>'), 'child prompts should include parent_invocation_id');
   assert(skill.includes('Nested `fixme-task` receives a `pipeline_run_id`'), 'nested pipeline ID reuse should be explicit');
+});
+
+test('fixme-task skill: creates liveness status for every dispatched agent', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <agent-name>'), 'fixme-task should create liveness status before each Agent dispatch');
+  assert(skill.includes('<liveness>'), 'child prompts should include liveness block');
+  assert(skill.includes('status_id: <status_id from run start>'), 'child prompts should include status_id');
+  assert(skill.includes('Do not dispatch the agent if `run start` fails.'), 'fixme-task should fail closed when liveness setup fails');
+});
+
+test('fixme-session skill: tracks background fixme-task liveness status id', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('active_run_status_id'), 'fixme-session should track active_run_status_id');
+  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'fixme-session should create liveness status before background fixme-task');
+  assert(skill.includes('status_id: <status_id from run start>'), 'background prompt should include status_id');
+  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>'), 'status flow should read liveness status');
 });
 
 test('fixme-task skill: Run Summary includes usage block backed by usage report', () => {
