@@ -103,19 +103,27 @@ Render one of these markdown reports.
 **Scope**: project
 **Usage file**: /absolute/path/to/events.jsonl
 
+Non-cached usage: 145,000 tokens
+Cached input: 20,000 tokens
 Total usage: 165,000 tokens
 Not included in total: 1 invocation with unavailable exact counters
 
 ### By Skill
-| Skill | Invocations | Measured | Unmeasured | Total usage |
-| --- | ---: | ---: | ---: | ---: |
-| fixme-write-plan | 2 | 2 | 0 | 42,000 |
-| **Total** | **3** | **2** | **1** | **165,000** |
+| Skill | Invocations | Measured | Unmeasured | Non-cached usage | Cached input | Total usage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixme-write-plan | 2 | 2 | 0 | 40,000 | 2,000 | 42,000 |
+| **Total** | **3** | **2** | **1** | **145,000** | **20,000** | **165,000** |
+
+### By Project
+| Project | Invocations | Measured | Unmeasured | Non-cached usage | Cached input | Total usage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| /absolute/path/to/project | 2 | 2 | 0 | 40,000 | 2,000 | 42,000 |
+| **Total** | **3** | **2** | **1** | **145,000** | **20,000** | **165,000** |
 
 ### Recent Invocations
-| Finished | Skill | Runtime | Status | Total usage |
-| --- | --- | --- | --- | ---: |
-| 2026-05-26T19:55:01Z | fixme-write-plan | codex | measured | 42,000 |
+| Finished | Skill | Runtime | Status | Non-cached usage | Cached input | Total usage |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| 2026-05-26T19:55:01Z | fixme-write-plan | codex | measured | 40,000 | 2,000 | 42,000 |
 
 ### Warnings
 | Code | Count |
@@ -123,7 +131,11 @@ Not included in total: 1 invocation with unavailable exact counters
 | COUNTERS_UNAVAILABLE | 1 |
 ```
 
-The `### By Skill` table must always include a last row labeled `**Total**`. Bold every cell in this total row. Its `Invocations`, `Measured`, and `Unmeasured` cells are the sums across all visible `bySkill[]` rows. Its `Total usage` cell is `totalUsage.totalTokens` from the report JSON, not a recalculated value from rendered rows.
+Sort `bySkill[]` and `byProject[]` rows by `totalUsage.nonCachedTokens` descending. Do not rank overview rows by cache-inclusive totals alone.
+
+The `### By Skill` table must always include a last row labeled `**Total**`. Bold every cell in this total row. Its `Invocations`, `Measured`, and `Unmeasured` cells are the sums across all visible `bySkill[]` rows. Its token cells are `totalUsage.nonCachedTokens`, `totalUsage.cachedTokens`, and `totalUsage.totalTokens` from the report JSON, not recalculated values from rendered rows.
+
+The `### By Project` table must render from `byProject[]` when present. It must always include a last row labeled `**Total**`. Bold every cell in this total row. Its `Invocations`, `Measured`, and `Unmeasured` cells are the sums across all visible `byProject[]` rows. Its token cells are `totalUsage.nonCachedTokens`, `totalUsage.cachedTokens`, and `totalUsage.totalTokens` from the report JSON, not recalculated values from rendered rows.
 
 Omit the `Not included in total` line when the count is zero. Omit `### Warnings` when no warnings exist.
 
@@ -141,7 +153,7 @@ Use heading `## Usage Report: <pipeline-run-id>`, show pipeline total usage, orc
 
 ## Output Rules
 
-- Use `Total usage` exactly for numeric totals.
+- Show `Non-cached usage`, `Cached input`, and `Total usage` as separate numeric token buckets.
 - Show token numbers with comma grouping.
 - Show `unavailable` for rows whose `totalTokens` is `null`.
 - Do not display `outcomeReason` in markdown reports.

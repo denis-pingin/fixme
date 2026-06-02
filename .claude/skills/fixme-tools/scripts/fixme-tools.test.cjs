@@ -2998,9 +2998,13 @@ test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL
   assert(skill.includes('usage finish --invocation-id <invocationId> --outcome complete --quiet'), 'skill should finish quietly before rendering report');
   assert(skill.includes('Render only the displayed report JSON'), 'skill should render only the post-finalization report');
   assert(skill.includes('last row labeled `**Total**`'), 'overview By Skill table should put total row at the bottom');
-  assert(skill.includes('| **Total** | **3** | **2** | **1** | **165,000** |'), 'overview By Skill total row should bold every cell');
-  assert(skill.includes('`totalUsage.totalTokens` from the report JSON'), 'total row should use report totalUsage');
-  assert(skill.includes('| Skill | Invocations | Measured | Unmeasured | Total usage |'), 'usage table should use Measured/Unmeasured labels');
+  assert(skill.includes('| **Total** | **3** | **2** | **1** | **145,000** | **20,000** | **165,000** |'), 'overview By Skill total row should bold every cell');
+  assert(skill.includes('`totalUsage.nonCachedTokens`, `totalUsage.cachedTokens`, and `totalUsage.totalTokens` from the report JSON'), 'total row should use report token buckets');
+  assert(skill.includes('| Skill | Invocations | Measured | Unmeasured | Non-cached usage | Cached input | Total usage |'), 'usage table should separate cached and non-cached usage');
+  assert(skill.includes('### By Project'), 'overview should include a By Project section');
+  assert(skill.includes('| Project | Invocations | Measured | Unmeasured | Non-cached usage | Cached input | Total usage |'), 'project table should separate cached and non-cached usage');
+  assert(skill.includes('byProject[]'), 'project table should render from byProject');
+  assert(skill.includes('Sort `bySkill[]` and `byProject[]` rows by `totalUsage.nonCachedTokens` descending'), 'overview should not rank rows by cache-inclusive total only');
   assert(skill.includes('Never parse JSONL directly.'), 'skill should not parse JSONL');
   assert(skill.includes('Never inspect runtime transcripts directly.'), 'skill should not inspect transcripts');
   assert(skill.includes('Do not display `outcomeReason`'), 'markdown reports should hide outcomeReason');
@@ -4113,6 +4117,8 @@ test('usage report: project totals exclude unmeasured rows and include not-inclu
   const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
   assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
   assert(result.data.totalUsage.totalTokens === 135, `total tokens should be 135, got ${result.data.totalUsage.totalTokens}`);
+  assert(result.data.totalUsage.nonCachedTokens === 135, `non-cached tokens should be 135, got ${result.data.totalUsage.nonCachedTokens}`);
+  assert(result.data.totalUsage.cachedTokens === 20, `cached tokens should be 20, got ${result.data.totalUsage.cachedTokens}`);
   assert(result.data.notIncludedInTotal.invocationCount === 1, 'one unmeasured invocation excluded');
   assert(result.data.notIncludedInTotal.eventIds.includes('event_unmeasured'), 'unmeasured event listed');
   assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes unmeasured warning');
@@ -4225,7 +4231,65 @@ test('usage report: pipeline report splits orchestrator overhead and child usage
   assert(result.data.byPipeline[0].childUsage.totalTokens === 130, 'child usage');
 });
 
-test('usage report: text output uses required Total usage language', () => {
+test('usage report: global JSON groups usage by projectRoot', () => {
+  const ctx = createUsageWorkspace();
+  const otherProjectRoot = path.join(ctx.projectRoot, 'other-project');
+  const otherFixmeDir = path.join(otherProjectRoot, '.fixme');
+  const projectComplete = usageEvent({
+    eventId: 'event_project_complete',
+    invocationId: 'usage_project_complete',
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+    tokens: { inputTokens: 70, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 25, reasoningOutputTokens: 5, totalTokens: 100 },
+  });
+  const otherComplete = usageEvent({
+    eventId: 'event_other_complete',
+    invocationId: 'usage_other_complete',
+    projectRoot: otherProjectRoot,
+    fixmeDir: otherFixmeDir,
+    tokens: { inputTokens: 150, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 40, reasoningOutputTokens: 10, totalTokens: 200 },
+  });
+  const otherUnmeasured = usageEvent({
+    eventId: 'event_other_unmeasured',
+    invocationId: 'usage_other_unmeasured',
+    projectRoot: otherProjectRoot,
+    fixmeDir: otherFixmeDir,
+    status: 'unmeasured',
+    tokens: null,
+    warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+  });
+  const projectConflict = usageEvent({
+    eventId: 'event_project_conflict',
+    invocationId: 'usage_project_conflict',
+    projectRoot: ctx.projectRoot,
+    fixmeDir: ctx.fixmeDir,
+  });
+  const projectConflictOther = { ...projectConflict, eventId: 'event_project_conflict_other', tokens: { ...projectConflict.tokens, totalTokens: 999 } };
+  writeUsageEvents(ctx.globalEvents, [projectComplete, otherComplete, otherUnmeasured, projectConflict, projectConflictOther]);
+
+  const result = runInDirWithEnv('usage report --scope global', ctx.projectRoot, ctx.env);
+  assert(result.ok, `global report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage.totalTokens === 300, `global total should include measured rows only, got ${result.data.totalUsage.totalTokens}`);
+  assert(Array.isArray(result.data.byProject), 'global report should include byProject');
+
+  const byCurrentProject = result.data.byProject.find(row => row.projectRoot === ctx.projectRoot);
+  assert(byCurrentProject.invocationCount === 1, `current project invocationCount ${byCurrentProject && byCurrentProject.invocationCount}`);
+  assert(byCurrentProject.measuredCount === 1, `current project measuredCount ${byCurrentProject.measuredCount}`);
+  assert(byCurrentProject.unmeasuredCount === 0, `current project unmeasuredCount ${byCurrentProject.unmeasuredCount}`);
+  assert(byCurrentProject.totalUsage.totalTokens === 100, `current project total ${byCurrentProject.totalUsage.totalTokens}`);
+  assert(byCurrentProject.notIncludedInTotal.invocationCount === 1, `current project excluded count ${byCurrentProject.notIncludedInTotal.invocationCount}`);
+  assert(byCurrentProject.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'current project warning summary includes duplicate conflict group');
+
+  const byOtherProject = result.data.byProject.find(row => row.projectRoot === otherProjectRoot);
+  assert(byOtherProject.invocationCount === 2, `other project invocationCount ${byOtherProject && byOtherProject.invocationCount}`);
+  assert(byOtherProject.measuredCount === 1, `other project measuredCount ${byOtherProject.measuredCount}`);
+  assert(byOtherProject.unmeasuredCount === 1, `other project unmeasuredCount ${byOtherProject.unmeasuredCount}`);
+  assert(byOtherProject.totalUsage.totalTokens === 200, `other project total ${byOtherProject.totalUsage.totalTokens}`);
+  assert(byOtherProject.notIncludedInTotal.invocationCount === 1, `other project excluded count ${byOtherProject.notIncludedInTotal.invocationCount}`);
+  assert(byOtherProject.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'other project warning summary includes unmeasured warning');
+});
+
+test('usage report: text output separates cached and non-cached usage', () => {
   const ctx = createUsageWorkspace();
   writeUsageEvents(ctx.projectEvents, [
     usageEvent({ invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir }),
@@ -4234,6 +4298,8 @@ test('usage report: text output uses required Total usage language', () => {
   const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
   assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
   assert(typeof result.data === 'string', 'text format returns raw string data in tests');
+  assert(result.data.includes('Non-cached usage: 135 tokens'), `missing non-cached usage line: ${result.data}`);
+  assert(result.data.includes('Cached input: 20 tokens'), `missing cached input line: ${result.data}`);
   assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
   assert(result.data.includes('Not included in total: 1 invocation with unavailable exact counters'), `missing not-included line: ${result.data}`);
 });
@@ -4299,6 +4365,8 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
   assert(bySkill.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'bySkill warning summary includes duplicate conflict group');
   assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose legacy invocations field');
+  assert(bySkill.totalUsage.nonCachedTokens === 135, `bySkill non-cached tokens ${bySkill.totalUsage.nonCachedTokens}`);
+  assert(bySkill.totalUsage.cachedTokens === 20, `bySkill cached tokens ${bySkill.totalUsage.cachedTokens}`);
 
   const byPipeline = result.data.byPipeline.find(row => row.pipelineRunId === pipelineRunId);
   assert(byPipeline.invocationCount === 2, `byPipeline invocationCount should exclude duplicate-conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
@@ -4310,6 +4378,8 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes unmeasured warning');
   assert(byPipeline.orchestratorUsage.totalTokens === 0, 'byPipeline includes orchestratorUsage subtotal object');
   assert(byPipeline.childUsage.totalTokens === 135, 'byPipeline includes childUsage subtotal object');
+  assert(byPipeline.totalUsage.nonCachedTokens === 135, `byPipeline non-cached tokens ${byPipeline.totalUsage.nonCachedTokens}`);
+  assert(byPipeline.totalUsage.cachedTokens === 20, `byPipeline cached tokens ${byPipeline.totalUsage.cachedTokens}`);
 });
 
 test('usage report: text output uses duplicate-conflict not-included language', () => {
@@ -4321,6 +4391,8 @@ test('usage report: text output uses duplicate-conflict not-included language', 
 
   const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
   assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.includes('Non-cached usage: 135 tokens'), `missing non-cached usage line: ${result.data}`);
+  assert(result.data.includes('Cached input: 20 tokens'), `missing cached input line: ${result.data}`);
   assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
   assert(result.data.includes('Not included in total: 1 invocation'), `missing duplicate not-included line: ${result.data}`);
   assert(!result.data.includes('with unavailable exact counters'), `duplicate conflicts should not use unavailable-counters language: ${result.data}`);
@@ -4385,6 +4457,60 @@ test('runtime adapter: Codex cumulative total_token_usage deltas are authoritati
   assert(row.tokens.reasoningOutputTokens === 10, `reasoning delta ${row.tokens.reasoningOutputTokens}`);
   assert(row.tokens.totalTokens === 190, `total delta ${row.tokens.totalTokens}`);
   assert(row.source.kind === 'codex_jsonl', 'source kind');
+});
+
+test('runtime adapter: Codex cumulative delta tolerates omitted optional per-turn cache metadata', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-omitted-cache.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 },
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 250, cached_input_tokens: 55, output_tokens: 40, reasoning_output_tokens: 15, total_tokens: 305 },
+      { input_tokens: 150, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 190 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.cachedInputTokens === 35, `expected cumulative cached delta 35, got ${row.tokens.cachedInputTokens}`);
+  assert(row.tokens.totalTokens === 190, `expected cumulative total delta 190, got ${row.tokens.totalTokens}`);
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'optional cache metadata mismatch should not be a counter conflict');
+});
+
+test('runtime adapter: Codex cumulative delta tolerates per-turn cache metadata disagreement', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-cache-disagreement.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 },
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 250, cached_input_tokens: 55, output_tokens: 40, reasoning_output_tokens: 15, total_tokens: 305 },
+      { input_tokens: 150, cached_input_tokens: 99, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 190 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.cachedInputTokens === 35, `expected cumulative cached delta 35, got ${row.tokens.cachedInputTokens}`);
+  assert(row.tokens.totalTokens === 190, `expected cumulative total delta 190, got ${row.tokens.totalTokens}`);
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'cache metadata disagreement should not make usage unavailable');
 });
 
 test('runtime adapter: Codex finish uses bounded persisted cumulative start snapshot', () => {
@@ -4763,6 +4889,69 @@ test('runtime adapter: no inferred runtime source appends unmeasured row', () =>
   assert(row.status === 'unmeasured', 'missing runtime source should be unmeasured');
   assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
+});
+
+test('runtime adapter: ambiguous inferred Codex sources use invocation id marker', () => {
+  const ctx = createUsageWorkspace();
+  const sourceOne = codexSessionPath(ctx, 'rollout-marked');
+  const sourceTwo = codexSessionPath(ctx, 'rollout-unmarked');
+  appendJsonl(sourceOne, [
+    codexSessionMeta(ctx.projectRoot),
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 },
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 }
+    ),
+  ]);
+  appendJsonl(sourceTwo, [codexSessionMeta(ctx.projectRoot)]);
+
+  const started = runInDirWithEnv('usage start --skill fixme-rebase --runtime codex', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourceOne, [
+    { type: 'response_item', payload: { type: 'function_call_output', output: `{"invocationId":"${started.data.invocationId}"}` } },
+    codexTokenCount(
+      { input_tokens: 130, cached_input_tokens: 25, output_tokens: 17, reasoning_output_tokens: 7, total_tokens: 147 },
+      { input_tokens: 30, cached_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 2, total_tokens: 32 }
+    ),
+  ]);
+  appendJsonl(sourceTwo, [
+    codexTokenCount(
+      { input_tokens: 999, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 999 },
+      { input_tokens: 999, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 999 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 32, `expected marked source delta 32, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourceOne, 'source path should be the file containing the invocation id marker');
+});
+
+test('runtime adapter: ambiguous inferred Claude sources use invocation id marker', () => {
+  const ctx = createUsageWorkspace();
+  const sourceOne = claudeTranscriptPath(ctx, 'session-unmarked');
+  const sourceTwo = claudeTranscriptPath(ctx, 'session-marked');
+  appendJsonl(sourceOne, [claudeTranscriptMeta(ctx.projectRoot)]);
+  appendJsonl(sourceTwo, [claudeTranscriptMeta(ctx.projectRoot)]);
+
+  const started = runInDirWithEnv('usage start --skill fixme-rebase --runtime claude', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourceOne, [
+    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 999, output_tokens: 1 } }, content: 'must be ignored' },
+  ]);
+  appendJsonl(sourceTwo, [
+    { type: 'assistant', cwd: ctx.projectRoot, content: `{"invocationId":"${started.data.invocationId}"}` },
+    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 15, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 } }, content: 'must be ignored' },
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 24, `expected marked source usage 24, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourceTwo, 'source path should be the transcript containing the invocation id marker');
+  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
 });
 
 test('runtime adapter: ambiguous inferred runtime sources append unmeasured row without guessing', () => {

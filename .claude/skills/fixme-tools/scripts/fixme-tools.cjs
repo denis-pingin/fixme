@@ -4561,6 +4561,40 @@ function readJsonlHeadRows(filePath, maxBytes) {
   }).filter(Boolean);
 }
 
+function findStringCursor(filePath, needle) {
+  const needleBuffer = Buffer.from(String(needle || ''));
+  if (needleBuffer.length === 0) return null;
+  const stat = fs.statSync(filePath);
+  const fd = fs.openSync(filePath, 'r');
+  const chunkSize = 64 * 1024;
+  const overlapSize = Math.max(0, needleBuffer.length - 1);
+  let offset = 0;
+  let carry = Buffer.alloc(0);
+  try {
+    while (offset < stat.size) {
+      const toRead = Math.min(chunkSize, stat.size - offset);
+      const buffer = Buffer.alloc(toRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, toRead, offset);
+      if (bytesRead <= 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+      const foundAt = combined.indexOf(needleBuffer);
+      if (foundAt !== -1) {
+        const combinedStartOffset = offset - carry.length;
+        const size = combinedStartOffset + foundAt + needleBuffer.length;
+        return { path: filePath, size: Math.max(0, Math.min(size, stat.size)), mtimeMs: stat.mtimeMs };
+      }
+      carry = overlapSize > 0
+        ? combined.subarray(Math.max(0, combined.length - overlapSize))
+        : Buffer.alloc(0);
+      offset += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return null;
+}
+
 function tokenValue(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -4640,11 +4674,8 @@ function hasPositiveToken(usage) {
   return !!usage && USAGE_TOKEN_BUCKETS.some(key => typeof usage[key] === 'number' && usage[key] > 0);
 }
 
-function tokensEqual(a, b) {
-  for (const key of USAGE_TOKEN_BUCKETS) {
-    if ((a[key] || 0) !== (b[key] || 0)) return false;
-  }
-  return true;
+function totalTokensEqual(a, b) {
+  return (a && a.totalTokens || 0) === (b && b.totalTokens || 0);
 }
 
 function counterUnmeasured(pending, code, message, source) {
@@ -4704,7 +4735,7 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
     if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLast)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
     }
-    if (summedLast && hasPositiveToken(summedLast) && !tokensEqual(delta.result, summedLast)) {
+    if (summedLast && hasPositiveToken(summedLast) && !totalTokensEqual(delta.result, summedLast)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
     }
     return measuredCounterResult(delta.result, source);
@@ -4810,6 +4841,31 @@ function discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, f
   if (candidates.length === 0) return { status: 'none', candidates: [] };
   if (candidates.length > 1) return { status: 'many', candidates };
   return { status: 'one', candidates };
+}
+
+function disambiguateRuntimeCounterSourcesByInvocationId(discovery, runtime, invocationId) {
+  if (!discovery || discovery.status !== 'many') return discovery;
+  const matches = [];
+  for (const candidate of discovery.candidates) {
+    let startCursor;
+    try {
+      startCursor = findStringCursor(candidate.path, invocationId);
+    } catch (_) {
+      startCursor = null;
+    }
+    if (!startCursor) continue;
+    const match = { ...candidate, startCursor };
+    if (runtime === 'codex') {
+      try {
+        match.codexCumulativeStartTokens = captureCodexCumulativeStartSnapshot(candidate.path, startCursor);
+      } catch (_) {
+        match.codexCumulativeStartTokens = null;
+      }
+    }
+    matches.push(match);
+  }
+  if (matches.length !== 1) return discovery;
+  return { status: 'one', candidates: matches };
 }
 
 function resolveUsageRuntime(rawRuntime, scriptPath) {
@@ -5031,6 +5087,7 @@ function resolveUsageCounters(pending) {
       explicitPath
     );
   }
+  discovery = disambiguateRuntimeCounterSourcesByInvocationId(discovery, pending.runtime, pending.invocationId);
   const kind = `${pending.runtime}_jsonl`;
   if (discovery.status === 'error') {
     return counterUnmeasured(
@@ -5060,12 +5117,16 @@ function resolveUsageCounters(pending) {
   const candidate = discovery.candidates[0];
   const startCursor = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
     ? pending.sourceSnapshot.cursor
+    : candidate.startCursor
+      ? candidate.startCursor
     : { ...candidate.cursor, size: 0 };
   const source = sourceMetadata(kind, candidate.path, candidate.discovery, 1, candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {});
   try {
     if (pending.runtime === 'codex') {
       const startTokens = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
         ? pending.sourceSnapshot.codexCumulativeStartTokens
+        : candidate.codexCumulativeStartTokens
+          ? candidate.codexCumulativeStartTokens
         : null;
       return extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source, startTokens);
     }
@@ -5219,6 +5280,30 @@ function addTokenUsage(total, tokens) {
   return total;
 }
 
+function nonCachedTokenCount(tokens) {
+  if (!tokens) return 0;
+  return (tokens.inputTokens || 0)
+    + (tokens.outputTokens || 0)
+    + (tokens.reasoningOutputTokens || 0);
+}
+
+function cachedTokenCount(tokens) {
+  if (!tokens) return 0;
+  if (typeof tokens.cachedInputTokens === 'number' && Number.isFinite(tokens.cachedInputTokens)) {
+    return tokens.cachedInputTokens;
+  }
+  return (tokens.cacheCreationInputTokens || 0) + (tokens.cacheReadInputTokens || 0);
+}
+
+function usageWithDerivedTokenBuckets(tokens) {
+  if (!tokens) return tokens;
+  return {
+    ...tokens,
+    nonCachedTokens: nonCachedTokenCount(tokens),
+    cachedTokens: cachedTokenCount(tokens),
+  };
+}
+
 function formatTokenCount(value) {
   return Number(value || 0).toLocaleString('en-US');
 }
@@ -5240,6 +5325,7 @@ function isMeasuredUsageRow(row) {
 
 function usageSummaryRow(event) {
   const normalizedEvent = normalizeUsageRowForReport(event);
+  const tokens = usageWithDerivedTokenBuckets(normalizedEvent.tokens);
   return {
     eventId: normalizedEvent.eventId,
     invocationId: normalizedEvent.invocationId,
@@ -5254,7 +5340,9 @@ function usageSummaryRow(event) {
     durationMs: normalizedEvent.durationMs,
     pipelineRunId: normalizedEvent.pipelineRunId,
     parentInvocationId: normalizedEvent.parentInvocationId,
-    totalTokens: normalizedEvent.tokens && typeof normalizedEvent.tokens.totalTokens === 'number' ? normalizedEvent.tokens.totalTokens : null,
+    nonCachedTokens: tokens && typeof tokens.nonCachedTokens === 'number' ? tokens.nonCachedTokens : null,
+    cachedTokens: tokens && typeof tokens.cachedTokens === 'number' ? tokens.cachedTokens : null,
+    totalTokens: tokens && typeof tokens.totalTokens === 'number' ? tokens.totalTokens : null,
     warningCodes: (normalizedEvent.warnings || []).map(warning => warning.code).filter(Boolean),
   };
 }
@@ -5392,6 +5480,18 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
     };
   }
 
+  function finalizeGroupUsage(group) {
+    const finalized = {
+      ...group,
+      totalUsage: usageWithDerivedTokenBuckets(group.totalUsage),
+    };
+    if (Object.prototype.hasOwnProperty.call(group, 'orchestratorUsage')) {
+      finalized.orchestratorUsage = usageWithDerivedTokenBuckets(group.orchestratorUsage);
+      finalized.childUsage = usageWithDerivedTokenBuckets(group.childUsage);
+    }
+    return finalized;
+  }
+
   function addGroupWarning(group, warning) {
     group.warningSummary = warningSummaryFromWarnings([
       ...group.warningSummary.flatMap(item => [{ code: item.code, count: item.count, eventIds: item.eventIds }]),
@@ -5405,6 +5505,15 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
       bySkillMap.set(skill, newGroup('skill', skill));
     }
     return bySkillMap.get(skill);
+  }
+
+  const byProjectMap = new Map();
+  function groupForProject(projectRoot) {
+    if (!projectRoot) return null;
+    if (!byProjectMap.has(projectRoot)) {
+      byProjectMap.set(projectRoot, newGroup('projectRoot', projectRoot));
+    }
+    return byProjectMap.get(projectRoot);
   }
 
   const byPipelineMap = new Map();
@@ -5441,12 +5550,13 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
 
   for (const row of reportRows) {
     addRowToGroup(groupForSkill(row.skill), row);
+    addRowToGroup(groupForProject(row.projectRoot), row);
     addRowToGroup(groupForPipeline(row.pipelineRunId), row);
   }
 
   for (const conflict of normalized.conflicts) {
     const first = conflict.rows[0] || {};
-    const groups = [groupForSkill(first.skill), groupForPipeline(first.pipelineRunId)].filter(Boolean);
+    const groups = [groupForSkill(first.skill), groupForProject(first.projectRoot), groupForPipeline(first.pipelineRunId)].filter(Boolean);
     for (const item of groups) {
       item.notIncludedInTotal.invocationCount++;
       for (const eventId of conflict.eventIds) {
@@ -5474,7 +5584,7 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
       skill: filters.skill || null,
       pipelineRunId: filters.pipelineRunId || null,
     },
-    totalUsage,
+    totalUsage: usageWithDerivedTokenBuckets(totalUsage),
     notIncludedInTotal: {
       invocationCount: new Set(notIncludedEventIds.filter(Boolean).map(eventId => {
         const row = [...reportRows, ...filtered].find(item => item.eventId === eventId);
@@ -5482,8 +5592,9 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
       })).size,
       eventIds: [...new Set(notIncludedEventIds.filter(Boolean))],
     },
-    bySkill: [...bySkillMap.values()].sort((a, b) => a.skill.localeCompare(b.skill)),
-    byPipeline: [...byPipelineMap.values()].sort((a, b) => a.pipelineRunId.localeCompare(b.pipelineRunId)),
+    bySkill: [...bySkillMap.values()].map(finalizeGroupUsage).sort((a, b) => a.skill.localeCompare(b.skill)),
+    byProject: [...byProjectMap.values()].map(finalizeGroupUsage).sort((a, b) => a.projectRoot.localeCompare(b.projectRoot)),
+    byPipeline: [...byPipelineMap.values()].map(finalizeGroupUsage).sort((a, b) => a.pipelineRunId.localeCompare(b.pipelineRunId)),
     recent,
     warnings: warningEvents,
     warningSummary: warningSummaryFromWarnings(warningEvents),
@@ -5492,6 +5603,8 @@ function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit
 
 function formatUsageReportText(report) {
   const lines = [
+    `Non-cached usage: ${formatTokenCount(report.totalUsage.nonCachedTokens)} tokens`,
+    `Cached input: ${formatTokenCount(report.totalUsage.cachedTokens)} tokens`,
     `Total usage: ${formatTokenCount(report.totalUsage.totalTokens)} tokens`,
   ];
   if (report.notIncludedInTotal.invocationCount > 0) {
