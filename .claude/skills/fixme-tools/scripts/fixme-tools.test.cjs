@@ -2813,6 +2813,26 @@ test('fixme-session skill: tracks background fixme-task liveness status id', () 
   assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>'), 'status flow should read liveness status');
 });
 
+test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('Liveness is the only allowed `<fixme-dir>` carve-out'), 'PR comments should permit only the liveness carve-out');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
+  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should create liveness status before nested fixme-task');
+  assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the nested fixme-task status id');
+  assert(skill.includes('status_id: <fixmeTaskStatusId>'), 'nested fixme-task args should include status_id');
+  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'parent wait loop should read nested fixme-task liveness');
+});
+
+test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('For `Run full fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`.'), 'brainstorm should map the fixme-task menu option to the fixme-task agent');
+  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <selected-fixme-agent>'), 'brainstorm should create liveness before downstream dispatch');
+  assert(skill.includes('status_id: <status_id from run start>'), 'brainstorm downstream args should include liveness status_id');
+  assert(skill.includes('Do not dispatch the downstream skill if `run start` fails.'), 'brainstorm should fail closed when liveness setup fails');
+});
+
 test('fixme-task skill: Run Summary includes usage block backed by usage report', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

@@ -294,8 +294,40 @@ Dispatch the selected skill via the Skill tool (`Skill(skill="fixme-write-produc
 - The absolute brainstorm path
 - The original topic (one sentence)
 - The resolved `<fixme-dir>` value if dispatching as an agent
+- The liveness `status_id` when the selected downstream skill maps to a known Fixme agent
 
 For "Save only", skip dispatch.
+
+Before dispatching a selected downstream skill that maps to a known Fixme agent, create liveness:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <selected-fixme-agent>
+```
+
+Use this mapping:
+
+| Routing option | `<selected-fixme-agent>` |
+| --- | --- |
+| Write product specification | `fixme-write-product-spec` |
+| Write technical specification | `fixme-write-technical-spec` |
+| Write implementation plan | `fixme-write-plan` |
+| Run full fixme-task workflow | `fixme-task` |
+
+For `Run full fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`. `Create Linear ticket` has no liveness record because `fixme-ticket` is not a known run-liveness agent. `Save only` has no dispatch.
+
+Store the returned `status_id`. Do not dispatch the downstream skill if `run start` fails. Surface the JSON error, fire `task_failed`, and stop.
+
+Include liveness in the downstream dispatch arguments:
+
+```
+<project>
+Fixme dir: <fixme-dir>
+</project>
+
+<liveness>
+status_id: <status_id from run start>
+</liveness>
+```
 
 ### Step 9: Close
 
