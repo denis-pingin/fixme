@@ -1250,7 +1250,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - `FIX_UNCLEAR` never means no-fix and never allows the loop to exit. It means the finding is real and the user must choose the approach.
 3. If the directive and counts conflict, do not advance the loop. Re-dispatch the same handler with a correction prompt that quotes the inconsistent routing block and asks for a corrected routing directive.
 4. Print the Review Classification block (see Review Classification Visibility). This happens for every handler output: CLEAN, HAS_BLOCKING_FIX, HAS_NONBLOCKING_FINDINGS, and HAS_ASK_USER.
-5. Follow the routing rules specified in the manifest entry:
+5. Follow the routing rules specified in the manifest entry. Treat printing the Review Classification block and taking the route as one atomic operation unless `HAS_ASK_USER` requires a user decision. Do not send a final response between the visible classification block and the next manifest action.
    - **CLEAN**: mark step `completed`, advance to the next numbered step
    - **HAS_BLOCKING_FIX + SPEC_REVISION**: mark step `completed`, jump back to the specification phase's first execute step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
@@ -1266,6 +1266,17 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 3. Mark step `completed`. Pipeline is DONE.
 
 In nested mode (`--nested`) there is no Run Summary step. After the implement-routing step (`Step N.8`) returns CLEAN, in the same TodoWrite call mark `Step N.8 completed` AND mark the parent's next pending item (e.g. `Step 10 [verify]`) as `in_progress`, then immediately begin executing the parent's Step 10 instructions. Do NOT print a `## Run Summary` block. Do NOT narrate the handoff. The parent owns the final summary at its own terminal step.
+
+## Pre-Final Response Gate
+
+Before sending any final response from this skill, verify one terminal condition is true:
+
+- Standalone mode completed the `[done]` Run Summary step.
+- The current handler route is `HAS_ASK_USER` and the Review Classification block has asked the user for decisions.
+- A loop guard escalated to the user.
+- The workflow failed or cannot continue after the documented recovery path.
+
+If none of these is true, do not final-answer. Continue the manifest from the current step. A Review Classification block with no user decision is never terminal by itself.
 
 ## Never Apply Fixes Directly
 
