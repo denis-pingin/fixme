@@ -17,7 +17,7 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
-- **Save mode is terminal.** When the user asks to save a deferred task, write only the task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.
+- **Save follows the full user instruction.** Save-only requests write a deferred task and stop. Save-and-continue requests write the task brief first, then continue into the selected or auto-detected pipeline. Ambiguous save requests stop and ask; never guess.
 
 ## Audible Alerts
 
@@ -98,8 +98,9 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
 /fixme-task --execute <plan-path>                     -> pipeline="execute-only", task="<plan-path>"
 /fixme-task --idea-to-production build import flow    -> pipeline="full", task="build import flow"
 /fixme-task --pipeline product-spec build import flow -> pipeline="product-spec", task="build import flow"
-/fixme-task --save build import flow                  -> saveMode=true, task="build import flow"
-/fixme-task standard --save build import flow         -> saveMode=true, pipelineHint="standard", task="build import flow"
+/fixme-task --save build import flow                  -> saveIntent=true, continueAfterSave=false, task="build import flow"
+/fixme-task save it and proceed with planning         -> saveIntent=true, continueAfterSave=true, pipeline="standard"
+/fixme-task standard --save build import flow         -> ambiguous save intent; ask whether to save only or save then run standard
 ```
 
 Plain `/fixme-task ...` defaults to `standard`.
@@ -108,7 +109,11 @@ Plain `/fixme-task ...` defaults to `standard`.
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
 2. Extract `--pipeline <name>` if present. Remove it from remaining args.
 3. Extract `--nested` if present (boolean flag). Remove it from remaining args. When set, this skill is being invoked inline by a parent skill (typically `fixme-pr-comments`) that owns its own todo list. The dispatch manifest is built in nested mode - see "Creating the Manifest with TodoWrite" below.
-4. Extract `--save` if present (boolean flag). Remove it from remaining args. Also set `saveMode=true` when the user asks in prose to "save this as a fixme-task", "save this a fixme-task", or equivalent. Save mode writes a deferred task brief and stops; it does not execute the pipeline.
+4. Extract `--save` if present (boolean flag). Remove it from remaining args. Also set `saveIntent=true` when the user asks in prose to "save this as a fixme-task", "save this a fixme-task", "save it", or equivalent.
+   - Save intent can be terminal or non-terminal depending on the rest of the instruction.
+   - Set `continueAfterSave=false` when the prompt only asks to save a task, or when `--save` is present and the remaining text is only the task description.
+   - Set `continueAfterSave=true` when the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving.
+   - If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.
 5. Extract intent flags if present. Supported flags:
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
@@ -140,7 +145,13 @@ Resolve the task description in this order - stop at the first match:
 
 ## Save Mode
 
-Use save mode when `saveMode=true`, including `/fixme-task --save ...`, `$fixme-task --save ...`, or a conversational request such as "save this as a fixme-task". Save mode captures the previously discussed task, issue, solution approach, or implementation shape so it can be planned and executed later.
+Use save mode when `saveIntent=true`, including `/fixme-task --save ...`, `$fixme-task --save ...`, or a conversational request such as "save this as a fixme-task". Save mode captures the previously discussed task, issue, solution approach, or implementation shape.
+
+Save intent can be terminal or non-terminal depending on the rest of the instruction.
+
+- If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.
+- If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.
+- If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.
 
 Save to `<fixme-dir>/tasks/<date>-<slug>.md`. Use ISO date format `YYYY-MM-DD`. Use a short lowercase slug derived from the generated title. Create `<fixme-dir>/tasks` if it does not exist.
 
@@ -262,9 +273,9 @@ One sentence describing the outcome, not the implementation steps.
 
 ### Save Mode Output
 
-Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading.
+Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.
 
-After writing the file, output a short confirmation and end with:
+After writing the file, output a short confirmation and always emit:
 
 ```markdown
 Saved [FIXME-<number>](<absolute path to saved task brief>)
@@ -274,7 +285,9 @@ Saved [FIXME-<number>](<absolute path to saved task brief>)
 TASK_PATH: <absolute path to saved task brief>
 ```
 
-If usage tracking is active in the installed runtime, finish usage normally with outcome `complete` before the `TASK_PATH` directive.
+If save is terminal and usage tracking is active in the installed runtime, finish usage normally with outcome `complete` before the `TASK_PATH` directive.
+
+If `continueAfterSave=true`, do not finish usage after writing the task brief. Store the emitted `TASK_PATH` as `savedTaskPath`, set the task context to that path, then proceed to Pipeline Auto-Detection, Project Root Resolution, Start From, Config Loading, manifest creation, ticket transitions, and agent dispatch as usual.
 
 ### Pipeline Auto-Detection
 

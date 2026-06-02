@@ -2843,7 +2843,7 @@ test('fixme-task skill: Run Summary includes usage block backed by usage report'
   assert(skill.includes('v1 does not include per-phase usage'), 'per-phase usage should remain out of scope');
 });
 
-test('fixme-task skill: --save writes deferred task briefs without entering the pipeline', () => {
+test('fixme-task skill: --save stops only when no continue intent is present', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('## Save Mode'), 'fixme-task should document save mode');
@@ -2852,7 +2852,11 @@ test('fixme-task skill: --save writes deferred task briefs without entering the 
   assert(skill.includes('The title is always auto-generated from the resolved task context.'), 'title generation should be automatic');
   assert(skill.includes('Do not ask the user for a title.'), 'save mode should not prompt for titles');
   assert(skill.includes('If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort'), 'save mode should abort when there is no task context');
-  assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading.'), 'save mode should be terminal');
+  assert(skill.includes('Save intent can be terminal or non-terminal depending on the rest of the instruction.'), 'save mode should not be unconditionally terminal');
+  assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
+  assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
+  assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
+  assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
   assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');
   assert(skill.includes('The counter file stores the next available task number.'), 'save mode should define counter semantics');
