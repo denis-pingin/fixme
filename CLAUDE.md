@@ -12,6 +12,12 @@ Fixme is a suite of Claude Code skills, Codex-adapted skill copies, and matching
 
 ## Commands
 
+## JSON Key Naming
+
+All JSON object keys in this project must be camelCase. Never introduce snake_case keys in JSON files, JSONL rows, CLI JSON stdout/stderr, config payloads, runtime state files, task state files, test fixtures, or documentation examples.
+
+When changing an existing JSON surface that currently contains snake_case keys, migrate that surface to camelCase in the same change and update every caller, test, fixture, and skill instruction that reads or writes it. Command-line flags, markdown headings, YAML frontmatter, and plain text directives are not JSON, but any JSON payload they contain must still use camelCase keys.
+
 ### Running Tests
 
 ```bash
@@ -56,6 +62,13 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket next <session-dir>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket list <session-dir>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]
+
+# Resumable task state
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket.md|ticket-folder> --pipeline <name> --project-root <path>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline <name> --project-root <path>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state.json> --data '<json>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>
 
 # Project context
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs context detect

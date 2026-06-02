@@ -2858,6 +2858,476 @@ function ticketRename(ticketPath, flags) {
 }
 
 // ============================================================================
+// Subcommands: task
+// ============================================================================
+
+function taskDirectory(fixmeRoot) {
+  return path.join(fixmeRoot, '.fixme', 'tasks');
+}
+
+function readNextTaskNumber(taskDir) {
+  const counterPath = path.join(taskDir, '.counter');
+  if (!fs.existsSync(counterPath)) return 1;
+
+  const raw = fs.readFileSync(counterPath, 'utf8').trim();
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(`The saved-task counter at ${counterPath} is invalid. Fix it to contain the next positive integer, then run task save again.`);
+  }
+  return parseInt(raw, 10);
+}
+
+function writeTaskCounter(taskDir, nextNumber) {
+  fs.writeFileSync(path.join(taskDir, '.counter'), `${nextNumber}\n`);
+}
+
+function sanitizeTaskSlug(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+}
+
+function titleFromSlug(slug) {
+  return slug.split('-').filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+function normalizeTaskTextArray(value) {
+  if (Array.isArray(value)) return value.filter(item => item !== null && item !== undefined).map(item => String(item));
+  if (value === null || value === undefined || value === '') return [];
+  return [String(value)];
+}
+
+function markdownList(items, fallback) {
+  const normalized = normalizeTaskTextArray(items);
+  if (normalized.length === 0) return `- ${fallback}`;
+  return normalized.map(item => `- ${item}`).join('\n');
+}
+
+function formatLockedDecisions(decisions) {
+  if (!Array.isArray(decisions) || decisions.length === 0) {
+    return '- None recorded.';
+  }
+  return decisions.map((decision, index) => {
+    if (isPlainObject(decision)) {
+      const title = decision.title || `Decision ${index + 1}`;
+      const answer = decision.answer || decision.decision || 'Recorded in saved task input.';
+      const status = decision.status || 'confirmed';
+      return `${index + 1}. **${title}**\n   - **Answer:** ${answer}\n   - **Status:** ${status}`;
+    }
+    return `${index + 1}. ${String(decision)}`;
+  }).join('\n');
+}
+
+function buildTaskMarkdown(data, taskRef, slug, date) {
+  const title = data.title || titleFromSlug(slug) || 'Saved Fixme Task';
+  const pipelineHint = data.pipelineHint || 'auto';
+  const frontmatter = {
+    title,
+    label: taskRef,
+    slug,
+    created: date,
+    updated: date,
+    status: 'saved',
+    source: data.source || 'conversation',
+    pipeline_hint: pipelineHint,
+    tags: Array.isArray(data.tags) ? data.tags : [],
+  };
+
+  const scope = isPlainObject(data.scope) ? data.scope : {};
+  const body = `# ${taskRef}: ${title}
+
+## Task Goal
+
+${data.taskGoal || 'Saved fixme task.'}
+
+## Agreed Approach
+
+${markdownList(data.agreedApproach, 'Use the saved task context.')}
+
+## User-Visible Behavior
+
+${markdownList(data.userVisibleBehavior, 'Resume or execute the saved task.')}
+
+## Scope
+
+### In Scope
+
+${markdownList(scope.inScope, 'The saved task described above.')}
+
+### Out Of Scope
+
+${markdownList(scope.outOfScope, 'Unrelated cleanup.')}
+
+## Locked Decisions
+
+${formatLockedDecisions(data.lockedDecisions)}
+
+## Constraints
+
+${markdownList(data.constraints, 'Follow project instructions.')}
+
+## Known Context
+
+${markdownList(data.knownContext, 'No extra context recorded.')}
+
+## Open Questions
+
+${markdownList(data.openQuestions, 'None.')}
+
+## Suggested Pipeline
+
+\`${pipelineHint}\`
+
+## Later Planning Notes
+
+${markdownList(data.laterPlanningNotes, 'Plan from this saved task brief.')}
+`;
+
+  return buildContent(frontmatter, body, []);
+}
+
+function firstPipelineCursor(pipelineName, fixmeRoot) {
+  const normalizedPipeline = normalizeWorkflowName(pipelineName || 'standard');
+  const phases = loadPipelinePhases(normalizedPipeline, fixmeRoot) || loadPipelinePhases('standard', fixmeRoot) || ['plan'];
+  const phase = phases[0] || 'plan';
+  const workflow = makeStandardWorkflow(STANDARD_PIPELINES[normalizedPipeline] ? normalizedPipeline : 'standard');
+  const configuredPhase = workflow.phases.find(candidate => candidate.name === phase);
+  const skill = configuredPhase && Array.isArray(configuredPhase.skills) && configuredPhase.skills.length > 0
+    ? configuredPhase.skills[0]
+    : null;
+  return {
+    phase,
+    stage: 'execute',
+    skill,
+    dispatchMode: 'normal',
+  };
+}
+
+function defaultTaskState({ projectRoot, pipeline, fixmeRoot, now }) {
+  return {
+    schemaVersion: 1,
+    projectRoot,
+    status: 'running',
+    pipeline,
+    cursor: firstPipelineCursor(pipeline, fixmeRoot),
+    artifacts: {
+      productSpecificationPath: null,
+      technicalSpecificationPath: null,
+      planPath: null,
+      codeMapPath: null,
+    },
+    handoff: {
+      executionSummary: null,
+      reviewFindings: null,
+      handlerResult: null,
+      followUpItems: [],
+    },
+    loops: {
+      phaseReviewCycles: [],
+      outerCycles: 0,
+    },
+    pendingDecision: null,
+    updatedAt: now,
+  };
+}
+
+function parseTaskData(rawData) {
+  if (!rawData || rawData === true) {
+    throw new Error('--data is required');
+  }
+  let data;
+  try {
+    data = JSON.parse(rawData);
+  } catch (e) {
+    throw new Error(`--data must be valid JSON: ${e.message}`);
+  }
+  if (!isPlainObject(data)) {
+    throw new Error('--data must be a JSON object');
+  }
+  return data;
+}
+
+function assertCamelCaseJsonKeys(value, label, pathParts = []) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertCamelCaseJsonKeys(item, label, pathParts.concat(String(index))));
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const currentPath = pathParts.concat(key).join('.');
+    if (!/^[a-z][A-Za-z0-9]*$/.test(key)) {
+      throw new Error(`${label} must use camelCase JSON keys; found ${currentPath}`);
+    }
+    assertCamelCaseJsonKeys(child, label, pathParts.concat(key));
+  }
+}
+
+function taskSave(flags, fixmeRoot) {
+  const data = parseTaskData(flags.data);
+  assertCamelCaseJsonKeys(data, '--data');
+  const taskDir = taskDirectory(fixmeRoot);
+  fs.mkdirSync(taskDir, { recursive: true });
+
+  const number = readNextTaskNumber(taskDir);
+  const taskRef = `FIXME-${number}`;
+  const title = data.title || 'Saved Fixme Task';
+  const slug = sanitizeTaskSlug(data.slug || title);
+  if (!slug) {
+    throw new Error('Task slug is empty after sanitization');
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  const taskPath = path.join(taskDir, `${date}-${taskRef}-${slug}.md`);
+  const statePath = path.join(taskDir, `${date}-${taskRef}-${slug}.state.json`);
+  const now = new Date().toISOString();
+  const pipeline = normalizeWorkflowName(data.pipelineHint || data.pipeline || 'standard');
+
+  writeTaskCounter(taskDir, number + 1);
+  fs.writeFileSync(taskPath, buildTaskMarkdown(data, taskRef, slug, date));
+  writeJsonAtomic(statePath, defaultTaskState({
+    projectRoot: fixmeRoot,
+    pipeline,
+    fixmeRoot,
+    now,
+  }));
+
+  return output({
+    mode: 'standalone',
+    taskRef,
+    taskPath,
+    ticketPath: null,
+    statePath,
+  });
+}
+
+function taskStatePathForTicket(ticketPath) {
+  return path.join(path.dirname(ticketPath), 'task-state.json');
+}
+
+function taskStatePathForTask(taskPath) {
+  if (!taskPath.endsWith('.md')) {
+    throw new Error(`Task path must end with .md: ${taskPath}`);
+  }
+  return taskPath.replace(/\.md$/, '.state.json');
+}
+
+function taskInit(flags, fixmeRoot) {
+  const pipeline = normalizeWorkflowName(flags.pipeline || 'standard');
+  const projectRoot = flags['project-root'] && flags['project-root'] !== true
+    ? path.resolve(String(flags['project-root']))
+    : fixmeRoot;
+  const now = new Date().toISOString();
+  const state = defaultTaskState({
+    projectRoot,
+    pipeline,
+    fixmeRoot,
+    now,
+  });
+
+  if (flags.ticket && flags.ticket !== true) {
+    const ticketPath = resolveTicketPath(String(flags.ticket));
+    if (!fs.existsSync(ticketPath)) {
+      throw new Error(`Ticket file not found: ${ticketPath}`);
+    }
+    const statePath = taskStatePathForTicket(ticketPath);
+    writeJsonAtomic(statePath, state);
+    return output({
+      mode: 'ticket',
+      taskRef: null,
+      taskPath: null,
+      ticketPath,
+      statePath,
+    });
+  }
+
+  if (flags.task && flags.task !== true) {
+    const taskPath = path.resolve(String(flags.task));
+    if (!fs.existsSync(taskPath)) {
+      throw new Error(`Task file not found: ${taskPath}`);
+    }
+    const statePath = taskStatePathForTask(taskPath);
+    writeJsonAtomic(statePath, state);
+    return output({
+      mode: 'standalone',
+      taskRef: parseTaskRefFromMarkdown(taskPath),
+      taskPath,
+      ticketPath: null,
+      statePath,
+    });
+  }
+
+  throw new Error('task init requires --ticket <ticket.md|ticket-folder> or --task <task.md>');
+}
+
+function parseTaskRefFromMarkdown(taskPath) {
+  const content = fs.readFileSync(taskPath, 'utf8');
+  const { frontmatter: fm } = parseFrontmatter(content);
+  if (typeof fm.label === 'string' && /^FIXME-\d+$/.test(fm.label)) {
+    return fm.label;
+  }
+  const match = path.basename(taskPath).match(/(^|-)FIXME-\d+(?=-|\.md$)/);
+  if (match) {
+    return match[0].replace(/^-/, '');
+  }
+  return null;
+}
+
+function resolveTicketTask(input) {
+  const resolvedInput = path.resolve(input);
+  let ticketPath = null;
+  let statePath = null;
+
+  if (fs.existsSync(resolvedInput) && fs.statSync(resolvedInput).isDirectory()) {
+    const candidate = path.join(resolvedInput, 'ticket.md');
+    if (fs.existsSync(candidate)) {
+      ticketPath = candidate;
+      statePath = taskStatePathForTicket(ticketPath);
+    }
+  } else if (path.basename(resolvedInput) === 'ticket.md') {
+    ticketPath = resolvedInput;
+    statePath = taskStatePathForTicket(ticketPath);
+  } else if (path.basename(resolvedInput) === 'task-state.json') {
+    statePath = resolvedInput;
+    const candidate = path.join(path.dirname(resolvedInput), 'ticket.md');
+    if (fs.existsSync(candidate)) {
+      ticketPath = candidate;
+    }
+  }
+
+  if (!ticketPath) return null;
+  if (!fs.existsSync(ticketPath)) {
+    throw new Error(`Ticket file not found: ${ticketPath}`);
+  }
+  if (!fs.existsSync(statePath)) {
+    throw new Error(`Task state file not found: ${statePath}`);
+  }
+
+  return {
+    mode: 'ticket',
+    taskRef: null,
+    taskPath: null,
+    ticketPath,
+    statePath,
+  };
+}
+
+function listTaskMarkdownFiles(taskDir) {
+  if (!fs.existsSync(taskDir)) return [];
+  return fs.readdirSync(taskDir)
+    .filter(file => file.endsWith('.md'))
+    .map(file => path.join(taskDir, file))
+    .filter(filePath => fs.statSync(filePath).isFile());
+}
+
+function resolveStandaloneTask(input, fixmeRoot) {
+  const taskDir = taskDirectory(fixmeRoot);
+  let taskPath = null;
+  let statePath = null;
+
+  if (/^FIXME-\d+$/.test(input)) {
+    const filenameMatches = listTaskMarkdownFiles(taskDir)
+      .filter(filePath => path.basename(filePath).includes(`-${input}-`));
+    const matches = filenameMatches.length > 0
+      ? filenameMatches
+      : listTaskMarkdownFiles(taskDir).filter(filePath => parseTaskRefFromMarkdown(filePath) === input);
+
+    if (matches.length === 0) {
+      throw new Error(`Saved task not found: ${input}`);
+    }
+    if (matches.length > 1) {
+      throw new Error(`Multiple saved tasks match ${input}: ${matches.join(', ')}`);
+    }
+    taskPath = matches[0];
+    statePath = taskStatePathForTask(taskPath);
+  } else {
+    const resolvedInput = path.resolve(input);
+    if (resolvedInput.endsWith('.state.json')) {
+      statePath = resolvedInput;
+      taskPath = resolvedInput.replace(/\.state\.json$/, '.md');
+    } else {
+      taskPath = resolvedInput;
+      statePath = taskStatePathForTask(resolvedInput);
+    }
+  }
+
+  if (!taskPath || !fs.existsSync(taskPath)) {
+    throw new Error(`Task file not found: ${taskPath || input}`);
+  }
+  if (!statePath || !fs.existsSync(statePath)) {
+    throw new Error(`Task state file not found: ${statePath || input}`);
+  }
+
+  return {
+    mode: 'standalone',
+    taskRef: parseTaskRefFromMarkdown(taskPath),
+    taskPath,
+    ticketPath: null,
+    statePath,
+  };
+}
+
+function taskResolve(input, fixmeRoot) {
+  if (!input) {
+    throw new Error('task resolve requires a FIXME ref, task path, state path, ticket path, or ticket folder');
+  }
+  const ticketTask = resolveTicketTask(input);
+  return output(ticketTask || resolveStandaloneTask(input, fixmeRoot));
+}
+
+function mergePlainObjects(previous, patch) {
+  const next = { ...previous };
+  for (const [key, value] of Object.entries(patch)) {
+    if (isPlainObject(value) && isPlainObject(previous[key])) {
+      next[key] = mergePlainObjects(previous[key], value);
+    } else {
+      next[key] = value;
+    }
+  }
+  return next;
+}
+
+const TASK_CHECKPOINT_FIELDS = new Set([
+  'status',
+  'cursor',
+  'artifacts',
+  'handoff',
+  'loops',
+  'pendingDecision',
+]);
+
+function mergeTaskState(previous, patch) {
+  for (const key of Object.keys(patch)) {
+    if (!TASK_CHECKPOINT_FIELDS.has(key)) {
+      throw new Error(`Unsupported task checkpoint field: ${key}`);
+    }
+  }
+  return {
+    ...mergePlainObjects(previous, patch),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function taskCheckpoint(flags) {
+  const statePath = flags.state && flags.state !== true ? path.resolve(String(flags.state)) : null;
+  if (!statePath) {
+    throw new Error('--state is required');
+  }
+  if (!fs.existsSync(statePath)) {
+    throw new Error(`Task state file not found: ${statePath}`);
+  }
+
+  const patch = parseTaskData(flags.data);
+  assertCamelCaseJsonKeys(patch, 'task checkpoint data');
+  const previous = readJsonFileStrict(statePath);
+  const next = mergeTaskState(previous, patch);
+  assertCamelCaseJsonKeys(next, 'task state');
+  writeJsonAtomic(statePath, next);
+  return output({ statePath });
+}
+
+// ============================================================================
 // Subcommands: session
 // ============================================================================
 
@@ -5191,6 +5661,20 @@ function main() {
             return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename`);
         }
 
+      case 'task':
+        switch (subcommand) {
+          case 'save':
+            return taskSave(flags, fixmeRoot);
+          case 'init':
+            return taskInit(flags, fixmeRoot);
+          case 'checkpoint':
+            return taskCheckpoint(flags);
+          case 'resolve':
+            return taskResolve(args[0], fixmeRoot);
+          default:
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve`);
+        }
+
       case 'session':
         switch (subcommand) {
           case 'create':
@@ -5323,7 +5807,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {

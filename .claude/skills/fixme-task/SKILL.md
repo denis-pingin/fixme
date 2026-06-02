@@ -101,6 +101,8 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
 /fixme-task --save build import flow                  -> saveIntent=true, continueAfterSave=false, task="build import flow"
 /fixme-task save it and proceed with planning         -> saveIntent=true, continueAfterSave=true, pipeline="standard"
 /fixme-task standard --save build import flow         -> ambiguous save intent; ask whether to save only or save then run standard
+/fixme-task --resume FIXME-23                         -> resumeRef="FIXME-23"
+/fixme-task --resume <ticket-path>                    -> resumeRef="<ticket-path>"
 ```
 
 Plain `/fixme-task ...` defaults to `standard`.
@@ -114,18 +116,19 @@ Plain `/fixme-task ...` defaults to `standard`.
    - Set `continueAfterSave=false` when the prompt only asks to save a task, or when `--save` is present and the remaining text is only the task description.
    - Set `continueAfterSave=true` when the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving.
    - If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.
-5. Extract intent flags if present. Supported flags:
+5. Extract `--resume <FIXME-N|task.md|state.json|ticket.md|ticket-folder>` if present. Remove it from remaining args. Resume mode resolves the ref through `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
+6. Extract intent flags if present. Supported flags:
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
    - `--technical-spec` -> pipeline `technical-spec`
    - `--plan` -> pipeline `plan-only`
    - `--execute` -> pipeline `execute-only`
    - `--idea-to-production` remains accepted as a compatibility alias for `full`
-6. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
-7. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
-8. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
-9. The remaining args are the task description.
-10. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
+7. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
+8. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
+9. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
+10. The remaining args are the task description.
+11. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
 
 ### Task Resolution
 
@@ -153,17 +156,25 @@ Save intent can be terminal or non-terminal depending on the rest of the instruc
 - If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.
 - If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.
 
-Save to `<fixme-dir>/tasks/<date>-<slug>.md`. Use ISO date format `YYYY-MM-DD`. Use a short lowercase slug derived from the generated title. Create `<fixme-dir>/tasks` if it does not exist.
+Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`. Use ISO date format `YYYY-MM-DD`. Use a short lowercase slug derived from the generated title. The saved task state lives beside it as `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.state.json`.
 
-Every saved task gets a project-scoped label in the form `FIXME-<number>`. Label: `FIXME-<number>`. The label is assigned from `<fixme-dir>/tasks/.counter`, which belongs to the resolved Fixme directory and is therefore per project.
+Every saved task gets a project-scoped label in the form `FIXME-<number>`. Label: `FIXME-<number>`. The label is assigned by the shared CLI from `<fixme-dir>/tasks/.counter`, which belongs to the resolved Fixme directory and is therefore per project.
 
-The counter file stores the next available task number. Read `<fixme-dir>/tasks/.counter` before assigning the label. If the counter file is missing, use `1` as the next number. If the counter file exists but is not a positive integer, abort with this user note and do not write a task file:
+The counter file stores the next available task number. The CLI reads and updates `<fixme-dir>/tasks/.counter`. If the counter file is missing, the CLI uses `1` as the next number. If the counter file exists but is not a positive integer, the CLI aborts; relay this user note and do not write a task file yourself:
 
 ```text
 The saved-task counter at <absolute path to counter> is invalid. Fix it to contain the next positive integer, then run `fixme-task --save` again.
 ```
 
-After assigning label `FIXME-N`, write `N + 1` plus a trailing newline back to `<fixme-dir>/tasks/.counter`. Gaps are acceptable if task writing fails after counter reservation; duplicate labels are not.
+After assigning label `FIXME-N`, the CLI writes `N + 1` plus a trailing newline back to `<fixme-dir>/tasks/.counter`. Gaps are acceptable if task writing fails after counter reservation; duplicate labels are not.
+
+The orchestrator does not hand-write saved task markdown, the counter, or task state JSON. It constructs a compact camelCase JSON input object and runs:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
+```
+
+The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, and `pipelineHint`. Optional keys: `agreedApproach`, `userVisibleBehavior`, `scope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `laterPlanningNotes`, `source`, and `tags`.
 
 ### Save Mode Context Resolution
 
@@ -195,7 +206,7 @@ Generate the filename slug from the title:
 
 ### Save Mode Document Structure
 
-Write this document shape:
+The CLI writes this document shape:
 
 ```markdown
 ---
@@ -275,7 +286,7 @@ One sentence describing the outcome, not the implementation steps.
 
 Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.
 
-After writing the file, output a short confirmation and always emit:
+After the CLI writes the file, output a short confirmation and always emit:
 
 ```markdown
 Saved [FIXME-<number>](<absolute path to saved task brief>)
@@ -285,9 +296,13 @@ Saved [FIXME-<number>](<absolute path to saved task brief>)
 TASK_PATH: <absolute path to saved task brief>
 ```
 
+```text
+TASK_STATE_PATH: <absolute path to saved task state JSON>
+```
+
 If save is terminal and usage tracking is active in the installed runtime, finish usage normally with outcome `complete` before the `TASK_PATH` directive.
 
-If `continueAfterSave=true`, do not finish usage after writing the task brief. Store the emitted `TASK_PATH` as `savedTaskPath`, set the task context to that path, then proceed to Pipeline Auto-Detection, Project Root Resolution, Start From, Config Loading, manifest creation, ticket transitions, and agent dispatch as usual.
+If `continueAfterSave=true`, do not finish usage after writing the task brief. Store the CLI-returned `taskPath` as `savedTaskPath`, store `statePath` as `taskStatePath`, set the task context to `taskPath`, then proceed to Pipeline Auto-Detection, Project Root Resolution, Start From, Config Loading, manifest creation, ticket transitions, task checkpoints, and agent dispatch as usual.
 
 ### Pipeline Auto-Detection
 
@@ -350,11 +365,11 @@ When entering mid-pipeline, still resolve the original task (for context packet 
 
 ### Artifact Handoff
 
-Maintain artifact paths as explicit state while routing the pipeline:
+Maintain artifact paths as explicit live routing state while routing the pipeline. Persist only the durable task state fields listed in Task Resume State.
 
 - `productSpecificationPath`: last `SPEC_PATH` produced by `fixme-write-product-spec`, or a product specification path selected as input.
 - `technicalSpecificationPath`: last `SPEC_PATH` produced by `fixme-write-technical-spec`, or a technical specification path selected as input.
-- `currentSpecificationPath`: specification artifact currently being reviewed by `fixme-review-spec`.
+- `currentSpecificationPath`: live alias for the specification artifact currently being reviewed by `fixme-review-spec`; never persist it in task state JSON.
 - `planPath`: plan artifact selected or produced by `fixme-write-plan` if the output names one.
 - `codeMapPath`: task-scoped code map artifact selected or produced by `fixme-write-plan` if the output names one.
 - `executionResults`: completion report from `fixme-execute-plan`.
@@ -586,15 +601,90 @@ Review levels use `strict | standard | lenient | fast-track | critical`. The top
 9. **Extract project settings** from config's `project` field. If absent, project settings are unavailable (agents will detect from CLAUDE.md and project files).
 10. **Store `outerMaxCycles`** from the selected workflow. Use `2` if absent or invalid.
 
+## Task Resume State
+
+Every non-terminal `fixme-task` run has a low-level task state JSON file. Ticket state remains the high-level session scheduler state; task state is the exact resume cursor for this orchestrator.
+
+Task state JSON uses camelCase JSON keys only. Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`. Those are either derivable from `cursor.phase` and artifact paths or are live TodoWrite UI state.
+
+Standalone saved task state path:
+
+```text
+<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.state.json
+```
+
+Ticket task state path:
+
+```text
+<ticket-folder>/task-state.json
+```
+
+Durable state shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "projectRoot": "/absolute/project/root",
+  "status": "running",
+  "pipeline": "standard",
+  "cursor": {
+    "phase": "implement",
+    "stage": "review",
+    "skill": "fixme-review-code",
+    "dispatchMode": "normal"
+  },
+  "artifacts": {
+    "productSpecificationPath": null,
+    "technicalSpecificationPath": null,
+    "planPath": "/absolute/.fixme/plans/plan.md",
+    "codeMapPath": "/absolute/.fixme/context/task-code-map.md"
+  },
+  "handoff": {
+    "executionSummary": "Plan executed; verification passed.",
+    "reviewFindings": null,
+    "handlerResult": null,
+    "followUpItems": []
+  },
+  "loops": {
+    "phaseReviewCycles": [
+      {
+        "phase": "plan",
+        "cycles": 1
+      }
+    ],
+    "outerCycles": 0
+  },
+  "pendingDecision": null,
+  "updatedAt": "2026-06-02T12:00:00.000Z"
+}
+```
+
+Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, and `pendingDecision`.
+
+Resume mode:
+
+1. Run `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
+2. Read the returned state path.
+3. Rebuild the live TodoWrite manifest from the workflow config and the semantic `cursor`.
+4. If `status` is `waitingForUser`, present `pendingDecision`.
+5. If the cursor points at a dispatch step, re-dispatch that skill with the artifact and handoff data in the state file.
+6. If a ticket-backed task has no task state but the ticket is at a phase boundary, initialize task state at that phase's first execute step. Do not guess from newest files.
+
 ## Ticket Integration (Optional)
 
 ### When `--ticket <path>` is provided:
 
 Ticket mode. The orchestrator tracks pipeline progress via ticket state transitions.
 
+- **Before the first phase dispatch**: initialize low-level task state with:
+  ```bash
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>
+  ```
+  Store the returned `statePath` as `taskStatePath`.
 - **At each phase start**: dispatch ticket transition through the `fixme-tickets` abstraction skill (Agent tool with the fixme-tickets SKILL.md). The fixme-tickets skill handles backend resolution and CLI invocation internally.
   - First transition includes `--pipeline <name>` flag to store the pipeline name in the ticket
   - Subsequent transitions omit the `--pipeline` flag (already stored)
+- **After every low-level routing change**: update `taskStatePath` with `task checkpoint --state <task-state-path> --data '<json-object>'`.
 - **On pipeline completion**: do NOT transition to `done`. The session orchestrator owns terminal transitions (`done`, `failed`, `skipped`) because they require cleanup (git commit/revert). Report success via output.
 - **On pipeline failure**: do NOT transition to `failed`. Report failure details via output. The session orchestrator handles the terminal transition.
 - **Report final status** in the Run Summary: success/failure + details for the session to act on.
@@ -610,7 +700,7 @@ Backward transitions (review retry) require `--reason`. Forward transitions do n
 
 ### When no `--ticket` is provided:
 
-Standalone mode. Execute the pipeline identically but skip all ticket transition dispatches. No state tracking overhead.
+Standalone mode. Execute the pipeline identically but skip all ticket transition dispatches. If the run did not start from terminal save mode or `--resume`, first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. Standalone task state is mandatory so another session can resume without chat history.
 
 ## Dispatch Gate (NON-NEGOTIABLE)
 
@@ -634,13 +724,18 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/tasks/.counter`, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
-- **Write** - ONLY on `<fixme-dir>/decisions.md`, `<fixme-dir>/tasks/.counter`, and `<fixme-dir>/tasks/*.md`
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/tasks/*.md`, `<fixme-dir>/tasks/*.state.json`, ticket `task-state.json` files, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
+- **Write** - ONLY on `<fixme-dir>/decisions.md`
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline <pipeline-name> --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch; installed Codex skills pass `--runtime codex`)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <agent-name>` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
-  - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/tasks`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
+  - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
 - **TodoWrite** - to create and track the dispatch manifest steps

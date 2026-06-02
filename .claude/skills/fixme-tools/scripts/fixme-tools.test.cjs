@@ -98,6 +98,20 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+function assertNoSnakeCaseKeys(value, label, pathParts = []) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoSnakeCaseKeys(item, label, pathParts.concat(String(index))));
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const currentPath = pathParts.concat(key).join('.');
+    assert(!key.includes('_'), `${label} should use camelCase JSON keys, found ${currentPath}`);
+    assertNoSnakeCaseKeys(child, label, pathParts.concat(key));
+  }
+}
+
 function readJsonl(filePath) {
   if (!fs.existsSync(filePath)) return [];
   return fs.readFileSync(filePath, 'utf8')
@@ -760,6 +774,227 @@ test('run ping: rejects invalid state and checkpoint values', () => {
   const badCheckpoint = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state running --checkpoint task-execution --current-command null`);
   assert(!badCheckpoint.ok, 'invalid checkpoint should be rejected');
   assert(badCheckpoint.data.error.includes('Unsupported run checkpoint'), `error should mention unsupported checkpoint, got ${badCheckpoint.data.error}`);
+});
+
+// ============================================================================
+// Test Suite: task save and resolve
+// ============================================================================
+
+console.log('\n=== task save/resolve tests ===\n');
+
+test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Resume Fixme Task',
+    taskGoal: 'Make fixme-task resumable from a stable task reference.',
+    agreedApproach: [
+      'Use a separate low-level task state file.',
+      'Keep ticket state as the session scheduler state.',
+    ],
+    userVisibleBehavior: [
+      'A user can resume a saved task by FIXME label.',
+    ],
+    scope: {
+      inScope: ['task CLI save and resolve'],
+      outOfScope: ['ticket alias refs'],
+    },
+    lockedDecisions: [
+      { title: 'Use camelCase JSON', answer: 'All new JSON fields are camelCase.', status: 'confirmed' },
+    ],
+    constraints: ['No numbered durable manifest.'],
+    knownContext: ['Existing saved task labels use FIXME-N.'],
+    openQuestions: [],
+    pipelineHint: 'standard',
+    laterPlanningNotes: ['Persist only fields needed for the next dispatch.'],
+    source: 'test',
+  });
+
+  const result = runInDir(`task save --data '${data}'`, projectRoot);
+
+  assert(result.ok, `task save should succeed, got: ${JSON.stringify(result.data)}`);
+  assertNoSnakeCaseKeys(result.data, 'task save output');
+  assert(result.data.mode === 'standalone', `mode should be standalone, got ${result.data.mode}`);
+  assert(result.data.taskRef === 'FIXME-1', `taskRef should be FIXME-1, got ${result.data.taskRef}`);
+  assert(result.data.taskPath.endsWith('.md'), `taskPath should end with .md, got ${result.data.taskPath}`);
+  assert(result.data.statePath.endsWith('.state.json'), `statePath should end with .state.json, got ${result.data.statePath}`);
+
+  const taskName = path.basename(result.data.taskPath);
+  assert(/^\d{4}-\d{2}-\d{2}-FIXME-1-resume-fixme-task\.md$/.test(taskName), `task filename should include date, FIXME label, and slug, got ${taskName}`);
+  assert(path.basename(result.data.statePath) === taskName.replace(/\.md$/, '.state.json'), 'state filename should be sibling .state.json');
+  assert(fs.existsSync(result.data.taskPath), 'task markdown should exist');
+  assert(fs.existsSync(result.data.statePath), 'state JSON should exist');
+
+  const taskMarkdown = fs.readFileSync(result.data.taskPath, 'utf8');
+  assert(/^label:\s+"?FIXME-1"?$/m.test(taskMarkdown), 'task frontmatter should include label');
+  assert(taskMarkdown.includes('# FIXME-1: Resume Fixme Task'), 'task heading should include label and title');
+
+  const state = readJson(result.data.statePath);
+  assertNoSnakeCaseKeys(state, 'task state');
+  assert(state.schemaVersion === 1, 'schemaVersion should be 1');
+  assert(fs.realpathSync(state.projectRoot) === fs.realpathSync(projectRoot), `projectRoot should be ${projectRoot}, got ${state.projectRoot}`);
+  assert(state.status === 'running', `status should be running, got ${state.status}`);
+  assert(state.pipeline === 'standard', `pipeline should be standard, got ${state.pipeline}`);
+  assert(state.cursor.phase === 'plan', `cursor.phase should be plan, got ${state.cursor.phase}`);
+  assert(state.cursor.stage === 'execute', `cursor.stage should be execute, got ${state.cursor.stage}`);
+  assert(state.cursor.skill === 'fixme-write-plan', `cursor.skill should be fixme-write-plan, got ${state.cursor.skill}`);
+  assert(state.cursor.dispatchMode === 'normal', `dispatchMode should be normal, got ${state.cursor.dispatchMode}`);
+  assert(Object.prototype.hasOwnProperty.call(state.artifacts, 'productSpecificationPath'), 'artifacts should include productSpecificationPath');
+  assert(Object.prototype.hasOwnProperty.call(state.artifacts, 'technicalSpecificationPath'), 'artifacts should include technicalSpecificationPath');
+  assert(Object.prototype.hasOwnProperty.call(state.artifacts, 'planPath'), 'artifacts should include planPath');
+  assert(Object.prototype.hasOwnProperty.call(state.artifacts, 'codeMapPath'), 'artifacts should include codeMapPath');
+  assert(Object.prototype.hasOwnProperty.call(state.handoff, 'executionSummary'), 'handoff should include executionSummary');
+  assert(Object.prototype.hasOwnProperty.call(state.handoff, 'reviewFindings'), 'handoff should include reviewFindings');
+  assert(Object.prototype.hasOwnProperty.call(state.handoff, 'handlerResult'), 'handoff should include handlerResult');
+  assert(Array.isArray(state.handoff.followUpItems), 'handoff.followUpItems should be an array');
+  assert(Array.isArray(state.loops.phaseReviewCycles), 'loops.phaseReviewCycles should be an array');
+  assert(state.loops.outerCycles === 0, 'loops.outerCycles should default to 0');
+  assert(state.pendingDecision === null, 'pendingDecision should default to null');
+  assert(typeof state.updatedAt === 'string' && !Number.isNaN(Date.parse(state.updatedAt)), `updatedAt should be ISO, got ${state.updatedAt}`);
+  assert(!Object.prototype.hasOwnProperty.call(state, 'currentSpecificationPath'), 'state should not include currentSpecificationPath');
+  assert(!Object.prototype.hasOwnProperty.call(state, 'currentStep'), 'state should not include currentStep');
+  assert(!Object.prototype.hasOwnProperty.call(state, 'manifest'), 'state should not include manifest');
+  assert(!Object.prototype.hasOwnProperty.call(state.artifacts, 'decisionLogPath'), 'artifacts should not include decisionLogPath');
+});
+
+test('task resolve: resolves FIXME label and legacy task path to canonical state paths', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Resolve Saved Task',
+    taskGoal: 'Resolve a saved task by label.',
+    pipelineHint: 'plan-only',
+    source: 'test',
+  });
+
+  const saved = runInDir(`task save --data '${data}'`, projectRoot);
+  assert(saved.ok, `task save should succeed, got: ${JSON.stringify(saved.data)}`);
+
+  const byLabel = runInDir('task resolve FIXME-1', projectRoot);
+  assert(byLabel.ok, `task resolve label should succeed, got: ${JSON.stringify(byLabel.data)}`);
+  assertNoSnakeCaseKeys(byLabel.data, 'task resolve label output');
+  assert(byLabel.data.mode === 'standalone', `mode should be standalone, got ${byLabel.data.mode}`);
+  assert(byLabel.data.taskRef === 'FIXME-1', `taskRef should be FIXME-1, got ${byLabel.data.taskRef}`);
+  assert(byLabel.data.taskPath === saved.data.taskPath, 'label resolve should return saved task path');
+  assert(byLabel.data.statePath === saved.data.statePath, 'label resolve should return saved state path');
+
+  const byTaskPath = runInDir(`task resolve "${saved.data.taskPath}"`, projectRoot);
+  assert(byTaskPath.ok, `task resolve path should succeed, got: ${JSON.stringify(byTaskPath.data)}`);
+  assert(byTaskPath.data.taskPath === saved.data.taskPath, 'path resolve should return saved task path');
+  assert(byTaskPath.data.statePath === saved.data.statePath, 'path resolve should return saved state path');
+
+  const byStatePath = runInDir(`task resolve "${saved.data.statePath}"`, projectRoot);
+  assert(byStatePath.ok, `task resolve state path should succeed, got: ${JSON.stringify(byStatePath.data)}`);
+  assert(byStatePath.data.taskPath === saved.data.taskPath, 'state resolve should return saved task path');
+  assert(byStatePath.data.statePath === saved.data.statePath, 'state resolve should return saved state path');
+});
+
+test('task init: creates ticket-backed task state and resolves ticket folder', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'resume-ticket', 'queued');
+  const ticketDir = path.dirname(ticketPath);
+
+  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+  assertNoSnakeCaseKeys(initialized.data, 'task init output');
+  assert(initialized.data.mode === 'ticket', `mode should be ticket, got ${initialized.data.mode}`);
+  assert(initialized.data.taskRef === null, `taskRef should be null, got ${initialized.data.taskRef}`);
+  assert(initialized.data.taskPath === null, `taskPath should be null, got ${initialized.data.taskPath}`);
+  assert(initialized.data.ticketPath === ticketPath, 'ticketPath should match input ticket path');
+  assert(initialized.data.statePath === path.join(ticketDir, 'task-state.json'), 'statePath should be beside ticket.md');
+  assert(fs.existsSync(initialized.data.statePath), 'ticket task state should exist');
+
+  const state = readJson(initialized.data.statePath);
+  assertNoSnakeCaseKeys(state, 'ticket task state');
+  assert(state.schemaVersion === 1, 'schemaVersion should be 1');
+  assert(fs.realpathSync(state.projectRoot) === fs.realpathSync(projectRoot), `projectRoot should be ${projectRoot}, got ${state.projectRoot}`);
+  assert(state.pipeline === 'standard', `pipeline should be standard, got ${state.pipeline}`);
+  assert(state.cursor.phase === 'plan', `cursor.phase should be plan, got ${state.cursor.phase}`);
+
+  const resolved = runInDir(`task resolve "${ticketDir}"`, projectRoot);
+  assert(resolved.ok, `task resolve ticket folder should succeed, got: ${JSON.stringify(resolved.data)}`);
+  assertNoSnakeCaseKeys(resolved.data, 'task resolve ticket output');
+  assert(resolved.data.mode === 'ticket', `mode should be ticket, got ${resolved.data.mode}`);
+  assert(resolved.data.ticketPath === ticketPath, 'resolved ticketPath should match ticket path');
+  assert(resolved.data.statePath === initialized.data.statePath, 'resolved statePath should match initialized state path');
+});
+
+test('task init: rejects non-markdown task paths without overwriting input', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const taskPath = path.join(projectRoot, 'not-a-task.txt');
+  fs.writeFileSync(taskPath, 'keep this content');
+
+  const initialized = runInDir(`task init --task "${taskPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+
+  assert(!initialized.ok, 'task init should reject non-markdown task paths');
+  assert(initialized.data.error.includes('Task path must end with .md'), `error should mention .md task path, got ${initialized.data.error}`);
+  assert(fs.readFileSync(taskPath, 'utf8') === 'keep this content', 'task init should not overwrite non-markdown input');
+});
+
+test('task checkpoint: merges allowed camelCase state fields and rejects invalid keys', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0002', 'checkpoint-ticket', 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+
+  const patch = JSON.stringify({
+    cursor: {
+      phase: 'implement',
+      stage: 'review',
+      skill: 'fixme-review-code',
+      dispatchMode: 'normal',
+    },
+    artifacts: {
+      planPath: '/abs/.fixme/plans/resume.md',
+    },
+    handoff: {
+      executionSummary: 'Plan executed and verification passed.',
+      followUpItems: ['Track low-risk cleanup separately.'],
+    },
+    loops: {
+      phaseReviewCycles: [{ phase: 'plan', cycles: 1 }],
+      outerCycles: 0,
+    },
+  });
+
+  const checkpointed = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '${patch}'`, projectRoot);
+
+  assert(checkpointed.ok, `task checkpoint should succeed, got: ${JSON.stringify(checkpointed.data)}`);
+  assertNoSnakeCaseKeys(checkpointed.data, 'task checkpoint output');
+  assert(checkpointed.data.statePath === initialized.data.statePath, 'checkpoint should return same statePath');
+  const state = readJson(initialized.data.statePath);
+  assertNoSnakeCaseKeys(state, 'checkpointed task state');
+  assert(state.cursor.phase === 'implement', `cursor.phase should be implement, got ${state.cursor.phase}`);
+  assert(state.cursor.stage === 'review', `cursor.stage should be review, got ${state.cursor.stage}`);
+  assert(state.artifacts.planPath === '/abs/.fixme/plans/resume.md', `planPath should be updated, got ${state.artifacts.planPath}`);
+  assert(state.artifacts.productSpecificationPath === null, 'checkpoint should preserve productSpecificationPath');
+  assert(state.handoff.executionSummary === 'Plan executed and verification passed.', 'executionSummary should be updated');
+  assert(state.handoff.reviewFindings === null, 'checkpoint should preserve reviewFindings');
+  assert(state.handoff.followUpItems.length === 1, 'followUpItems should be updated');
+  assert(Array.isArray(state.loops.phaseReviewCycles), 'phaseReviewCycles should remain an array');
+  assert(state.loops.phaseReviewCycles[0].phase === 'plan', `phaseReviewCycles[0].phase should be plan, got ${state.loops.phaseReviewCycles[0].phase}`);
+  assert(state.loops.phaseReviewCycles[0].cycles === 1, `phaseReviewCycles[0].cycles should be 1, got ${state.loops.phaseReviewCycles[0].cycles}`);
+  assert(typeof state.updatedAt === 'string' && !Number.isNaN(Date.parse(state.updatedAt)), `updatedAt should be ISO, got ${state.updatedAt}`);
+
+  const unknownKey = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"taskPath":"/not-allowed"}'`, projectRoot);
+  assert(!unknownKey.ok, 'unknown top-level checkpoint key should fail');
+  assert(unknownKey.data.error.includes('Unsupported task checkpoint field'), `error should mention unsupported field, got ${unknownKey.data.error}`);
+
+  const snakeKey = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"current_step":5}'`, projectRoot);
+  assert(!snakeKey.ok, 'snake_case checkpoint key should fail');
+  assert(snakeKey.data.error.includes('camelCase'), `error should mention camelCase, got ${snakeKey.data.error}`);
+
+  const dynamicPhaseKey = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"loops":{"phaseReviewCycles":{"product-spec":1}}}'`, projectRoot);
+  assert(!dynamicPhaseKey.ok, 'hyphenated dynamic phase key should fail');
+  assert(dynamicPhaseKey.data.error.includes('camelCase'), `error should mention camelCase, got ${dynamicPhaseKey.data.error}`);
 });
 
 // ============================================================================
@@ -2783,6 +3018,10 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('run start --fixme-dir'), 'fixme-tools skill should document run start');
   assert(toolsSkill.includes('run ping --fixme-dir'), 'fixme-tools skill should document run ping');
   assert(toolsSkill.includes('run status --fixme-dir'), 'fixme-tools skill should document run status');
+  assert(toolsSkill.includes('task save --data'), 'fixme-tools skill should document task save');
+  assert(toolsSkill.includes('task init --ticket'), 'fixme-tools skill should document task init for tickets');
+  assert(toolsSkill.includes('task checkpoint --state'), 'fixme-tools skill should document task checkpoint');
+  assert(toolsSkill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'fixme-tools skill should document task resolve');
 });
 
 test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {
@@ -2848,7 +3087,13 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('## Save Mode'), 'fixme-task should document save mode');
   assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
-  assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-<slug>.md`'), 'saved tasks should use the tasks directory');
+  assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`'), 'saved tasks should include the FIXME label in the filename');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'save mode should delegate saved task writes to fixme-tools');
+  assert(skill.includes('task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>'), 'ticket mode should initialize task state through fixme-tools');
+  assert(skill.includes('task checkpoint --state <task-state-path> --data'), 'fixme-task should checkpoint resumable state through fixme-tools');
+  assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');
+  assert(skill.includes('camelCase JSON keys only'), 'task state JSON requirement should be explicit');
+  assert(skill.includes('Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`'), 'task state should exclude derived aliases and numbered manifest data');
   assert(skill.includes('The title is always auto-generated from the resolved task context.'), 'title generation should be automatic');
   assert(skill.includes('Do not ask the user for a title.'), 'save mode should not prompt for titles');
   assert(skill.includes('If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort'), 'save mode should abort when there is no task context');
@@ -2860,12 +3105,12 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
   assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');
   assert(skill.includes('The counter file stores the next available task number.'), 'save mode should define counter semantics');
-  assert(skill.includes('Read `<fixme-dir>/tasks/.counter`'), 'save mode should read a per-project counter');
-  assert(skill.includes('If the counter file is missing, use `1` as the next number.'), 'save mode should initialize missing counters');
-  assert(skill.includes('If the counter file exists but is not a positive integer, abort'), 'save mode should not guess on corrupt counters');
+  assert(skill.includes('The CLI reads and updates `<fixme-dir>/tasks/.counter`'), 'save mode should delegate counter handling to the CLI');
+  assert(skill.includes('If the counter file is missing, the CLI uses `1` as the next number.'), 'save mode should initialize missing counters');
+  assert(skill.includes('If the counter file exists but is not a positive integer, the CLI aborts'), 'save mode should not guess on corrupt counters');
   assert(skill.includes('Saved [FIXME-<number>](<absolute path to saved task brief>)'), 'save mode should print a clickable label link');
-  assert(skill.includes('mkdir -p <fixme-dir>/tasks'), 'orchestrator allowlist should permit creating the tasks directory');
-  assert(skill.includes('<fixme-dir>/tasks/.counter'), 'orchestrator allowlist should permit the per-project counter file');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'orchestrator allowlist should permit task save');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data'), 'orchestrator allowlist should permit task checkpoint');
 });
 
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
