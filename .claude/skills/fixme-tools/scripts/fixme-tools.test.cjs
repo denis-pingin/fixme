@@ -3435,6 +3435,14 @@ test('fixme review workflows require evidence before accepting reviewer claim pr
     assert(skill.includes('Evidence receipts'), 'classification output should expose evidence receipts');
   }
 
+  for (const handler of handlers) {
+    assert(handler.includes('## Fix Classification Proof Gate'), 'review handlers should require decisive proof before fix classification');
+    assert(handler.includes("State the claim as one falsifiable sentence, without the reviewer's proposed fix."), 'review handlers should strip reviewer fix anchoring from the core claim');
+    assert(handler.includes('Identify the one decisive code/spec/API/runtime fact.'), 'review handlers should force the decisive fact before classification');
+    assert(handler.includes('Local shape is a lead, not proof.'), 'review handlers should reject local-shape-only evidence');
+    assert(handler.includes('For key, ID, dedupe, cache, queue, lock, retry, or refresh findings, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.'), 'review handlers should point key and dedupe findings at downstream side effects');
+  }
+
   assert(reviewer.includes('## Semantic Equivalence Gate for Duplication Findings'), 'reviewer should gate duplicate findings on semantic equivalence');
   assert(reviewer.includes('Do not report duplicate, redundant, or equivalent parameters until semantic equivalence is proven.'), 'reviewer should not report duplicate parameters without proof');
   assert(reviewer.includes('Two values that look similar may encode different protocol versions, transports, network roles, runtime layers, or consumer contracts.'), 'reviewer should account for distinct semantics behind similar values');

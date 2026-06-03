@@ -48,6 +48,30 @@ Run this gate before classifying any finding as `FIX`, `FIX_UNCLEAR`, or `FOLLOW
 
 A reviewer claim is a hypothesis, not evidence. Treat the reviewer's characterization and suggested fix as inputs to test against the codebase, docs, runtime behavior, and user decisions.
 
+## Fix Classification Proof Gate
+
+Before classifying any review finding as `FIX`, `FIX_UNCLEAR`, or nonblocking follow-up, answer these three questions:
+
+1. **What is the reviewer's core claim?**
+   State the claim as one falsifiable sentence, without the reviewer's proposed fix.
+
+2. **What fact would make that claim true or false?**
+   Identify the one decisive code/spec/API/runtime fact. Prefer the downstream consumer, side effect, support contract, or intended behavior over the local line the reviewer cited.
+
+3. **Did we verify that fact?**
+   Cite the source checked and the observed fact.
+
+Routing rule:
+
+- If the decisive fact proves the claim true -> continue to severity and route-scope classification.
+- If the decisive fact proves the claim false -> `REJECT_FALSE_POSITIVE`.
+- If the decisive fact is unavailable or depends on product intent -> `ASK_USER`.
+- If the claim is true but nonblocking -> classify as follow-up per severity and review level.
+
+Do not classify as `FIX` from local shape alone, such as "payload has X but key omits X", "field name looks duplicated", "branch looks reachable", or "test seems missing." Local shape is a lead, not proof.
+
+For key, ID, dedupe, cache, queue, lock, retry, or refresh findings, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.
+
 Break the finding into atomic premises before assigning any FIX or CURRENT_PR_FIX route. Premises include: the current code behavior, external API/tool semantics, semantic equivalence or duplication, reachability, support contract, user/system impact, and whether the suggested change is safe.
 
 For each essential premise, record Evidence receipts. Each receipt must name the source checked and the observed fact: current source or tests, dependency source/types, installed binary `--help`, rendered config/manifests, official docs for the actual project version, a controlled reproduction, or a recorded user decision.
