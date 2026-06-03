@@ -130,6 +130,44 @@ Plain `/fixme-task ...` defaults to `standard`.
 10. The remaining args are the task description.
 11. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
 
+### Pipeline Resolution Contract
+
+Pipeline selection is a candidate-resolution step, not a free-form summary. Keep the existing inference sources, but every selected pipeline must come from eligible user or artifact evidence.
+
+Eligible candidate sources:
+
+- `explicitPipelineArg`: latest invocation supplied `--pipeline <name>`
+- `intentFlag`: latest invocation supplied an intent flag such as `--idea-to-production`, `--plan`, or `--execute`
+- `firstArgumentPipelineName`: latest invocation's first remaining argument matched a configured or standard pipeline name
+- `userProseIntent`: latest user invocation explicitly asked for a matching workflow, such as "write a plan", "execute the plan", or "end-to-end from idea"
+- `artifact`: selected or injected artifact shape determines the starting workflow, such as product spec, technical spec, or plan
+- `resumeState`: explicit resume state already has a persisted pipeline resolution
+- `default`: resolver output when no eligible candidate existed, so use `standard`
+
+Ineligible sources:
+
+- Assistant menu labels
+- Assistant summaries
+- Previous assistant wording
+- Unrelated old files
+- Vague continuation words such as "proceed" unless they point to an eligible saved/resolved task
+
+Before task save, task init, Config Loading, ticket transitions, or dispatch, construct a compact camelCase candidate payload and run:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data '<json-object>'
+```
+
+Input shape:
+
+```json
+{
+  "candidates": []
+}
+```
+
+Use the resolver output as `pipelineResolution`. Dispatch using `pipelineResolution.pipeline`. Do not hand-author the final pipeline after resolver output exists.
+
 ### Task Resolution
 
 Resolve the task description in this order - stop at the first match:
@@ -174,7 +212,7 @@ The orchestrator does not hand-write saved task markdown, the counter, or task s
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
 ```
 
-The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, and `pipelineHint`. Optional keys: `agreedApproach`, `userVisibleBehavior`, `scope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `laterPlanningNotes`, `source`, and `tags`.
+The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, and `pipelineResolution`. Optional keys: `agreedApproach`, `userVisibleBehavior`, `scope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `laterPlanningNotes`, `source`, and `tags`. `pipelineHint` remains accepted only for legacy saved-task callers; new runs must use `pipelineResolution`.
 
 ### Save Mode Context Resolution
 
@@ -627,6 +665,13 @@ Durable state shape:
   "projectRoot": "/absolute/project/root",
   "status": "running",
   "pipeline": "standard",
+  "pipelineResolution": {
+    "pipeline": "standard",
+    "source": "default",
+    "evidence": null,
+    "reason": "Latest user invocation did not contain an eligible pipeline signal.",
+    "candidates": []
+  },
   "cursor": {
     "phase": "implement",
     "stage": "review",
@@ -678,7 +723,7 @@ Ticket mode. The orchestrator tracks pipeline progress via ticket state transiti
 
 - **Before the first phase dispatch**: initialize low-level task state with:
   ```bash
-  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>
   ```
   Store the returned `statePath` as `taskStatePath`.
 - **At each phase start**: dispatch ticket transition through the `fixme-tickets` abstraction skill (Agent tool with the fixme-tickets SKILL.md). The fixme-tickets skill handles backend resolution and CLI invocation internally.
@@ -729,8 +774,8 @@ The orchestrator may ONLY use these tools:
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline <pipeline-name> --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '<json-object>'`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name>` (before each Agent dispatch; installed Codex skills pass `--runtime codex`)

@@ -1207,11 +1207,14 @@ function findFixmeRoot(startDir) {
  */
 function loadPipelinePhases(pipelineName, fixmeRoot) {
   const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
-  if (!fs.existsSync(configPath)) return null;
+  const normalizedName = normalizeWorkflowName(pipelineName);
+  if (!fs.existsSync(configPath)) {
+    const standardWorkflow = STANDARD_PIPELINES[normalizedName];
+    return standardWorkflow ? standardWorkflow.map(phase => phase.name).filter(Boolean) : null;
+  }
 
   try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const normalizedName = normalizeWorkflowName(pipelineName);
     let workflow = getWorkflowDefinition(config, normalizedName);
     if (!workflow && isPlainObject(config.pipelines) && Array.isArray(config.pipelines[pipelineName])) {
       workflow = {
@@ -2922,7 +2925,9 @@ function formatLockedDecisions(decisions) {
 
 function buildTaskMarkdown(data, taskRef, slug, date) {
   const title = data.title || titleFromSlug(slug) || 'Saved Fixme Task';
-  const pipelineHint = data.pipelineHint || 'auto';
+  const pipelineHint = isPlainObject(data.pipelineResolution) && data.pipelineResolution.pipeline
+    ? data.pipelineResolution.pipeline
+    : (data.pipelineHint || 'auto');
   const frontmatter = {
     title,
     label: taskRef,
@@ -3005,12 +3010,13 @@ function firstPipelineCursor(pipelineName, fixmeRoot) {
   };
 }
 
-function defaultTaskState({ projectRoot, pipeline, fixmeRoot, now }) {
+function defaultTaskState({ projectRoot, pipeline, pipelineResolution, fixmeRoot, now }) {
   return {
     schemaVersion: 1,
     projectRoot,
     status: 'running',
     pipeline,
+    pipelineResolution,
     cursor: firstPipelineCursor(pipeline, fixmeRoot),
     artifacts: {
       productSpecificationPath: null,
@@ -3064,6 +3070,187 @@ function assertCamelCaseJsonKeys(value, label, pathParts = []) {
   }
 }
 
+const PIPELINE_RESOLUTION_SOURCE_PRIORITY = Object.freeze({
+  explicitPipelineArg: 100,
+  intentFlag: 95,
+  firstArgumentPipelineName: 90,
+  userProseIntent: 80,
+  artifact: 70,
+  resumeState: 60,
+  legacyPipelineHint: 50,
+  default: 0,
+});
+
+const INELIGIBLE_PIPELINE_RESOLUTION_SOURCES = new Set([
+  'assistantMenuText',
+  'assistantSummary',
+  'assistantText',
+  'previousAssistantMessage',
+  'assistantContext',
+]);
+
+function normalizePipelineEvidence(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value);
+}
+
+function normalizePipelineCandidate(candidate, index) {
+  if (!isPlainObject(candidate)) {
+    throw new Error(`pipeline candidate ${index + 1} must be an object`);
+  }
+
+  const source = candidate.source === undefined || candidate.source === null
+    ? ''
+    : String(candidate.source);
+  if (INELIGIBLE_PIPELINE_RESOLUTION_SOURCES.has(source)) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(PIPELINE_RESOLUTION_SOURCE_PRIORITY, source)) {
+    throw new Error(`Unsupported pipeline candidate source: ${source || '<missing>'}`);
+  }
+
+  const pipelineValue = candidate.pipeline === undefined || candidate.pipeline === null
+    ? ''
+    : String(candidate.pipeline).trim();
+  if (!pipelineValue) {
+    throw new Error(`pipeline candidate ${index + 1} must include pipeline`);
+  }
+
+  const pipeline = normalizeWorkflowName(pipelineValue);
+  return {
+    pipeline,
+    source,
+    evidence: normalizePipelineEvidence(candidate.evidence),
+    reason: candidate.reason ? String(candidate.reason) : `Selected from ${source}.`,
+    priority: PIPELINE_RESOLUTION_SOURCE_PRIORITY[source],
+  };
+}
+
+function candidateForOutput(candidate) {
+  return {
+    pipeline: candidate.pipeline,
+    source: candidate.source,
+    evidence: candidate.evidence,
+    reason: candidate.reason,
+  };
+}
+
+function defaultPipelineResolution(reason = 'No eligible pipeline candidate was provided.') {
+  return {
+    pipeline: 'standard',
+    source: 'default',
+    evidence: null,
+    reason,
+    candidates: [],
+  };
+}
+
+function resolvePipelineCandidates(candidates) {
+  const normalizedCandidates = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const normalizedCandidate = normalizePipelineCandidate(candidate, index);
+    if (normalizedCandidate) normalizedCandidates.push(normalizedCandidate);
+  }
+
+  if (normalizedCandidates.length === 0) {
+    return defaultPipelineResolution();
+  }
+
+  normalizedCandidates.sort((a, b) => b.priority - a.priority);
+  const selected = normalizedCandidates[0];
+  const conflicting = normalizedCandidates.find(candidate =>
+    candidate.priority === selected.priority && candidate.pipeline !== selected.pipeline
+  );
+  if (conflicting) {
+    throw new Error(`Ambiguous pipeline resolution: ${selected.source} selects ${selected.pipeline}, but ${conflicting.source} selects ${conflicting.pipeline}`);
+  }
+
+  return {
+    pipeline: selected.pipeline,
+    source: selected.source,
+    evidence: selected.evidence,
+    reason: selected.reason,
+    candidates: normalizedCandidates.map(candidateForOutput),
+  };
+}
+
+function normalizeProvidedPipelineResolution(value) {
+  if (!isPlainObject(value)) {
+    throw new Error('pipelineResolution must be an object');
+  }
+  const selected = normalizePipelineCandidate(value, 0);
+  if (!selected) {
+    throw new Error('pipelineResolution source is not eligible');
+  }
+  const candidates = Array.isArray(value.candidates)
+    ? value.candidates
+      .map((candidate, index) => normalizePipelineCandidate(candidate, index))
+      .filter(Boolean)
+      .map(candidateForOutput)
+    : (selected.source === 'default' ? [] : [candidateForOutput(selected)]);
+
+  return {
+    pipeline: selected.pipeline,
+    source: selected.source,
+    evidence: selected.evidence,
+    reason: selected.reason,
+    candidates,
+  };
+}
+
+function resolvePipelineFromData(data) {
+  assertCamelCaseJsonKeys(data, 'pipeline resolve data');
+  if (isPlainObject(data.pipelineResolution)) {
+    return normalizeProvidedPipelineResolution(data.pipelineResolution);
+  }
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  return resolvePipelineCandidates(candidates);
+}
+
+function legacyPipelineResolution(rawPipeline, evidence, reason) {
+  if (!rawPipeline) return defaultPipelineResolution();
+  return resolvePipelineCandidates([{
+    pipeline: rawPipeline,
+    source: 'legacyPipelineHint',
+    evidence,
+    reason,
+  }]);
+}
+
+function pipelineResolutionForTaskSaveData(data) {
+  if (isPlainObject(data.pipelineResolution)) {
+    return normalizeProvidedPipelineResolution(data.pipelineResolution);
+  }
+  const rawPipeline = data.pipelineHint || data.pipeline;
+  return legacyPipelineResolution(rawPipeline, rawPipeline ? 'pipelineHint' : null, rawPipeline
+    ? 'Existing task save input supplied pipelineHint.'
+    : 'No eligible pipeline candidate was provided.');
+}
+
+function pipelineResolutionForTaskInitFlags(flags) {
+  if (flags['pipeline-resolution'] && flags['pipeline-resolution'] !== true) {
+    const data = parseTaskData(flags['pipeline-resolution']);
+    assertCamelCaseJsonKeys(data, '--pipeline-resolution');
+    return normalizeProvidedPipelineResolution(data);
+  }
+
+  if (flags.pipeline && flags.pipeline !== true) {
+    return resolvePipelineCandidates([{
+      pipeline: flags.pipeline,
+      source: 'explicitPipelineArg',
+      evidence: `--pipeline ${flags.pipeline}`,
+      reason: 'Latest invocation supplied --pipeline.',
+    }]);
+  }
+
+  return defaultPipelineResolution();
+}
+
+function pipelineResolve(flags) {
+  const data = parseTaskData(flags.data);
+  return output(resolvePipelineFromData(data));
+}
+
 function taskSave(flags, fixmeRoot) {
   const data = parseTaskData(flags.data);
   assertCamelCaseJsonKeys(data, '--data');
@@ -3082,13 +3269,20 @@ function taskSave(flags, fixmeRoot) {
   const taskPath = path.join(taskDir, `${date}-${taskRef}-${slug}.md`);
   const statePath = path.join(taskDir, `${date}-${taskRef}-${slug}.state.json`);
   const now = new Date().toISOString();
-  const pipeline = normalizeWorkflowName(data.pipelineHint || data.pipeline || 'standard');
+  const pipelineResolution = pipelineResolutionForTaskSaveData(data);
+  const pipeline = pipelineResolution.pipeline;
+  const taskData = {
+    ...data,
+    pipelineHint: pipeline,
+    pipelineResolution,
+  };
 
   writeTaskCounter(taskDir, number + 1);
-  fs.writeFileSync(taskPath, buildTaskMarkdown(data, taskRef, slug, date));
+  fs.writeFileSync(taskPath, buildTaskMarkdown(taskData, taskRef, slug, date));
   writeJsonAtomic(statePath, defaultTaskState({
     projectRoot: fixmeRoot,
     pipeline,
+    pipelineResolution,
     fixmeRoot,
     now,
   }));
@@ -3114,7 +3308,8 @@ function taskStatePathForTask(taskPath) {
 }
 
 function taskInit(flags, fixmeRoot) {
-  const pipeline = normalizeWorkflowName(flags.pipeline || 'standard');
+  const pipelineResolution = pipelineResolutionForTaskInitFlags(flags);
+  const pipeline = pipelineResolution.pipeline;
   const projectRoot = flags['project-root'] && flags['project-root'] !== true
     ? path.resolve(String(flags['project-root']))
     : fixmeRoot;
@@ -3122,6 +3317,7 @@ function taskInit(flags, fixmeRoot) {
   const state = defaultTaskState({
     projectRoot,
     pipeline,
+    pipelineResolution,
     fixmeRoot,
     now,
   });
@@ -5788,6 +5984,14 @@ function main() {
             return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve`);
         }
 
+      case 'pipeline':
+        switch (subcommand) {
+          case 'resolve':
+            return pipelineResolve(flags);
+          default:
+            return error(`Unknown pipeline subcommand: '${subcommand}'. Valid: resolve`);
+        }
+
       case 'session':
         switch (subcommand) {
           case 'create':
@@ -5920,7 +6124,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, task, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {
@@ -5954,6 +6158,7 @@ module.exports = {
   installClaudeSkills,
   defaultReviewCyclesForPhase,
   normalizeWorkflowName,
+  resolvePipelineFromData,
   resolveReviewLevel,
   KNOWN_FIXME_AGENTS,
   RUN_STATES,

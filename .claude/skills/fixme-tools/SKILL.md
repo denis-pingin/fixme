@@ -24,6 +24,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Register Fixme agents in Codex `config.toml`
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from workflow config
+- Resolve workflow pipeline selection from eligible user and artifact candidates
 - Record dispatched-agent liveness under `<fixme-dir>/runs/<status_id>/status.json`
 - Save standalone task briefs and maintain low-level resumable task state
 - Record usage start and finish events with pending state, runtime counter extraction, and append-only project/global usage JSONL
@@ -77,14 +78,15 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir
 ## Task Resume Commands
 
 ```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket.md|ticket-folder> --pipeline <pipeline-name> --project-root <project-root>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline <pipeline-name> --project-root <project-root>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket.md|ticket-folder> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state.json> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>
 ```
 
-`task save` creates a standalone task brief at `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`, creates its sibling `.state.json`, and returns `taskRef`, `taskPath`, and `statePath`. `task init` creates resumable state for an existing saved task or ticket. `task checkpoint` atomically merges allowed camelCase JSON state fields. `task resolve` converts a user-facing ref or path into canonical `taskPath`, `ticketPath`, and `statePath` values.
+`pipeline resolve` selects one pipeline from eligible user/artifact candidates and returns a camelCase `pipelineResolution` object. Assistant-authored candidates are ignored. `task save` creates a standalone task brief at `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`, creates its sibling `.state.json`, and returns `taskRef`, `taskPath`, and `statePath`. `task init` creates resumable state for an existing saved task or ticket. `task checkpoint` atomically merges allowed camelCase JSON state fields. `task resolve` converts a user-facing ref or path into canonical `taskPath`, `ticketPath`, and `statePath` values.
 
 ## Ownership
 

@@ -64,9 +64,10 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket list <session-d
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]
 
 # Resumable task state
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data '<json>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket.md|ticket-folder> --pipeline <name> --project-root <path>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline <name> --project-root <path>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket.md|ticket-folder> --pipeline-resolution '<json>' --project-root <path>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline-resolution '<json>' --project-root <path>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state.json> --data '<json>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>
 

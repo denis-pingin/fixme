@@ -782,6 +782,63 @@ test('run ping: rejects invalid state and checkpoint values', () => {
 
 console.log('\n=== task save/resolve tests ===\n');
 
+test('pipeline resolve: ignores assistant-authored candidates and falls back to standard', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    candidates: [
+      {
+        pipeline: 'full',
+        source: 'assistantMenuText',
+        evidence: 'Run full fixme-task workflow',
+        reason: 'Assistant-authored menu label is not user intent.',
+      },
+    ],
+  });
+
+  const result = runInDir(`pipeline resolve --data '${data}'`, projectRoot);
+
+  assert(result.ok, `pipeline resolve should succeed, got: ${JSON.stringify(result.data)}`);
+  assertNoSnakeCaseKeys(result.data, 'pipeline resolve output');
+  assert(result.data.pipeline === 'standard', `pipeline should default to standard, got ${result.data.pipeline}`);
+  assert(result.data.source === 'default', `source should be default, got ${result.data.source}`);
+  assert(result.data.evidence === null, `evidence should be null, got ${result.data.evidence}`);
+  assert(Array.isArray(result.data.candidates), 'candidates should be an array');
+  assert(result.data.candidates.length === 0, `assistant candidates should be excluded, got ${JSON.stringify(result.data.candidates)}`);
+});
+
+test('pipeline resolve: selects highest-priority eligible pipeline candidate', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    candidates: [
+      {
+        pipeline: 'full',
+        source: 'assistantSummary',
+        evidence: 'Previously summarized as full workflow.',
+        reason: 'Assistant text is not eligible evidence.',
+      },
+      {
+        pipeline: 'technical-spec',
+        source: 'userProseIntent',
+        evidence: 'write a technical specification',
+        reason: 'Latest user invocation asks for a technical specification.',
+      },
+    ],
+  });
+
+  const result = runInDir(`pipeline resolve --data '${data}'`, projectRoot);
+
+  assert(result.ok, `pipeline resolve should succeed, got: ${JSON.stringify(result.data)}`);
+  assertNoSnakeCaseKeys(result.data, 'pipeline resolve output');
+  assert(result.data.pipeline === 'technical-spec', `pipeline should be technical-spec, got ${result.data.pipeline}`);
+  assert(result.data.source === 'userProseIntent', `source should be userProseIntent, got ${result.data.source}`);
+  assert(result.data.evidence === 'write a technical specification', `evidence should be preserved, got ${result.data.evidence}`);
+  assert(result.data.candidates.length === 1, `only eligible candidate should remain, got ${JSON.stringify(result.data.candidates)}`);
+});
+
 test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -836,6 +893,9 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(fs.realpathSync(state.projectRoot) === fs.realpathSync(projectRoot), `projectRoot should be ${projectRoot}, got ${state.projectRoot}`);
   assert(state.status === 'running', `status should be running, got ${state.status}`);
   assert(state.pipeline === 'standard', `pipeline should be standard, got ${state.pipeline}`);
+  assert(state.pipelineResolution.pipeline === 'standard', `pipelineResolution.pipeline should be standard, got ${state.pipelineResolution && state.pipelineResolution.pipeline}`);
+  assert(state.pipelineResolution.source === 'legacyPipelineHint', `pipelineResolution.source should be legacyPipelineHint, got ${state.pipelineResolution && state.pipelineResolution.source}`);
+  assert(state.pipelineResolution.evidence === 'pipelineHint', `pipelineResolution.evidence should be pipelineHint, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
   assert(state.cursor.phase === 'plan', `cursor.phase should be plan, got ${state.cursor.phase}`);
   assert(state.cursor.stage === 'execute', `cursor.stage should be execute, got ${state.cursor.stage}`);
   assert(state.cursor.skill === 'fixme-write-plan', `cursor.skill should be fixme-write-plan, got ${state.cursor.skill}`);
@@ -856,6 +916,42 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(!Object.prototype.hasOwnProperty.call(state, 'currentStep'), 'state should not include currentStep');
   assert(!Object.prototype.hasOwnProperty.call(state, 'manifest'), 'state should not include manifest');
   assert(!Object.prototype.hasOwnProperty.call(state.artifacts, 'decisionLogPath'), 'artifacts should not include decisionLogPath');
+});
+
+test('task save: persists explicit pipeline resolution in task state', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Write Technical Specification',
+    taskGoal: 'Create a technical specification from a product specification.',
+    pipelineResolution: {
+      pipeline: 'technical-spec',
+      source: 'userProseIntent',
+      evidence: 'write a technical specification',
+      reason: 'Latest user invocation selected specification writing.',
+      candidates: [
+        {
+          pipeline: 'technical-spec',
+          source: 'userProseIntent',
+          evidence: 'write a technical specification',
+          reason: 'Latest user invocation selected specification writing.',
+        },
+      ],
+    },
+    source: 'test',
+  });
+
+  const result = runInDir(`task save --data '${data}'`, projectRoot);
+
+  assert(result.ok, `task save should succeed, got: ${JSON.stringify(result.data)}`);
+  const state = readJson(result.data.statePath);
+  assertNoSnakeCaseKeys(state, 'task state');
+  assert(state.pipeline === 'technical-spec', `pipeline should be technical-spec, got ${state.pipeline}`);
+  assert(state.pipelineResolution.pipeline === 'technical-spec', `pipelineResolution.pipeline should be technical-spec, got ${state.pipelineResolution && state.pipelineResolution.pipeline}`);
+  assert(state.pipelineResolution.source === 'userProseIntent', `source should be userProseIntent, got ${state.pipelineResolution && state.pipelineResolution.source}`);
+  assert(state.pipelineResolution.evidence === 'write a technical specification', `evidence should be preserved, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
+  assert(state.cursor.phase === 'technical-spec', `cursor should use technical-spec workflow first phase, got ${state.cursor.phase}`);
 });
 
 test('task resolve: resolves FIXME label and legacy task path to canonical state paths', () => {
@@ -914,6 +1010,9 @@ test('task init: creates ticket-backed task state and resolves ticket folder', (
   assert(state.schemaVersion === 1, 'schemaVersion should be 1');
   assert(fs.realpathSync(state.projectRoot) === fs.realpathSync(projectRoot), `projectRoot should be ${projectRoot}, got ${state.projectRoot}`);
   assert(state.pipeline === 'standard', `pipeline should be standard, got ${state.pipeline}`);
+  assert(state.pipelineResolution.pipeline === 'standard', `pipelineResolution.pipeline should be standard, got ${state.pipelineResolution && state.pipelineResolution.pipeline}`);
+  assert(state.pipelineResolution.source === 'explicitPipelineArg', `pipelineResolution.source should be explicitPipelineArg, got ${state.pipelineResolution && state.pipelineResolution.source}`);
+  assert(state.pipelineResolution.evidence === '--pipeline standard', `pipelineResolution.evidence should mention --pipeline standard, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
   assert(state.cursor.phase === 'plan', `cursor.phase should be plan, got ${state.cursor.phase}`);
 
   const resolved = runInDir(`task resolve "${ticketDir}"`, projectRoot);
@@ -922,6 +1021,38 @@ test('task init: creates ticket-backed task state and resolves ticket folder', (
   assert(resolved.data.mode === 'ticket', `mode should be ticket, got ${resolved.data.mode}`);
   assert(resolved.data.ticketPath === ticketPath, 'resolved ticketPath should match ticket path');
   assert(resolved.data.statePath === initialized.data.statePath, 'resolved statePath should match initialized state path');
+});
+
+test('task init: persists provided pipeline resolution in ticket-backed task state', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0003', 'bug-ticket', 'queued');
+  const resolution = JSON.stringify({
+    pipeline: 'bugfix',
+    source: 'userProseIntent',
+    evidence: 'debug checkout failure',
+    reason: 'Latest user invocation reports a bug that needs investigation.',
+    candidates: [
+      {
+        pipeline: 'bugfix',
+        source: 'userProseIntent',
+        evidence: 'debug checkout failure',
+        reason: 'Latest user invocation reports a bug that needs investigation.',
+      },
+    ],
+  });
+
+  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline-resolution '${resolution}' --project-root "${projectRoot}"`, projectRoot);
+
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+  const state = readJson(initialized.data.statePath);
+  assertNoSnakeCaseKeys(state, 'ticket task state');
+  assert(state.pipeline === 'bugfix', `pipeline should be bugfix, got ${state.pipeline}`);
+  assert(state.pipelineResolution.pipeline === 'bugfix', `pipelineResolution.pipeline should be bugfix, got ${state.pipelineResolution && state.pipelineResolution.pipeline}`);
+  assert(state.pipelineResolution.source === 'userProseIntent', `source should be userProseIntent, got ${state.pipelineResolution && state.pipelineResolution.source}`);
+  assert(state.pipelineResolution.evidence === 'debug checkout failure', `evidence should be preserved, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
+  assert(state.cursor.phase === 'investigate', `cursor should use bugfix workflow first phase, got ${state.cursor.phase}`);
 });
 
 test('task init: rejects non-markdown task paths without overwriting input', () => {
@@ -3093,7 +3224,7 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
   assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`'), 'saved tasks should include the FIXME label in the filename');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'save mode should delegate saved task writes to fixme-tools');
-  assert(skill.includes('task init --ticket <ticket-path> --pipeline <pipeline-name> --project-root <project-root>'), 'ticket mode should initialize task state through fixme-tools');
+  assert(skill.includes("task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>"), 'ticket mode should initialize task state through fixme-tools');
   assert(skill.includes('task checkpoint --state <task-state-path> --data'), 'fixme-task should checkpoint resumable state through fixme-tools');
   assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');
   assert(skill.includes('camelCase JSON keys only'), 'task state JSON requirement should be explicit');
