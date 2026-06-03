@@ -3121,7 +3121,7 @@ test('fixme-rebase skill: clean verified rebase pushes by default unless --no-pu
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('argument-hint: "[base-branch] [--no-push] [--confirm]"'), 'argument hint should document --no-push and --confirm');
+  assert(skill.includes('argument-hint: "[branch-to-rebase] [--base <branch>] [--no-push] [--confirm]"'), 'argument hint should document branch-to-rebase, --base, --no-push, and --confirm');
   assert(skill.includes('Push is default when `--no-push` is absent and verification passed.'), 'auto-push default should be explicit');
   assert(skill.includes('If `--no-push` is present: do not push automatically. Present the exact push command and wait for confirmation.'), '--no-push should restore confirmation flow');
   assert(skill.includes('git push --force-with-lease origin <branch>'), 'force-with-lease command should remain documented');
@@ -3132,16 +3132,71 @@ test('fixme-rebase skill: --confirm is the only pre-execution confirmation gate'
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('Treat `--confirm` as a workflow flag, not a base branch.'), '--confirm should be parsed as a workflow flag');
-  assert(skill.includes('Set `CONFIRM_BEFORE_EXECUTION=true` when `--confirm` is present.'), '--confirm should enable pre-execution confirmation');
-  assert(skill.includes('Set `CONFIRM_BEFORE_EXECUTION=false` when `--confirm` is absent.'), 'default should not require pre-execution confirmation');
-  assert(skill.includes('Remove `--confirm` from the remaining arguments before resolving the optional base branch.'), '--confirm should not be treated as a branch');
+  assert(skill.includes('Treat `--confirm` as a workflow flag.'), '--confirm should be parsed as a workflow flag');
+  assert(skill.includes('Set `CONFIRM_BEFORE_EXECUTION=true` when present, `CONFIRM_BEFORE_EXECUTION=false` when absent.'), '--confirm should enable pre-execution confirmation and default off');
+  assert(skill.includes('That argument is the **branch to rebase** (the branch that will be moved), NOT the base.'), 'positional argument should be the branch to rebase, not the base');
   assert(skill.includes('By default, Phase 2.5 is informational, not a confirmation gate.'), 'onto detection should not pause by default');
   assert(skill.includes('If `--confirm` is absent and detection result is DETECTED, set `REBASE_MODE` = "onto" and proceed to Phase 3 with the detected `FORK_POINT`.'), 'detected onto rebase should proceed by default');
   assert(skill.includes('When `--confirm` is present, this summary becomes the single pre-execution confirmation gate.'), '--confirm should add one pre-execution gate after analysis');
   assert(skill.includes('When `--confirm` is absent, proceed directly to Phase 4 after presenting the summary.'), 'default path should proceed after analysis summary');
   assert(!skill.includes('mandatory, non-negotiable user confirmation gate for any `--onto` recommendation'), 'old unconditional onto confirmation gate should be removed');
   assert(!skill.includes('The user always confirms before execution.'), 'old unconditional confirmation statement should be removed');
+});
+
+test('fixme-rebase skill: positional argument is the branch to rebase and --base sets the target', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  // --base provides the rebase target; positional provides the branch to move.
+  assert(skill.includes('Treat `--base <branch>` (or `--base=<branch>`) as the base branch to rebase ONTO.'), '--base should set the rebase target');
+  assert(skill.includes('Set `BASE_ARG` to its value'), '--base value should be captured as BASE_ARG');
+  assert(skill.includes('the branch to rebase defaults to the current branch'), 'missing positional should default the rebased branch to current');
+
+  // The four documented interpretations.
+  assert(skill.includes('`/fixme-rebase` -> rebase current branch onto auto-detected base.'), 'no-arg interpretation documented');
+  assert(skill.includes('`/fixme-rebase feat/x` -> rebase `feat/x` onto auto-detected base.'), 'positional-only interpretation documented');
+  assert(skill.includes('`/fixme-rebase --base develop` -> rebase current branch onto `develop`.'), '--base-only interpretation documented');
+  assert(skill.includes('`/fixme-rebase feat/x --base develop` -> rebase `feat/x` onto `develop`.'), 'positional-plus-base interpretation documented');
+
+  // A named branch that does not exist is an error, not a fallback to current.
+  assert(skill.includes('a named branch that doesn\'t exist is an error, not a default'), 'nonexistent rebase branch should stop, not default to current');
+
+  // Phase 1 resolves the base from --base, not from a positional.
+  assert(skill.includes('Check for an explicit `--base` argument:'), 'Phase 1 should resolve base from --base');
+  assert(!skill.includes('argument-hint: "[base-branch] [--no-push] [--confirm]"'), 'old base-branch-positional argument hint should be gone');
+});
+
+test('fixme-rebase skill: off-current-branch checkout stays on the rebased branch', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Switch to the branch to rebase (only if it differs from the current branch):'), 'skill should check out the named branch when it differs');
+  assert(skill.includes('git checkout <REBASE_BRANCH>'), 'checkout of the rebased branch should be documented');
+  assert(skill.includes('never switches back to `<STARTED_ON_BRANCH>`'), 'skill should stay on the rebased branch, never restoring the original');
+  assert(skill.includes('Record `STARTED_ON_BRANCH`'), 'the starting branch should be recorded');
+  // Protected check applies to the branch being rebased, not the base.
+  assert(skill.includes('a protected branch is fine as the `--base` target'), 'protected base should be allowed');
+});
+
+test('fixme-rebase skill: dirty tree stops and asks with stash/discard/abort and same-branch pop rule', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  // No silent auto-stash anymore - stop and ask.
+  assert(skill.includes('Handle uncommitted changes (stop and ask - never auto-stash or auto-discard):'), 'dirty tree should stop and ask, never auto-stash');
+  assert(skill.includes('1. Stash - save them with `git stash`, then proceed'), 'stash option documented');
+  assert(skill.includes('2. Discard - permanently delete them, then proceed'), 'discard option documented');
+  assert(skill.includes('3. Abort - do nothing, leave the working tree exactly as it is'), 'abort option documented');
+  assert(skill.includes('git reset --hard HEAD'), 'discard should reset tracked changes');
+  assert(skill.includes('git clean -fd'), 'discard should remove untracked files');
+
+  // Stash pop rule: pop only when the rebased branch is the started-on branch.
+  assert(skill.includes('Record `STASH_IS_SAME_BRANCH = (REBASE_BRANCH == STARTED_ON_BRANCH)`'), 'stash pop rule flag should be recorded');
+  assert(skill.includes('the stash is popped only when the rebased branch is the one the user started on'), 'same-branch pop rule should be documented');
+  assert(skill.includes('**`STASH_IS_SAME_BRANCH=false`**'), 'cross-branch case should be handled explicitly');
+
+  // The dirty-tree gate fires an alert and is listed as a user-pause gate.
+  assert(skill.includes('Phase 0 dirty-tree choice (stash / discard / abort)'), 'dirty-tree gate should be registered as a user-pause gate');
 });
 
 test('fixme-rebase skill: same-or-worse merge fallback continues rebase without route prompt', () => {

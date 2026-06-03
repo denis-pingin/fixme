@@ -1,7 +1,7 @@
 ---
 name: fixme-rebase
-description: Safely rebase current branch onto its base branch with conflict resolution, verification, data protection, and default push after clean verification. Detects base branch from PR target or merge-base, analyzes divergence, backs up when needed, resolves conflicts with intent awareness, runs full verification, and pushes unless --no-push is set. Use --confirm to pause after analysis before executing.
-argument-hint: "[base-branch] [--no-push] [--confirm]"
+description: Safely rebase a branch onto a base branch with conflict resolution, verification, data protection, and default push after clean verification. The optional positional argument is the branch to rebase (defaults to the current branch); --base <branch> sets the base to rebase onto (defaults to PR target or merge-base detection). Analyzes divergence, backs up when needed, resolves conflicts with intent awareness, runs full verification, and pushes unless --no-push is set. Use --confirm to pause after analysis before executing.
+argument-hint: "[branch-to-rebase] [--base <branch>] [--no-push] [--confirm]"
 ---
 
 ## Fixme Directory
@@ -12,21 +12,21 @@ Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and t
 
 # Rebase Branch
 
-Rebase the current branch onto its base branch. Safety, clarity, and verification at every step.
+Rebase a branch (the current branch by default, or a named branch via the positional argument) onto its base branch. Safety, clarity, and verification at every step.
 
 ## Hard Constraints
 
 - **Push is default when `--no-push` is absent and verification passed.** Only skip the default push when final verification failed, the working tree is not clean, no upstream or push target can be resolved, or `--no-push` was requested. Use `--force-with-lease` when the branch was previously pushed and history was rewritten.
-- **Never rebase main, master, or develop.** If on a protected branch, stop immediately and tell the user.
-- **Never lose uncommitted work.** Stash before rebase, unstash after. Verify stash succeeded.
-- **Never proceed through ambiguity.** If the base branch is unclear, the user's intent is unclear, or a conflict resolution is uncertain - stop and ask.
+- **Never rebase a protected branch (main, master, develop).** The protected check applies to the branch being rebased - the positional argument, or the current branch when no argument is given - NOT to the base. Rebasing onto a protected base (e.g. `--base develop`) is normal and allowed. If the branch to rebase is protected, stop immediately and tell the user.
+- **Never lose uncommitted work.** If the working tree is dirty, stop before any checkout or rebase and ask the user: stash, discard, or abort. Never auto-discard. After a stash, restore it only when the rebased branch is the branch the user started on; otherwise leave it stashed and report the stash ref.
+- **Never proceed through ambiguity.** If the base branch is unclear, the user's intent is unclear, or a conflict resolution is uncertain - stop and ask. This fires on an *actual* conflict being resolved in Phase 5, never on conflicts merely *predicted* before execution. Predicted conflicts, a large rewrite, or a high commit-drop count are never grounds for a pre-execution pause.
 - **Never skip post-rebase verification.** Build, lint, and tests must run after rebase completes. Regressions introduced by conflict resolution must be caught.
 - **Never commit a merge before verification passes.** When falling back from rebase to merge, the resolved-but-uncommitted state is an opportunity: run the full verification suite BEFORE `git commit`. This is the critical difference between merge and rebase - rebase auto-commits via `git rebase --continue`, but merge lets you verify first. Use that advantage.
 - **Never silently discard commits.** If rebase would drop, squash, or duplicate commits, surface this to the user before proceeding.
 
 ## Discussion Mode at User-Pause Gates
 
-Several phases pause for explicit user input before proceeding: Phase 0 Step 6 shallow-clone choice, Phase 3 pre-execution confirmation when `--confirm` is present, Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
+Several phases pause for explicit user input before proceeding: Phase 0 dirty-tree choice (stash / discard / abort), Phase 0 shallow-clone choice, Phase 3 pre-execution confirmation when `--confirm` is present, Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
 
 **A pause begins** the moment the skill emits the gate's user-facing block (Findings, conflict markers, regression report, etc.). **It ends** the moment the user provides a decision the skill can act on.
 
@@ -50,6 +50,7 @@ Fire an alert at every user-pause gate and at the terminal outcome. Use the Bash
 
 | Gate | Alert |
 | --- | --- |
+| Phase 0 dirty-tree choice (stash / discard / abort) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 0 shallow-clone choice | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 3 pre-execution confirmation (when `--confirm`) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 5 conflict stop | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
@@ -67,14 +68,17 @@ Fire once per gate entry. Do not re-fire if the user reopens the same gate with 
 Before anything else, capture the full current state. This is the recovery baseline.
 
 0. **Parse arguments:**
-   - Treat `--no-push` as a workflow flag, not a base branch.
-   - Set `AUTO_PUSH=false` when `--no-push` is present.
-   - Set `AUTO_PUSH=true` when `--no-push` is absent.
-   - Treat `--confirm` as a workflow flag, not a base branch.
-   - Set `CONFIRM_BEFORE_EXECUTION=true` when `--confirm` is present.
-   - Set `CONFIRM_BEFORE_EXECUTION=false` when `--confirm` is absent.
-   - Remove `--no-push` from the remaining arguments before resolving the optional base branch.
-   - Remove `--confirm` from the remaining arguments before resolving the optional base branch.
+   - Treat `--no-push` as a workflow flag. Set `AUTO_PUSH=false` when present, `AUTO_PUSH=true` when absent. Remove it from the argument list.
+   - Treat `--confirm` as a workflow flag. Set `CONFIRM_BEFORE_EXECUTION=true` when present, `CONFIRM_BEFORE_EXECUTION=false` when absent. Remove it from the argument list.
+   - Treat `--base <branch>` (or `--base=<branch>`) as the base branch to rebase ONTO. Set `BASE_ARG` to its value and remove both the flag and its value from the argument list. If `--base` is absent, leave `BASE_ARG` unset - the base is auto-detected in Phase 1.
+   - After removing all flags, at most one positional argument may remain. That argument is the **branch to rebase** (the branch that will be moved), NOT the base. Set `REBASE_BRANCH_ARG` to it. If no positional argument remains, leave `REBASE_BRANCH_ARG` unset - the branch to rebase defaults to the current branch.
+   - If more than one positional argument remains after flag removal, stop and ask the user which one is the branch to rebase.
+
+   Resulting interpretation:
+   - `/fixme-rebase` -> rebase current branch onto auto-detected base.
+   - `/fixme-rebase feat/x` -> rebase `feat/x` onto auto-detected base.
+   - `/fixme-rebase --base develop` -> rebase current branch onto `develop`.
+   - `/fixme-rebase feat/x --base develop` -> rebase `feat/x` onto `develop`.
 
 1. **Check for in-progress rebase or merge:**
    ```bash
@@ -82,43 +86,80 @@ Before anything else, capture the full current state. This is the recovery basel
    ```
    If output mentions "rebase in progress", "merge in progress", or "cherry-pick in progress" - stop and ask the user how to handle it (abort, continue, or skip this skill).
 
-2. **Verify not on a protected branch:**
-   ```bash
-   git branch --show-current
-   ```
+2. **Resolve the branch to rebase:**
+   - If `REBASE_BRANCH_ARG` is set:
+     ```bash
+     git rev-parse --verify <REBASE_BRANCH_ARG> 2>/dev/null
+     git rev-parse --verify origin/<REBASE_BRANCH_ARG> 2>/dev/null
+     ```
+     - Exists locally: set `REBASE_BRANCH=<REBASE_BRANCH_ARG>`.
+     - Only on remote: `git fetch origin <REBASE_BRANCH_ARG> && git branch <REBASE_BRANCH_ARG> origin/<REBASE_BRANCH_ARG>`, then set `REBASE_BRANCH=<REBASE_BRANCH_ARG>`.
+     - Neither: stop. Tell the user "`<REBASE_BRANCH_ARG>` doesn't exist locally or on origin, so there's nothing to rebase." Do NOT fall back to the current branch - a named branch that doesn't exist is an error, not a default.
+   - If `REBASE_BRANCH_ARG` is unset: set `REBASE_BRANCH` to the current branch (`git branch --show-current`).
+   - Record `STARTED_ON_BRANCH` = current branch (`git branch --show-current`). This is where the user was when the skill started; it drives the stash-restore rule and the final report. The skill never switches back to it on its own.
+
+3. **Verify the branch to rebase is not protected:**
    Determine protected branches dynamically:
    - **Check `<fixme-dir>/config.json`** for a `protectedBranches` array (if present).
    - **Check remote default branch:** `git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}'`
    - **Fallback heuristic:** check which of `main`, `master`, `develop` exist locally or on the remote.
    - Combine all sources into the protected set.
 
-   If the current branch is in the protected set - stop. Tell the user: "You're on `<branch>`, which is a protected branch. Rebasing it rewrites shared history. Switch to your feature branch first."
+   If `REBASE_BRANCH` is in the protected set - stop. Tell the user: "`<REBASE_BRANCH>` is a protected branch. Rebasing it rewrites shared history. Choose a feature branch to rebase." This check is on the branch being rebased only; a protected branch is fine as the `--base` target.
 
-3. **Record recovery point:**
-   ```bash
-   git rev-parse HEAD
-   ```
-   Save this as `ORIGINAL_HEAD`. This is the commit to restore if anything goes wrong.
-
-4. **Handle uncommitted changes:**
+4. **Handle uncommitted changes (stop and ask - never auto-stash or auto-discard):**
    ```bash
    git status --porcelain
    ```
-   - If output is empty: clean working tree, proceed.
-   - If output is non-empty:
-     - Show the user what's uncommitted (modified files, untracked files).
-     - Stash everything: `git stash push -u -m "fixme-rebase: auto-stash before rebase"`.
-     - Verify stash succeeded: `git stash list` - confirm the stash appears at top.
-     - Record that we stashed (need to unstash in Phase 7).
+   - If output is empty: clean working tree, proceed to step 5.
+   - If output is non-empty: the working tree is dirty. Any checkout or rebase would be affected by these changes, so **stop and ask the user before touching anything.** Show what's uncommitted (modified files, untracked files) and present the choice:
 
-5. **Record current branch state:**
+     ```
+     You have uncommitted local changes:
+     <list modified + untracked files>
+
+     The rebase (and the branch switch to `<REBASE_BRANCH>`, if it differs from `<STARTED_ON_BRANCH>`) would be affected by these. How should I handle them?
+     1. Stash - save them with `git stash`, then proceed
+     2. Discard - permanently delete them, then proceed
+     3. Abort - do nothing, leave the working tree exactly as it is
+     ```
+
+     **Wait for user choice.** Nothing is checked out, stashed, discarded, or rebased until the user decides.
+
+     - **Stash:**
+       ```bash
+       git stash push -u -m "fixme-rebase: stash before rebase"
+       git stash list
+       ```
+       Confirm the stash appears at the top. Record `STASHED=true`. Record `STASH_IS_SAME_BRANCH = (REBASE_BRANCH == STARTED_ON_BRANCH)`. This flag drives the Phase 7 restore rule: the stash is popped only when the rebased branch is the one the user started on; for a cross-branch rebase the stashed work belongs to `<STARTED_ON_BRANCH>` and is left stashed.
+     - **Discard:** The user explicitly chose to lose these changes; that choice is the confirmation. Discard tracked changes and untracked files:
+       ```bash
+       git reset --hard HEAD
+       git clean -fd
+       ```
+       Record `STASHED=false`. Proceed.
+     - **Abort:** Stop the skill entirely. Make no changes. Fire the `task_failed` alert and end.
+
+5. **Switch to the branch to rebase (only if it differs from the current branch):**
+   ```bash
+   git checkout <REBASE_BRANCH>
+   ```
+   Run this only when `REBASE_BRANCH` != `STARTED_ON_BRANCH`. The working tree is guaranteed clean at this point (step 4). After this, the current branch and `HEAD` refer to `<REBASE_BRANCH>`, so every later phase that reads "current branch" or `HEAD` operates on the branch being rebased. **The skill stays on `<REBASE_BRANCH>` for the rest of the run and never switches back to `<STARTED_ON_BRANCH>`.**
+
+6. **Record recovery point:**
+   ```bash
+   git rev-parse HEAD
+   ```
+   Save this as `ORIGINAL_HEAD` (the tip of `<REBASE_BRANCH>`). This is the commit to restore if anything goes wrong.
+
+7. **Record current branch state:**
    ```bash
    git log --oneline -20
    git branch -vv
    ```
    This snapshot is used for the final summary comparison.
 
-6. **Detect shallow clone:**
+8. **Detect shallow clone:**
    ```bash
    git rev-parse --is-shallow-repository
    ```
@@ -140,17 +181,19 @@ Before anything else, capture the full current state. This is the recovery basel
 
 Determine what to rebase onto. Priority order:
 
-0. **Check for user-provided argument:**
-   If a base branch argument was provided (e.g., `/fixme-rebase develop`):
+0. **Check for an explicit `--base` argument:**
+   If `BASE_ARG` was set from `--base <branch>` in Phase 0 (e.g., `/fixme-rebase --base develop`):
    ```bash
    # Check local first
-   git rev-parse --verify <argument> 2>/dev/null
+   git rev-parse --verify <BASE_ARG> 2>/dev/null
    # Then remote
-   git rev-parse --verify origin/<argument> 2>/dev/null
+   git rev-parse --verify origin/<BASE_ARG> 2>/dev/null
    ```
    - If the branch exists locally: use the local branch name as `BASE_BRANCH`. Skip to the freshness step (step 5).
-   - If only on remote: `git fetch origin <argument> && git branch <argument> origin/<argument>` to create a local tracking branch. Use as `BASE_BRANCH`. Skip to step 5.
-   - If neither: tell the user "`<argument>` doesn't exist locally or on origin. Falling back to auto-detection." Continue to step 1.
+   - If only on remote: `git fetch origin <BASE_ARG> && git branch <BASE_ARG> origin/<BASE_ARG>` to create a local tracking branch. Use as `BASE_BRANCH`. Skip to step 5.
+   - If neither: tell the user "`--base <BASE_ARG>` doesn't exist locally or on origin. Falling back to auto-detection." Continue to step 1.
+
+   If `BASE_ARG` was not set, continue to step 1 for auto-detection.
 
 1. **Check for an open PR:**
    ```bash
@@ -723,10 +766,11 @@ Present the complete analysis summary before attempting the rebase. When `--conf
 **Format:**
 
 ```
-## Rebasing onto <base-branch>
+## Rebasing <branch-to-rebase> onto <base-branch>
 
-**Current branch:** <branch> at <short-hash>
-**Base branch:** <base-branch> (from: PR #N / merge-base detection)
+**Branch being rebased:** <REBASE_BRANCH> at <short-hash>
+<If REBASE_BRANCH != STARTED_ON_BRANCH:>**Checked out from:** <STARTED_ON_BRANCH> (will stay on <REBASE_BRANCH> after completion)
+**Base branch:** <base-branch> (from: --base argument / PR #N / merge-base detection)
 **Common ancestor:** <merge-base-short-hash> (<how far back>)
 **Rebase mode:** <normal / --onto (squash-merge detected)>
 
@@ -754,7 +798,7 @@ Present the complete analysis summary before attempting the rebase. When `--conf
 Attempting rebase...
 ```
 
-If `CONFIRM_BEFORE_EXECUTION=false`, proceed immediately to Phase 4.
+**If `CONFIRM_BEFORE_EXECUTION=false` (no `--confirm`): proceed directly to Phase 4. Do NOT ask any confirmation question.** The Pre-Rebase Summary above is informational output, not a gate. This holds at every confidence level and in every rebase mode, including `--onto` with a HIGH-confidence detected fork point. None of the following are grounds to pause before execution: a large history rewrite, a high commit-drop count, predicted replay conflicts, or the fact that a Phase 4 backup will be created. Predicted conflicts are handled by the Phase 5 conflict-stop and verification by the Phase 6 regression-stop - neither justifies inventing a pre-execution gate here. The ONLY switch that turns this into a confirmation gate is `--confirm`.
 
 If `CONFIRM_BEFORE_EXECUTION=true`, ask:
 
@@ -966,7 +1010,7 @@ Leave the rebase paused. Do NOT abort.
    ```bash
    git rebase --abort
    ```
-   If stash was created in Phase 0, unstash: `git stash pop`.
+   If `STASHED=true`, restore per the Phase 7 stash rule: pop only when `STASH_IS_SAME_BRANCH=true`; otherwise leave it stashed and report the stash ref.
    Stop here.
 
 #### If rebase fails catastrophically:
@@ -977,18 +1021,20 @@ git rebase --abort
 
 Tell the user: "Rebase aborted. Branch is back to its original state at `<ORIGINAL_HEAD>`. The issue was: <description>."
 
-If stash was created in Phase 0, unstash: `git stash pop`.
+If `STASHED=true`, restore per the Phase 7 stash rule: pop only when `STASH_IS_SAME_BRANCH=true`; otherwise leave it stashed and report the stash ref.
 
 Stop here. Do not retry without user guidance.
 
 ### Phase 7: Verification, Commit & Cleanup
 
-1. **Unstash if applicable:**
-   If we stashed in Phase 0:
-   ```bash
-   git stash pop
-   ```
-   If pop fails due to conflicts: `git stash drop` is NOT safe. Tell the user: "Stash couldn't be applied cleanly. Your stashed changes are still in `git stash list`. Apply manually with `git stash apply` after resolving."
+1. **Restore stash if applicable (follow the same-branch rule):**
+   Only relevant when `STASHED=true`.
+   - **`STASH_IS_SAME_BRANCH=true`** (the rebased branch is the branch the user started on): pop the stash back on top:
+     ```bash
+     git stash pop
+     ```
+     If pop fails due to conflicts: `git stash drop` is NOT safe. Tell the user: "Stash couldn't be applied cleanly. Your stashed changes are still in `git stash list`. Apply manually with `git stash apply` after resolving."
+   - **`STASH_IS_SAME_BRANCH=false`** (cross-branch rebase: the stashed work belongs to `<STARTED_ON_BRANCH>`, not to the rebased `<REBASE_BRANCH>`): do NOT pop. Leave it stashed and tell the user: "Your uncommitted changes from `<STARTED_ON_BRANCH>` are still stashed (`git stash list`). You're now on the rebased `<REBASE_BRANCH>`. To restore them, switch back with `git checkout <STARTED_ON_BRANCH>` and run `git stash pop`."
 
 2. **Refresh dependency install state after rebase:**
    Always refresh dependency install state before post-rebase verification. The rebase may have brought in dependency changes, and local install state can be stale even when tracked lockfiles did not change.
@@ -1049,7 +1095,8 @@ Present the complete summary. **All file references in the report MUST be clicka
 ```
 ## Rebase Complete
 
-**Branch:** <branch>
+**Branch:** <REBASE_BRANCH>
+<If REBASE_BRANCH != STARTED_ON_BRANCH:>**Now checked out:** <REBASE_BRANCH> (started on <STARTED_ON_BRANCH>; not switched back)
 **Rebased onto:** <base-branch>
 **Rebase mode:** <normal / --onto (squash-merged ancestor: <SQUASH_PARENT>)>
 **Commits rebased:** N (M conflicts resolved, K cherry-picked commits dropped)
@@ -1265,7 +1312,7 @@ Stop.
 
 ### Shallow clone
 
-Shallow clone detection and user prompting happens in **Phase 0 Step 6**. If the user chooses degraded mode there, the `SHALLOW_CLONE=true` flag is honored inline at each downstream step: Phase 1 Step 5a ancestry check aborts auto-reset on missing commits, Phase 2.5 Step 5 content walk is skipped entirely, and any Phase 2.5 verdict has its confidence downgraded by one level. The Findings Presentation includes a "Detection ran on a shallow clone. Content walk was skipped. Accuracy reduced." warning.
+Shallow clone detection and user prompting happens in **Phase 0 Step 8**. If the user chooses degraded mode there, the `SHALLOW_CLONE=true` flag is honored inline at each downstream step: Phase 1 Step 5a ancestry check aborts auto-reset on missing commits, Phase 2.5 Step 5 content walk is skipped entirely, and any Phase 2.5 verdict has its confidence downgraded by one level. The Findings Presentation includes a "Detection ran on a shallow clone. Content walk was skipped. Accuracy reduced." warning.
 
 A shallow clone is a partial copy of the repository that only includes recent commit history (created with `git clone --depth N`). The merge-base - the common ancestor commit where the current branch diverged from the base branch - may lie beyond the shallow boundary. Without the merge-base, git cannot determine which commits belong to the branch vs the base, and the rebase will fail. The fix offered in Phase 0 is `git fetch --unshallow origin`.
 
