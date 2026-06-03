@@ -45,17 +45,17 @@ Before evaluating anything, understand:
 4. **What does the task code map already prove?** Read the code map and re-read its cited source ranges before relying on any mapped pattern, API shape, or file role.
 5. **What patterns does the codebase use?** Prefer the code map's cited sources for task-relevant conventions. Read additional neighboring files only when the map is missing, stale, or insufficient for the specific review question.
 6. **What stable context does the plan provide?** Read the plan's `## Context` section. Stable Context provides architecture, patterns, conventions, and dependency information discovered during planning. Use this as a head start - no need to re-explore the full codebase for this information. Re-read changed files directly for current state.
-7. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, and `Verification Since Last Review` sections to orient the review. Verify all claims against the files and git diff before relying on them.
+7. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, `Verification Since Last Review`, and repair context sections to orient the review. Verify all claims against the files and git diff before relying on them.
 
-`Fixes Since Last Review` does not limit review scope unless focused re-review mode is active. Focused re-review mode reviews fixes since last review plus directly affected call sites.
+`Fixes Since Last Review` and repair context never limit review scope. Code review always covers the full changed surface.
 
 This prevents the most common source of false findings: reviewing code without understanding why it was written that way.
 
-## Focused Re-Review Mode
+## Post-Repair Full Review
 
-Focused Re-Review Mode is used after `fixme-execute-plan` repair mode handles implementation-only code review findings.
+Post-repair review is used after `fixme-execute-plan` repair mode handles implementation-only code review findings.
 
-Focused re-review mode reviews fixes since last review plus directly affected call sites. Start with:
+Post-repair review starts with the repair items, then reviews the full changed surface. Start with:
 
 1. The repair items from the previous handler.
 2. Files changed by the repair.
@@ -63,15 +63,11 @@ Focused re-review mode reviews fixes since last review plus directly affected ca
 4. Callers, imports, generated outputs, and configuration touched by the repaired code.
 5. Verification results since the repair.
 
-A focused re-review may still widen scope when the repair changes shared contracts or high-risk behavior. Widen to the full changed surface when any of these are true:
+Then review every file created or modified, every test created or modified, the plan/spec alignment, the task code map, and the full git diff.
 
-- The repair changes public APIs, exported types, database schema, request/response contracts, auth, permissions, payment/billing, migration behavior, concurrency, caching, or error-handling semantics.
-- The repair modifies shared helpers used outside the repaired feature.
-- The repair changes tests in a way that could hide production behavior.
-- The repair contradicts or reinterprets the plan.
-- You cannot confidently bound the blast radius from the repair diff.
+Repair context is an ordering hint, not a scope limiter. A clean post-repair review certifies the full changed surface, not only the repaired lines.
 
-Focused mode is a scope optimization, not a lower quality bar. Every finding still needs evidence, severity, and a concrete suggestion.
+Every finding still needs evidence, severity, and a concrete suggestion.
 
 ## Foundational Mindset: Do Not Trust
 

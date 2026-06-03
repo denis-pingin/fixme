@@ -814,7 +814,7 @@ Use that metadata as intake routing context, not as a substitute for normal plan
 - Batch CURRENT_PR_FIX items by dependency cluster, not by comment source.
 - Split dispatch only when a high-complexity PLAN_REQUIRED fix touches an unrelated subsystem or blocks low-risk fixes.
 - `ROUTE_SCOPE` governs review-loop routing only - it does not shortcut entry into the pipeline. A fresh fixme-task entry always starts at the plan phase regardless of incoming `ROUTE_SCOPE`, because there is no existing plan to repair against. `IMPLEMENT_ONLY` takes effect during the code review loop (Step 8): blocking FIX items skip replanning and route directly back to `fixme-execute-plan` in repair mode. `PLAN_REQUIRED` items in that same loop trigger plan revision and count against `outerMaxCycles`.
-- Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.
+- IMPLEMENT_ONLY repair keeps the current plan but returns to a full code review before the pipeline can advance.
 
 The planner and executor still validate the requested route. If a supposedly implementation-only PR fix actually requires plan, contract, persistence, migration, or acceptance-criteria changes, promote it to `PLAN_REQUIRED` before execution. If a current PR fix is found to be valid but disproportionate for this PR after deeper inspection, demote it to `FOLLOWUP_ONLY`, record the reason, and do not spend a revision cycle on it.
 
@@ -1169,7 +1169,7 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 - Path to task code map if available
 - Current review context packet
 - Git diff information (base branch or commit range)
-- Focused re-review flag when the previous step was implementation repair. Focused re-review mode reviews fixes since last review plus directly affected call sites.
+- Repair context when the previous step was implementation repair. Implementation-only repairs return to full code review and do not count against outerMaxCycles.
 
 **fixme-handle-code-review** (in `implement` phase review):
 - Review findings from reviewer
@@ -1200,7 +1200,7 @@ Before each review, handler, revision, or verification dispatch, construct a com
 - If decision metadata is insufficient, include only decisions made during this `fixme-task` invocation or decisions already carried in the current plan/specification.
 - Include every fix applied since the previous review cycle, whether it came from automatic `FIX` routing or from a user decision that resolved `FIX_UNCLEAR` or `ASK_USER`.
 - Include the task code map path when one exists. Do not paste the full code map into the packet.
-- For code review, `Fixes Since Last Review` is extra orientation, not a scope limiter unless focused re-review mode is active. Focused re-review mode reviews fixes since last review plus directly affected call sites.
+- For code review, `Fixes Since Last Review` and repair context are extra orientation, not scope limiters. Code review always covers the full changed surface.
 
 ### Packet Shape
 
@@ -1349,7 +1349,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - **CLEAN**: mark step `completed`, advance to the next numbered step
    - **HAS_BLOCKING_FIX + SPEC_REVISION**: mark step `completed`, jump back to the specification phase's first execute step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
-   - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, focused code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
+   - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
    - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.
    - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 6. Do NOT apply fixes yourself. Do NOT proceed past blocking fixes without dispatching the required producer. Follow-up-only items may proceed without a producer dispatch.

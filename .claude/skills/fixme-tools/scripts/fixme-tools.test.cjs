@@ -3282,7 +3282,8 @@ test('fixme-task skill: consumes PR comment triage metadata to reduce unnecessar
   assert(skill.includes('`ROUTE_SCOPE` governs review-loop routing only - it does not shortcut entry into the pipeline.'), 'fixme-task should clarify that ROUTE_SCOPE applies to review-loop routing, not entry-point shortcuts');
   assert(skill.includes('A fresh fixme-task entry always starts at the plan phase regardless of incoming `ROUTE_SCOPE`'), 'fixme-task should always start at the plan phase on fresh entry');
   assert(skill.includes('When the dispatch input already contains a complete pre-planned recipe'), 'fixme-task should describe pre-planned input handoff to the planner');
-  assert(skill.includes('Use severity and complexity to choose review depth: BLOCKER or high-complexity PLAN_REQUIRED work gets full review; low-risk IMPLEMENT_ONLY repair gets focused re-review.'), 'review intensity should follow risk and complexity');
+  assert(skill.includes('IMPLEMENT_ONLY repair keeps the current plan but returns to a full code review before the pipeline can advance.'), 'implementation-only repairs should keep full code review as the terminal gate');
+  assert(!skill.includes('low-risk IMPLEMENT_ONLY repair gets focused re-review'), 'implementation-only repairs should not use focused re-review');
 });
 
 test('fixme review handlers: classify blocking severity and route scope separately', () => {
@@ -3586,10 +3587,11 @@ test('fixme-task skill: routes implementation-only code review fixes without out
   assert(skill.includes('IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.'), 'implementation-only findings should avoid plan loop');
   assert(skill.includes('MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.'), 'nonblocking findings should not trigger loops');
   assert(skill.includes('If the unresolved blocking issue count is not lower than the previous comparable cycle, stop the loop and escalate as stalled.'), 'loop should stop when issue count does not improve');
-  assert(skill.includes('Focused re-review mode reviews fixes since last review plus directly affected call sites.'), 'code review should support focused re-review after repair');
+  assert(skill.includes('Implementation-only repairs return to full code review and do not count against outerMaxCycles.'), 'code review should stay full-scope after repair');
+  assert(!skill.includes('Focused re-review mode reviews fixes since last review plus directly affected call sites.'), 'code review should not support focused re-review after repair');
 });
 
-test('fixme execute/review skills: support repair mode and focused re-review', () => {
+test('fixme execute/review skills: support repair mode and full post-repair review', () => {
   const executePath = path.resolve(__dirname, '..', '..', 'fixme-execute-plan', 'SKILL.md');
   const reviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
   const execute = fs.readFileSync(executePath, 'utf8');
@@ -3598,9 +3600,11 @@ test('fixme execute/review skills: support repair mode and focused re-review', (
   assert(execute.includes('Repair Mode'), 'executor should document repair mode');
   assert(execute.includes('Repair items come from implementation-only code review findings'), 'repair mode should be limited to implementation-only findings');
   assert(execute.includes('Do not redesign the plan in repair mode.'), 'executor should not replan implementation-only repairs');
-  assert(review.includes('Focused Re-Review Mode'), 'code reviewer should document focused re-review mode');
-  assert(review.includes('Focused re-review mode reviews fixes since last review plus directly affected call sites.'), 'focused review scope should be explicit');
-  assert(review.includes('A focused re-review may still widen scope when the repair changes shared contracts or high-risk behavior.'), 'focused review should widen scope for risky changes');
+  assert(review.includes('## Post-Repair Full Review'), 'code reviewer should document full post-repair review');
+  assert(review.includes('Post-repair review starts with the repair items, then reviews the full changed surface.'), 'post-repair review should start with repair items without limiting scope');
+  assert(review.includes('Repair context is an ordering hint, not a scope limiter.'), 'repair context should not limit review scope');
+  assert(!review.includes('Focused Re-Review Mode'), 'code reviewer should not document focused re-review mode');
+  assert(!review.includes('focused re-review'), 'code reviewer should remove focused re-review wording');
 });
 
 // ============================================================================

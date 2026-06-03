@@ -559,7 +559,7 @@ Expand full evidence cards for BLOCKER, MAJOR, FIX_UNCLEAR, ASK_USER, LOW confid
 
 - **Groups**: {G1, G2, ...}
 - **Execution shape**: {implementation repair | plan-required change}
-- **Review shape**: {focused re-review | full review}
+- **Review shape**: full code review
 - **Why batched together**: {shared files, shared behavior, or same root cause}
 
 ### Follow-Up Only
