@@ -340,6 +340,30 @@ Run this gate before assigning `VERDICT: FIX`, `VERDICT: FIX_UNCLEAR`, `VERDICT:
 
 A reviewer claim is a hypothesis, not evidence. The reviewer's wording can point to a real issue, but it cannot prove code behavior, API semantics, duplication, reachability, or fix safety by itself.
 
+## Current-Fix Proof Gate
+
+Before routing any PR comment to `CURRENT_PR_FIX`, answer these three questions:
+
+1. **What is the reviewer's core claim?**
+   State the claim as one falsifiable sentence, without the reviewer's proposed fix.
+
+2. **What fact would make that claim true or false?**
+   Identify the one decisive code/API/runtime fact. Prefer the downstream consumer or side effect over the local line the reviewer cited.
+
+3. **Did we verify that fact?**
+   Cite the source checked and the observed fact.
+
+Routing rule:
+
+- If the decisive fact proves the claim true -> `CURRENT_PR_FIX`.
+- If the decisive fact proves the claim false -> `REJECT_FALSE_POSITIVE`.
+- If the decisive fact is unavailable or depends on product intent -> `ASK_USER`.
+- If the claim is true but not worth this PR -> `FOLLOWUP_ONLY`.
+
+Do not route to `CURRENT_PR_FIX` from local shape alone, such as "payload has X but key omits X", "field name looks duplicated", "branch looks reachable", or "test seems missing." Local shape is a lead, not proof.
+
+For key, ID, dedupe, cache, queue, lock, retry, or refresh comments, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.
+
 Break the finding into atomic premises before assigning any FIX or CURRENT_PR_FIX route. Premises include: the current code state, external API/tool semantics, semantic equivalence or duplication, reachability, user/system impact, and whether the suggested change is safe.
 
 For each premise, record Evidence receipts. Each receipt must name the source checked and the fact observed: current source or tests, dependency source/types, installed binary `--help`, rendered config/manifests, official docs for the actual project version, a controlled reproduction, or a recorded user decision.

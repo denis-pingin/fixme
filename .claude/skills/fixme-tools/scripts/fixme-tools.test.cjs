@@ -3386,6 +3386,11 @@ test('fixme-pr-comments skill: triages comments by risk, complexity, confidence,
   assert(skill.includes('For each decision group, use `fixme-howto-present-decisions` exactly.'), 'PR comment decisions should reuse the shared decision presentation skill');
   assert(skill.includes('Do not restate, summarize, or locally redefine its decision-card fields in this skill.'), 'PR comment skill should not duplicate decision-card formatting');
   assert(skill.includes('If after consultation zero `CURRENT_PR_FIX` groups remain'), 'routing should dispatch only current PR fixes');
+  assert(skill.includes('## Current-Fix Proof Gate'), 'PR comment triage should require decisive proof before current-fix routing');
+  assert(skill.includes("State the claim as one falsifiable sentence, without the reviewer's proposed fix."), 'proof gate should strip reviewer fix anchoring from the core claim');
+  assert(skill.includes('Identify the one decisive code/API/runtime fact.'), 'proof gate should force the decisive fact before routing');
+  assert(skill.includes('Local shape is a lead, not proof.'), 'proof gate should reject local-shape-only evidence');
+  assert(skill.includes('For key, ID, dedupe, cache, queue, lock, retry, or refresh comments, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.'), 'proof gate should point key and dedupe comments at downstream side effects');
 });
 
 test('fixme-pr-comments skill: zero current fixes proceeds to reply resolution without confirmation', () => {
