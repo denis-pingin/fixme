@@ -135,6 +135,20 @@ tags: [short, relevant, tags]
 
 Do not use markdown tables in the default template. Use bullets and fenced code blocks for data shapes.
 
+## Decision Handling In Final Specifications
+
+Decision cards are only for user-facing pauses before a decision is made. They are not the persisted format for final technical specifications.
+
+In final technical specifications, record only resolved decisions that constrain implementation:
+
+```md
+- **Decision**: [chosen implementation contract]
+  - Rationale: [why this contract is required]
+  - Source: [decision log, user answer, product specification, or verified code reference]
+```
+
+Do not embed option-comparison cards, `ASK_USER` prompts, acceptance instructions, or rejected-option matrices in the final specification. Omit rejected options unless they define an explicit out-of-scope boundary, compatibility constraint, or implementation prohibition.
+
 ## Contract Rules
 
 - Every contract must be exact enough that implementation does not require a design choice.

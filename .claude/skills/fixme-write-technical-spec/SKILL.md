@@ -135,6 +135,22 @@ The specification must include:
 
 Omit irrelevant sections rather than padding the document.
 
+## Decision Formatting In Final Specifications
+
+Decision cards are only for user-facing pauses before a decision is made.
+
+Do not embed option-comparison decision cards in the final technical specification. In the final specification, record only resolved decisions that constrain implementation.
+
+Use compact bullets:
+
+```md
+- **Decision**: [chosen implementation contract]
+  - Rationale: [why this contract is required]
+  - Source: [decision log, user answer, product specification, or verified code reference]
+```
+
+Omit rejected options unless they define an explicit out-of-scope boundary, compatibility constraint, or implementation prohibition.
+
 ## Final Check Before Saving
 
 Before saving, verify:

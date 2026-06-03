@@ -5,7 +5,9 @@ description: Shared decision presentation guidelines for the fixme pipeline. Def
 
 # Decision Presentation Guidelines
 
-These guidelines govern how `ASK_USER` and `FIX_UNCLEAR` items are presented to users for decision-making. Every skill that produces or presents decisions MUST follow this format.
+These guidelines govern how `ASK_USER` and `FIX_UNCLEAR` items are presented to users for decision-making. Every skill that produces or presents user-facing decision prompts MUST follow this format.
+
+These guidelines do not define the persisted format for final product specifications, technical specifications, implementation plans, review reports, or other saved artifacts unless that artifact's owning skill explicitly opts into decision cards. Saved artifacts should record resolved decisions in their own document format.
 
 The output is a decision card: a compact, self-contained block optimized for fast re-entry after context switching. It must guide the user from the high-level situation to the concrete tradeoff before asking them to choose.
 
