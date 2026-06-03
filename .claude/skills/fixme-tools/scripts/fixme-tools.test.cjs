@@ -3178,6 +3178,14 @@ test('fixme-task skill: creates liveness status for every dispatched agent', () 
   assert(skill.includes('Do not dispatch the agent if `run start` fails.'), 'fixme-task should fail closed when liveness setup fails');
 });
 
+test('fixme-task skill: refreshes its own liveness while waiting on dispatched agents', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('Before every Agent dispatch wait, ping the current fixme-task invocation'), 'fixme-task should refresh its inherited liveness before waiting on child agents');
+  assert(skill.includes('--current-command "waiting for <agent-name>"'), 'fixme-task should report the child agent it is waiting on');
+  assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
+});
+
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

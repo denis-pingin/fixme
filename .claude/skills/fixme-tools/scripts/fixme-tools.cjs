@@ -4012,6 +4012,7 @@ function getUsageTrackingBlock(skillName, runtime) {
     'Use only these checkpoints: `dispatched`, `started`, `working`, `waiting`, `finalizing`, `done`.',
     '',
     'Ping `running/working` before main work. Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
+    'Before waiting on any Agent, Skill, or child dispatch, ping `running/working` with `--current-command "waiting for <child-name>"`; after the child returns, ping again with `--current-command null`.',
     '',
     'Before pausing for user input or parent instruction, ping `waiting/waiting`. If blocked, ping `blocked/waiting`. Before normal final output, ping `completed/done`. On failure, ping `failed/done`.',
     '',

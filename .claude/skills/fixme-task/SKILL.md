@@ -1034,6 +1034,28 @@ node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <
 
 Store the returned `status_id` as the dispatched agent's liveness status. Do not dispatch the agent if `run start` fails. Surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
+Step 2.5 - Refresh this fixme-task invocation's own liveness while it waits on the dispatched agent:
+
+Before every Agent dispatch wait, ping the current fixme-task invocation if this fixme-task invocation received its own `<liveness>` `status_id`:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command "waiting for <agent-name>"
+```
+
+Installed Codex skills use the Codex-installed tool path:
+
+```bash
+node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command "waiting for <agent-name>"
+```
+
+After the dispatched agent returns, ping the current fixme-task invocation again:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command null
+```
+
+If the current fixme-task invocation did not receive its own `<liveness>` `status_id`, skip only these parent heartbeat pings and continue the normal dispatch path. The child agent still receives its own liveness status id from Step 4.
+
 Step 3 - Print the banner as a single line of user-visible text before the Agent tool call:
 
 ```
