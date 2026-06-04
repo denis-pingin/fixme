@@ -44,8 +44,9 @@ Before evaluating anything, understand:
 3. **What was actually changed?** Read every diff. Map changes back to plan tasks.
 4. **What does the task code map already prove?** Read the code map and re-read its cited source ranges before relying on any mapped pattern, API shape, or file role.
 5. **What patterns does the codebase use?** Prefer the code map's cited sources for task-relevant conventions. Read additional neighboring files only when the map is missing, stale, or insufficient for the specific review question.
-6. **What stable context does the plan provide?** Read the plan's `## Context` section. Stable Context provides architecture, patterns, conventions, and dependency information discovered during planning. Use this as a head start - no need to re-explore the full codebase for this information. Re-read changed files directly for current state.
-7. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, `Verification Since Last Review`, and repair context sections to orient the review. Verify all claims against the files and git diff before relying on them.
+6. **What stable context and critical invariants does the plan provide?** Read the plan's `## Context` section. Stable Context provides architecture, patterns, conventions, and dependency information discovered during planning. Critical Invariants are mandatory correctness conditions. Use this as a head start - no need to re-explore the full codebase for this information. Re-read changed files directly for current state.
+7. **Does the spec/task contain critical invariants the plan omitted?** Look for money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, and provider APIs. Review those invariants even if the plan failed to list them.
+8. **What happened since the last review?** Use the review context packet's `Fixes Since Last Review`, `User Decisions For This Run`, `Verification Since Last Review`, and repair context sections to orient the review. Verify all claims against the files and git diff before relying on them.
 
 `Fixes Since Last Review` and repair context never limit review scope. Code review always covers the full changed surface.
 
@@ -120,6 +121,31 @@ Lexical similarity is not evidence of duplication. If semantic equivalence is no
 ## Verification Dimensions
 
 Use the dimension name as the finding's Category value (e.g., Dimension 3: Stub Detection -> category STUB-DETECTION).
+
+### Dimension 0: Critical Invariant Trace
+
+**Question:** Are every critical invariant and every external side-effect contract enforced on the live production path, with a behavioral test that would fail if omitted?
+
+This runs before ordinary plan compliance. A plan step can be "implemented" textually while still failing the invariant. Example failure shape: code computes and stores an idempotency key but never sends it in the provider request.
+
+**Process:**
+1. List critical invariants from the plan's `### Critical Invariants` section, the spec/task, and changed code that touches money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs.
+2. For each invariant, trace the live production path from entrypoint to side effect or state transition. Do not stop at helper definitions, schema fields, or stored metadata.
+3. Verify the enforcement point named by the plan actually exists on that path: outbound request field, provider/API method, guard, reconcile lookup, durable identifier write, confirmation check, database constraint, or state transition.
+4. Verify the ordering. For irreversible transitions, the external confirmation or durable proof must happen before the terminal state, public reveal, unlock, delete, publish, or acknowledgement.
+5. Verify retries. A retry must consult durable state and provider/source-of-truth identifiers before repeating an external side effect.
+6. Verify tests. The test must execute the production entrypoint or a public seam that includes the side-effect decision, and it must assert the observable contract. Tests that only assert helper output or source shape are insufficient.
+
+**Red flags:**
+- A required idempotency/reference key is computed or stored but not included in the outbound provider/API request.
+- Reconcile-before-resend is described in the plan but retry logic can send again from a `submitted`, `pending`, or unknown state without querying durable identifiers or the provider/source of truth.
+- Code marks an external action `confirmed`, releases locks, deletes data, publishes, reveals, acknowledges, or advances a terminal state before the external system has actually confirmed success.
+- A status enum or attempt row exists, but the live retry path does not branch on it.
+- A helper implements the invariant, but the scheduled action, handler, mutation, job, or public API path never calls it.
+- A behavioral test asserts a wrapper/helper was called but not that the outbound request includes required fields or that state advances only after confirmation.
+- A mock is configured to succeed in a way that skips the failure/retry/confirmation behavior the invariant is supposed to protect.
+
+**Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, or authorize incorrectly; otherwise MAJOR.
 
 ### Dimension 1: Plan Compliance
 

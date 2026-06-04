@@ -343,6 +343,14 @@ Use the exact saved plan and code map paths. In revision mode, these are the exi
 - [Build/test/lint commands and CI expectations - exact commands]
 - [Key constraints and design decisions with rationale]
 
+### Critical Invariants
+[Required for tasks that touch money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs. Use `None.` only when the task has no such invariant.]
+
+- **Invariant:** [condition that must always hold]
+  - **Source:** [spec/task/code source proving this is required]
+  - **Production enforcement:** [exact function/call path/request field/state transition that must enforce it]
+  - **Behavioral proof:** [test name or verification that fails if this invariant is omitted]
+
 ### Locked Decisions
 [User answers from ASK_USER and FIX_UNCLEAR questions. Each entry: the question, the answer, and the resulting decision. Empty on first pass. In revision mode, carry forward from previous plan and decision log.]
 
@@ -406,6 +414,29 @@ Before defining tasks, map every file that will be created or modified. This loc
 - Follow existing codebase patterns for structure and naming
 - Include exact paths, always
 - Include line ranges for modifications when possible (after reading the file)
+
+## Critical Invariants and External Side Effects
+
+If the task touches money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs, the plan MUST include a `### Critical Invariants` section.
+
+For each invariant, the plan must answer four questions:
+
+1. **What must always be true?** Use a concrete condition, not a theme. Good: "A submitted payout attempt is reconciled by stored provider identifiers and reference ID before any retry sends another transfer." Bad: "Payouts are safe."
+2. **Where did the requirement come from?** Cite the spec, task, existing code contract, provider documentation, schema, state machine, or user decision that makes it mandatory.
+3. **Where is it enforced on the live production path?** Name the exact function, outbound request field, state transition, guard, transaction, or database constraint. A stored value is not enforcement unless a later production call consumes it.
+4. **Which test fails if this is missing?** Name the behavioral test and the assertion it makes. The test must observe production behavior, not source shape.
+
+External side-effect plans need extra precision. If code sends, charges, pays, deletes, publishes, reveals, unlocks, enqueues, emails, calls a provider, or advances state based on a provider result, include the exact request/transition contract in the implementation step:
+
+- outbound provider/API method and required request fields
+- idempotency or deduplication key and the exact call site that sends it
+- retry decision order, including any reconcile-before-resend lookup
+- durable identifiers written before and after the side effect
+- confirmation source before irreversible state advancement
+- failure path and the next retryable state
+- test doubles or fixtures needed to prove every branch
+
+Do not let a plan say only "store reference ID", "add reconcile", "wait for confirmation", or "make it idempotent". Those are incomplete unless the step also specifies the consuming production call path and behavioral test.
 
 ## TDD-First Task Structure
 
@@ -548,6 +579,7 @@ Every task MUST have a structured **Expected Outcome** block immediately after t
 - **Lint:** "passes with zero warnings" or "N/A"
 - **Tests:** specific test names that pass + "full suite passes"
 - **Behavior:** observable state change, verifiable condition
+- **Critical Invariants:** each applicable invariant is enforced on the live production path, with the behavioral proof named in the invariant section
 
 Examples:
 - **For bug fixes:** Build: passes. Tests: `test_auth_redirect_after_login` passes (was failing). Behavior: Login page redirects to `/dashboard` instead of 404.
@@ -578,6 +610,8 @@ After writing the complete plan, read it end-to-end as if you were the executor.
 - **TDD completeness.** Does every behavioral task have the full cycle: write test, verify fails, implement, verify passes?
 - **Command accuracy.** Are all commands the project's actual commands from its docs/config, not generic guesses?
 - **Delegation violations.** Apply the Delegation Test to every create/modify step. Any "based on", "adapted from", "similar to"?
+- **Critical invariant trace.** For every critical invariant, can you point to one plan step that enforces it on the live production path and one behavioral test that would fail if it were omitted?
+- **External side-effect contract.** For every external side effect, does the plan specify the outbound request fields, retry/reconcile order, durable identifiers, confirmation source, and irreversible state advancement rule?
 
 ## Final Checklist
 
@@ -607,5 +641,8 @@ Before saving the plan, verify:
 - [ ] Every behavioral task follows TDD structure (test first, verify fail, implement, verify pass)
 - [ ] Every verification step includes the exact command and expected output
 - [ ] No commit step falls between "write test" and "make test pass"
+- [ ] Critical Invariants is present and complete, or explicitly says `None.`
+- [ ] Every critical invariant maps to exact production enforcement and a behavioral proof
+- [ ] Every external side effect specifies the actual outbound request contract and retry/confirmation state machine
 - [ ] Revision mode: the approach is fundamentally different from any previously failed approach
 - [ ] Final response ends with `PLAN_PATH: <absolute path to plan>` and `CODE_MAP_PATH: <absolute path to task code map>`

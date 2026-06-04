@@ -3814,6 +3814,35 @@ test('fixme execute/review skills: support repair mode and full post-repair revi
   assert(!review.includes('focused re-review'), 'code reviewer should remove focused re-review wording');
 });
 
+test('fixme plan and review skills require critical invariant receipts', () => {
+  const writePlanPath = path.resolve(__dirname, '..', '..', 'fixme-write-plan', 'SKILL.md');
+  const executePath = path.resolve(__dirname, '..', '..', 'fixme-execute-plan', 'SKILL.md');
+  const planReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md');
+  const codeReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const writePlan = fs.readFileSync(writePlanPath, 'utf8');
+  const execute = fs.readFileSync(executePath, 'utf8');
+  const planReview = fs.readFileSync(planReviewPath, 'utf8');
+  const codeReview = fs.readFileSync(codeReviewPath, 'utf8');
+
+  assert(writePlan.includes('### Critical Invariants'), 'planner should require a Critical Invariants section');
+  assert(writePlan.includes('A stored value is not enforcement unless a later production call consumes it.'), 'planner should reject storage-only enforcement');
+  assert(writePlan.includes('outbound provider/API method and required request fields'), 'planner should require exact external request contracts');
+  assert(writePlan.includes('Every critical invariant maps to exact production enforcement and a behavioral proof'), 'planner final checklist should require invariant proof');
+
+  assert(execute.includes('Critical Invariant Receipts'), 'executor should require critical invariant receipts');
+  assert(execute.includes('Never satisfy a critical invariant with storage-only or prose-only work.'), 'executor should reject storage-only completion');
+  assert(execute.includes('production enforcement file/function/call path'), 'executor receipts should cite production enforcement');
+  assert(execute.includes('A value is computed or stored but never passed to the provider/API call.'), 'executor should catch computed-but-unused safety values');
+
+  assert(planReview.includes('Dimension 0: Critical Invariant Coverage'), 'plan reviewer should check critical invariants before ordinary dimensions');
+  assert(planReview.includes('translating "send reference ID to provider" into only "derive and store reference ID."'), 'plan reviewer should catch provider-field-to-storage-only plan gaps');
+  assert(planReview.includes('The plan must specify the consumer of every safety value'), 'plan reviewer should require safety value consumers');
+
+  assert(codeReview.includes('Dimension 0: Critical Invariant Trace'), 'code reviewer should trace critical invariants before plan compliance');
+  assert(codeReview.includes('trace the live production path from entrypoint to side effect or state transition'), 'code reviewer should trace production paths');
+  assert(codeReview.includes('computed or stored but not included in the outbound provider/API request'), 'code reviewer should catch computed-but-unsent provider fields');
+});
+
 // ============================================================================
 // resolveAlert
 // ============================================================================

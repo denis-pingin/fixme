@@ -137,6 +137,33 @@ Lexical similarity is not evidence of duplication. If semantic equivalence is no
 
 Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim Verification -> category CLAIM-VERIFICATION).
 
+### Dimension 0: Critical Invariant Coverage
+
+**Question:** Does the plan make every critical invariant and external side-effect contract executable, testable, and impossible to satisfy with storage-only work?
+
+This runs before ordinary requirement coverage. A spec can be explicit and a plan can still fail by translating "send reference ID to provider" into only "derive and store reference ID." The reviewer must catch that at plan time.
+
+**Process:**
+1. Extract critical invariants from the spec, task, decision log, and existing code contracts. Look for money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, and provider APIs.
+2. Verify the plan has a `### Critical Invariants` section. If it says `None.`, prove the task has no critical invariants before accepting that.
+3. For each invariant, verify the plan names:
+   - the source requirement
+   - exact production enforcement point
+   - exact outbound request field, guard, durable write, reconcile lookup, confirmation source, database constraint, or state transition
+   - behavioral test or verification that fails if enforcement is omitted
+4. For every external side effect, check the planned live path from entrypoint to provider/API/state transition. The plan must specify the consumer of every safety value, not just where the value is computed or stored.
+5. For retries and irreversible transitions, verify the plan defines ordering: durable identifiers before retry decisions, reconcile-before-resend before a repeat side effect, and confirmation before terminal state/reveal/unlock/delete/publish/acknowledge.
+
+**Red flags:**
+- The plan omits Critical Invariants for a task involving money, provider calls, retries, idempotency, access control, data deletion, or terminal/public state.
+- The plan says "store reference ID", "add reconcile", "wait for confirmation", "make it idempotent", or similar without naming the exact consuming production call path.
+- A required provider/API request field appears in Stable Context or research notes but no implementation step passes it to the outbound request.
+- The plan adds a status, schema field, or attempt row but does not define retry branching that reads it.
+- The plan advances a terminal/public/irreversible state without first defining the confirmation source.
+- The test step only checks helper output, stored metadata, source text, or mocks, not production behavior at the side-effect decision.
+
+**Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, or authorize incorrectly; otherwise MAJOR.
+
 ### Dimension 1: Goal Achievement
 
 **Question:** If every step executes perfectly, is the stated problem actually solved?

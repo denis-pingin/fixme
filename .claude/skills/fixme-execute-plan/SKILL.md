@@ -19,6 +19,7 @@ Execute an implementation plan step by step. Verification is sacred. Work is nev
 - **Never skip a verification step.** Every "run test", "run lint", "run build" step in the plan is mandatory. If the plan doesn't include one where it should, add it.
 - **Never dismiss failures as pre-existing without proof.** See the Pre-Existing Failures section.
 - **Never start implementation on main/master without explicit user consent.**
+- **Never satisfy a critical invariant with storage-only or prose-only work.** If the plan requires an idempotency key, confirmation, reconcile step, access check, irreversible transition, or provider request field, prove it is consumed by the live production path and covered by a behavioral test.
 
 ## Input Resolution
 
@@ -48,7 +49,7 @@ Do not redesign the plan in repair mode. Do not implement follow-up-only `MINOR`
 ### Phase 1: Load and Review
 
 1. Read the plan fully
-2. Read the plan's `## Context` section. Stable Context provides architectural background. Locked Decisions are settled user choices - do not question or deviate from them during execution. If a plan step seems to contradict a locked decision, treat it as a plan concern and stop (step 5).
+2. Read the plan's `## Context` section. Stable Context provides architectural background. Critical Invariants are mandatory correctness conditions. Locked Decisions are settled user choices - do not question or deviate from them during execution. If a plan step seems to contradict a locked decision, treat it as a plan concern and stop (step 5).
 3. Read the task code map if provided or referenced in the plan. Use it to target source reads and verify API shapes, patterns, and commands. It is orientation, not authority.
 4. Read every file referenced in the plan's File Map - verify paths exist (for modifications) and parent directories exist (for creations)
 5. Identify concerns:
@@ -56,6 +57,9 @@ Do not redesign the plan in repair mode. Do not implement follow-up-only `MINOR`
    - Missing dependencies or prerequisites
    - Ambiguous steps that could be interpreted multiple ways
    - Steps that reference files/APIs/types that don't exist
+   - Critical Invariants is missing or says `None.` while the task clearly touches money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs
+   - A critical invariant names no exact production enforcement point or no behavioral proof
+   - An external side-effect step omits the outbound request fields, retry/reconcile order, durable identifiers, confirmation source, or irreversible state advancement rule needed to implement it safely
 6. If concerns exist: **stop and raise them with the user before writing any code**
 7. If no concerns: proceed
 
@@ -78,13 +82,42 @@ For each task in the plan:
 2. Execute each step exactly as written
 3. After each code change, verify it compiles/typechecks before moving on
 4. Run task-level verifications as specified in the plan
-5. If a step fails:
+5. After each task that touches a critical invariant, write an implementation receipt in your notes:
+   - invariant text
+   - production enforcement file/function/call path
+   - exact outbound request field, state transition, guard, or database constraint that enforces it
+   - behavioral test or verification command that proves it
+   - current result of that verification
+6. If you cannot produce a receipt for a critical invariant, stop. Do not continue to later tasks and do not claim completion.
+7. If a step fails:
    - Read the error carefully
    - Check if the plan's approach is wrong or if the implementation has a bug
    - Fix the implementation if it's a bug in your code
    - If the plan's approach is wrong: **stop and surface to the user**. Do not invent an alternative approach
-6. If an ambiguity arises not covered by the plan steps or locked decisions: stop and surface to the user. Do not make ad-hoc decisions that should be locked. When running inside the orchestrator, this routes back to the plan loop.
-7. Commit at every commit point specified in the plan. Each commit must leave the codebase in a buildable, passing state
+8. If an ambiguity arises not covered by the plan steps or locked decisions: stop and surface to the user. Do not make ad-hoc decisions that should be locked. When running inside the orchestrator, this routes back to the plan loop.
+9. Commit at every commit point specified in the plan. Each commit must leave the codebase in a buildable, passing state
+
+### Critical Invariant Receipts
+
+Critical invariant receipts are required whenever the plan has a `### Critical Invariants` section other than `None.` They prevent checklist completion without real enforcement.
+
+For each invariant, verify the live production path from entrypoint to side effect or state transition:
+
+1. Start at the scheduled action, handler, mutation, command, component action, webhook, job, or public API that triggers the behavior.
+2. Trace the actual calls to the side effect or irreversible state transition.
+3. Confirm the required guard, request field, idempotency key, reconcile lookup, confirmation check, durable write, or state transition is present on that path.
+4. Confirm the behavioral test would fail if the enforcement were removed or omitted.
+
+Common false completions that are not receipts:
+
+- A value is computed or stored but never passed to the provider/API call.
+- A helper exists but the live code path does not call it.
+- A retry state exists but retry logic does not branch on it.
+- A status is named `confirmed` but is set before the external system confirms.
+- A test imports a helper but never invokes the production entrypoint that performs the side effect.
+- A mock asserts that a wrapper was called but not that the outbound request includes required fields.
+
+If any of these appear, fix the implementation if the plan is precise enough. If the plan omitted the required contract, stop and report a plan concern.
 
 ### Phase 4: Final Verification (SACRED)
 
@@ -189,9 +222,10 @@ Report:
 1. **Summary**: what was implemented
 2. **Tasks completed**: list with status
 3. **Commits created**: list with hashes and messages
-4. **Verification results**: paste the clean output
-5. **Pre-existing issues**: if any were proven, list them with evidence
-6. **Notes**: anything the user should know that isn't captured above
+4. **Critical invariant receipts**: for each invariant, cite the production enforcement point and behavioral proof, or say `None`
+5. **Verification results**: paste the clean output
+6. **Pre-existing issues**: if any were proven, list them with evidence
+7. **Notes**: anything the user should know that isn't captured above
 
 ## Output Format
 
