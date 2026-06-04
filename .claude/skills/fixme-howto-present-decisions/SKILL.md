@@ -13,12 +13,12 @@ The output is a decision card: a compact, self-contained block optimized for fas
 
 ## Core Principle
 
-The Recommendation and Decision needed fields are what the user reads first. They must let the user understand the situation, compare the real choices, and respond without re-reading the finding, plan, or code.
+The Decision needed and Recommendation fields are what the user reads first. They must let the user understand the situation, compare the real choices, and respond without re-reading the finding, plan, or code.
 
 Use **top-down progressive disclosure**:
 
-1. State the recommendation.
-2. State the decision.
+1. State the decision.
+2. State the recommendation.
 3. Add an at-a-glance block that explains where we are, what problem we are solving, what breaks if we do nothing, and why the decision matters now.
 4. Give only the context and evidence needed to understand the recommendation.
 5. Present options as visually separated mini-cards.
@@ -85,8 +85,8 @@ Decision cards must read like designed cards, not logs.
 
 The first visible block must answer, in order:
 
-1. What do you recommend?
-2. What does the user need to decide?
+1. What does the user need to decide?
+2. What do you recommend?
 3. What context, problem, impact, and urgency make the decision necessary?
 
 Use this visual rhythm:
@@ -108,9 +108,9 @@ Every decision card starts with the same fast-orientation header:
 ```md
 ## D{number}: {short descriptive title}
 
-**Recommendation**: {specific recommendation}
-
 **Decision needed**: {one sentence}
+
+**Recommendation**: {specific recommendation}
 
 **At a glance**:
 
@@ -227,7 +227,7 @@ All decision output must be visually scannable. Dense walls of text are never ac
 - **Use decision numbers** (`D1`, `D2`, etc.) in headings so multiple decisions can be referenced unambiguously.
 - **Use horizontal rules** (`---`) between independent decision blocks when presenting multiple decisions.
 - **Bold key labels** (`**Decision needed**:`, `**Recommendation**:`, etc.) and start each on its own line.
-- **Put `Recommendation` immediately after the decision title.** Do not make the user read the whole card before seeing the recommended path.
+- **Put `Decision needed` immediately after the decision title, then `Recommendation` right after it.** Do not make the user read the whole card before seeing what they must decide and the recommended path.
 - **Use `At a glance` for orientation.** It must contain Context, Problem, Impact, and Why now in that order.
 - **Use option headings** (`### Option A: ...`) for every option. Do not compress options into one dense bullet list.
 - **Make option fields visually repeatable.** Every option uses the same field order: What, How it solves the issue, Pros, Cons, Tradeoff, Effort.
@@ -240,7 +240,7 @@ All decision output must be visually scannable. Dense walls of text are never ac
 
 Default budget:
 
-- Opening block: exactly 3 fields after the title: `Recommendation`, `Decision needed`, `At a glance`.
+- Opening block: exactly 3 fields after the title: `Decision needed`, `Recommendation`, `At a glance`.
 - At a glance: exactly 4 bullets: Context, Problem, Impact, Why now.
 - Context: max 5 bullets.
 - Impact if not fixed: one sentence, only for reported issues.
@@ -266,8 +266,8 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ## Recommendation Rules
 
 - **Recommendation is mandatory.** Always. No exceptions.
-- **Every decision card starts with a recommendation.** Put it immediately after the title.
-- **Option decisions get two recommendation lines.** Put the same recommendation after the title and after options.
+- **Every decision card surfaces the recommendation near the top.** Put it immediately after the `Decision needed` line.
+- **Option decisions get two recommendation lines.** Put the same recommendation in the opening block and after options.
 - **Spell out the recommendation before the option label.** Use `Choose Convex paginated result (Option A)`, not `Option A`.
 - **The pre-options recommendation must never be only an option label.** It must name the concrete choice and then include the label in parentheses.
 - **The top recommendation and post-options recommendation must match exactly.** Do not recommend one option before the list and a different wording after the list.
@@ -279,7 +279,7 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ## Quality Bar
 
 - **Self-contained**: the reader understands the full situation from this block alone, without scrolling back or re-reading code.
-- **Top-down**: recommendation first, then the decision, then the mental model, then the concrete tension, then the details. Never reference a concept before establishing it.
+- **Top-down**: decision first, then the recommendation, then the mental model, then the concrete tension, then the details. Never reference a concept before establishing it.
 - **Concrete**: actual file names, function names, line numbers, data volumes, error messages. "There's a size-related issue" is not acceptable - "the API returns 502 when payload exceeds 1MB" is.
 - **Right abstraction level**: a question about API design doesn't need to explain what an API is. A question about a race condition does need to explain the specific timing window.
 - **Neutral**: present the tradeoffs honestly. Don't bias toward FIX or REJECT in how the question is framed.
@@ -292,9 +292,9 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 ```md
 ## D1: Agent Gallery Result Shape
 
-**Recommendation**: Choose Convex paginated result (Option A).
-
 **Decision needed**: Choose the return shape for the Convex Agent gallery query.
+
+**Recommendation**: Choose Convex paginated result (Option A).
 
 **At a glance**:
 
