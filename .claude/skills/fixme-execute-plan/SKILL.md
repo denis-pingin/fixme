@@ -19,7 +19,8 @@ Execute an implementation plan step by step. Verification is sacred. Work is nev
 - **Never skip a verification step.** Every "run test", "run lint", "run build" step in the plan is mandatory. If the plan doesn't include one where it should, add it.
 - **Never dismiss failures as pre-existing without proof.** See the Pre-Existing Failures section.
 - **Never start implementation on main/master without explicit user consent.**
-- **Never satisfy a critical invariant with storage-only or prose-only work.** If the plan requires an idempotency key, confirmation, reconcile step, access check, irreversible transition, or provider request field, prove it is consumed by the live production path and covered by a behavioral test.
+- **Never satisfy a critical invariant with storage-only or prose-only work.** If the plan requires an idempotency key, proof marker, reconcile step, access check, irreversible transition, generated artifact, or outbound request field, prove it is consumed by the live production path and covered by a behavioral test.
+- **Never satisfy an Effect Lifecycle Contract with local-only work.** If the plan creates or consumes a state, marker, key, artifact, durable record, generated output, or safety value for a stateful effect, prove the live path consumes it and the behavioral proof would fail if it were omitted.
 
 ## Input Resolution
 
@@ -60,6 +61,7 @@ Do not redesign the plan in repair mode. Do not implement follow-up-only `MINOR`
    - Critical Invariants is missing or says `None.` while the task clearly touches money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs
    - A critical invariant names no exact production enforcement point or no behavioral proof
    - An external side-effect step omits the outbound request fields, retry/reconcile order, durable identifiers, confirmation source, or irreversible state advancement rule needed to implement it safely
+   - A stateful effect lacks an Effect Lifecycle Contract covering boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof
 6. If concerns exist: **stop and raise them with the user before writing any code**
 7. If no concerns: proceed
 
@@ -89,13 +91,21 @@ For each task in the plan:
    - behavioral test or verification command that proves it
    - current result of that verification
 6. If you cannot produce a receipt for a critical invariant, stop. Do not continue to later tasks and do not claim completion.
-7. If a step fails:
+7. After each task that touches a stateful effect, write an Effect Lifecycle Contract receipt in your notes:
+   - boundary and production entrypoint
+   - state meanings and source of truth
+   - durable evidence and consumer path
+   - repeat behavior and advancement gate
+   - failure signal
+   - behavioral test or verification command that proves the live path
+8. If you cannot produce a receipt for a stateful effect, stop. Do not continue to later tasks and do not claim completion.
+9. If a step fails:
    - Read the error carefully
    - Check if the plan's approach is wrong or if the implementation has a bug
    - Fix the implementation if it's a bug in your code
    - If the plan's approach is wrong: **stop and surface to the user**. Do not invent an alternative approach
-8. If an ambiguity arises not covered by the plan steps or locked decisions: stop and surface to the user. Do not make ad-hoc decisions that should be locked. When running inside the orchestrator, this routes back to the plan loop.
-9. Commit at every commit point specified in the plan. Each commit must leave the codebase in a buildable, passing state
+10. If an ambiguity arises not covered by the plan steps or locked decisions: stop and surface to the user. Do not make ad-hoc decisions that should be locked. When running inside the orchestrator, this routes back to the plan loop.
+11. Commit at every commit point specified in the plan. Each commit must leave the codebase in a buildable, passing state
 
 ### Critical Invariant Receipts
 
@@ -110,14 +120,36 @@ For each invariant, verify the live production path from entrypoint to side effe
 
 Common false completions that are not receipts:
 
-- A value is computed or stored but never passed to the provider/API call.
+- A value, marker, status, artifact, or record is computed or stored but never consumed by the live path.
 - A helper exists but the live code path does not call it.
 - A retry state exists but retry logic does not branch on it.
-- A status is named `confirmed` but is set before the external system confirms.
+- A status name is stronger than the proof available when it is set.
 - A test imports a helper but never invokes the production entrypoint that performs the side effect.
 - A mock asserts that a wrapper was called but not that the outbound request includes required fields.
 
 If any of these appear, fix the implementation if the plan is precise enough. If the plan omitted the required contract, stop and report a plan concern.
+
+### Effect Lifecycle Contract Receipts
+
+Effect Lifecycle Contract receipts are required whenever a task touches a stateful effect: state transition, retry, job, queue, webhook, cache invalidation, external API, durable write, generated artifact, public visibility, deletion, authorization, notification, deployment action, or similar observable behavior.
+
+For each stateful effect, verify the live production path from entrypoint to effect:
+
+1. Trace the boundary from the scheduled action, handler, mutation, command, component action, webhook, job, or public API to the effect crossing point.
+2. Confirm each status, flag, phase, marker, or derived state is named only after its required proof exists.
+3. Confirm the implementation checks the declared source of truth and records or reads the durable evidence.
+4. Confirm every generated key, marker, status, artifact, or record is consumed by the production path that makes the behavior safe.
+5. Confirm repeat behavior handles duplicate execution, interruption, races, and partial prior state as planned.
+6. Confirm the advancement gate runs before public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition.
+7. Confirm the behavioral test would fail if any of the above enforcement were removed or bypassed.
+
+Common false completions that are not receipts:
+
+- A marker, status, key, artifact, or record exists but no live path consumes it.
+- A status name is stronger than the proof behind it.
+- A helper implements the contract but the production entrypoint never calls it.
+- A retry path exists but ignores durable evidence from a prior attempt.
+- A test checks generated shape or helper output but not the production behavior.
 
 ### Phase 4: Final Verification (SACRED)
 

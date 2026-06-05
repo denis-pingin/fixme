@@ -126,7 +126,7 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Stub 
 
 **Question:** Are every critical invariant and every external side-effect contract enforced on the live production path, with a behavioral test that would fail if omitted?
 
-This runs before ordinary plan compliance. A plan step can be "implemented" textually while still failing the invariant. Example failure shape: code computes and stores an idempotency key but never sends it in the provider request.
+This runs before ordinary plan compliance. A plan step can be "implemented" textually while still failing the invariant. Example failure shape: code computes and stores a safety marker but the live path never consumes it.
 
 **Process:**
 1. List critical invariants from the plan's `### Critical Invariants` section, the spec/task, and changed code that touches money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, or provider APIs.
@@ -137,15 +137,40 @@ This runs before ordinary plan compliance. A plan step can be "implemented" text
 6. Verify tests. The test must execute the production entrypoint or a public seam that includes the side-effect decision, and it must assert the observable contract. Tests that only assert helper output or source shape are insufficient.
 
 **Red flags:**
-- A required idempotency/reference key is computed or stored but not included in the outbound provider/API request.
-- Reconcile-before-resend is described in the plan but retry logic can send again from a `submitted`, `pending`, or unknown state without querying durable identifiers or the provider/source of truth.
-- Code marks an external action `confirmed`, releases locks, deletes data, publishes, reveals, acknowledges, or advances a terminal state before the external system has actually confirmed success.
+- A required safety value, marker, status, artifact, or durable record is computed or stored but not consumed by the live path.
+- Reconcile-before-repeat is described in the plan but retry logic can repeat work from `pending`, `submitted`, `processing`, or unknown state without querying durable evidence or the source of truth.
+- Code marks work complete, releases locks, deletes data, publishes, reveals, acknowledges, or advances a terminal state before the source of truth proves the effect.
 - A status enum or attempt row exists, but the live retry path does not branch on it.
 - A helper implements the invariant, but the scheduled action, handler, mutation, job, or public API path never calls it.
-- A behavioral test asserts a wrapper/helper was called but not that the outbound request includes required fields or that state advances only after confirmation.
-- A mock is configured to succeed in a way that skips the failure/retry/confirmation behavior the invariant is supposed to protect.
+- A behavioral test asserts a wrapper/helper was called but not that the live path consumes required fields or advances state only after proof.
+- A mock is configured to succeed in a way that skips the failure, retry, replay, or proof behavior the invariant is supposed to protect.
 
 **Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, or authorize incorrectly; otherwise MAJOR.
+
+### Dimension 0A: Effect Lifecycle Contract Trace
+
+**Question:** Are every stateful effect and every Effect Lifecycle Contract enforced on the live production path, with a behavioral test that would fail if omitted?
+
+A stateful effect is any operation where correctness depends on more than local code returning a value: state transition, retry, job, queue, webhook, cache invalidation, external API, durable write, generated artifact, public visibility, deletion, authorization, notification, deployment action, or similar observable behavior.
+
+**Process:**
+1. List stateful effects from the plan, specification, review context, and changed code.
+2. For each effect, trace the live production path from entrypoint to effect crossing point. Do not stop at helper definitions, schema fields, generated artifacts, stored metadata, or execution-report claims.
+3. Verify state meanings against proof. A status, flag, phase, marker, or derived state must not be set before the source of truth and durable evidence justify the name.
+4. Verify every generated key, marker, status, artifact, or record is consumed by the production path that makes the behavior safe.
+5. Verify repeat behavior: duplicate execution, retry, interruption, races, and partial prior state must read durable evidence before repeating or advancing work.
+6. Verify the advancement gate runs before public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition.
+7. Verify the test executes the production entrypoint or public seam and would fail if the lifecycle contract were omitted or bypassed.
+
+**Red flags:**
+- A marker, key, status, artifact, durable record, generated file, or queue item is created but the live path never consumes it.
+- A status name is stronger than the evidence used before setting it.
+- A helper implements the lifecycle contract but the scheduled action, handler, mutation, job, component action, or public API never calls it.
+- Retry or replay can repeat work without first reading durable evidence from prior attempts.
+- The implementation advances public, terminal, destructive, or acknowledgement state before its source of truth proves the effect.
+- A test asserts source shape, helper output, artifact existence, or mock calls without proving production behavior.
+
+**Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, authorize, corrupt durable state, or make workflow state untrustworthy; otherwise MAJOR.
 
 ### Dimension 1: Plan Compliance
 

@@ -110,6 +110,17 @@ Every finding must include both severity and route scope. Classification answers
 
 MINOR and INFO findings never trigger a revision loop by themselves. Most valid code review fixes should be `IMPLEMENT_ONLY`; use `PLAN_REQUIRED` only when the implementation exposes a plan-level defect, ambiguous scope, or architecture problem that the executor should not decide alone.
 
+### Effect Lifecycle Contract Routing
+
+For findings about stateful effects, critical invariants, retries, durable markers, generated artifacts, state transitions, public visibility, deletion, acknowledgement, or irreversible workflow advancement, classify the root cause before assigning route scope:
+
+- If the specification or source task spec omitted the lifecycle contract, classify route scope as `PLAN_REQUIRED` and the approach must require specification or plan revision before implementation.
+- If the specification defined the lifecycle contract but the plan omitted or weakened it, classify route scope as `PLAN_REQUIRED` and the approach must revise the plan.
+- If the plan defined the lifecycle contract but the implementation omitted or bypassed it, classify route scope as `IMPLEMENT_ONLY`.
+- If one finding contains mixed root causes, split it into separate classified items. Do not collapse a spec omission, plan omission, and implementation omission into one repair.
+
+Use this routing before ordinary "can the executor fix it?" reasoning. An executor can repair missed implementation details, but must not invent missing lifecycle contracts.
+
 ## Review level Routing
 
 Use the shared `fixme-howto-importance` rubric after classification.

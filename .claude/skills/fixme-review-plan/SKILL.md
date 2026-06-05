@@ -141,7 +141,7 @@ Use the dimension name as the finding's Category value (e.g., Dimension 3: Claim
 
 **Question:** Does the plan make every critical invariant and external side-effect contract executable, testable, and impossible to satisfy with storage-only work?
 
-This runs before ordinary requirement coverage. A spec can be explicit and a plan can still fail by translating "send reference ID to provider" into only "derive and store reference ID." The reviewer must catch that at plan time.
+This runs before ordinary requirement coverage. A spec can be explicit and a plan can still fail by translating "consume durable evidence before advancing state" into only "store durable evidence." The reviewer must catch that at plan time.
 
 **Process:**
 1. Extract critical invariants from the spec, task, decision log, and existing code contracts. Look for money movement, external side effects, irreversible state transitions, idempotency, retries, access control, data deletion, public reveal, notifications, webhooks, queues, and provider APIs.
@@ -156,13 +156,36 @@ This runs before ordinary requirement coverage. A spec can be explicit and a pla
 
 **Red flags:**
 - The plan omits Critical Invariants for a task involving money, provider calls, retries, idempotency, access control, data deletion, or terminal/public state.
-- The plan says "store reference ID", "add reconcile", "wait for confirmation", "make it idempotent", or similar without naming the exact consuming production call path.
-- A required provider/API request field appears in Stable Context or research notes but no implementation step passes it to the outbound request.
+- The plan says "store the marker", "add reconcile", "wait for proof", "make it idempotent", or similar without naming the exact consuming production call path.
+- A required safety value appears in Stable Context or research notes but no implementation step consumes it in the live path.
 - The plan adds a status, schema field, or attempt row but does not define retry branching that reads it.
 - The plan advances a terminal/public/irreversible state without first defining the confirmation source.
 - The test step only checks helper output, stored metadata, source text, or mocks, not production behavior at the side-effect decision.
 
 **Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, or authorize incorrectly; otherwise MAJOR.
+
+### Dimension 0A: Effect Lifecycle Contract Coverage
+
+**Question:** Does the plan translate every stateful effect's Effect Lifecycle Contract into executable steps and behavioral proof?
+
+A stateful effect is any operation where correctness depends on more than local code returning a value: state transition, retry, job, queue, webhook, cache invalidation, external API, durable write, generated artifact, public visibility, deletion, authorization, notification, deployment action, or similar observable behavior.
+
+**Process:**
+1. Extract stateful effects from the specification, task, decision log, review context, and existing code contracts.
+2. For each effect, verify the plan defines the boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof.
+3. Verify each generated key, marker, status, artifact, or record has a production consumer named in a step.
+4. Verify the plan defines what happens on duplicate execution, retry, interruption, races, and partial prior state.
+5. Verify every public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition has an advancement gate backed by exact proof.
+6. Verify the test step runs the production entrypoint or public seam and would fail if the lifecycle contract were omitted.
+
+**Red flags:**
+- The plan creates a status, marker, key, artifact, or durable record but does not name the production path that consumes it.
+- A status name is stronger than the proof the plan requires before setting it.
+- The plan says "mark done", "publish", "sync", "acknowledge", "delete", "unlock", or similar without defining the source of truth and advancement gate.
+- The plan adds retry or replay behavior without defining how prior durable evidence is read before repeating work.
+- The plan tests helper output, generated shape, or source text instead of behavior at the production entrypoint.
+
+**Severity:** BLOCKER when failure can duplicate, lose, reveal, delete, publish, charge, pay, authorize, corrupt durable state, or make workflow state untrustworthy; otherwise MAJOR.
 
 ### Dimension 1: Goal Achievement
 

@@ -39,7 +39,7 @@ Before writing findings, enumerate the specification's behavioral surfaces:
 - authoritative stores, caches, projections, indexes, queues, and mobile copies
 - background jobs, locks, retries, polling, replay, force, and idempotency semantics
 - migrations, backfills, legacy decoders, invalidation, rebuilds, and deletion paths
-- external providers, durable assets, transient URLs, and media type boundaries
+- external providers, durable assets, generated artifacts, transient URLs, media type boundaries, and public visibility
 
 ## Verdict Rules
 
@@ -91,6 +91,29 @@ Validity outcomes:
 - **Impossible by construction** - the specification's declared request shapes, states, migrations, or transitions make the state unreachable. Drop the candidate silently unless another section weakens those guarantees.
 - **Out of scope** - the state may matter in a different product journey or future specification, but not this one. Do not promote it as a blocking finding.
 - **Unclear** - evidence does not prove supported, unsupported, or impossible. Emit a decision card instead of recommending specification text.
+
+## Effect Lifecycle Contract Gate
+
+Run this gate for every stateful effect. A stateful effect is any operation where correctness depends on more than local code returning a value: state transition, retry, job, queue, webhook, cache invalidation, external API, durable write, generated artifact, public visibility, deletion, authorization, notification, deployment action, or similar observable behavior.
+
+The specification must define an Effect Lifecycle Contract for each stateful effect:
+
+1. **Boundary**: exact operation crossing point where the effect happens.
+2. **State meanings**: exact proof behind every status, flag, phase, marker, or derived state.
+3. **Source of truth**: where reality is checked for each state.
+4. **Durable evidence**: persisted fact proving requested, applied, observed, skipped, failed, or completed work.
+5. **Consumer path**: production path that consumes each safety value, marker, key, status, artifact, or record.
+6. **Repeat behavior**: duplicate execution, retry, replay, interruption, race, and partial prior state.
+7. **Advancement gate**: proof required before public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition.
+8. **Failure signal**: observable status, log, metric, error, report, or user-facing state when work cannot complete.
+9. **Behavioral proof**: validation that fails if the contract is violated.
+
+Red flags:
+
+- a value, marker, status, artifact, or record is stored but not consumed
+- a status name is stronger than its evidence
+- a workflow can retry, replay, publish, delete, acknowledge, or become terminal without reading durable evidence
+- acceptance criteria verify shape or existence instead of production behavior
 
 ## Required Finding Format
 

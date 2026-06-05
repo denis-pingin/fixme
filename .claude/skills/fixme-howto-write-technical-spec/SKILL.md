@@ -157,7 +157,26 @@ Do not embed option-comparison cards, `ASK_USER` prompts, acceptance instruction
 - Every background workflow must define trigger, ownership, locking, retries, idempotency, progress observation, and partial failure.
 - Every integration must define required capability, limits, timeout or retry expectations, fallback behavior, and logging.
 - Every fallback or degraded behavior must be visible through logs, metrics, user-facing state, or an explicit operational signal.
+- Every stateful effect must define an Effect Lifecycle Contract.
 - Every requirement must map to validation criteria.
+
+## Effect Lifecycle Contracts
+
+A stateful effect is any operation where correctness depends on more than local code returning a value. This includes state transitions, retries, queues, jobs, webhooks, cache invalidation, external APIs, database writes, filesystem writes, public UI visibility, deletion, authorization, notifications, generated artifacts, deployment steps, and similar durable or observable behavior.
+
+For every stateful effect, define:
+
+- **Boundary**: the operation crossing point, such as handler, job, mutation, API call, filesystem write, queue publish, cache update, UI publish, provider call, deploy action, or artifact generation.
+- **State meanings**: every status, flag, phase, marker, or derived state introduced or consumed, with the exact proof required for that name to be true. Do not use names like `done`, `sent`, `synced`, `confirmed`, `published`, or `valid` unless the contract defines what proves them.
+- **Source of truth**: where reality is checked for each state: local store, remote system, generated file, event log, queue state, rendered output, user-visible surface, or another concrete authority.
+- **Durable evidence**: the persisted fact that proves the effect was requested, applied, observed, skipped, failed, or completed.
+- **Consumer path**: every generated key, marker, status, artifact, or record must name the production path that consumes it. Storage alone is not enforcement.
+- **Repeat behavior**: what happens when the same operation runs twice, resumes after interruption, races with another run, or sees partial prior state.
+- **Advancement gate**: the exact proof required before downstream state advances, especially before public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or any irreversible transition.
+- **Failure signal**: the observable status, log, metric, error, report, or user-facing state emitted when the effect cannot complete.
+- **Behavioral proof**: the test or validation must execute the production entrypoint or public seam and fail if the lifecycle contract is violated.
+
+The universal rule: any value, state, or artifact that exists to make behavior safe must be consumed by the live path that makes the behavior safe, and a behavioral test must prove that consumption.
 
 ## Data Contract Shape
 
@@ -194,6 +213,7 @@ Before finalizing, verify:
 - every product behavior has a technical owner or contract
 - every API, data, workflow, migration, and integration path has one valid implementation
 - every failure mode has a specified outcome and observable signal
+- every stateful effect has an Effect Lifecycle Contract
 - every durable change has migration and legacy behavior
 - every contract can be converted into tests or validation commands
 - no product decisions are hidden as technical assumptions

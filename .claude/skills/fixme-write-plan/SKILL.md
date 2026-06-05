@@ -421,14 +421,14 @@ If the task touches money movement, external side effects, irreversible state tr
 
 For each invariant, the plan must answer four questions:
 
-1. **What must always be true?** Use a concrete condition, not a theme. Good: "A submitted payout attempt is reconciled by stored provider identifiers and reference ID before any retry sends another transfer." Bad: "Payouts are safe."
-2. **Where did the requirement come from?** Cite the spec, task, existing code contract, provider documentation, schema, state machine, or user decision that makes it mandatory.
+1. **What must always be true?** Use a concrete condition, not a theme. Good: "A retry reads durable evidence from the prior attempt before repeating or advancing work." Bad: "Retries are safe."
+2. **Where did the requirement come from?** Cite the spec, task, existing code contract, documentation, schema, state machine, or user decision that makes it mandatory.
 3. **Where is it enforced on the live production path?** Name the exact function, outbound request field, state transition, guard, transaction, or database constraint. A stored value is not enforcement unless a later production call consumes it.
 4. **Which test fails if this is missing?** Name the behavioral test and the assertion it makes. The test must observe production behavior, not source shape.
 
 External side-effect plans need extra precision. If code sends, charges, pays, deletes, publishes, reveals, unlocks, enqueues, emails, calls a provider, or advances state based on a provider result, include the exact request/transition contract in the implementation step:
 
-- outbound provider/API method and required request fields
+- outbound method or operation and required fields
 - idempotency or deduplication key and the exact call site that sends it
 - retry decision order, including any reconcile-before-resend lookup
 - durable identifiers written before and after the side effect
@@ -436,7 +436,25 @@ External side-effect plans need extra precision. If code sends, charges, pays, d
 - failure path and the next retryable state
 - test doubles or fixtures needed to prove every branch
 
-Do not let a plan say only "store reference ID", "add reconcile", "wait for confirmation", or "make it idempotent". Those are incomplete unless the step also specifies the consuming production call path and behavioral test.
+Do not let a plan say only "store the marker", "add reconcile", "wait for proof", or "make it idempotent". Those are incomplete unless the step also specifies the consuming production call path and behavioral test.
+
+## Effect Lifecycle Contract Translation
+
+For every stateful effect named or implied by the task, technical specification, product specification, review item, or codebase contract, the plan must translate the Effect Lifecycle Contract into executable steps. A stateful effect is any operation where correctness depends on more than local code returning a value, including state transitions, retries, jobs, queues, webhooks, cache invalidation, external APIs, durable writes, generated artifacts, public visibility, deletion, authorization, notifications, and deployment actions.
+
+Each stateful-effect task must specify:
+
+- **Boundary**: exact production entrypoint and effect crossing point.
+- **State meanings**: exact meaning of each status, flag, phase, marker, or derived state used by the steps.
+- **Source of truth**: where the implementation checks reality before deciding the next state.
+- **Durable evidence**: what persisted fact is written or read before and after the effect.
+- **Consumer path**: Every generated key, marker, status, artifact, or record must name the production path that consumes it.
+- **Repeat behavior**: retry, replay, duplicate execution, interrupted execution, racing execution, and partial prior state.
+- **Advancement gate**: exact proof required before downstream public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition.
+- **Failure signal**: status, log, metric, error, report, or user-facing state when the effect cannot complete.
+- **Behavioral proof**: test or verification that runs the production entrypoint or public seam and fails if the lifecycle contract is violated.
+
+Do not translate an Effect Lifecycle Contract into only helper functions, stored fields, documentation, or local assertions. The plan must name the live path that consumes the state or artifact and the test that proves it.
 
 ## TDD-First Task Structure
 
@@ -612,6 +630,7 @@ After writing the complete plan, read it end-to-end as if you were the executor.
 - **Delegation violations.** Apply the Delegation Test to every create/modify step. Any "based on", "adapted from", "similar to"?
 - **Critical invariant trace.** For every critical invariant, can you point to one plan step that enforces it on the live production path and one behavioral test that would fail if it were omitted?
 - **External side-effect contract.** For every external side effect, does the plan specify the outbound request fields, retry/reconcile order, durable identifiers, confirmation source, and irreversible state advancement rule?
+- **Effect Lifecycle Contract translation.** For every stateful effect, does the plan preserve the boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof from the specification or codebase contract?
 
 ## Final Checklist
 
@@ -644,5 +663,6 @@ Before saving the plan, verify:
 - [ ] Critical Invariants is present and complete, or explicitly says `None.`
 - [ ] Every critical invariant maps to exact production enforcement and a behavioral proof
 - [ ] Every external side effect specifies the actual outbound request contract and retry/confirmation state machine
+- [ ] Every stateful effect has an Effect Lifecycle Contract translated into executable steps and behavioral proof
 - [ ] Revision mode: the approach is fundamentally different from any previously failed approach
 - [ ] Final response ends with `PLAN_PATH: <absolute path to plan>` and `CODE_MAP_PATH: <absolute path to task code map>`

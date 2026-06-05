@@ -96,10 +96,13 @@ Before writing the final specification, identify choices that materially affect 
 - interface shape, request/response contract, or error behavior
 - source of truth, durable data shape, versioning, or migration path
 - workflow trigger, locking, retry, replay, idempotency, or partial failure behavior
+- stateful effect boundary, state meanings, source of truth, durable evidence, repeat behavior, advancement gate, or failure signal
 - integration fallback, timeout, rate limit, or degraded behavior
 - rollout, rollback, compatibility, observability, or validation strategy
 
 If any choice has more than one defensible answer, present it with `fixme-howto-present-decisions` and wait for the answer. If the choice is purely mechanical because the codebase already has one established pattern, record the verified pattern as source material rather than a decision.
+
+Every stateful effect must have an Effect Lifecycle Contract. A stateful effect is any operation where correctness depends on more than local code returning a value, including state transitions, retries, jobs, queues, webhooks, cache invalidation, external APIs, durable writes, generated artifacts, public visibility, deletion, authorization, notifications, and deployment actions. If the contract cannot define the boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof, ask the user before finalizing.
 
 ## Save Location
 
@@ -128,6 +131,7 @@ The specification must include:
 - interfaces and data contracts
 - persistence, migration, and backfill behavior
 - workflow, concurrency, and failure semantics
+- effect lifecycle contracts for every stateful effect
 - dependencies and integration boundaries
 - test and validation criteria
 - rollout, compatibility, and operations
@@ -158,6 +162,8 @@ Before saving, verify:
 - every product behavior has a technical owner or contract
 - every interface, data, workflow, migration, and integration path has one valid implementation
 - every failure mode has a specified outcome and observable signal
+- every stateful effect has an Effect Lifecycle Contract with boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof
+- every terminal state, public visibility, deletion, acknowledgement, unlock, commit, publish, or irreversible transition names the exact proof that permits advancement
 - every durable change has migration, rollback, and legacy behavior
 - every contract maps to validation criteria
 - every review FIX item is addressed or escalated

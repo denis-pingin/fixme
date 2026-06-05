@@ -3826,21 +3826,72 @@ test('fixme plan and review skills require critical invariant receipts', () => {
 
   assert(writePlan.includes('### Critical Invariants'), 'planner should require a Critical Invariants section');
   assert(writePlan.includes('A stored value is not enforcement unless a later production call consumes it.'), 'planner should reject storage-only enforcement');
-  assert(writePlan.includes('outbound provider/API method and required request fields'), 'planner should require exact external request contracts');
+  assert(writePlan.includes('outbound method or operation and required fields'), 'planner should require exact external request contracts');
   assert(writePlan.includes('Every critical invariant maps to exact production enforcement and a behavioral proof'), 'planner final checklist should require invariant proof');
 
   assert(execute.includes('Critical Invariant Receipts'), 'executor should require critical invariant receipts');
   assert(execute.includes('Never satisfy a critical invariant with storage-only or prose-only work.'), 'executor should reject storage-only completion');
   assert(execute.includes('production enforcement file/function/call path'), 'executor receipts should cite production enforcement');
-  assert(execute.includes('A value is computed or stored but never passed to the provider/API call.'), 'executor should catch computed-but-unused safety values');
+  assert(execute.includes('A value, marker, status, artifact, or record is computed or stored but never consumed by the live path.'), 'executor should catch computed-but-unused safety values');
 
   assert(planReview.includes('Dimension 0: Critical Invariant Coverage'), 'plan reviewer should check critical invariants before ordinary dimensions');
-  assert(planReview.includes('translating "send reference ID to provider" into only "derive and store reference ID."'), 'plan reviewer should catch provider-field-to-storage-only plan gaps');
+  assert(planReview.includes('translating "consume durable evidence before advancing state" into only "store durable evidence."'), 'plan reviewer should catch storage-only plan gaps');
   assert(planReview.includes('The plan must specify the consumer of every safety value'), 'plan reviewer should require safety value consumers');
 
   assert(codeReview.includes('Dimension 0: Critical Invariant Trace'), 'code reviewer should trace critical invariants before plan compliance');
   assert(codeReview.includes('trace the live production path from entrypoint to side effect or state transition'), 'code reviewer should trace production paths');
-  assert(codeReview.includes('computed or stored but not included in the outbound provider/API request'), 'code reviewer should catch computed-but-unsent provider fields');
+  assert(codeReview.includes('computed or stored but not consumed by the live path'), 'code reviewer should catch computed-but-unused safety values');
+});
+
+test('fixme workflow skills require universal effect lifecycle contracts', () => {
+  const technicalSpecHowtoPath = path.resolve(__dirname, '..', '..', 'fixme-howto-write-technical-spec', 'SKILL.md');
+  const writeTechnicalSpecPath = path.resolve(__dirname, '..', '..', 'fixme-write-technical-spec', 'SKILL.md');
+  const reviewSpecPath = path.resolve(__dirname, '..', '..', 'fixme-review-spec', 'SKILL.md');
+  const writePlanPath = path.resolve(__dirname, '..', '..', 'fixme-write-plan', 'SKILL.md');
+  const executePath = path.resolve(__dirname, '..', '..', 'fixme-execute-plan', 'SKILL.md');
+  const planReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md');
+  const codeReviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const codeHandlerPath = path.resolve(__dirname, '..', '..', 'fixme-handle-code-review', 'SKILL.md');
+
+  const technicalSpecHowto = fs.readFileSync(technicalSpecHowtoPath, 'utf8');
+  const writeTechnicalSpec = fs.readFileSync(writeTechnicalSpecPath, 'utf8');
+  const reviewSpec = fs.readFileSync(reviewSpecPath, 'utf8');
+  const writePlan = fs.readFileSync(writePlanPath, 'utf8');
+  const execute = fs.readFileSync(executePath, 'utf8');
+  const planReview = fs.readFileSync(planReviewPath, 'utf8');
+  const codeReview = fs.readFileSync(codeReviewPath, 'utf8');
+  const codeHandler = fs.readFileSync(codeHandlerPath, 'utf8');
+
+  assert(technicalSpecHowto.includes('## Effect Lifecycle Contracts'), 'technical spec rubric should define effect lifecycle contracts');
+  assert(technicalSpecHowto.includes('A stateful effect is any operation where correctness depends on more than local code returning a value.'), 'technical spec rubric should define stateful effects generically');
+  assert(technicalSpecHowto.includes('Boundary'), 'effect lifecycle contract should require the operation boundary');
+  assert(technicalSpecHowto.includes('State meanings'), 'effect lifecycle contract should require exact state meanings');
+  assert(technicalSpecHowto.includes('Source of truth'), 'effect lifecycle contract should require a source of truth');
+  assert(technicalSpecHowto.includes('Durable evidence'), 'effect lifecycle contract should require durable evidence');
+  assert(technicalSpecHowto.includes('Consumer path'), 'effect lifecycle contract should require consumer paths');
+  assert(technicalSpecHowto.includes('Repeat behavior'), 'effect lifecycle contract should require repeat behavior');
+  assert(technicalSpecHowto.includes('Advancement gate'), 'effect lifecycle contract should require advancement gates');
+  assert(technicalSpecHowto.includes('Failure signal'), 'effect lifecycle contract should require observable failure signals');
+  assert(technicalSpecHowto.includes('Behavioral proof'), 'effect lifecycle contract should require behavioral proof');
+
+  assert(writeTechnicalSpec.includes('stateful effect'), 'technical spec writer should identify stateful effects');
+  assert(writeTechnicalSpec.includes('Effect Lifecycle Contract'), 'technical spec writer should require effect lifecycle contracts');
+  assert(writeTechnicalSpec.includes('terminal state, public visibility, deletion, acknowledgement, unlock, commit, publish, or irreversible transition'), 'technical spec writer should gate irreversible/public advancement');
+
+  assert(reviewSpec.includes('Effect Lifecycle Contract'), 'spec reviewer should review effect lifecycle contracts');
+  assert(reviewSpec.includes('stored but not consumed'), 'spec reviewer should catch storage-only safety work');
+  assert(reviewSpec.includes('status name is stronger than its evidence'), 'spec reviewer should catch over-strong state names');
+
+  assert(writePlan.includes('stateful effect'), 'planner should identify stateful effects');
+  assert(writePlan.includes('Effect Lifecycle Contract'), 'planner should translate effect lifecycle contracts');
+  assert(writePlan.includes('Every generated key, marker, status, artifact, or record must name the production path that consumes it.'), 'planner should require consumer paths for safety artifacts');
+
+  assert(execute.includes('Effect Lifecycle Contract'), 'executor should enforce effect lifecycle contracts');
+  assert(planReview.includes('Effect Lifecycle Contract'), 'plan reviewer should check effect lifecycle contract translation');
+  assert(codeReview.includes('Effect Lifecycle Contract'), 'code reviewer should trace effect lifecycle contracts');
+  assert(codeHandler.includes('spec omitted the lifecycle contract'), 'code review handler should route spec omissions separately');
+  assert(codeHandler.includes('plan omitted or weakened it'), 'code review handler should route plan omissions separately');
+  assert(codeHandler.includes('implementation omitted or bypassed it'), 'code review handler should route executor omissions separately');
 });
 
 // ============================================================================

@@ -69,6 +69,24 @@ Discard preference-only issues, speculative edge cases outside the declared surf
 
 Write only confirmed findings. Do not include retracted candidates, investigation notes, or "no issue" commentary.
 
+## Effect Lifecycle Contract Gate
+
+Run this gate for every stateful effect in the specification. A stateful effect is any operation where correctness depends on more than local code returning a value: state transition, retry, job, queue, webhook, cache invalidation, external API, durable write, generated artifact, public visibility, deletion, authorization, notification, deployment action, or similar observable behavior.
+
+For each stateful effect, verify the specification defines an Effect Lifecycle Contract:
+
+1. **Boundary**: the exact handler, job, mutation, API call, write, publish, generated artifact, or other crossing point where the effect occurs.
+2. **State meanings**: the exact meaning of every status, flag, phase, marker, and derived state. Flag any status name is stronger than its evidence.
+3. **Source of truth**: where reality is checked for each state.
+4. **Durable evidence**: what persisted fact proves the effect was requested, applied, observed, skipped, failed, or completed.
+5. **Consumer path**: every safety value, marker, key, status, artifact, or record has a production consumer. Flag anything stored but not consumed.
+6. **Repeat behavior**: how retry, replay, duplicate execution, interruption, race, and partial prior state behave.
+7. **Advancement gate**: what proof permits public visibility, deletion, acknowledgement, unlock, commit, publish, terminal state, or irreversible transition.
+8. **Failure signal**: the observable status, log, metric, error, report, or user-facing state when the effect cannot complete.
+9. **Behavioral proof**: the validation that would fail if the lifecycle contract is violated.
+
+If any field is missing, ambiguous, or contradicted by another section, emit a finding against the nearest section where the contract should have been defined.
+
 ## Edge-Case Validity Gate
 
 Run this gate for any candidate about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, negative path, legacy path, partial-failure path, or "this could happen if..." scenario.
