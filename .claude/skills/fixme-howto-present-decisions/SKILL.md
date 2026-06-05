@@ -28,6 +28,17 @@ Use **top-down progressive disclosure**:
 
 Pick the format by the user's cognitive task, not blindly by the handler label.
 
+### Eligibility Before Cards
+
+Do not emit a decision card just because the workflow paused.
+
+Before using `ASK_USER` or `FIX_UNCLEAR`, identify the real user task:
+
+- If the agent can safely determine the next action from facts and workflow rules, proceed and present a compact status block if useful.
+- If only one path is eligible after hard constraints are applied, present that path directly. Do not manufacture alternatives.
+- If the workflow is blocked because a fact is unknown, present a compact evidence gate with `Cause`, `Evidence`, `Blocked by`, and `Next`. Do not add option cards unless the user must choose between genuinely different safe actions.
+- If every "con" is just an expected mechanism of the recommended action, such as "force-push rewrites the branch ref" during a rebase, the option shape is wrong. State the mechanism under `Safety` or `Impact`, not as a downside.
+
 ### ASK_USER
 
 Use `ASK_USER` when the handler cannot safely decide whether the finding is valid, in scope, already handled by a locked decision, or intentionally acceptable.
@@ -256,6 +267,7 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 
 ## Option Rules
 
+- **Do not invent costs to fill the format.** A `Cons` bullet must name a real cost, risk, ownership burden, regression risk, user-visible downside, or irreversible effect. Expected mechanics, already-mitigated safety steps, and normal workflow consequences are not cons.
 - **All 6 option fields are mandatory and exhaustive** for every option: What, How it solves the issue, Pros, Cons, Tradeoff, Effort. Do not invent additional fields like "Product impact", "Complexity", "Risk", or "Why now". If a field would have the same value across all options (e.g. "Product impact: user-facing fallback remains unchanged" repeated for every option), it is filler and must not appear at all.
 - **Options are mandatory** for `FIX_UNCLEAR`.
 - **Options are optional** for `ASK_USER`. Include them only when there are genuinely different directions.

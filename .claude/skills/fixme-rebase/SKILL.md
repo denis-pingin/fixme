@@ -26,7 +26,7 @@ Rebase a branch (the current branch by default, or a named branch via the positi
 
 ## Discussion Mode at User-Pause Gates
 
-Several phases pause for explicit user input before proceeding: Phase 0 dirty-tree choice (stash / discard / abort), Phase 0 shallow-clone choice, Phase 3 pre-execution confirmation when `--confirm` is present, Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
+Several phases pause for explicit user input before proceeding: Phase 0 dirty-tree choice (stash / discard / abort), Phase 0 shallow-clone choice, Phase 1 unresolved current-branch divergence, Phase 3 pre-execution confirmation when `--confirm` is present, Phase 5 conflict-stop (`stop and present the conflict to the user`), Phase 6 regression-stop, and the final push confirmation. Each of these is a **decision pause**, not just a yes/no gate.
 
 **A pause begins** the moment the skill emits the gate's user-facing block (Findings, conflict markers, regression report, etc.). **It ends** the moment the user provides a decision the skill can act on.
 
@@ -52,6 +52,7 @@ Fire an alert at every user-pause gate and at the terminal outcome. Use the Bash
 | --- | --- |
 | Phase 0 dirty-tree choice (stash / discard / abort) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 0 shallow-clone choice | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
+| Phase 1 unresolved current-branch divergence | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 3 pre-execution confirmation (when `--confirm`) | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 5 conflict stop | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
 | Phase 6 regression stop | `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert user_input` |
@@ -300,7 +301,65 @@ Determine what to rebase onto. Priority order:
      ```
      - **Behind only (0 ahead, N behind):** **STOP.** Tell the user: "Your branch is behind `$CUR_UPSTREAM` by N commits. Pull or fast-forward before rebasing to avoid losing remote changes."
      - **Up-to-date or ahead-only:** Good, proceed.
-     - **Diverged (N ahead, M behind):** **STOP.** Tell the user: "Your branch has diverged from `$CUR_UPSTREAM` (N ahead, M behind). This is unusual. Reconcile with your upstream before rebasing."
+     - **Diverged (N ahead, M behind):** classify the remote-only side before stopping.
+
+      One common cause is a previous local rebase that was not pushed: local `HEAD` contains the rebased commits, while `$CUR_UPSTREAM` still points at the old pre-rebase commit graph. The safe condition is narrower than the cause: continue only when the remote-only commits are represented locally.
+
+       **Stale-upstream check:**
+
+       ```bash
+       git cherry HEAD $CUR_UPSTREAM
+       git log --format='%h%x09%an%x09%s' HEAD..$CUR_UPSTREAM
+       git log --format='%h%x09%an%x09%s' $CUR_UPSTREAM..HEAD
+       git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads/backup/fixme-rebase/
+       git range-diff <BASE_BRANCH>..$CUR_UPSTREAM <BASE_BRANCH>..HEAD
+       ```
+
+       - If every `git cherry HEAD $CUR_UPSTREAM` row starts with `-`: the remote-only commits are patch-equivalent to local commits. Treat `$CUR_UPSTREAM` as represented by local history.
+       - If non-equivalent remote-only commits remain, compare exact subject and author against local-only commits. If every remaining remote-only commit has a same-author, same-subject local-only commit and any diff differences are generated-file churn already present in local `HEAD`, treat `$CUR_UPSTREAM` as represented by local history.
+       - If any remote-only commit appears to be genuine unique work, or the cause is not clear: stop.
+
+       **If remote-only commits are represented locally:**
+
+       First verify the precise cause. Use `Cause: verified - previous local rebase was not pushed` only when at least one concrete fact supports it:
+       - `$CUR_UPSTREAM` equals a prior `backup/fixme-rebase/...` ref for this branch.
+       - `git range-diff` maps the old remote series onto the local rebased series.
+
+       If those checks do not support the cause, use `Cause: remote-only commits are represented locally, but the exact divergence cause is unverified`.
+
+       1. Create or refresh a backup ref for the remote state:
+          ```bash
+          git branch backup/fixme-rebase/<branch>-remote-<YYYYMMDD-HHMMSS> $CUR_UPSTREAM
+          ```
+       2. Record `CURRENT_UPSTREAM_STALE=true`.
+       3. Record the cause as verified or unverified.
+       4. Present the compact reconciliation gate below and wait for explicit approval before running the force-push.
+
+       Do not use a `D1` decision card and do not invent pros/cons; this is a reconciliation gate, not a fix-approach choice.
+
+       ```md
+       Current upstream's remote-only commits are represented locally.
+
+       Cause: <verified - previous local rebase was not pushed | remote-only commits are represented locally, but the exact divergence cause is unverified>.
+       Evidence: remote-only commits are represented by local rebased commits (<patch-equivalent-count> patch-equivalent, <same-subject-count> same-subject/generated); <backup-ref-or-range-diff-fact>.
+       Recommended reconciliation: backed up `$CUR_UPSTREAM`, then run `git push --force-with-lease <remote> <branch>`.
+       Next: after the push succeeds, fetch `$CUR_UPSTREAM`, verify local and upstream are `0 0`, then rerun or continue the rebase onto `<BASE_BRANCH>`.
+       ```
+
+       If the user approves, run the recommended reconciliation command, fetch `$CUR_UPSTREAM`, verify `git rev-list HEAD...$CUR_UPSTREAM --count --left-right` returns `0 0`, then continue to Phase 1 step 6. If the user declines, stop.
+
+       **If stale pre-rebase history is not detected:**
+
+       Fire the Phase 1 unresolved current-branch divergence alert, then stop with this compact gate. Do not use a `D1` decision card and do not invent pros/cons; this is a safety classification failure, not a fix-approach choice.
+
+       ```md
+       Current branch diverged from its upstream and the cause is unclear.
+
+       Cause: unknown. Local has N commits not on `$CUR_UPSTREAM`; `$CUR_UPSTREAM` has M commits not in local `HEAD`.
+       Evidence: <list the remote-only commits that are not patch-equivalent or same-subject represented, max 10>.
+       Blocked by: these remote-only commits may be collaborator work, so rebasing and later force-pushing could remove them from the PR branch name.
+       Next: reconcile `$CUR_UPSTREAM` manually, or explicitly say to back up the remote ref and treat it as stale.
+       ```
 
 Record the chosen base branch as `BASE_BRANCH`. The rebase target is always the local ref `<BASE_BRANCH>` (guaranteed fresh by step 5).
 

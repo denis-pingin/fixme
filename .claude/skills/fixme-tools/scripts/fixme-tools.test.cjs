@@ -3348,6 +3348,20 @@ test('fixme-rebase skill: --confirm is the only pre-execution confirmation gate'
   assert(!skill.includes('The user always confirms before execution.'), 'old unconditional confirmation statement should be removed');
 });
 
+test('fixme-rebase skill: stale current upstream recommends verified force-push reconciliation', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Use `Cause: verified - previous local rebase was not pushed` only when'), 'stale upstream cause should name the previous unpushed rebase only when verified');
+  assert(skill.includes('Cause: remote-only commits are represented locally, but the exact divergence cause is unverified'), 'fallback cause should avoid over-claiming an unpushed rebase');
+  assert(!skill.includes('Cause: <verified|likely> - previous local rebase was not pushed'), 'status template must not label unverified causes as likely unpushed rebases');
+  assert(skill.includes('git for-each-ref --format'), 'stale upstream check should inspect previous rebase backup refs');
+  assert(skill.includes('Recommended reconciliation'), 'stale upstream gate should recommend the concrete reconciliation step');
+  assert(skill.includes('git push --force-with-lease <remote> <branch>'), 'stale upstream gate should give the exact force-push shape');
+  assert(skill.includes('wait for explicit approval before running the force-push'), 'mid-flow force-push should remain an explicit approval gate');
+  assert(skill.includes('Do not use a `D1` decision card'), 'stale upstream handling should not fabricate a decision card');
+});
+
 test('fixme-rebase skill: positional argument is the branch to rebase and --base sets the target', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

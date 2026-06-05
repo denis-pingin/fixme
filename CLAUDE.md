@@ -34,7 +34,7 @@ There is no `package.json` - this is a pure skill repo with no build/lint steps.
 
 Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skills/`. It installs Codex-adapted skill copies into `~/.codex/skills/`, installs `.claude/agents/fixme-*.md` into `~/.claude/agents/`, generates Codex agent TOML files in `~/.codex/agents/`, and registers them in `~/.codex/config.toml` using `[agents.fixme-*]` tables.
 
-**CRITICAL: Always edit source files in `.claude/skills/`, NEVER edit `~/.claude/skills/` directly.** The installed copies at `~/.claude/skills/` are overwritten by `install.sh`. Edits made there will be lost on next install and won't be tracked in git. Workflow: edit in `.claude/skills/` -> run `./install.sh` to deploy.
+**CRITICAL: Always edit source files in `.claude/skills/`, NEVER edit `~/.claude/skills/` directly.** The installed copies at `~/.claude/skills/` are overwritten by `install.sh`. Edits made there will be lost on next install and won't be tracked in git. Workflow: edit in `.claude/skills/` -> run `node .claude/skills/fixme-tools/scripts/fixme-tools.test.cjs` to verify -> run `./install.sh` to deploy -> commit -> push to `main` unless specifically instructed to use a different branch.
 
 ### Configuring fixme
 
