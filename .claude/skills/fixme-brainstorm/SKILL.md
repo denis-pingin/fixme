@@ -31,7 +31,7 @@ This skill is the missing front step: it explores the idea collaboratively until
 
 ## Hard Constraints
 
-- **NO source code modifications.** The only writable artifact is the brainstorm document under `<fixme-dir>/brainstorms/`. Downstream skills handle code.
+- **NO source code modifications.** The writable artifacts are the brainstorm document under `<fixme-dir>/brainstorms/` and, when task-bound, the saved task preparation artifact index. Downstream skills handle code.
 - **NO assumptions.** Every decision must come from the user's input. Speculation is allowed if explicitly flagged with "assumption:" in the conversation and recorded as a deferred question.
 - **NO multi-question prompts.** Ask one question at a time. Use AskUserQuestion with concrete multiple-choice options when possible.
 - **NO auto-routing.** Always write the brainstorm document and present the routing menu. Dispatch downstream skills only when the user explicitly picks one.
@@ -45,6 +45,45 @@ Detect the topic in this order:
 2. **IDE context**: if the user has source material, screenshots, or notes selected, use it.
 3. **Conversation context**: if the user has just described a problem or feature in this conversation, use that.
 4. **Empty**: ask the user "What's on your mind?" and use their reply.
+
+## Saved Task Binding
+
+This skill can prepare an existing saved `FIXME-N` task before execution.
+
+Resolve task binding in this order:
+
+1. Explicit `--task <FIXME-N|task.md|state.json|ticket.md|ticket-folder>` in `$ARGUMENTS`.
+2. If no explicit flag exists, extract a `FIXME-N` label from the natural-language prompt when the user asks for brainstorm or preparation work for that saved task.
+3. If the prompt contains both a Linear label and a saved task label, such as `ALP-304 / FIXME-13`, use the `FIXME-N` saved task as the attachment target. Treat the Linear label as context only unless authoritative Linear content is required.
+4. If no explicit task binding or `FIXME-N` label exists, run standalone and do not attach the brainstorm to any saved task.
+
+Do not search by recency for a task to attach to. Do not infer a task from the newest file in `<fixme-dir>/tasks/`, `<fixme-dir>/brainstorms/`, or `<fixme-dir>/research/`.
+
+When task-bound:
+
+1. Run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <ref>`.
+2. Read the resolved saved task brief and task state before starting the Socratic loop.
+3. Include explicitly attached preparation artifacts from the saved task as context. Do not discover unrelated brainstorm or research files by recency.
+4. After writing the brainstorm document, attach it with:
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task attach-artifact --task <ref> --data '<json-object>'
+   ```
+
+   The JSON must use camelCase keys:
+
+   ```json
+   {
+     "artifactType": "brainstorm",
+     "artifactPath": "<absolute path to brainstorm.md>",
+     "title": "<brainstorm title>",
+     "summary": ["<1-3 concise bullets from the brainstorm outcome>"],
+     "sourceSkill": "fixme-brainstorm",
+     "status": "current"
+   }
+   ```
+
+If attachment fails, warn with the task ref, brainstorm path, failed command, and fallback: the brainstorm still exists but is not indexed on the saved task.
 
 ## Audible Alerts
 
@@ -273,14 +312,16 @@ related: []
 
 <Files, docs, ADRs, or specs the user pointed to during the conversation. Full relative paths.>
 
-## Recommended Next Step
+## Handoff
 
-<Default to run the configured fixme-task workflow unless the user explicitly asked only to save or only to write an implementation plan. Include a one-sentence rationale.>
+Route menu default: run configured fixme-task workflow. This is not a fixme-task pipeline hint; downstream pipeline selection must come from explicit user choice or artifact type.
 ```
 
 Omit sections that have no content. Keep entries terse.
 
 Append a line to `<fixme-dir>/decisions.md` for each new decision if that file exists or the user wants it persisted across brainstorms. Use the same `D-XX` numbering scheme as the document. If `decisions.md` does not exist, do not create it from this skill - leave that to the spec/plan skills.
+
+If this brainstorm is task-bound, run `task attach-artifact --task <ref> --data '<json-object>'` now so future `fixme-task --resume <ref>` runs can discover the brainstorm without chat history.
 
 ### Step 9: Present the routing menu
 
@@ -302,7 +343,7 @@ Present the options in this exact order with these labels:
 | A | A. Write implementation plan | Dispatch `fixme-write-plan` with the brainstorm path as input |
 | C | C. Save only | Stop here. The brainstorm document is the artifact. |
 
-`Run configured fixme-task workflow` is the recommended option. This means the workflow selected by config resolution; it does not mean the workflow named `full`. Do not reorder options based on the document's `Recommended Next Step`.
+`Run configured fixme-task workflow` is the recommended option. This means the workflow selected by config resolution; it does not mean the workflow named `full`. Do not reorder options based on the document's `Handoff` section.
 
 Dispatch the selected skill via the Skill tool (`Skill(skill="fixme-task", args="...")`), or via the Agent tool when running under an orchestrator that prefers agent dispatch. Pass:
 

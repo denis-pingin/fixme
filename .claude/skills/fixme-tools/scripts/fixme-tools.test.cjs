@@ -1023,6 +1023,66 @@ test('task resolve: resolves FIXME label and legacy task path to canonical state
   assert(byStatePath.data.statePath === saved.data.statePath, 'state resolve should return saved state path');
 });
 
+test('task attach-artifact: indexes preparation artifact on saved task brief and state', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Prepare Saved Task',
+    taskGoal: 'Prepare a saved task for implementation.',
+    agreedApproach: ['Attach preparation artifacts to the saved task instead of relying on chat history.'],
+    userVisibleBehavior: ['A future resume can discover the attached preparation artifact from the saved task.'],
+    scope: {
+      inScope: ['Saved task preparation artifact indexing'],
+      outOfScope: ['Executing the prepared task'],
+    },
+    laterPlanningNotes: ['Read the attached preparation artifacts before planning execution.'],
+    pipelineHint: 'standard',
+    source: 'test',
+  });
+
+  const saved = runInDir(`task save --data '${data}'`, projectRoot);
+  assert(saved.ok, `task save should succeed, got: ${JSON.stringify(saved.data)}`);
+
+  const researchDir = path.join(projectRoot, '.fixme', 'research', '2026-06-05-prepare-saved-task');
+  fs.mkdirSync(researchDir, { recursive: true });
+  const researchPath = path.join(researchDir, 'research.md');
+  fs.writeFileSync(researchPath, '# Research\n\nEvidence-backed approach.\n');
+
+  const artifactData = JSON.stringify({
+    artifactType: 'research',
+    artifactPath: researchPath,
+    title: 'Validate approach',
+    summary: [
+      'Checked the saved task approach against codebase evidence.',
+      'Planner should use the attached research before execution.',
+    ],
+    sourceSkill: 'fixme-research',
+    status: 'current',
+  });
+
+  const attached = runInDir(`task attach-artifact --task FIXME-1 --data '${artifactData}'`, projectRoot);
+
+  assert(attached.ok, `task attach-artifact should succeed, got: ${JSON.stringify(attached.data)}`);
+  assertNoSnakeCaseKeys(attached.data, 'task attach-artifact output');
+  assert(attached.data.taskRef === 'FIXME-1', `taskRef should be FIXME-1, got ${attached.data.taskRef}`);
+  assert(attached.data.taskPath === saved.data.taskPath, 'attach output should include saved task path');
+  assert(attached.data.artifact.artifactType === 'research', `artifactType should be research, got ${attached.data.artifact && attached.data.artifact.artifactType}`);
+  assert(attached.data.artifact.artifactPath === researchPath, 'artifact path should be preserved');
+
+  const taskMarkdown = fs.readFileSync(saved.data.taskPath, 'utf8');
+  assert(taskMarkdown.includes('## Preparation Artifacts'), 'saved task brief should include preparation artifact section');
+  assert(taskMarkdown.includes('### Research: Validate approach'), 'artifact title should be indexed in markdown');
+  assert(taskMarkdown.includes(`- **Path:** \`${researchPath}\``), 'artifact path should be indexed in markdown');
+  assert(taskMarkdown.includes('- Checked the saved task approach against codebase evidence.'), 'artifact summary should be indexed in markdown');
+
+  const state = readJson(saved.data.statePath);
+  assertNoSnakeCaseKeys(state, 'task state with preparation artifact');
+  assert(Array.isArray(state.artifacts.preparationArtifacts), 'state should track preparation artifacts');
+  assert(state.artifacts.preparationArtifacts.length === 1, `state should have one preparation artifact, got ${state.artifacts.preparationArtifacts.length}`);
+  assert(state.artifacts.preparationArtifacts[0].artifactPath === researchPath, 'state artifact path should match');
+});
+
 test('task init: creates ticket-backed task state and resolves ticket folder', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -3341,6 +3401,52 @@ test('fixme-brainstorm skill: labels routing options in B A C order with configu
   assert(optionC !== -1, 'save only option should be labeled C');
   assert(optionB < optionA && optionA < optionC, 'routing options should be presented in B, A, C order');
   assert(!menu.includes('Run full fixme-task workflow'), 'routing menu should not imply the workflow named full');
+});
+
+test('fixme-brainstorm skill: artifact does not write a downstream pipeline hint', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const templateStart = skill.indexOf('Document shape:');
+  const templateEnd = skill.indexOf('### Step 9: Present the routing menu', templateStart);
+  const template = skill.slice(templateStart, templateEnd);
+
+  assert(templateStart !== -1 && templateEnd !== -1, 'brainstorm document template should be present');
+  assert(!template.includes('## Recommended Next Step'), 'brainstorm artifact should not contain a recommended next-step route hint');
+  assert(template.includes('## Handoff'), 'brainstorm artifact should contain a neutral handoff section');
+  assert(template.includes('not a fixme-task pipeline hint'), 'handoff section should state it is not pipeline evidence');
+});
+
+test('fixme-task skill: ignores brainstorm handoff text for pipeline resolution', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Brainstorm document handoff sections are assistant-authored metadata, not pipeline evidence.'), 'fixme-task should treat brainstorm handoff text as ineligible pipeline evidence');
+  assert(skill.includes('Do not select `plan-only` because a brainstorm artifact says to write an implementation plan.'), 'fixme-task should not convert brainstorm handoff text into plan-only');
+});
+
+test('fixme router: routes natural-language saved task preparation sequences', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Preparation work for a saved task mentioned in natural language'), 'router should define saved task preparation routing');
+  assert(skill.includes('extract the saved task ref from any `FIXME-N` label in the prompt'), 'router should bind natural-language prep to FIXME labels');
+  assert(skill.includes('Fixme Research followed by Fixme Brainstorm'), 'router should preserve research then brainstorm sequencing');
+  assert(skill.includes('Skill("fixme-research", "--task <ref>'), 'router should dispatch research with task binding');
+  assert(skill.includes('Skill("fixme-brainstorm", "--task <ref>'), 'router should dispatch brainstorm with task binding');
+});
+
+test('fixme preparation skills: attach artifacts to implicit saved task refs', () => {
+  const brainstormPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const researchPath = path.resolve(__dirname, '..', '..', 'fixme-research', 'SKILL.md');
+  const brainstorm = fs.readFileSync(brainstormPath, 'utf8');
+  const research = fs.readFileSync(researchPath, 'utf8');
+
+  for (const [name, skill] of [['fixme-brainstorm', brainstorm], ['fixme-research', research]]) {
+    assert(skill.includes('Saved Task Binding'), `${name} should define saved task binding`);
+    assert(skill.includes('extract a `FIXME-N` label from the natural-language prompt'), `${name} should bind implicit FIXME labels`);
+    assert(skill.includes('task attach-artifact --task <ref> --data'), `${name} should attach generated artifacts through fixme-tools`);
+    assert(skill.includes('Do not search by recency for a task to attach to'), `${name} should reject recency-based task attachment`);
+  }
 });
 
 test('fixme-brainstorm skill: only presents verified feasible approach options', () => {

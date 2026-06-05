@@ -149,6 +149,7 @@ Ineligible sources:
 - Assistant menu labels
 - Assistant summaries
 - Previous assistant wording
+- Brainstorm document handoff sections and legacy `Recommended Next Step` sections
 - Unrelated old files
 - Vague continuation words such as "proceed" unless they point to an eligible saved/resolved task
 
@@ -385,6 +386,12 @@ Run auto-detection only when no explicit pipeline was selected by `--pipeline`, 
 
 - If the input is a loose implementation task and no artifact type is clear, use `standard`.
 
+**Brainstorm artifact handling:**
+
+- Brainstorm document handoff sections are assistant-authored metadata, not pipeline evidence.
+- Treat `## Handoff` and legacy `## Recommended Next Step` in brainstorm files as user-facing routing notes only.
+- Do not select `plan-only` because a brainstorm artifact says to write an implementation plan.
+
 **Ambiguous detection:**
 
 - If multiple artifact types are present in conversation or IDE context and none is explicitly selected, ask once before continuing.
@@ -426,6 +433,7 @@ Maintain artifact paths as explicit live routing state while routing the pipelin
 - `currentSpecificationPath`: live alias for the specification artifact currently being reviewed by `fixme-review-spec`; never persist it in task state JSON.
 - `planPath`: plan artifact selected or produced by `fixme-write-plan` if the output names one.
 - `codeMapPath`: task-scoped code map artifact selected or produced by `fixme-write-plan` if the output names one.
+- `preparationArtifacts`: brainstorm, research, investigation, or other pre-work artifacts explicitly attached to the saved task with `task attach-artifact`. These are task context, not pipeline entry-point artifacts.
 - `executionResults`: completion report from `fixme-execute-plan`.
 
 After every phase skill dispatch, parse its output for artifact directives:
@@ -698,7 +706,18 @@ Durable state shape:
     "productSpecificationPath": null,
     "technicalSpecificationPath": null,
     "planPath": "/absolute/.fixme/plans/plan.md",
-    "codeMapPath": "/absolute/.fixme/context/task-code-map.md"
+    "codeMapPath": "/absolute/.fixme/context/task-code-map.md",
+    "preparationArtifacts": [
+      {
+        "artifactType": "research",
+        "artifactPath": "/absolute/.fixme/research/research.md",
+        "title": "Validate approach",
+        "summary": ["Research found the approach is implementable."],
+        "sourceSkill": "fixme-research",
+        "status": "current",
+        "updatedAt": "2026-06-02T12:00:00.000Z"
+      }
+    ]
   },
   "handoff": {
     "executionSummary": "Plan executed; verification passed.",
@@ -729,7 +748,8 @@ Resume mode:
 3. Rebuild the live TodoWrite manifest from the workflow config and the semantic `cursor`.
 4. If `status` is `waitingForUser`, present `pendingDecision`.
 5. If the cursor points at a dispatch step, re-dispatch that skill with the artifact and handoff data in the state file.
-6. If a ticket-backed task has no task state but the ticket is at a phase boundary, initialize task state at that phase's first execute step. Do not guess from newest files.
+6. If the saved task brief or state contains `Preparation Artifacts`, include only those explicit artifacts in the next dispatch context. Do not discover brainstorm or research files by recency.
+7. If a ticket-backed task has no task state but the ticket is at a phase boundary, initialize task state at that phase's first execute step. Do not guess from newest files.
 
 ## Ticket Integration (Optional)
 

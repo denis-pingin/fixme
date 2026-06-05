@@ -36,6 +36,7 @@ If the user explicitly invokes a concrete skill such as `/fixme-task`, `/fixme-s
 | User intent | Route |
 | --- | --- |
 | Run or resume a saved task, ticket, or `FIXME-N` label | `Skill("fixme-task", "<pipeline args if any> --resume <ref>")` |
+| Preparation work for a saved task mentioned in natural language | Extract the saved task ref and dispatch the requested preparation skills with `--task <ref>` in the user's stated order |
 | Run a normal one-off implementation workflow | `Skill("fixme-task", "<request>")` |
 | Run a named pipeline | `Skill("fixme-task", "--pipeline <name> <request>")` |
 | Start, resume, report, stop, or check a bug-fix session | `Skill("fixme-session", "<request>")` |
@@ -55,6 +56,28 @@ If the user explicitly invokes a concrete skill such as `/fixme-task`, `/fixme-s
 4. If the user says `followed by`, `then`, `after that`, or gives an ordered list, preserve that order.
 5. If no pipeline is supplied for a `FIXME-N` label, route with `--resume <ref>` only and let `fixme-task` resolve the saved pipeline or default.
 6. If the request includes non-Fixme work plus a Fixme route, route the Fixme work first only when the user made sequencing explicit. Otherwise ask which should happen first.
+
+### Saved Task Preparation Parsing
+
+Preparation work for a saved task mentioned in natural language must attach its artifacts to that saved task, even when the user did not pass explicit `--task` flags.
+
+Use this rule when the prompt includes:
+
+- A saved task ref, usually a `FIXME-N` label. If the prompt also names a Linear ticket such as `ALP-304 / FIXME-13`, extract the saved task ref from any `FIXME-N` label in the prompt and use it as `<ref>`.
+- A preparation intent such as "prepare for execution", "preparing for implementation", "check if you can find issues", "validate the approach against hard evidence", "make sure everything is implementable", "do Fixme Research", or "do Fixme Brainstorm".
+- One or more preparation skills in prose, especially ordered phrases such as "Fixme Research followed by Fixme Brainstorm".
+
+Routing:
+
+```text
+Fixme Research followed by Fixme Brainstorm for FIXME-13
+Route:
+Skill("fixme-research", "--task <ref> <specific research request from prompt>")
+wait for completion
+Skill("fixme-brainstorm", "--task <ref> <specific brainstorm request from prompt>")
+```
+
+If the user gives non-Fixme prerequisites before the preparation sequence, such as "switch to master and refresh it first", perform those prerequisites first when they are safe and explicit. Then route the preparation skills in the stated order. Do not start `fixme-task --resume <ref>` unless the user explicitly asks to execute or resume the saved task after preparation.
 
 ## Canonical Examples
 

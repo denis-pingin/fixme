@@ -3055,6 +3055,7 @@ function defaultTaskState({ projectRoot, pipeline, pipelineResolution, fixmeRoot
       technicalSpecificationPath: null,
       planPath: null,
       codeMapPath: null,
+      preparationArtifacts: [],
     },
     handoff: {
       executionSummary: null,
@@ -3497,12 +3498,163 @@ function resolveStandaloneTask(input, fixmeRoot) {
   };
 }
 
-function taskResolve(input, fixmeRoot) {
+function resolveTask(input, fixmeRoot) {
   if (!input) {
     throw new Error('task resolve requires a FIXME ref, task path, state path, ticket path, or ticket folder');
   }
   const ticketTask = resolveTicketTask(input);
-  return output(ticketTask || resolveStandaloneTask(input, fixmeRoot));
+  return ticketTask || resolveStandaloneTask(input, fixmeRoot);
+}
+
+function taskResolve(input, fixmeRoot) {
+  return output(resolveTask(input, fixmeRoot));
+}
+
+function singleLine(value, fallback = '') {
+  const text = value === null || value === undefined ? fallback : String(value);
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function titleFromArtifactType(type) {
+  return String(type || 'artifact')
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ') || 'Artifact';
+}
+
+function normalizePreparationArtifactData(data) {
+  const artifactType = singleLine(data.artifactType).toLowerCase();
+  const artifactPath = singleLine(data.artifactPath);
+  if (!artifactType) {
+    throw new Error('artifactType is required');
+  }
+  if (!/^[a-z][a-z0-9-]*$/.test(artifactType)) {
+    throw new Error(`artifactType must be lowercase kebab-case: ${artifactType}`);
+  }
+  if (!artifactPath) {
+    throw new Error('artifactPath is required');
+  }
+
+  const title = singleLine(data.title, titleFromArtifactType(artifactType));
+  const status = singleLine(data.status, 'current') || 'current';
+  const sourceSkill = singleLine(data.sourceSkill);
+  const summary = normalizeTaskTextArray(data.summary)
+    .map(item => singleLine(item))
+    .filter(Boolean);
+  const now = new Date().toISOString();
+
+  return {
+    artifactType,
+    artifactPath,
+    title,
+    summary,
+    sourceSkill: sourceSkill || null,
+    status,
+    updatedAt: now,
+  };
+}
+
+function markdownEscapeInline(value) {
+  return String(value || '').replace(/`/g, '\\`');
+}
+
+function renderPreparationArtifact(artifact) {
+  const headingType = titleFromArtifactType(artifact.artifactType);
+  const lines = [
+    `### ${headingType}: ${artifact.title || headingType}`,
+    '',
+    `- **Path:** \`${markdownEscapeInline(artifact.artifactPath)}\``,
+    `- **Status:** ${artifact.status || 'current'}`,
+  ];
+  if (artifact.sourceSkill) {
+    lines.push(`- **Source:** \`${markdownEscapeInline(artifact.sourceSkill)}\``);
+  }
+  if (artifact.updatedAt) {
+    lines.push(`- **Updated:** ${artifact.updatedAt}`);
+  }
+  if (Array.isArray(artifact.summary) && artifact.summary.length > 0) {
+    lines.push('- **Summary:**');
+    artifact.summary.forEach(item => lines.push(`  - ${item}`));
+  }
+  return lines.join('\n');
+}
+
+function renderPreparationArtifactsSection(artifacts) {
+  const renderedArtifacts = artifacts.map(renderPreparationArtifact).join('\n\n');
+  return `## Preparation Artifacts
+
+<!-- fixme-preparation-artifacts:start -->
+${renderedArtifacts}
+<!-- fixme-preparation-artifacts:end -->`;
+}
+
+function replacePreparationArtifactsSection(body, artifacts) {
+  const section = renderPreparationArtifactsSection(artifacts);
+  const pattern = /\n*## Preparation Artifacts\n\n<!-- fixme-preparation-artifacts:start -->[\s\S]*?<!-- fixme-preparation-artifacts:end -->\n*/;
+  if (pattern.test(body)) {
+    return body.replace(pattern, `\n\n${section}\n`);
+  }
+  return `${body.replace(/\s*$/, '')}\n\n${section}\n`;
+}
+
+function upsertPreparationArtifact(existingArtifacts, artifact) {
+  const artifacts = Array.isArray(existingArtifacts) ? existingArtifacts.slice() : [];
+  const existingIndex = artifacts.findIndex(candidate =>
+    candidate
+      && candidate.artifactType === artifact.artifactType
+      && candidate.artifactPath === artifact.artifactPath
+  );
+  if (existingIndex === -1) {
+    artifacts.push(artifact);
+  } else {
+    artifacts[existingIndex] = {
+      ...artifacts[existingIndex],
+      ...artifact,
+    };
+  }
+  return artifacts;
+}
+
+function taskAttachArtifact(flags, fixmeRoot) {
+  const taskRef = flags.task && flags.task !== true ? String(flags.task) : null;
+  if (!taskRef) {
+    throw new Error('task attach-artifact requires --task <FIXME-N|task.md|state.json|ticket.md|ticket-folder>');
+  }
+  const data = parseTaskData(flags.data);
+  assertCamelCaseJsonKeys(data, '--data');
+  const resolved = resolveTask(taskRef, fixmeRoot);
+  const targetPath = resolved.taskPath || resolved.ticketPath;
+  if (!targetPath) {
+    throw new Error(`No markdown target found for task reference: ${taskRef}`);
+  }
+
+  const artifact = normalizePreparationArtifactData(data);
+  const state = readJsonFileStrict(resolved.statePath);
+  const previousArtifacts = state.artifacts && Array.isArray(state.artifacts.preparationArtifacts)
+    ? state.artifacts.preparationArtifacts
+    : [];
+  const preparationArtifacts = upsertPreparationArtifact(previousArtifacts, artifact);
+  const nextState = {
+    ...state,
+    artifacts: {
+      ...(isPlainObject(state.artifacts) ? state.artifacts : {}),
+      preparationArtifacts,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  const content = fs.readFileSync(targetPath, 'utf8');
+  const { frontmatter, body, rawFields } = parseFrontmatter(content);
+  const nextBody = replacePreparationArtifactsSection(body, preparationArtifacts);
+
+  writeJsonAtomic(resolved.statePath, nextState);
+  fs.writeFileSync(targetPath, buildContent(frontmatter, nextBody, rawFields));
+
+  return output({
+    ...resolved,
+    artifact,
+  });
 }
 
 function mergePlainObjects(previous, patch) {
@@ -6034,8 +6186,10 @@ function main() {
             return taskCheckpoint(flags);
           case 'resolve':
             return taskResolve(args[0], fixmeRoot);
+          case 'attach-artifact':
+            return taskAttachArtifact(flags, fixmeRoot);
           default:
-            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve`);
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact`);
         }
 
       case 'pipeline':

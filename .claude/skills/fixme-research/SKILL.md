@@ -31,6 +31,46 @@ You need up to three things. When invoked directly (via `/fixme-research`), reso
 
 **Output directory:** Default to `<fixme-dir>/research/<YYYY-MM-DD-slug>/` where slug is derived from the first few words of the task description. Create with `mkdir -p`.
 
+## Saved Task Binding
+
+This skill can prepare an existing saved `FIXME-N` task before execution.
+
+Resolve task binding in this order:
+
+1. Explicit `--task <FIXME-N|task.md|state.json|ticket.md|ticket-folder>` in `$ARGUMENTS`.
+2. If no explicit flag exists, extract a `FIXME-N` label from the natural-language prompt when the user asks for research, validation, evidence gathering, or preparation work for that saved task.
+3. If the prompt contains both a Linear label and a saved task label, such as `ALP-304 / FIXME-13`, use the `FIXME-N` saved task as the attachment target. Treat the Linear label as context only unless authoritative Linear content is required.
+4. If no explicit task binding or `FIXME-N` label exists, run standalone and do not attach the research to any saved task.
+
+Do not search by recency for a task to attach to. Do not infer a task from the newest file in `<fixme-dir>/tasks/`, `<fixme-dir>/brainstorms/`, or `<fixme-dir>/research/`.
+
+When task-bound:
+
+1. Run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <ref>`.
+2. Read the resolved saved task brief and task state before research.
+3. Use the saved task brief as the authoritative task description unless the latest prompt narrows the research question.
+4. Include explicitly attached preparation artifacts from the saved task as context. Do not discover unrelated brainstorm or research files by recency.
+5. After writing the research report, attach it with:
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task attach-artifact --task <ref> --data '<json-object>'
+   ```
+
+   The JSON must use camelCase keys:
+
+   ```json
+   {
+     "artifactType": "research",
+     "artifactPath": "<absolute path to research.md>",
+     "title": "<research title>",
+     "summary": ["<1-3 concise bullets from the findings>"],
+     "sourceSkill": "fixme-research",
+     "status": "current"
+   }
+   ```
+
+If attachment fails, warn with the task ref, research path, failed command, and fallback: the research still exists but is not indexed on the saved task.
+
 ## Workflow
 
 ### Phase 1: Read Investigation Findings (if provided)
@@ -128,6 +168,8 @@ Write the structured research file to `<output-dir>/research.md`:
 ```
 
 Write the file as the LAST step - do not write progressively.
+
+If this research is task-bound, run `task attach-artifact --task <ref> --data '<json-object>'` immediately after writing `<output-dir>/research.md`.
 
 ### Phase 6: Return Work Summary
 
