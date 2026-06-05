@@ -144,7 +144,19 @@ Use the `FIX_UNCLEAR` shape when the user must pick a path. Always:
 
 Record each resolved gray area as a decision in the running brainstorm. Reflect the user's choice back in one sentence before moving on.
 
-### Step 6: Reflect and propose approaches
+### Step 6: Feasibility gate
+
+Before proposing any route, convert possible approaches into candidate routes and prove feasibility from evidence. Only present approaches whose hard requirements have been verified.
+
+For each route:
+
+1. List hard requirements: runtime compatibility, package or SDK availability, API contract, auth path, deployment owner, data access, build or test command, and rollout dependency.
+2. Verify each hard requirement with concrete evidence: current repository files, existing dependencies, local command output, official docs, package metadata, or a `fixme-research` or spike report that performed the check. If a claim depends on current third-party behavior, verify it with current docs or local tool output before treating it as true.
+3. If verification requires source changes, dependency installation, credentials, a networked build, or a runtime experiment that has not been run, the route is unproven. Ask to run that verification before choosing or park it outside the menu.
+4. Do not ask the user to choose between an unverified option and a verified option. If an option is attractive but unproven, put it under unproven alternatives or Open Questions with the exact proof needed.
+5. If fewer than two verified approaches remain, recommend the single verified route instead of manufacturing a choice.
+
+### Step 7: Reflect and propose approaches
 
 Once you understand purpose, users, scope, constraints, and success criteria, reflect what you heard back in 3-5 bullets and confirm:
 
@@ -159,29 +171,32 @@ Does this match what you have in mind?
 [Yes, that's right] / [Adjust one of these] / [I want to revisit something]
 ```
 
-If "adjust" or "revisit", return to the relevant Socratic step. If confirmed, propose 2-3 approaches:
+If "adjust" or "revisit", return to the relevant Socratic step. If confirmed, propose 1-3 verified approaches:
 
 ```
-Three approaches I'd consider:
+Approaches I'd consider:
 
 **A. <name>** - <one-sentence summary>
+- Feasibility: <specific evidence that proves the hard requirements>
 - Trades: <what you give up>
 - Effort: <small | medium | large>
 
 **B. <name>** - <one-sentence summary>
+- Feasibility: <specific evidence that proves the hard requirements>
 - Trades: <what you give up>
 - Effort: <small | medium | large>
 
 **C. <name>** - <one-sentence summary>
+- Feasibility: <specific evidence that proves the hard requirements>
 - Trades: <what you give up>
 - Effort: <small | medium | large>
 
 Recommendation: **<letter>** - <one-sentence rationale>.
 ```
 
-Use AskUserQuestion to pick the approach. If the user picks something else, capture it.
+Use AskUserQuestion to pick the approach only when two or more verified approaches remain. If there is one verified approach, recommend it directly and ask whether to proceed or run verification for an unproven alternative. If the user picks something else, capture it.
 
-### Step 7: Write the brainstorm document
+### Step 8: Write the brainstorm document
 
 Save to `<fixme-dir>/brainstorms/<YYYY-MM-DD>-<slug>.md`. The slug is short kebab-case derived from the topic.
 
@@ -244,6 +259,7 @@ related: []
 ## Alternatives Considered
 
 - **<Other approach name>** - <why not chosen>
+- **<Unproven route>** - not selectable yet; proof needed: <specific feasibility check>
 
 ## Open Questions
 
@@ -266,7 +282,7 @@ Omit sections that have no content. Keep entries terse.
 
 Append a line to `<fixme-dir>/decisions.md` for each new decision if that file exists or the user wants it persisted across brainstorms. Use the same `D-XX` numbering scheme as the document. If `decisions.md` does not exist, do not create it from this skill - leave that to the spec/plan skills.
 
-### Step 8: Present the routing menu
+### Step 9: Present the routing menu
 
 Fire `user_input` alert. Then use AskUserQuestion to route to the next step:
 
@@ -329,7 +345,7 @@ status_id: <status_id from run start>
 </liveness>
 ```
 
-### Step 9: Close
+### Step 10: Close
 
 Fire `task_finished`. Output a short summary:
 

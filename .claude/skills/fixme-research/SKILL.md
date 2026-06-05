@@ -61,12 +61,22 @@ For each affected file, determine:
 - What it depends on (upstream providers)
 - What would break if it changed (risk assessment)
 
-### Phase 4: Identify Approach Candidates
+### Phase 4: Verify Feasibility and Identify Approach Candidates
 
-Based on the code analysis, identify 1-3 possible fix approaches:
-- For each approach: what files change, what the change is, pros, cons
-- Order by confidence (most promising first)
-- Note if any approach has test coverage gaps (risks)
+Based on the code analysis, identify 1-3 feasible fix approaches.
+
+A route is an approach candidate only after every hard requirement has supporting evidence. Hard requirements include source ownership, runtime compatibility, existing or installable dependencies, API contracts, auth paths, data access, deployment ownership, testability, and build compatibility.
+
+For each route:
+
+1. List the hard requirements.
+2. Verify each requirement with concrete evidence from repository files, existing dependency manifests, local command output, official docs, package metadata, or explicitly approved spike output.
+3. If a route depends on an SDK, package, external API, runtime, build target, or deployment owner you have not verified, it is not a candidate yet.
+4. If verification would require code changes, dependency installation, credentials, private infrastructure access, or a build you cannot run in this research pass, keep that route out of the candidate list and record the exact missing proof.
+
+For each verified approach: describe what files change, what the change is, feasibility evidence, pros, and cons. Order by confidence, with the strongest evidence-backed approach first. Note test coverage gaps as risks.
+
+Do not put unproven routes in `## Approach Candidates`. Put them in `## Unproven Alternatives` with the specific verification needed before they can become selectable.
 
 ### Phase 5: Write Research Output
 
@@ -105,11 +115,16 @@ Write the structured research file to `<output-dir>/research.md`:
 ### 1. [Approach Name]
 - **Change:** [what to modify]
 - **Files:** [list]
+- **Feasibility Evidence:** [specific files, command output, docs, package metadata, or spike result proving each hard requirement]
 - **Pros:** [advantages]
 - **Cons:** [disadvantages]
 
 ### 2. [Approach Name]
 ...
+
+## Unproven Alternatives
+
+- **[Route name]** - **Missing proof:** [specific feasibility check required before this can be considered an approach candidate]
 ```
 
 Write the file as the LAST step - do not write progressively.

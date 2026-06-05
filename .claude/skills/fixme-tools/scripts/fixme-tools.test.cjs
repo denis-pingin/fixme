@@ -3287,6 +3287,26 @@ test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', (
   assert(skill.includes('Do not dispatch the downstream skill if `run start` fails.'), 'brainstorm should fail closed when liveness setup fails');
 });
 
+test('fixme-brainstorm skill: only presents verified feasible approach options', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('### Step 6: Feasibility gate'), 'brainstorm should gate approaches before presenting options');
+  assert(skill.includes('Only present approaches whose hard requirements have been verified.'), 'brainstorm should require verified feasibility for selectable approaches');
+  assert(skill.includes('Do not ask the user to choose between an unverified option and a verified option.'), 'brainstorm should not mix unverified and verified options');
+  assert(skill.includes('If fewer than two verified approaches remain, recommend the single verified route instead of manufacturing a choice.'), 'brainstorm should allow a single verified route');
+  assert(skill.includes('unproven alternatives'), 'brainstorm should park unverified routes outside the option menu');
+});
+
+test('fixme-research skill: approach candidates require feasibility evidence', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-research', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('### Phase 4: Verify Feasibility and Identify Approach Candidates'), 'research should verify feasibility before naming candidates');
+  assert(skill.includes('A route is an approach candidate only after every hard requirement has supporting evidence.'), 'research candidates should require evidence for hard requirements');
+  assert(skill.includes('If a route depends on an SDK, package, external API, runtime, build target, or deployment owner you have not verified, it is not a candidate yet.'), 'research should reject unverified dependency and runtime routes');
+  assert(skill.includes('Do not put unproven routes in `## Approach Candidates`.'), 'research should keep unproven routes out of candidate list');
+  assert(skill.includes('## Unproven Alternatives'), 'research output should have a place for unverified routes');
+});
+
 test('fixme-task skill: Run Summary includes usage block backed by usage report', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
