@@ -791,7 +791,7 @@ test('pipeline resolve: ignores assistant-authored candidates and falls back to 
       {
         pipeline: 'full',
         source: 'assistantMenuText',
-        evidence: 'Run full fixme-task workflow',
+        evidence: 'Run configured fixme-task workflow',
         reason: 'Assistant-authored menu label is not user intent.',
       },
     ],
@@ -2416,6 +2416,26 @@ test('config set rejects unsupported ticket backend', () => {
   assert(result.data.error.includes('ticketBackend'), `error should mention ticketBackend: ${result.data.error}`);
 });
 
+test('config set validates Linear default priority metadata', () => {
+  const tmp = createTmpDir();
+  const ok = runInDir(`config set linear.defaultPriority '{"value":3,"label":"Normal"}'`, tmp);
+  assert(ok.ok, `linear default priority should be accepted: ${JSON.stringify(ok.data)}`);
+
+  const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
+  assert(config.linear.defaultPriority.value === 3, 'default priority value should be written');
+  assert(config.linear.defaultPriority.label === 'Normal', 'default priority label should be written');
+
+  const badValue = runInDir(`config set linear.defaultPriority '{"value":0,"label":"None"}'`, tmp);
+  assert(!badValue.ok, 'No priority should not be accepted as a default priority');
+  assert(badValue.data && badValue.data.error, 'error should be returned');
+  assert(badValue.data.error.includes('linear.defaultPriority.value'), `error should mention priority value: ${badValue.data.error}`);
+
+  const badLabel = runInDir(`config set linear.defaultPriority '{"value":2,"label":""}'`, tmp);
+  assert(!badLabel.ok, 'empty default priority label should fail');
+  assert(badLabel.data && badLabel.data.error, 'error should be returned');
+  assert(badLabel.data.error.includes('linear.defaultPriority.label'), `error should mention priority label: ${badLabel.data.error}`);
+});
+
 test('config set rejects unsupported model override', () => {
   const tmp = createTmpDir();
   const result = runInDir('config set models.overrides.fixme-task "made-up-model"', tmp);
@@ -3179,14 +3199,32 @@ test('fixme bootstrap skill: routes Fixme-shaped requests to concrete entry poin
   assert(claude.includes('fixme/'), 'CLAUDE should list the bootstrap router in the skill suite');
 });
 
-test('fixme-ticket skill: defaults tickets without priority signals to Medium', () => {
+test('fixme-ticket skill: defaults tickets without priority signals from config', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-ticket', 'SKILL.md');
   assert(fs.existsSync(skillPath), 'fixme-ticket skill should exist');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('No signals -> 3 (Medium default)'), 'missing priority signals should default to Medium');
-  assert(skill.includes('never default to `0 - No priority`'), 'skill should forbid defaulting to no priority');
-  assert(skill.includes('"3 - Medium (default)"'), 'ticket preview should show Medium as the default priority');
+  assert(skill.includes('linear.defaultPriority'), 'skill should read the configured default priority');
+  assert(skill.includes('No signals -> `linear.defaultPriority.value`'), 'missing priority signals should use configured default priority');
+  assert(skill.includes('Do not hardcode `3 - Medium`'), 'skill should forbid hardcoded Medium defaults');
+  assert(skill.includes('<defaultPriority.value> - <defaultPriority.label> (config default)'), 'ticket preview should show configured default priority');
+});
+
+test('fixme-config skill: configures Linear default issue priority', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-config', 'SKILL.md');
+  const schemaPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'references', 'config-schema.md');
+  assert(fs.existsSync(skillPath), 'fixme-config skill should exist');
+  assert(fs.existsSync(schemaPath), 'config schema should exist');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const schema = fs.readFileSync(schemaPath, 'utf8');
+
+  assert(skill.includes('linear.defaultPriority'), 'fixme-config should mention default priority');
+  assert(skill.includes('Configure the default Linear issue priority'), 'fixme-config should ask for a default priority');
+  assert(skill.includes('config set linear.defaultPriority'), 'fixme-config should write default priority through fixme-tools');
+  assert(skill.includes('Default Linear Priority'), 'confirmation should show the configured priority');
+  assert(!skill.includes('This round configures ONLY `linear.teamId` and `linear.teamName`'), 'Linear round must no longer be team-only');
+  assert(schema.includes('"defaultPriority": { "value": 3, "label": "Normal" }'), 'schema example should include default priority object');
+  assert(schema.includes('| `linear.defaultPriority.value` | number | No | Default non-zero issue priority sent by `/fixme-ticket` when no priority signal is detected. |'), 'schema should document default priority value');
 });
 
 test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL directly', () => {
@@ -3281,10 +3319,28 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
 test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('For `Run full fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`.'), 'brainstorm should map the fixme-task menu option to the fixme-task agent');
+  assert(skill.includes('For `Run configured fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`.'), 'brainstorm should map the fixme-task menu option to the fixme-task agent');
   assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <selected-fixme-agent>'), 'brainstorm should create liveness before downstream dispatch');
   assert(skill.includes('status_id: <status_id from run start>'), 'brainstorm downstream args should include liveness status_id');
   assert(skill.includes('Do not dispatch the downstream skill if `run start` fails.'), 'brainstorm should fail closed when liveness setup fails');
+});
+
+test('fixme-brainstorm skill: labels routing options in B A C order with configured fixme-task recommended', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const menuStart = skill.indexOf('Options (single-select):');
+  const menuEnd = skill.indexOf('`Run configured fixme-task workflow` is the recommended option.', menuStart);
+  const menu = skill.slice(menuStart, menuEnd);
+  const optionB = menu.indexOf('B. Run configured fixme-task workflow - recommended');
+  const optionA = menu.indexOf('A. Write implementation plan');
+  const optionC = menu.indexOf('C. Save only');
+
+  assert(menuStart !== -1 && menuEnd !== -1, 'brainstorm routing menu should be present');
+  assert(optionB !== -1, 'configured fixme-task option should be labeled B and recommended');
+  assert(optionA !== -1, 'write plan option should be labeled A');
+  assert(optionC !== -1, 'save only option should be labeled C');
+  assert(optionB < optionA && optionA < optionC, 'routing options should be presented in B, A, C order');
+  assert(!menu.includes('Run full fixme-task workflow'), 'routing menu should not imply the workflow named full');
 });
 
 test('fixme-brainstorm skill: only presents verified feasible approach options', () => {
@@ -4914,6 +4970,39 @@ test('runtime adapter: Codex cumulative delta tolerates per-turn cache metadata 
   assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'cache metadata disagreement should not make usage unavailable');
 });
 
+test('runtime adapter: Codex cumulative delta tolerates per-turn total-only anomalies', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-total-anomaly.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 110 },
+      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 110 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 150, cached_input_tokens: 35, output_tokens: 20, reasoning_output_tokens: 8, total_tokens: 170 },
+      { input_tokens: 50, cached_input_tokens: 15, output_tokens: 10, reasoning_output_tokens: 3, total_tokens: 60 }
+    ),
+    codexTokenCount(
+      { input_tokens: 150, cached_input_tokens: 35, output_tokens: 20, reasoning_output_tokens: 8, total_tokens: 170 },
+      { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 27473 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.inputTokens === 50, `expected cumulative input delta 50, got ${row.tokens.inputTokens}`);
+  assert(row.tokens.outputTokens === 10, `expected cumulative output delta 10, got ${row.tokens.outputTokens}`);
+  assert(row.tokens.reasoningOutputTokens === 3, `expected cumulative reasoning delta 3, got ${row.tokens.reasoningOutputTokens}`);
+  assert(row.tokens.totalTokens === 60, `expected cumulative total delta 60, got ${row.tokens.totalTokens}`);
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'total-only per-turn anomaly should not make usage unavailable');
+});
+
 test('runtime adapter: Codex finish uses bounded persisted cumulative start snapshot', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-large-prefix.jsonl');
@@ -5255,6 +5344,26 @@ test('runtime adapter: inferred Claude transcript under HOME projects is used wh
   assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
   assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
   assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
+});
+
+test('runtime adapter: finish-time inferred Claude source without start cursor is unmeasured', () => {
+  const ctx = createUsageWorkspace();
+  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, ctx.env);
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+
+  const sourcePath = claudeTranscriptPath(ctx, 'session-created-after-start');
+  appendJsonl(sourcePath, [
+    claudeTranscriptMeta(ctx.projectRoot),
+    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 2000, output_tokens: 50 } } },
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should append an unmeasured row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'unmeasured', `expected unmeasured, got ${row.status}`);
+  assert(row.tokens === null, 'unbounded finish-time inference must not record transcript-wide tokens');
+  assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'bounded start cursor warning expected');
+  assert(row.source.path === sourcePath, 'source path should still identify the inferred runtime source');
 });
 
 test('runtime adapter: Claude subagent transcript attribution is used for the active skill', () => {

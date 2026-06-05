@@ -1811,7 +1811,7 @@ function isSupportedConfigKey(parts) {
   }
 
   if (top === 'linear') {
-    return ['teamId', 'teamName', 'defaultLabels', 'defaultProject'].includes(second) && parts.length === 2;
+    return ['teamId', 'teamName', 'defaultLabels', 'defaultProject', 'defaultPriority'].includes(second) && parts.length === 2;
   }
 
   if (top === 'ticketTemplate') {
@@ -1871,6 +1871,18 @@ function collectUnknownSkillWarnings(skills, warnings, fieldName) {
     if (!KNOWN_FIXME_SKILLS.has(skill)) {
       warnings.push(`Unknown skill '${skill}' in ${fieldName}; saved because custom skills are allowed`);
     }
+  }
+}
+
+function validateLinearDefaultPriority(value) {
+  if (!isPlainObject(value)) {
+    throw new Error('linear.defaultPriority must be an object with value and label');
+  }
+  if (!isPositiveInteger(value.value)) {
+    throw new Error('linear.defaultPriority.value must be a positive integer');
+  }
+  if (typeof value.label !== 'string' || value.label.trim() === '') {
+    throw new Error('linear.defaultPriority.label must be a non-empty string');
   }
 }
 
@@ -2022,6 +2034,8 @@ function validateConfigSetValue(parts, value) {
   if (top === 'linear') {
     if (second === 'defaultLabels') {
       validateStringArray(value, 'linear.defaultLabels', true);
+    } else if (second === 'defaultPriority') {
+      validateLinearDefaultPriority(value);
     } else if (value !== null && typeof value !== 'string') {
       throw new Error(`linear.${second} must be a string or null`);
     }
@@ -4894,6 +4908,18 @@ function totalTokensEqual(a, b) {
   return (a && a.totalTokens || 0) === (b && b.totalTokens || 0);
 }
 
+function primaryTokenBucketsCompatible(a, b) {
+  let compared = false;
+  for (const key of ['inputTokens', 'outputTokens', 'reasoningOutputTokens']) {
+    const aValue = a && a[key] !== null && a[key] !== undefined ? a[key] : null;
+    const bValue = b && b[key] !== null && b[key] !== undefined ? b[key] : null;
+    if (aValue === null || bValue === null) continue;
+    compared = true;
+    if (aValue !== bValue) return false;
+  }
+  return compared ? true : totalTokensEqual(a, b);
+}
+
 function counterUnmeasured(pending, code, message, source) {
   const result = buildUnmeasuredCounterResult(pending, code, message);
   if (source) result.source = source;
@@ -4951,7 +4977,7 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
     if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLast)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
     }
-    if (summedLast && hasPositiveToken(summedLast) && !totalTokensEqual(delta.result, summedLast)) {
+    if (summedLast && hasPositiveToken(summedLast) && !primaryTokenBucketsCompatible(delta.result, summedLast)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
     }
     return measuredCounterResult(delta.result, source);
@@ -5331,15 +5357,23 @@ function resolveUsageCounters(pending) {
   }
 
   const candidate = discovery.candidates[0];
-  const startCursor = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
-    ? pending.sourceSnapshot.cursor
-    : candidate.startCursor
-      ? candidate.startCursor
-    : { ...candidate.cursor, size: 0 };
+  const hasPersistedCursor = !!(pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path);
+  const hasInvocationCursor = !!candidate.startCursor;
   const source = sourceMetadata(kind, candidate.path, candidate.discovery, 1, candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {});
+  if (!hasPersistedCursor && !hasInvocationCursor) {
+    return counterUnmeasured(
+      pending,
+      USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE,
+      'Runtime counter source was inferred at finish, but no bounded start cursor was available.',
+      source
+    );
+  }
+  const startCursor = hasPersistedCursor
+    ? pending.sourceSnapshot.cursor
+    : candidate.startCursor;
   try {
     if (pending.runtime === 'codex') {
-      const startTokens = pending.sourceSnapshot && pending.sourceSnapshot.cursor && pending.sourceSnapshot.cursor.path === candidate.path
+      const startTokens = hasPersistedCursor
         ? pending.sourceSnapshot.codexCumulativeStartTokens
         : candidate.codexCumulativeStartTokens
           ? candidate.codexCumulativeStartTokens

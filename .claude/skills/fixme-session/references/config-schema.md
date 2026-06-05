@@ -72,7 +72,8 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
     "teamId": "abc123-team-id",
     "teamName": "Engineering",
     "defaultLabels": ["bug"],
-    "defaultProject": "project-id-or-name"
+    "defaultProject": "project-id-or-name",
+    "defaultPriority": { "value": 3, "label": "Normal" }
   },
   "alerts": {
     "enabled": true,
@@ -161,6 +162,8 @@ Resolution priority for workflow phases is phase, workflow, global, then built-i
 | `linear.teamName` | string | Backend-dependent | Linear team name. |
 | `linear.defaultLabels` | string[] | No | Optional labels applied to new Linear tickets. |
 | `linear.defaultProject` | string or null | No | Optional default Linear project. |
+| `linear.defaultPriority.value` | number | No | Default non-zero issue priority sent by `/fixme-ticket` when no priority signal is detected. |
+| `linear.defaultPriority.label` | string | No | Display label for the configured default issue priority. |
 | `alerts.enabled` | boolean | No | Enables audible alerts. |
 | `alerts.sounds.<event>` | string | No | Sound for `user_input`, `task_finished`, or `task_failed`. |
 | `usage.printAfterFinish` | boolean | No | Print compact usage line after skill completion. |

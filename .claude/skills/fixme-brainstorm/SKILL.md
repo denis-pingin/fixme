@@ -275,7 +275,7 @@ related: []
 
 ## Recommended Next Step
 
-<One of: write product spec | write technical spec | write plan | create ticket | run full fixme-task workflow | save only. Include a one-sentence rationale.>
+<Default to run the configured fixme-task workflow unless the user explicitly asked only to save or only to write an implementation plan. Include a one-sentence rationale.>
 ```
 
 Omit sections that have no content. Keep entries terse.
@@ -294,18 +294,17 @@ What do you want to do next?
 
 Options (single-select):
 
-| Option | What happens |
-|--------|--------------|
-| Write product specification | Dispatch `fixme-write-product-spec` with the brainstorm path as input |
-| Write technical specification | Dispatch `fixme-write-technical-spec` with the brainstorm path as input |
-| Write implementation plan | Dispatch `fixme-write-plan` with the brainstorm path as input |
-| Create Linear ticket | Dispatch `fixme-ticket` with the brainstorm content as the description |
-| Run full fixme-task workflow | Dispatch `fixme-task` with the brainstorm path as input - runs the configured workflow end to end |
-| Save only | Stop here. The brainstorm document is the artifact. |
+Present the options in this exact order with these labels:
 
-The "Recommended Next Step" from the document should be listed first and marked as recommended.
+| Label | Option | What happens |
+|-------|--------|--------------|
+| B | B. Run configured fixme-task workflow - recommended | Dispatch `fixme-task` with the brainstorm path as input - runs the configured workflow end to end |
+| A | A. Write implementation plan | Dispatch `fixme-write-plan` with the brainstorm path as input |
+| C | C. Save only | Stop here. The brainstorm document is the artifact. |
 
-Dispatch the selected skill via the Skill tool (`Skill(skill="fixme-write-product-spec", args="...")`), or via the Agent tool when running under an orchestrator that prefers agent dispatch. Pass:
+`Run configured fixme-task workflow` is the recommended option. This means the workflow selected by config resolution; it does not mean the workflow named `full`. Do not reorder options based on the document's `Recommended Next Step`.
+
+Dispatch the selected skill via the Skill tool (`Skill(skill="fixme-task", args="...")`), or via the Agent tool when running under an orchestrator that prefers agent dispatch. Pass:
 
 - The absolute brainstorm path
 - The original topic (one sentence)
@@ -324,12 +323,10 @@ Use this mapping:
 
 | Routing option | `<selected-fixme-agent>` |
 | --- | --- |
-| Write product specification | `fixme-write-product-spec` |
-| Write technical specification | `fixme-write-technical-spec` |
 | Write implementation plan | `fixme-write-plan` |
-| Run full fixme-task workflow | `fixme-task` |
+| Run configured fixme-task workflow | `fixme-task` |
 
-For `Run full fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`. `Create Linear ticket` has no liveness record because `fixme-ticket` is not a known run-liveness agent. `Save only` has no dispatch.
+For `Run configured fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`. `Save only` has no dispatch.
 
 Store the returned `status_id`. Do not dispatch the downstream skill if `run start` fails. Surface the JSON error, fire `task_failed`, and stop.
 

@@ -20,7 +20,7 @@ Interactive configuration of fixme settings: model profile, workflow selection, 
 
 ## Prerequisites
 
-**Linear MCP is needed by `/fixme-ticket` (standalone Linear ticket creation) and by the Linear ticket backend.** `fixme-config` always runs the Linear discovery round so that `linear.teamId` and `linear.teamName` are available to `/fixme-ticket` regardless of which `ticketBackend` is selected. Ticket backend and `/fixme-ticket` are independent: the backend controls how the pipeline tracks tickets, while `/fixme-ticket` always creates Linear issues.
+**Linear MCP is needed by `/fixme-ticket` (standalone Linear ticket creation) and by the Linear ticket backend.** `fixme-config` always runs the Linear discovery round so that `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are available to `/fixme-ticket` regardless of which `ticketBackend` is selected. Ticket backend and `/fixme-ticket` are independent: the backend controls how the pipeline tracks tickets, while `/fixme-ticket` always creates Linear issues.
 
 If Linear MCP is unavailable when Step 6 runs, branch on backend:
 
@@ -32,9 +32,9 @@ If Linear MCP is unavailable when Step 6 runs, branch on backend:
 
 - **Backend is `fixme-tickets-md`:** print a warning and skip ONLY the Linear round, then continue with the rest of the skill:
 
-  > "Linear MCP is not available. Skipping Linear team configuration. `/fixme-ticket` will not work until you enable Linear MCP and re-run `/fixme-config`."
+  > "Linear MCP is not available. Skipping Linear ticket configuration. `/fixme-ticket` will not work until you enable Linear MCP and re-run `/fixme-config`."
 
-  Do not stop the skill. Do not write or clear `linear.teamId` / `linear.teamName` (leave any existing values untouched). Continue to Step 8.
+  Do not stop the skill. Do not write or clear `linear.teamId`, `linear.teamName`, or `linear.defaultPriority` (leave any existing values untouched). Continue to Step 8.
 
 ## Process
 
@@ -70,6 +70,7 @@ Parse current values (defaults if not present):
 - `project.framework` - detected framework (default: null)
 - `linear.teamId` - Linear team ID (default: null)
 - `linear.teamName` - Linear team name (default: null)
+- `linear.defaultPriority` - default non-zero Linear issue priority object, `{ "value": <number>, "label": <string> }` (default: null)
 
 ### Step 2: Auto-detect project settings (first run only)
 
@@ -401,11 +402,11 @@ Hot Module Replacement uses Yes/No:
 
 ### Step 6: Linear discovery round
 
-**Always run this round, regardless of `ticketBackend`.** `linear.teamId` and `linear.teamName` are read by `/fixme-ticket` (standalone Linear ticket creation) and by the Linear ticket backend. They are independent of which backend is selected.
+**Always run this round, regardless of `ticketBackend`.** `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are read by `/fixme-ticket` (standalone Linear ticket creation). Team values are also read by the Linear ticket backend. They are independent of which backend is selected.
 
 If Linear MCP is unavailable when this step starts, follow the backend-conditional skip rules in **Prerequisites**: stop the skill when backend is `fixme-tickets-linear`, or warn and skip only this round when backend is `fixme-tickets-md`.
 
-This round configures ONLY `linear.teamId` and `linear.teamName`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
+This round configures `linear.teamId`, `linear.teamName`, and `linear.defaultPriority`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
 
 #### Step 6a: Discover and select team (Decision 13 hybrid flow)
 
@@ -477,7 +478,44 @@ After Step 6a resolves `selectedTeam`, hold these values in memory for the merge
 - `linear.teamId` = `selectedTeam.id`
 - `linear.teamName` = `selectedTeam.name`
 
-No other Linear fields are staged. `linear.defaultLabels` and `linear.defaultProject` are NOT configured by this skill (Decision 13).
+#### Step 6c: Configure default Linear issue priority
+
+Configure the default Linear issue priority used by `/fixme-ticket` when ticket text contains no explicit priority signal.
+
+Use the issue priority options exposed by the current Linear MCP `save_issue.priority` field. Exclude `0 - No priority` from automatic defaults because `/fixme-ticket` needs an assignable non-zero priority by default. In the current Linear connector, the issue priority options are:
+
+- 1 = Urgent
+- 2 = High
+- 3 = Normal
+- 4 = Low
+
+If the current runtime exposes different priority options, use those options instead. Preserve the current configured `linear.defaultPriority` as the first option when present and valid. If there is no current value, recommend the option whose label matches `normal` or `medium` case-insensitively; if no such option exists, recommend the first non-zero assignable option from the exposed priority list.
+
+Ask:
+
+```
+AskUserQuestion([
+  {
+    question: "Default Linear issue priority when no ticket priority is detected?",
+    header: "Priority",
+    multiSelect: false,
+    options: [
+      { label: "{current/default priority label} (Recommended)", description: "Save as linear.defaultPriority = { value: <number>, label: <label> }" },
+      { label: "{next priority label}", description: "value: <number>" },
+      { label: "{next priority label}", description: "value: <number>" },
+      { label: "{next priority label}", description: "value: <number>" }
+    ]
+  }
+])
+```
+
+Use Other/free-text for a priority value or label from the printed/exposed list. If the user enters a pure positive integer, match by priority value. If the user enters text, match case-insensitively by priority label. Reject `0`, "None", and any value not in the exposed assignable priority list; re-prompt instead of silently falling back.
+
+Stage:
+
+- `linear.defaultPriority` = `{ "value": <selectedPriorityValue>, "label": "<selectedPriorityLabel>" }`
+
+No other Linear fields are staged. `linear.defaultLabels` and `linear.defaultProject` are NOT configured by this skill.
 
 ### Step 7: Alerts round
 
@@ -582,6 +620,8 @@ Before writing, validate the config:
 10. **Linear fields** (only if Step 6 resolved a team in this run, i.e. Linear MCP was available):
    - `linear.teamId` must be a non-empty string
    - `linear.teamName` must be a non-empty string
+   - `linear.defaultPriority.value` must be a positive integer from the exposed assignable priority list
+   - `linear.defaultPriority.label` must be a non-empty string
 
    When backend is `fixme-tickets-linear`, Step 6 is required to have resolved a team (the skill stops earlier when MCP is unavailable). When backend is `fixme-tickets-md` and Linear MCP was unavailable, Step 6 is skipped and these fields are not validated.
 
@@ -643,9 +683,16 @@ When Step 6 resolved a Linear team in this run (regardless of backend), write th
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.teamId '<json-string>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.teamName '<json-string>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.defaultPriority '<json-priority-object>'
 ```
 
-When Step 6 was skipped because Linear MCP was unavailable (only possible when backend is `fixme-tickets-md`), leave the existing `linear` object untouched - do not delete or overwrite it. Existing `linear.teamId` / `linear.teamName` from a prior run remain valid for `/fixme-ticket` until the user re-runs `/fixme-config` with Linear MCP enabled.
+Example:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set linear.defaultPriority '{"value":3,"label":"Normal"}'
+```
+
+When Step 6 was skipped because Linear MCP was unavailable (only possible when backend is `fixme-tickets-md`), leave the existing `linear` object untouched - do not delete or overwrite it. Existing `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` from a prior run remain valid for `/fixme-ticket` until the user re-runs `/fixme-config` with Linear MCP enabled.
 
 Write rules:
 
@@ -676,6 +723,7 @@ Display:
 | Build Command        | {value}                  |
 | Test Command         | {value}                  |
 | Lint Command         | {value}                  |
+| Default Linear Priority | {linear.defaultPriority.label} ({linear.defaultPriority.value}) |
 ```
 
 Then print the selected workflow detail:

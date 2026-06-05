@@ -39,11 +39,11 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 ### Configuring fixme
 
 ```bash
-# Interactive setup of workflows, workflow skills, loop controls, models, review level, project commands, ticket backend, Linear metadata, and alerts
+# Interactive setup of workflows, workflow skills, loop controls, models, review level, project commands, ticket backend, Linear team/default-priority metadata, and alerts
 /fixme-config
 ```
 
-Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. Linear team discovery is used by `/fixme-ticket` and the Linear ticket backend; when the selected backend is markdown and Linear MCP is unavailable, `/fixme-config` warns, skips only that Linear round, and preserves existing Linear settings. Audible alerts are configured under `alerts.{enabled,sounds,players}`.
+Updates `.fixme/config.json` via AskUserQuestion prompts. Auto-detects project commands from package.json on first run. Workflow configuration selects one workflow at a time, then configures that workflow's skills, per-phase review cycles, and outer workflow cycles. Linear team and default-priority discovery are used by `/fixme-ticket`; Linear team discovery is also used by the Linear ticket backend. When the selected backend is markdown and Linear MCP is unavailable, `/fixme-config` warns, skips only that Linear round, and preserves existing Linear settings. Audible alerts are configured under `alerts.{enabled,sounds,players}`.
 
 Review strictness is configured with `review.level`, optional `workflows.<workflow>.review.level`, optional phase `review.level`, and optional `pullRequestComments.review.level`. Standard workflows include `standard`, `quick`, `full`, `bugfix`, `product-spec`, `technical-spec`, `plan-only`, and `execute-only`.
 

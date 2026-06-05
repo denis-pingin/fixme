@@ -109,7 +109,7 @@ Safely rebases the current branch onto its base branch (auto-detected from PR ta
 /fixme-ticket login button broken on mobile, only on iOS Safari
 ```
 
-Creates a Linear ticket from a description or the current conversation context. Auto-discovers team, project, and label metadata upfront. Supports templates, assignment, status, due dates, and attachments.
+Creates a Linear ticket from a description or the current conversation context. Auto-discovers team, project, label, and priority metadata upfront. Supports templates, assignment, status, due dates, and attachments.
 
 ### Brainstorm before committing to a path
 
@@ -125,11 +125,11 @@ Runs a one-question-at-a-time discovery flow, captures decisions to a brainstorm
 /fixme-config
 ```
 
-Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget/inherit), review level, project commands (install/build/lint/test), ticket backend, Linear team metadata, and audible alerts. Auto-detects project commands from `package.json` on first run.
+Interactive setup for `.fixme/config.json` - workflows, workflow skills, per-phase review cycles, workflow outer cycles, model profiles (quality/balanced/budget/inherit), review level, project commands (install/build/lint/test), ticket backend, Linear team/default-priority metadata, and audible alerts. Auto-detects project commands from `package.json` on first run.
 
 `/fixme-config` writes through `fixme-tools.cjs config` commands, not by hand-editing JSON. The tool creates missing config files, backfills newly added standard workflows, validates workflow cycle limits, preserves custom config, and writes atomically.
 
-Linear team discovery is used by `/fixme-ticket` even when the ticket backend stays on markdown files. If Linear MCP is unavailable with the markdown backend, `/fixme-config` skips only that Linear round and leaves existing Linear settings untouched.
+Linear team and default-priority discovery are used by `/fixme-ticket` even when the ticket backend stays on markdown files. If Linear MCP is unavailable with the markdown backend, `/fixme-config` skips only that Linear round and leaves existing Linear settings untouched.
 
 ### Show usage reports
 
@@ -264,7 +264,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-rebase` | Safe branch rebasing with conflict resolution and verification |
 | `fixme-browser-verify` | Browser verification after code changes |
 | `fixme-ticket` | Create Linear tickets from description or conversation context |
-| `fixme-config` | Interactive configuration for workflows, models, review level, project settings, Linear, and alerts |
+| `fixme-config` | Interactive configuration for workflows, models, review level, project settings, Linear team/default-priority metadata, and alerts |
 | `fixme-usage` | Show project, global, per-skill, and per-pipeline token usage reports |
 | `fixme-tickets` | Abstract ticket interface (routes to backend) |
 | `fixme-tickets-md` | Markdown file ticket backend |

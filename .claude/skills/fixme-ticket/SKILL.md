@@ -59,7 +59,7 @@ If a description is provided (directly or via AskUserQuestion), use it as the st
 - **Description**: the full text, formatted as markdown
 - **Mentioned files**: any file paths referenced in the text
 - **Labels**: any explicit label mentions (e.g., "bug", "feature", "urgent")
-- **Priority signals**: urgency indicators ("critical", "blocker", "nice to have"). If no priority signal is present, default to Medium.
+- **Priority signals**: urgency indicators ("critical", "blocker", "nice to have"). If no priority signal is present, use the configured `linear.defaultPriority`.
 
 **Mode B: Extract from conversation context**
 
@@ -71,11 +71,12 @@ When the user says "from context" or equivalent:
 
 **Apply config defaults (both modes):**
 
-After initial content is gathered (from either mode), read `<fixme-dir>/config.json` and check for `linear.defaultLabels` and `linear.defaultProject`:
+After initial content is gathered (from either mode), read `<fixme-dir>/config.json` and check for `linear.defaultLabels`, `linear.defaultProject`, and `linear.defaultPriority`:
 
 1. If `<fixme-dir>/config.json` exists and has a `linear` key:
    - If `linear.defaultLabels` is a non-empty array, add each label to the detected labels list. Deduplicate: if a label name from the config already appears in the user-detected labels (case-insensitive match), keep only one copy. Track the source of each label -- "config default" or "detected from text".
    - If `linear.defaultProject` is a non-empty string, store it as the default project value. Track the source as "config default". If the user's text also explicitly mentions a project, the user mention takes priority and the config default is discarded.
+   - If `linear.defaultPriority` is an object with a positive integer `value` and non-empty `label`, store it as the default priority value. Track the source as "config default". If the user's text includes a priority signal, the detected signal takes priority and the config default is discarded.
 2. If `<fixme-dir>/config.json` does not exist, or `linear` is absent, or both fields are absent/empty, proceed with only the user-detected metadata.
 
 **In both modes**, after initial content is gathered and config defaults are applied, apply any configured template (see Template Application below), then proceed to Phase 2 for preview.
@@ -154,7 +155,7 @@ If any call fails, log a warning and continue without that metadata. Auto-discov
 - **Labels**: For each label name from text detection or config defaults, case-insensitive match against `availableLabels`. Matched labels get their IDs resolved immediately. Unmatched labels are dropped with a note in the preview (e.g., "'xyz' not found in Linear labels"). If no labels were detected or matched, note the count of available labels for awareness.
 - **Project**: If a project name was detected or set from config, match case-insensitively against `availableProjects` and auto-select with resolved ID. If nothing was detected and exactly one project exists, auto-suggest it. If multiple projects and nothing detected, note count and top 3 names.
 - **Assignee**: Identify the authenticated user in `teamMembers` and pre-suggest assigning to them. Show as "Your Name (you)". If the authenticated user cannot be identified, leave as "unassigned" but note the count of team members.
-- **Priority**: Map detected priority signals to Linear levels: "urgent"/"critical"/"blocker" -> 1 (Urgent), "high" -> 2 (High), "medium" -> 3 (Medium), "low"/"nice to have" -> 4 (Low). No signals -> 3 (Medium default); never default to `0 - No priority` unless the user explicitly selects it during metadata editing.
+- **Priority**: Map detected priority signals to Linear levels: "urgent"/"critical"/"blocker" -> 1 (Urgent), "high" -> 2 (High), "medium"/"normal" -> 3 (Normal), "low"/"nice to have" -> 4 (Low). No signals -> `linear.defaultPriority.value`; preview it as `<defaultPriority.value> - <defaultPriority.label> (config default)`. Do not hardcode `3 - Medium` as the no-signal fallback. If no config default exists, leave priority unset in the preview and require the user to choose one before creation.
 
 All resolved IDs from this step carry through to Phase 3 -- no redundant resolution needed later.
 
@@ -175,7 +176,7 @@ Present the enriched ticket preview with auto-discovered suggestions clearly ann
 - Labels: <matched labels, e.g., "bug (matched)" -- or "none (15 labels available)" if none matched>
 - Project: <auto-selected, e.g., "Alpha (only project)" or "Alpha (matched)" -- or "none (pick from: Alpha, Beta, Gamma)" if multiple>
 - Assignee: <auto-suggested, e.g., "Denis Pingin (you)" -- or "unassigned (5 members available)">
-- Priority: <mapped priority, e.g., "3 - Medium (detected)" or "3 - Medium (default)">
+- Priority: <mapped priority, e.g., "3 - Normal (detected)" or "<defaultPriority.value> - <defaultPriority.label> (config default)">
 - Files mentioned: <list, or "none">
 ```
 
@@ -218,11 +219,11 @@ Ask the user for a due date. Accept natural language ("next Friday", "2026-04-20
 
 #### Priority
 
-Present Linear priority levels. Pre-select the detected priority, or `3 - Medium` when no signal was detected. Let the user adjust:
+Present Linear priority levels. Pre-select the detected priority, or `linear.defaultPriority` when no signal was detected. Let the user adjust:
 - 0 = No priority (manual clear only; never auto-select this as default)
 - 1 = Urgent
 - 2 = High
-- 3 = Medium
+- 3 = Normal
 - 4 = Low
 
 After the user finishes setting metadata, proceed directly to Phase 3 (IDs are already resolved).
@@ -272,7 +273,7 @@ No ticket was created (dry run mode).
    - `assigneeId`: assignee user ID (if any)
    - `stateId`: workflow state ID (if any)
    - `dueDate`: ISO date string (if any)
-   - `priority`: priority number. Use `3` when no priority signal was detected unless the user explicitly selected No priority.
+   - `priority`: priority number. Use `linear.defaultPriority.value` when no priority signal was detected unless the user explicitly selected No priority. If neither a detected signal nor a configured default exists, ask for priority before calling `save_issue`.
 
 2. **Handle the response:**
    - On success: extract the issue identifier (e.g., "ALP-123") and URL from the response
@@ -313,13 +314,14 @@ URL: <linear-url>
 
 The skill reads optional configuration from `<fixme-dir>/config.json`:
 
-```json
+ ```json
 {
   "linear": {
     "teamId": "optional-default-team-id",
     "teamName": "optional-default-team-name",
     "defaultLabels": ["bug"],
-    "defaultProject": "optional-project-id-or-name"
+    "defaultProject": "optional-project-id-or-name",
+    "defaultPriority": { "value": 3, "label": "Normal" }
   },
   "ticketTemplate": {
     "default": "standard",
@@ -333,7 +335,7 @@ The skill reads optional configuration from `<fixme-dir>/config.json`:
 
 All configuration is optional. Without it, the skill resolves everything interactively via Linear MCP tool calls and user prompts.
 
-**Config default behavior:** `linear.defaultLabels` and `linear.defaultProject` are automatically applied to new tickets during Phase 1 content gathering. They are matched against Linear data during auto-discovery (Phase 2 Step 2) and shown in the preview with match status annotations. The user can override, add to, or clear them during the metadata editing flow. Config defaults never override explicit user mentions -- user text takes priority for project, and labels are deduplicated.
+**Config default behavior:** `linear.defaultLabels`, `linear.defaultProject`, and `linear.defaultPriority` are automatically applied to new tickets during Phase 1 content gathering. Labels and project are matched against Linear data during auto-discovery (Phase 2 Step 2) and shown in the preview with match status annotations. Priority uses the configured numeric `value` and display `label` unless a priority signal is detected in the ticket text. The user can override, add to, or clear defaults during the metadata editing flow. Config defaults never override explicit user mentions -- user text takes priority for project and priority, and labels are deduplicated.
 
 ## MCP Tool Reference
 
@@ -378,4 +380,4 @@ The skill uses these Linear MCP tools. Tool names follow the pattern `mcp__claud
 
 11. **Resolve team before metadata.** Labels, users, and workflow states are team-scoped in Linear. The team must be resolved before any metadata listing operations. Never call `list_issue_labels`, `list_users`, or `list_issue_statuses` without a resolved team ID.
 
-12. **Config defaults are additive, never overriding.** `linear.defaultLabels` are merged with user-detected labels (deduplicated, case-insensitive). `linear.defaultProject` is used only when no project was explicitly mentioned by the user. The user can always override or clear config defaults during the metadata editing flow.
+12. **Config defaults are additive, never overriding.** `linear.defaultLabels` are merged with user-detected labels (deduplicated, case-insensitive). `linear.defaultProject` is used only when no project was explicitly mentioned by the user. `linear.defaultPriority` is used only when no priority signal was detected. The user can always override or clear config defaults during the metadata editing flow.
