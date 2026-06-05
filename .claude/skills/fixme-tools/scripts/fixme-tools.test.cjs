@@ -918,6 +918,28 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(!Object.prototype.hasOwnProperty.call(state.artifacts, 'decisionLogPath'), 'artifacts should not include decisionLogPath');
 });
 
+test('task save: rejects skeletal handoffs that are not self-contained', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Fix Bridge Issues',
+    taskGoal: 'Fix live bridge indexing and fee estimation.',
+    pipelineResolution: {
+      pipeline: 'bugfix',
+      source: 'userProseIntent',
+      evidence: 'User asked to save a bugfix task.',
+      reason: 'The requested work is a bugfix.',
+    },
+  });
+
+  const result = runInDir(`task save --data '${data}'`, projectRoot);
+
+  assert(!result.ok, 'task save should reject a skeletal handoff');
+  assert(String(result.data.error).includes('self-contained handoff'), `error should explain the handoff requirement, got ${JSON.stringify(result.data)}`);
+  assert(!fs.existsSync(path.join(projectRoot, '.fixme', 'tasks', '.counter')), 'counter should not advance when save is rejected');
+});
+
 test('task save: persists explicit pipeline resolution in task state', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -925,6 +947,13 @@ test('task save: persists explicit pipeline resolution in task state', () => {
   const data = JSON.stringify({
     title: 'Write Technical Specification',
     taskGoal: 'Create a technical specification from a product specification.',
+    agreedApproach: ['Use the technical-spec workflow to turn the product specification into deterministic implementation guidance.'],
+    userVisibleBehavior: ['A future run can resume the saved specification-writing task without chat context.'],
+    scope: {
+      inScope: ['Saved task state and technical-spec pipeline resolution'],
+      outOfScope: ['Executing the specification-writing phase in this test'],
+    },
+    laterPlanningNotes: ['Verify the resumed task starts at the technical-spec workflow cursor.'],
     pipelineResolution: {
       pipeline: 'technical-spec',
       source: 'userProseIntent',
@@ -961,6 +990,13 @@ test('task resolve: resolves FIXME label and legacy task path to canonical state
   const data = JSON.stringify({
     title: 'Resolve Saved Task',
     taskGoal: 'Resolve a saved task by label.',
+    agreedApproach: ['Save a standalone task, then resolve it by visible label, task path, and state path.'],
+    userVisibleBehavior: ['A user can resume the same saved task through each supported reference form.'],
+    scope: {
+      inScope: ['Standalone task save and task reference resolution'],
+      outOfScope: ['Ticket-backed task resolution'],
+    },
+    laterPlanningNotes: ['Assert each reference resolves to the same canonical task and state paths.'],
     pipelineHint: 'plan-only',
     source: 'test',
   });
@@ -3118,6 +3154,31 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
 // Skill contract tests
 // ============================================================================
 
+test('fixme bootstrap skill: routes Fixme-shaped requests to concrete entry points', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md');
+  const readmePath = path.resolve(__dirname, '..', '..', '..', '..', 'README.md');
+  const claudePath = path.resolve(__dirname, '..', '..', '..', '..', 'CLAUDE.md');
+  assert(fs.existsSync(skillPath), 'fixme bootstrap skill should exist');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const readme = fs.readFileSync(readmePath, 'utf8');
+  const claude = fs.readFileSync(claudePath, 'utf8');
+
+  assert(skill.includes('name: fixme'), 'frontmatter name');
+  assert(skill.includes('Use first for Fixme-related requests'), 'description should make Fixme routing an early skill-selection trigger');
+  assert(skill.includes('FIXME-9 followed by FIXME-10, both standard pipeline'), 'bootstrap should cover bare sequential FIXME references');
+  assert(skill.includes('Skill("fixme-task", "--pipeline standard --resume FIXME-9")'), 'first sequential task should route to fixme-task with standard pipeline');
+  assert(skill.includes('Skill("fixme-task", "--pipeline standard --resume FIXME-10")'), 'second sequential task should route to fixme-task with standard pipeline');
+  assert(skill.includes('Skill("fixme-session"'), 'bug-session requests should route to fixme-session');
+  assert(skill.includes('Skill("fixme-pr-comments"'), 'PR comment requests should route to fixme-pr-comments');
+  assert(skill.includes('Skill("fixme-rebase"'), 'rebase requests should route to fixme-rebase');
+  assert(skill.includes('Skill("fixme-ticket"'), 'ticket creation requests should route to fixme-ticket');
+  assert(skill.includes('Skill("fixme-brainstorm"'), 'ambiguous idea requests should route to fixme-brainstorm');
+  assert(skill.includes('Do not dispatch more than one `fixme-task` at a time.'), 'sequential task routing should forbid concurrent fixme-task dispatch');
+  assert(readme.includes('`/fixme`'), 'README should document the bootstrap router');
+  assert(readme.includes('/fixme FIXME-9 followed by FIXME-10, both standard pipeline'), 'README should document sequential FIXME routing');
+  assert(claude.includes('fixme/'), 'CLAUDE should list the bootstrap router in the skill suite');
+});
+
 test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL directly', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-usage', 'SKILL.md');
   assert(fs.existsSync(skillPath), 'fixme-usage skill should exist');
@@ -3154,6 +3215,7 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('run ping --fixme-dir'), 'fixme-tools skill should document run ping');
   assert(toolsSkill.includes('run status --fixme-dir'), 'fixme-tools skill should document run status');
   assert(toolsSkill.includes('task save --data'), 'fixme-tools skill should document task save');
+  assert(toolsSkill.includes('task save` rejects skeletal inputs that are not self-contained handoffs'), 'fixme-tools skill should document task save handoff validation');
   assert(toolsSkill.includes('task init --ticket'), 'fixme-tools skill should document task init for tickets');
   assert(toolsSkill.includes('task checkpoint --state'), 'fixme-tools skill should document task checkpoint');
   assert(toolsSkill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'fixme-tools skill should document task resolve');
@@ -3232,6 +3294,10 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
   assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`'), 'saved tasks should include the FIXME label in the filename');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'save mode should delegate saved task writes to fixme-tools');
+  assert(skill.includes('### Save Mode Lossless Handoff Gate'), 'save mode should define the lossless handoff gate');
+  assert(skill.includes('A future run must be able to plan and execute from the task file alone, with no chat history.'), 'save mode should state the task file is the context boundary');
+  assert(skill.includes('Do not compress a rich discussion into only a title and one-sentence goal.'), 'save mode should forbid lossy save summaries');
+  assert(skill.includes('The CLI rejects skeletal handoffs that omit concrete `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`.'), 'save mode should document the CLI fail-closed guard');
   assert(skill.includes("task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>"), 'ticket mode should initialize task state through fixme-tools');
   assert(skill.includes('task checkpoint --state <task-state-path> --data'), 'fixme-task should checkpoint resumable state through fixme-tools');
   assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');

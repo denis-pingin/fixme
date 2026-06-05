@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Fixme is a suite of Claude Code skills, Codex-adapted skill copies, and matching agent definitions for automated bug fixing and task execution. It has two main systems:
+Fixme is a suite of Claude Code skills, Codex-adapted skill copies, and matching agent definitions for automated bug fixing and task execution. `/fixme` is the bootstrap router for Fixme-shaped requests such as bare `FIXME-N` labels, pipeline sequencing, sessions, PR comments, rebases, tickets, configuration, usage, and brainstorming. It has two main execution systems:
 
 1. **fixme-session** - A long-lived bug fix session orchestrator. Accepts bug reports, creates tickets, and dispatches fixme-task in the background per ticket. Stays responsive for intake and status queries while tasks execute.
 
@@ -105,6 +105,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 
 ```
 .claude/skills/
+  fixme/                    # Bootstrap router for Fixme-shaped requests
   fixme-session/            # Session orchestrator (dispatch loop, intake, browser setup)
     SKILL.md                # Orchestrator: background dispatch of fixme-task per ticket
     agents/                 # intake-agent.md, investigation-agent.md
@@ -177,7 +178,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-research | Codebase explorer | Writes research output, never fixes code | opus | high | xhigh |
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | high | xhigh |
 
-Top-level user-invoked skills (fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config, fixme-brainstorm), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
+Top-level user-invoked skills (fixme, fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config, fixme-brainstorm), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
 
 Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `medium` for `fixme-execute-plan`; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
 

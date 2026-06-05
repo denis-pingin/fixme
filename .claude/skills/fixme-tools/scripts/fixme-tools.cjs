@@ -2908,6 +2908,24 @@ function markdownList(items, fallback) {
   return normalized.map(item => `- ${item}`).join('\n');
 }
 
+function hasTaskDetail(value) {
+  return normalizeTaskTextArray(value).some(item => item.trim().length > 0);
+}
+
+function validateTaskSaveHandoffData(data) {
+  const scope = isPlainObject(data.scope) ? data.scope : {};
+  const missing = [];
+  if (String(data.taskGoal || '').trim().length === 0) missing.push('taskGoal');
+  if (!hasTaskDetail(data.agreedApproach)) missing.push('agreedApproach');
+  if (!hasTaskDetail(data.userVisibleBehavior)) missing.push('userVisibleBehavior');
+  if (!hasTaskDetail(scope.inScope)) missing.push('scope.inScope');
+  if (!hasTaskDetail(data.laterPlanningNotes)) missing.push('laterPlanningNotes');
+
+  if (missing.length > 0) {
+    throw new Error(`task save requires a self-contained handoff; missing concrete ${missing.join(', ')}. Include the settled solution shape, observable behavior, scope, and planning notes before saving.`);
+  }
+}
+
 function formatLockedDecisions(decisions) {
   if (!Array.isArray(decisions) || decisions.length === 0) {
     return '- None recorded.';
@@ -3254,6 +3272,7 @@ function pipelineResolve(flags) {
 function taskSave(flags, fixmeRoot) {
   const data = parseTaskData(flags.data);
   assertCamelCaseJsonKeys(data, '--data');
+  validateTaskSaveHandoffData(data);
   const taskDir = taskDirectory(fixmeRoot);
   fs.mkdirSync(taskDir, { recursive: true });
 

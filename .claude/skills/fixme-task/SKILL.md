@@ -212,7 +212,23 @@ The orchestrator does not hand-write saved task markdown, the counter, or task s
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
 ```
 
-The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, and `pipelineResolution`. Optional keys: `agreedApproach`, `userVisibleBehavior`, `scope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `laterPlanningNotes`, `source`, and `tags`. `pipelineHint` remains accepted only for legacy saved-task callers; new runs must use `pipelineResolution`.
+The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, `laterPlanningNotes`, and `pipelineResolution`. Optional keys: `scope.outOfScope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `source`, and `tags`. `pipelineHint` remains accepted only for legacy saved-task callers; new runs must use `pipelineResolution`.
+
+### Save Mode Lossless Handoff Gate
+
+Treat the saved task file as the context boundary. A future run must be able to plan and execute from the task file alone, with no chat history.
+
+Before calling `task save`, build the payload from the resolved task context and check it against this invariant:
+
+- Every settled solution-shape detail from the conversation appears under `agreedApproach`, including concrete systems, data shapes, fallback behavior, and rejected alternatives when relevant.
+- Every observed behavior or expected change appears under `userVisibleBehavior`.
+- Every included and excluded work item appears under `scope.inScope` or `scope.outOfScope`.
+- Every known fact, investigated root cause, file reference, command, data value, or constraint needed to avoid re-discussion appears under `knownContext` or `constraints`.
+- Every test, verification, sequencing, or risk note that the planner should preserve appears under `laterPlanningNotes`.
+
+Do not compress a rich discussion into only a title and one-sentence goal. Do not rely on the next agent to rediscover already-settled approach details. If the payload would lose any information needed after context loss, repair the payload before saving. If the missing information cannot be recovered from arguments, IDE selection, or conversation context, abort and ask the user for the missing scope.
+
+The CLI rejects skeletal handoffs that omit concrete `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`. Treat that rejection as a save-mode bug in your payload, not as a reason to hand-write the task file.
 
 ### Save Mode Context Resolution
 

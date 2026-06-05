@@ -4,6 +4,7 @@ A Claude Code and Codex skill suite for automated task execution. Turn a task de
 
 Primary entry points:
 
+- **`/fixme`** - Bootstrap router for Fixme-shaped requests. Chooses the right Fixme skill for bare `FIXME-N` labels, pipeline sequencing, sessions, PR comments, rebases, tickets, brainstorming, config, and usage reports.
 - **`/fixme-task`** - Single-task pipeline executor. Plan, review, execute, review code - with configurable phases and review loops.
 - **`/fixme-session`** - Long-lived session that accepts bug reports, creates tickets, and dispatches background workflows to investigate, fix, and verify each bug.
 - **`/fixme-pr-comments`** - Fetch and address unresolved PR review comments through the full plan/execute cycle.
@@ -14,6 +15,14 @@ Primary entry points:
 - **`/fixme-usage`** - Show project, global, per-skill, and per-pipeline token usage reports.
 
 ## Quick Start
+
+### Let Fixme choose the skill
+
+```text
+/fixme FIXME-9 followed by FIXME-10, both standard pipeline
+```
+
+Routes each `FIXME-N` label to `fixme-task` sequentially. The example runs `FIXME-9` with the `standard` pipeline, waits for completion, then runs `FIXME-10` with the same pipeline.
 
 ### Fix a single task
 
@@ -226,6 +235,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 
 | Skill | Purpose |
 | ----- | ------- |
+| `fixme` | Bootstrap router for Fixme-shaped requests |
 | `fixme-session` | Session orchestrator (intake, dispatch, cleanup) |
 | `fixme-task` | Config-driven pipeline executor |
 | `fixme-alert` | Play configured audible alerts for user-input, task-finished, and task-failed events |
