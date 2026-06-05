@@ -59,7 +59,7 @@ If a description is provided (directly or via AskUserQuestion), use it as the st
 - **Description**: the full text, formatted as markdown
 - **Mentioned files**: any file paths referenced in the text
 - **Labels**: any explicit label mentions (e.g., "bug", "feature", "urgent")
-- **Priority signals**: urgency indicators ("critical", "blocker", "nice to have")
+- **Priority signals**: urgency indicators ("critical", "blocker", "nice to have"). If no priority signal is present, default to Medium.
 
 **Mode B: Extract from conversation context**
 
@@ -154,7 +154,7 @@ If any call fails, log a warning and continue without that metadata. Auto-discov
 - **Labels**: For each label name from text detection or config defaults, case-insensitive match against `availableLabels`. Matched labels get their IDs resolved immediately. Unmatched labels are dropped with a note in the preview (e.g., "'xyz' not found in Linear labels"). If no labels were detected or matched, note the count of available labels for awareness.
 - **Project**: If a project name was detected or set from config, match case-insensitively against `availableProjects` and auto-select with resolved ID. If nothing was detected and exactly one project exists, auto-suggest it. If multiple projects and nothing detected, note count and top 3 names.
 - **Assignee**: Identify the authenticated user in `teamMembers` and pre-suggest assigning to them. Show as "Your Name (you)". If the authenticated user cannot be identified, leave as "unassigned" but note the count of team members.
-- **Priority**: Map detected priority signals to Linear levels: "urgent"/"critical"/"blocker" -> 1 (Urgent), "high" -> 2 (High), "medium" -> 3 (Medium), "low"/"nice to have" -> 4 (Low). No signals -> 0 (No priority).
+- **Priority**: Map detected priority signals to Linear levels: "urgent"/"critical"/"blocker" -> 1 (Urgent), "high" -> 2 (High), "medium" -> 3 (Medium), "low"/"nice to have" -> 4 (Low). No signals -> 3 (Medium default); never default to `0 - No priority` unless the user explicitly selects it during metadata editing.
 
 All resolved IDs from this step carry through to Phase 3 -- no redundant resolution needed later.
 
@@ -175,7 +175,7 @@ Present the enriched ticket preview with auto-discovered suggestions clearly ann
 - Labels: <matched labels, e.g., "bug (matched)" -- or "none (15 labels available)" if none matched>
 - Project: <auto-selected, e.g., "Alpha (only project)" or "Alpha (matched)" -- or "none (pick from: Alpha, Beta, Gamma)" if multiple>
 - Assignee: <auto-suggested, e.g., "Denis Pingin (you)" -- or "unassigned (5 members available)">
-- Priority: <mapped priority, e.g., "3 - Medium (detected)" -- or "None">
+- Priority: <mapped priority, e.g., "3 - Medium (detected)" or "3 - Medium (default)">
 - Files mentioned: <list, or "none">
 ```
 
@@ -218,8 +218,8 @@ Ask the user for a due date. Accept natural language ("next Friday", "2026-04-20
 
 #### Priority
 
-Present Linear priority levels. Pre-select the auto-detected priority if any. Let the user adjust:
-- 0 = No priority
+Present Linear priority levels. Pre-select the detected priority, or `3 - Medium` when no signal was detected. Let the user adjust:
+- 0 = No priority (manual clear only; never auto-select this as default)
 - 1 = Urgent
 - 2 = High
 - 3 = Medium
@@ -256,7 +256,7 @@ Output the complete ticket payload as formatted text and stop:
 **Assignee:** <assignee or "unassigned">
 **Status:** <status or "default">
 **Due Date:** <date or "none">
-**Priority:** <priority or "none">
+**Priority:** <priority, or "none" only if the user explicitly selected No priority>
 
 No ticket was created (dry run mode).
 ```
@@ -272,7 +272,7 @@ No ticket was created (dry run mode).
    - `assigneeId`: assignee user ID (if any)
    - `stateId`: workflow state ID (if any)
    - `dueDate`: ISO date string (if any)
-   - `priority`: priority number (if any)
+   - `priority`: priority number. Use `3` when no priority signal was detected unless the user explicitly selected No priority.
 
 2. **Handle the response:**
    - On success: extract the issue identifier (e.g., "ALP-123") and URL from the response

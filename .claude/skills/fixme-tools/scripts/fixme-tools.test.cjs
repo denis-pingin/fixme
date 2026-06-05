@@ -3179,6 +3179,16 @@ test('fixme bootstrap skill: routes Fixme-shaped requests to concrete entry poin
   assert(claude.includes('fixme/'), 'CLAUDE should list the bootstrap router in the skill suite');
 });
 
+test('fixme-ticket skill: defaults tickets without priority signals to Medium', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-ticket', 'SKILL.md');
+  assert(fs.existsSync(skillPath), 'fixme-ticket skill should exist');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('No signals -> 3 (Medium default)'), 'missing priority signals should default to Medium');
+  assert(skill.includes('never default to `0 - No priority`'), 'skill should forbid defaulting to no priority');
+  assert(skill.includes('"3 - Medium (default)"'), 'ticket preview should show Medium as the default priority');
+});
+
 test('fixme-usage skill: delegates reports to fixme-tools and never parses JSONL directly', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-usage', 'SKILL.md');
   assert(fs.existsSync(skillPath), 'fixme-usage skill should exist');
