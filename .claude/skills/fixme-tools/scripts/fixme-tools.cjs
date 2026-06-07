@@ -4521,6 +4521,57 @@ function codexSkillsInstall(flags) {
   }));
 }
 
+function buildClaudeUsageHookCommand(claudeDir) {
+  const toolPath = path.join(claudeDir, 'skills', 'fixme-tools', 'scripts', 'fixme-tools.cjs');
+  return `node ${JSON.stringify(toolPath)} usage claude-hook`;
+}
+
+function removeManagedClaudeUsageHooks(groups) {
+  if (!Array.isArray(groups)) return [];
+  const cleaned = [];
+  for (const group of groups) {
+    if (!group || typeof group !== 'object') continue;
+    const hooks = Array.isArray(group.hooks)
+      ? group.hooks.filter(hook => {
+        if (!hook || typeof hook !== 'object') return true;
+        return !(hook.type === 'command' && typeof hook.command === 'string' && hook.command.includes('usage claude-hook'));
+      })
+      : [];
+    if (hooks.length > 0) cleaned.push({ ...group, hooks });
+  }
+  return cleaned;
+}
+
+function installClaudeUsageHook(claudeDir) {
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  let settings = {};
+  if (fs.existsSync(settingsPath)) {
+    settings = readJsonFileStrict(settingsPath);
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error(`Claude settings must be a JSON object: ${settingsPath}`);
+    }
+  }
+  if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
+    settings.hooks = {};
+  }
+
+  const existing = removeManagedClaudeUsageHooks(settings.hooks.UserPromptSubmit);
+  existing.push({
+    matcher: '',
+    hooks: [
+      {
+        type: 'command',
+        command: buildClaudeUsageHookCommand(claudeDir),
+      },
+    ],
+  });
+  settings.hooks.UserPromptSubmit = existing;
+
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  writeJsonAtomic(settingsPath, settings);
+  return settingsPath;
+}
+
 function installClaudeSkills(options) {
   const skillsSrc = options.skillsSrc;
   const claudeDir = options.claudeDir;
@@ -4551,10 +4602,12 @@ function installClaudeSkills(options) {
   }
 
   fs.rmSync(path.join(skillsDir, 'fixme-tickets-md', 'scripts'), { recursive: true, force: true });
+  const settingsPath = installClaudeUsageHook(claudeDir);
 
   return {
     claudeDir: path.resolve(claudeDir),
     skillsDir: path.resolve(skillsDir),
+    settingsPath: path.resolve(settingsPath),
     installed: sourceDirs.length,
     removed,
     skills: sourceDirs,
@@ -4586,6 +4639,65 @@ function usageProjectEventPath(fixmeDir) {
 
 function usageGlobalEventPath() {
   return path.join(os.homedir(), '.fixme', 'usage', 'events.jsonl');
+}
+
+function usageClaudeHook() {
+  let input;
+  try {
+    const raw = fs.readFileSync(0, 'utf8');
+    input = raw.trim() ? JSON.parse(raw) : {};
+  } catch (e) {
+    return output({ recorded: false, reason: `Invalid hook JSON: ${e.message}` });
+  }
+  if (!input || typeof input !== 'object') {
+    return output({ recorded: false, reason: 'Hook input was not an object' });
+  }
+
+  const hookEventName = typeof input.hook_event_name === 'string' ? input.hook_event_name : null;
+  if (hookEventName !== 'UserPromptSubmit') {
+    return output({ recorded: false, reason: 'Unsupported hook event', hookEventName });
+  }
+
+  const rawSessionId = input.session_id || input.sessionId;
+  const sessionId = typeof rawSessionId === 'string' && /^[A-Za-z0-9_-]+$/.test(rawSessionId)
+    ? rawSessionId
+    : null;
+  const rawSourcePath = input.agent_transcript_path || input.transcript_path || input.agentTranscriptPath || input.transcriptPath;
+  const sourcePath = typeof rawSourcePath === 'string' && rawSourcePath.trim()
+    ? path.resolve(expandHomePath(rawSourcePath))
+    : null;
+  const cwd = typeof input.cwd === 'string' && input.cwd.trim()
+    ? path.resolve(expandHomePath(input.cwd))
+    : null;
+
+  if (!sessionId || !sourcePath) {
+    return output({
+      recorded: false,
+      reason: 'Hook input did not include session id and transcript path',
+      hasSessionId: !!sessionId,
+      hasSourcePath: !!sourcePath,
+      hookEventName,
+    });
+  }
+
+  const statePath = claudeSessionSourcePath(sessionId);
+  const state = {
+    schemaVersion: 1,
+    sessionId,
+    sourcePath,
+    cwd,
+    hookEventName,
+    updatedAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  writeJsonAtomic(statePath, state);
+
+  return output({
+    recorded: true,
+    sessionId,
+    sourcePath,
+    statePath,
+  });
 }
 
 function normalizeNullableFlag(value) {
@@ -5238,11 +5350,87 @@ function runAttention(args, flags) {
   }
 }
 
-function explicitUsageSourcePath(runtime, explicitPath) {
-  return explicitPath
+function expandHomePath(value) {
+  if (!value || typeof value !== 'string') return null;
+  if (value === '~') return os.homedir();
+  if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+function loadNodeSqliteDatabaseSync() {
+  const previousEmitWarning = process.emitWarning;
+  process.emitWarning = function emitWarningWithoutSqliteExperimentalNoise(warning, ...args) {
+    const message = typeof warning === 'string' ? warning : (warning && warning.message) || '';
+    if (message.includes('SQLite is an experimental feature')) return;
+    return previousEmitWarning.call(process, warning, ...args);
+  };
+  try {
+    return require('node:sqlite').DatabaseSync;
+  } catch (_) {
+    return null;
+  } finally {
+    process.emitWarning = previousEmitWarning;
+  }
+}
+
+function runtimeStateDir() {
+  return path.join(os.homedir(), '.fixme', 'usage', 'runtime');
+}
+
+function claudeSessionSourcePath(sessionId) {
+  if (!sessionId || !/^[A-Za-z0-9_-]+$/.test(String(sessionId))) return null;
+  return path.join(runtimeStateDir(), 'claude-sessions', `${sessionId}.json`);
+}
+
+function readClaudeHookSourceRef() {
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID;
+  const sourceStatePath = claudeSessionSourcePath(sessionId);
+  if (!sourceStatePath || !fs.existsSync(sourceStatePath)) return null;
+  try {
+    const state = readJsonFileStrict(sourceStatePath);
+    const sourcePath = typeof state.sourcePath === 'string' ? expandHomePath(state.sourcePath) : null;
+    if (!sourcePath) return null;
+    return { path: path.resolve(sourcePath), discovery: 'claudeHook' };
+  } catch (_) {
+    return null;
+  }
+}
+
+function readCodexThreadSourceRef() {
+  const threadId = process.env.CODEX_THREAD_ID;
+  if (!threadId) return null;
+  const dbPath = path.join(os.homedir(), '.codex', 'state_5.sqlite');
+  if (!fs.existsSync(dbPath)) return null;
+  const DatabaseSync = loadNodeSqliteDatabaseSync();
+  if (!DatabaseSync) return null;
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare('SELECT rollout_path FROM threads WHERE id = ?').get(threadId);
+    const rolloutPath = row && typeof row.rollout_path === 'string' ? expandHomePath(row.rollout_path) : null;
+    if (!rolloutPath) return null;
+    return { path: path.resolve(rolloutPath), discovery: 'codexThreadId' };
+  } catch (_) {
+    return null;
+  } finally {
+    if (db) db.close();
+  }
+}
+
+function explicitUsageSourceRef(runtime, explicitPath) {
+  const directPath = explicitPath
     || process.env.FIXME_USAGE_SOURCE_PATH
     || (runtime === 'codex' ? process.env.CODEX_SESSION_FILE : process.env.CLAUDE_TRANSCRIPT_PATH)
     || null;
+  if (directPath) return { path: path.resolve(expandHomePath(String(directPath))), discovery: 'explicit' };
+  if (runtime === 'codex') return readCodexThreadSourceRef();
+  if (runtime === 'claude') return readClaudeHookSourceRef();
+  return null;
+}
+
+function explicitUsageSourcePath(runtime, explicitPath) {
+  const sourceRef = explicitUsageSourceRef(runtime, explicitPath);
+  return sourceRef ? sourceRef.path : null;
 }
 
 function captureCodexCumulativeStartSnapshot(sourcePath, cursor) {
@@ -5260,35 +5448,22 @@ function captureCodexCumulativeStartSnapshot(sourcePath, cursor) {
 }
 
 function captureSourceSnapshot(runtime, explicitPath, projectRoot, skill, startedAt) {
-  const sourcePath = explicitUsageSourcePath(runtime, explicitPath);
+  const sourceRef = explicitUsageSourceRef(runtime, explicitPath);
+  const sourcePath = sourceRef && sourceRef.path ? sourceRef.path : null;
+  let cursor = null;
+  if (sourcePath && fs.existsSync(sourcePath)) {
+    const stat = fs.statSync(sourcePath);
+    cursor = { path: sourcePath, size: stat.size, mtimeMs: stat.mtimeMs };
+  } else if (runtime === 'claude' && sourcePath) {
+    cursor = { path: sourcePath, size: 0, mtimeMs: 0 };
+  }
   const snapshot = {
     runtime,
     explicitPath: sourcePath,
-    source: sourcePath ? { kind: `${runtime}_jsonl`, path: sourcePath, discovery: 'explicit' } : null,
-    cursor: sourcePath && fs.existsSync(sourcePath)
-      ? { path: sourcePath, size: fs.statSync(sourcePath).size, mtimeMs: fs.statSync(sourcePath).mtimeMs }
-      : null,
+    source: sourcePath ? { kind: `${runtime}_jsonl`, path: sourcePath, discovery: sourceRef.discovery } : null,
+    cursor,
     codexCumulativeStartTokens: null,
   };
-  if (!sourcePath && projectRoot) {
-    try {
-      const discovery = discoverRuntimeCounterSources(runtime, projectRoot, skill, startedAt, startedAt, null);
-      if (discovery.status === 'one') {
-        const candidate = discovery.candidates[0];
-        snapshot.source = sourceMetadata(
-          `${runtime}_jsonl`,
-          candidate.path,
-          candidate.discovery,
-          1,
-          candidate.attributionSkill ? { attributionSkill: candidate.attributionSkill } : {}
-        );
-        snapshot.cursor = { ...candidate.cursor, path: candidate.path };
-      }
-    } catch (_) {
-      snapshot.source = null;
-      snapshot.cursor = null;
-    }
-  }
   if (runtime === 'codex' && snapshot.cursor) {
     try {
       snapshot.codexCumulativeStartTokens = captureCodexCumulativeStartSnapshot(snapshot.cursor.path, snapshot.cursor);
@@ -5923,15 +6098,11 @@ function buildUnmeasuredCounterResult(pending, warningCode, message) {
 }
 
 function resolveUsageCounters(pending) {
-  const finishedAt = new Date().toISOString();
-  const explicitPath = pending.sourceSnapshot && pending.sourceSnapshot.explicitPath
-    ? pending.sourceSnapshot.explicitPath
-    : explicitUsageSourcePath(pending.runtime, null);
   const persistedSource = pending.sourceSnapshot && pending.sourceSnapshot.source && pending.sourceSnapshot.source.path
     ? pending.sourceSnapshot.source
     : null;
   let discovery;
-  if (!explicitPath && persistedSource) {
+  if (persistedSource) {
     if (fs.existsSync(persistedSource.path)) {
       const stat = fs.statSync(persistedSource.path);
       discovery = {
@@ -5947,16 +6118,8 @@ function resolveUsageCounters(pending) {
       discovery = { status: 'none', candidates: [] };
     }
   } else {
-    discovery = discoverRuntimeCounterSources(
-      pending.runtime,
-      pending.projectRoot,
-      pending.skill,
-      pending.startedAt,
-      finishedAt,
-      explicitPath
-    );
+    discovery = { status: 'none', candidates: [] };
   }
-  discovery = disambiguateRuntimeCounterSourcesByInvocationId(discovery, pending.runtime, pending.invocationId);
   const kind = `${pending.runtime}_jsonl`;
   if (discovery.status === 'error') {
     return counterUnmeasured(
@@ -6787,8 +6950,10 @@ function main() {
             return usageFinish(flags, hasUsageFixmeDirFlag(flags) ? null : getFixmeRoot());
           case 'report':
             return usageReport(flags, flags.scope === 'global' || hasUsageFixmeDirFlag(flags) ? null : getFixmeRoot());
+          case 'claude-hook':
+            return usageClaudeHook();
           default:
-            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start, finish, report`);
+            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start, finish, report, claude-hook`);
         }
 
       case 'run':

@@ -49,7 +49,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install -
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src <agents-dir> --codex-dir ~/.codex
 ```
 
-`claude-skills install` copies source `fixme*` skills into `~/.claude/skills`, injects generated usage tracking instructions into installed `SKILL.md` entrypoints, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
+`claude-skills install` copies source `fixme*` skills into `~/.claude/skills`, injects generated usage tracking instructions into installed `SKILL.md` entrypoints, installs the managed `UserPromptSubmit` usage hook in `~/.claude/settings.json`, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
 
 `codex-skills install` copies source `fixme*` skills into `~/.codex/skills`, rewrites `.claude` paths to `.codex`, prepends a Codex runtime adapter to each installed `SKILL.md`, removes stale Fixme skill copies, and excludes `fixme-tickets-md/scripts`.
 
@@ -61,9 +61,10 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage start --skill <skill-name> --runtime claude
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage finish --invocation-id <id> --outcome complete
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope project
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage claude-hook
 ```
 
-`usage start` creates pending invocation state. `usage finish` extracts runtime counters when available, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
+`usage start` creates pending invocation state and captures the runtime counter source at start only. Codex source binding uses `CODEX_THREAD_ID` to read `threads.rollout_path` from `~/.codex/state_5.sqlite`; Claude source binding uses the managed hook's `session_id` to read the hook-recorded `transcript_path`. `usage claude-hook` is run by Claude Code's `UserPromptSubmit` hook and records only session metadata and transcript path, never transcript contents. `usage finish` extracts runtime counters only from the start-captured source, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
 
 ## Run Liveness Commands
 

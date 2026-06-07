@@ -101,6 +101,24 @@ function runToolPath(toolPath, args, options = {}) {
   }
 }
 
+function runToolPathWithInput(toolPath, args, input, options = {}) {
+  try {
+    const result = execSync(`node "${toolPath}" ${args}`, {
+      encoding: 'utf8',
+      timeout: options.timeout || 5000,
+      cwd: options.cwd || process.cwd(),
+      env: { ...process.env, ...(options.env || {}) },
+      input,
+    });
+    return { ok: true, data: JSON.parse(result.trim()) };
+  } catch (e) {
+    const stdout = e.stdout ? e.stdout.trim() : '';
+    let data = null;
+    try { data = JSON.parse(stdout); } catch (_) {}
+    return { ok: false, data, stderr: e.stderr || '', exitCode: e.status };
+  }
+}
+
 function runInDirWithEnv(args, cwd, env = {}) {
   return runToolPath(TOOLS_PATH, args, { cwd, env });
 }
@@ -4378,6 +4396,13 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(reference.includes('--role reference'), 'fixme-howto-* role mapping');
   assert(reference.includes('Only run this block when `fixme-howto-code-map` is the active skill invocation.'), 'reference guard');
   assert(!fs.existsSync(path.join(claudeSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not install');
+  const settings = readJson(path.join(claudeDir, 'settings.json'));
+  const userPromptHooks = settings.hooks && settings.hooks.UserPromptSubmit;
+  assert(Array.isArray(userPromptHooks), 'Claude install should configure UserPromptSubmit hooks');
+  assert(
+    JSON.stringify(userPromptHooks).includes('usage claude-hook'),
+    'Claude install should register the Fixme usage hook that records transcript_path'
+  );
 
   const reinstall = run(`claude-skills install --skills-src "${skillsSrc}" --claude-dir "${claudeDir}"`);
   assert(reinstall.ok, `reinstall should succeed, got: ${JSON.stringify(reinstall)}`);
@@ -4386,6 +4411,10 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(blockCount === 1, `usage block should be idempotent, got ${blockCount}`);
   const livenessBlockCount = (reinstalledTask.match(/## Fixme Agent Liveness/g) || []).length;
   assert(livenessBlockCount === 1, `liveness block should be idempotent, got ${livenessBlockCount}`);
+  const reinstalledSettings = readJson(path.join(claudeDir, 'settings.json'));
+  const hookConfig = JSON.stringify(reinstalledSettings.hooks.UserPromptSubmit);
+  const hookCount = (hookConfig.match(/usage claude-hook/g) || []).length;
+  assert(hookCount === 1, `Claude usage hook should be idempotent, got ${hookCount}`);
 });
 
 // ============================================================================
@@ -6458,6 +6487,33 @@ function appendJsonl(filePath, rows) {
   fs.appendFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
 }
 
+function loadNodeSqliteDatabaseSyncForTests() {
+  const previousEmitWarning = process.emitWarning;
+  process.emitWarning = function emitWarningWithoutSqliteExperimentalNoise(warning, ...args) {
+    const message = typeof warning === 'string' ? warning : (warning && warning.message) || '';
+    if (message.includes('SQLite is an experimental feature')) return;
+    return previousEmitWarning.call(process, warning, ...args);
+  };
+  try {
+    return require('node:sqlite').DatabaseSync;
+  } finally {
+    process.emitWarning = previousEmitWarning;
+  }
+}
+
+function writeCodexStateThread(ctx, threadId, rolloutPath) {
+  const DatabaseSync = loadNodeSqliteDatabaseSyncForTests();
+  const dbPath = path.join(ctx.homeDir, '.codex', 'state_5.sqlite');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)');
+    db.prepare('INSERT INTO threads (id, rollout_path) VALUES (?, ?)').run(threadId, rolloutPath);
+  } finally {
+    db.close();
+  }
+}
+
 function codexTokenCount(total, last) {
   return { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: total, last_token_usage: last } } };
 }
@@ -6691,9 +6747,58 @@ test('runtime adapter: Codex sums each last_token_usage event when cumulative sn
   assert(row.tokens.totalTokens === 42, `expected 42, got ${row.tokens.totalTokens}`);
 });
 
-test('runtime adapter: inferred Codex session under HOME sessions is used when exactly one candidate matches', () => {
+test('runtime adapter: Codex binds source from CODEX_THREAD_ID rollout path at start', () => {
   const ctx = createUsageWorkspace();
-  const sourcePath = codexSessionPath(ctx, 'rollout-good');
+  const threadId = 'thread_20260607_codex_probe';
+  const sourcePath = codexSessionPath(ctx, 'rollout-thread-bound');
+  const decoyPath = codexSessionPath(ctx, 'rollout-decoy');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  appendJsonl(decoyPath, [
+    codexSessionMeta(ctx.projectRoot),
+    codexTokenCount(
+      { input_tokens: 900, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 900 },
+      { input_tokens: 900, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 900 }
+    ),
+  ]);
+  writeCodexStateThread(ctx, threadId, sourcePath);
+
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, CODEX_THREAD_ID: threadId });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  const pending = readJson(started.data.pendingPath);
+  assert(pending.sourceSnapshot.source.path === sourcePath, 'start should bind source path from CODEX_THREAD_ID');
+  assert(pending.sourceSnapshot.source.discovery === 'codexThreadId', `discovery should be codexThreadId, got ${pending.sourceSnapshot.source.discovery}`);
+  assert(pending.sourceSnapshot.cursor.path === sourcePath, 'start should capture bounded cursor for rollout path');
+  assert(pending.sourceSnapshot.codexCumulativeStartTokens.totalTokens === 39, 'start should capture cumulative token snapshot');
+
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+  appendJsonl(decoyPath, [
+    codexTokenCount(
+      { input_tokens: 999, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 999 },
+      { input_tokens: 99, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 99 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, CODEX_THREAD_ID: threadId });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected rollout-path total 25, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourcePath, 'finish should use the CODEX_THREAD_ID-bound rollout path');
+});
+
+test('runtime adapter: Codex does not infer source from HOME sessions without thread binding', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = codexSessionPath(ctx, 'rollout-single-unbound');
   appendJsonl(sourcePath, [
     codexSessionMeta(ctx.projectRoot),
     codexTokenCount(
@@ -6703,6 +6808,9 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   ]);
   const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
   assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  const pending = readJson(started.data.pendingPath);
+  assert(pending.sourceSnapshot.source === null, 'start should not scan HOME sessions for an inferred source');
+
   appendJsonl(sourcePath, [
     codexTokenCount(
       { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
@@ -6712,115 +6820,9 @@ test('runtime adapter: inferred Codex session under HOME sessions is used when e
   const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens.totalTokens}`);
-  assert(row.source.kind === 'codex_jsonl', 'source kind');
-  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
-  assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
-  assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
-});
-
-test('runtime adapter: inferred Codex session under project subdirectory matches project root', () => {
-  const ctx = createUsageWorkspace();
-  const subProjectRoot = path.join(ctx.projectRoot, 'alpha-2');
-  fs.mkdirSync(subProjectRoot, { recursive: true });
-  const sourcePath = codexSessionPath(ctx, 'rollout-subproject');
-  appendJsonl(sourcePath, [
-    codexSessionMeta(subProjectRoot),
-    codexTokenCount(
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
-    ),
-  ]);
-  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourcePath, [
-    codexTokenCount(
-      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
-      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
-    ),
-  ]);
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
-  assert(row.source.path === sourcePath, 'source path should identify the subproject session');
-});
-
-test('runtime adapter: inferred Codex discovery parses complete long first JSONL line', () => {
-  const ctx = createUsageWorkspace();
-  const sourcePath = codexSessionPath(ctx, 'rollout-long-first-line');
-  appendJsonl(sourcePath, [
-    { ...codexSessionMeta(ctx.projectRoot), padding: 'x'.repeat(30000) },
-    codexTokenCount(
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
-    ),
-  ]);
-  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourcePath, [
-    codexTokenCount(
-      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
-      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
-    ),
-  ]);
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
-});
-
-test('runtime adapter: usage finish reuses inferred source captured at start', () => {
-  const ctx = createUsageWorkspace();
-  const sourcePath = codexSessionPath(ctx, 'rollout-mtime-drift');
-  appendJsonl(sourcePath, [
-    codexSessionMeta(ctx.projectRoot),
-    codexTokenCount(
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
-      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
-    ),
-  ]);
-  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourcePath, [
-    codexTokenCount(
-      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
-      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
-    ),
-  ]);
-  const future = new Date(Date.now() + 60000);
-  fs.utimesSync(sourcePath, future, future);
-
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 25, `expected inferred total 25, got ${row.tokens && row.tokens.totalTokens}`);
-  assert(row.source.discovery === 'inferred', `expected inferred source, got ${row.source && row.source.discovery}`);
-  assert(row.source.path === sourcePath, 'finish should use the source captured at start');
-});
-
-test('runtime adapter: inferred Codex last_token_usage excludes rows before invocation start', () => {
-  const ctx = createUsageWorkspace();
-  const sourcePath = codexSessionPath(ctx, 'rollout-last-window');
-  appendJsonl(sourcePath, [
-    codexSessionMeta(ctx.projectRoot),
-    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0, total_tokens: 120 } } } },
-  ]);
-  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourcePath, [
-    { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 15 } } } },
-  ]);
-
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 15, `inferred source should count only after-start last usage, got ${row.tokens.totalTokens}`);
+  assert(row.status === 'unmeasured', `expected unmeasured, got ${row.status}`);
+  assert(row.tokens === null, 'unbound source must not report inferred tokens');
+  assert(row.source.path === null, 'unavailable source path should stay null');
 });
 
 test('runtime adapter: source discovery failures append unmeasured row instead of failing finish', () => {
@@ -6916,67 +6918,38 @@ test('runtime adapter: Claude message.usage maps cache buckets and derived cache
   assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
 });
 
-test('runtime adapter: inferred Claude transcript under HOME projects is used when exactly one candidate matches', () => {
+test('runtime adapter: Claude hook source maps session id to transcript path with zero cursor', () => {
   const ctx = createUsageWorkspace();
-  const sourcePath = claudeTranscriptPath(ctx, 'session-main');
-  appendJsonl(sourcePath, [claudeTranscriptMeta(ctx.projectRoot)]);
-  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourcePath, [
-    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 3, cache_creation_input_tokens: 1, cache_read_input_tokens: 2, output_tokens: 4 } }, content: 'must be ignored' },
-  ]);
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 10, `expected inferred total 10, got ${row.tokens.totalTokens}`);
-  assert(row.source.kind === 'claude_jsonl', 'source kind');
-  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
-  assert(row.source.candidateCount === 1, 'exactly one inferred candidate should be recorded');
-  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
-  assert(row.source.path === sourcePath, 'source path identifies the single inferred local counter source');
-});
+  const sessionId = '7203a77f-dad2-4fb3-bfb4-0c0cfb4b8f16';
+  const sourcePath = claudeTranscriptPath(ctx, sessionId);
+  const hookInput = JSON.stringify({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: sessionId,
+    transcript_path: sourcePath,
+    cwd: ctx.projectRoot,
+  });
+  const hook = runToolPathWithInput(TOOLS_PATH, 'usage claude-hook', hookInput, { cwd: ctx.projectRoot, env: ctx.env });
+  assert(hook.ok, `hook should succeed, got ${JSON.stringify(hook)}`);
+  assert(hook.data.recorded === true, `hook should record transcript path, got ${JSON.stringify(hook.data)}`);
 
-test('runtime adapter: finish-time inferred Claude source without start cursor is unmeasured', () => {
-  const ctx = createUsageWorkspace();
-  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, ctx.env);
+  const started = runInDirWithEnv('usage start --skill fixme-review-plan --runtime claude', ctx.projectRoot, { ...ctx.env, CLAUDE_CODE_SESSION_ID: sessionId });
   assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  const pending = readJson(started.data.pendingPath);
+  assert(pending.sourceSnapshot.source.path === sourcePath, 'start should bind source path from hook session id');
+  assert(pending.sourceSnapshot.source.discovery === 'claudeHook', `discovery should be claudeHook, got ${pending.sourceSnapshot.source.discovery}`);
+  assert(pending.sourceSnapshot.cursor.path === sourcePath, 'start should persist a bounded cursor for the hook path');
+  assert(pending.sourceSnapshot.cursor.size === 0, `missing transcript at start should use zero cursor, got ${pending.sourceSnapshot.cursor.size}`);
 
-  const sourcePath = claudeTranscriptPath(ctx, 'session-created-after-start');
   appendJsonl(sourcePath, [
     claudeTranscriptMeta(ctx.projectRoot),
-    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 2000, output_tokens: 50 } } },
+    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 7, cache_creation_input_tokens: 3, cache_read_input_tokens: 4, output_tokens: 6 } }, content: 'must be ignored' },
   ]);
-
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should append an unmeasured row, got ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'unmeasured', `expected unmeasured, got ${row.status}`);
-  assert(row.tokens === null, 'unbounded finish-time inference must not record transcript-wide tokens');
-  assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'bounded start cursor warning expected');
-  assert(row.source.path === sourcePath, 'source path should still identify the inferred runtime source');
-});
-
-test('runtime adapter: Claude subagent transcript attribution is used for the active skill', () => {
-  const ctx = createUsageWorkspace();
-  const parentPath = claudeTranscriptPath(ctx, 'session-parent');
-  const subagentPath = path.join(path.dirname(parentPath), 'subagents', 'fixme-review-code.jsonl');
-  appendJsonl(parentPath, [claudeTranscriptMeta(ctx.projectRoot)]);
-  appendJsonl(subagentPath, [claudeTranscriptMeta(ctx.projectRoot, { attributionSkill: 'fixme-review-code', attributionAgent: 'fixme-review-code' })]);
-  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime claude', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(subagentPath, [
-    { type: 'assistant', cwd: ctx.projectRoot, attributionSkill: 'fixme-review-code', message: { usage: { input_tokens: 6, cache_creation_input_tokens: 0, cache_read_input_tokens: 2, output_tokens: 5 } }, tool_result: 'must be ignored' },
-  ]);
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, CLAUDE_CODE_SESSION_ID: sessionId });
   assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
   const row = readJsonl(ctx.projectEvents)[0];
   assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 13, `expected subagent total 13, got ${row.tokens.totalTokens}`);
-  assert(row.source.kind === 'claude_jsonl', 'source kind');
-  assert(row.source.discovery === 'inferred', 'source discovery should be inferred');
-  assert(row.source.attributionSkill === 'fixme-review-code', 'source attributionSkill should be sanitized and preserved');
-  assert(row.source.path === subagentPath, 'source path identifies the attributed local subagent source');
+  assert(row.tokens.totalTokens === 20, `expected hook transcript total 20, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourcePath, 'finish should use the Claude hook transcript path');
   assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
 });
 
@@ -6990,89 +6963,6 @@ test('runtime adapter: no inferred runtime source appends unmeasured row', () =>
   assert(row.status === 'unmeasured', 'missing runtime source should be unmeasured');
   assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
-});
-
-test('runtime adapter: ambiguous inferred Codex sources use invocation id marker', () => {
-  const ctx = createUsageWorkspace();
-  const sourceOne = codexSessionPath(ctx, 'rollout-marked');
-  const sourceTwo = codexSessionPath(ctx, 'rollout-unmarked');
-  appendJsonl(sourceOne, [
-    codexSessionMeta(ctx.projectRoot),
-    codexTokenCount(
-      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 },
-      { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 5, total_tokens: 115 }
-    ),
-  ]);
-  appendJsonl(sourceTwo, [codexSessionMeta(ctx.projectRoot)]);
-
-  const started = runInDirWithEnv('usage start --skill fixme-rebase --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourceOne, [
-    { type: 'response_item', payload: { type: 'function_call_output', output: `{"invocationId":"${started.data.invocationId}"}` } },
-    codexTokenCount(
-      { input_tokens: 130, cached_input_tokens: 25, output_tokens: 17, reasoning_output_tokens: 7, total_tokens: 147 },
-      { input_tokens: 30, cached_input_tokens: 5, output_tokens: 7, reasoning_output_tokens: 2, total_tokens: 32 }
-    ),
-  ]);
-  appendJsonl(sourceTwo, [
-    codexTokenCount(
-      { input_tokens: 999, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 999 },
-      { input_tokens: 999, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 999 }
-    ),
-  ]);
-
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 32, `expected marked source delta 32, got ${row.tokens && row.tokens.totalTokens}`);
-  assert(row.source.path === sourceOne, 'source path should be the file containing the invocation id marker');
-});
-
-test('runtime adapter: ambiguous inferred Claude sources use invocation id marker', () => {
-  const ctx = createUsageWorkspace();
-  const sourceOne = claudeTranscriptPath(ctx, 'session-unmarked');
-  const sourceTwo = claudeTranscriptPath(ctx, 'session-marked');
-  appendJsonl(sourceOne, [claudeTranscriptMeta(ctx.projectRoot)]);
-  appendJsonl(sourceTwo, [claudeTranscriptMeta(ctx.projectRoot)]);
-
-  const started = runInDirWithEnv('usage start --skill fixme-rebase --runtime claude', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourceOne, [
-    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 999, output_tokens: 1 } }, content: 'must be ignored' },
-  ]);
-  appendJsonl(sourceTwo, [
-    { type: 'assistant', cwd: ctx.projectRoot, content: `{"invocationId":"${started.data.invocationId}"}` },
-    { type: 'assistant', cwd: ctx.projectRoot, message: { usage: { input_tokens: 15, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 } }, content: 'must be ignored' },
-  ]);
-
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'measured', `expected measured, got ${row.status}`);
-  assert(row.tokens.totalTokens === 24, `expected marked source usage 24, got ${row.tokens && row.tokens.totalTokens}`);
-  assert(row.source.path === sourceTwo, 'source path should be the transcript containing the invocation id marker');
-  assert(!JSON.stringify(row).includes('must be ignored'), 'content-bearing fixture values must not be stored');
-});
-
-test('runtime adapter: ambiguous inferred runtime sources append unmeasured row without guessing', () => {
-  const ctx = createUsageWorkspace();
-  const sourceOne = codexSessionPath(ctx, 'rollout-one');
-  const sourceTwo = codexSessionPath(ctx, 'rollout-two');
-  appendJsonl(sourceOne, [codexSessionMeta(ctx.projectRoot)]);
-  appendJsonl(sourceTwo, [codexSessionMeta(ctx.projectRoot)]);
-  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
-  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
-  appendJsonl(sourceOne, [codexTokenCount({ input_tokens: 1, total_tokens: 1 }, { input_tokens: 1, total_tokens: 1 })]);
-  appendJsonl(sourceTwo, [codexTokenCount({ input_tokens: 2, total_tokens: 2 }, { input_tokens: 2, total_tokens: 2 })]);
-  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
-  assert(finished.ok, `finish should append unmeasured row, got ${JSON.stringify(finished.data)}`);
-  const row = readJsonl(ctx.projectEvents)[0];
-  assert(row.status === 'unmeasured', 'ambiguous runtime sources should be unmeasured');
-  assert(row.tokens === null, 'unmeasured tokens null');
-  assert(row.warnings.some(w => w.code === 'AMBIGUOUS_COUNTER_SOURCE'), 'AMBIGUOUS_COUNTER_SOURCE warning expected');
-  assert(row.source.candidateCount === 2, 'candidate count should be recorded without source paths');
-  assert(row.source.path === null, 'ambiguous source path should be null');
 });
 
 // ============================================================================
