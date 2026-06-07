@@ -6329,6 +6329,10 @@ function addTokenUsage(total, tokens) {
 
 function nonCachedTokenCount(tokens) {
   if (!tokens) return 0;
+  const totalTokens = typeof tokens.totalTokens === 'number' && Number.isFinite(tokens.totalTokens)
+    ? tokens.totalTokens
+    : null;
+  if (totalTokens !== null) return Math.max(0, totalTokens - cachedTokenCount(tokens));
   return (tokens.inputTokens || 0)
     + (tokens.outputTokens || 0)
     + (tokens.reasoningOutputTokens || 0);
@@ -6353,6 +6357,11 @@ function usageWithDerivedTokenBuckets(tokens) {
 
 function formatTokenCount(value) {
   return Number(value || 0).toLocaleString('en-US');
+}
+
+function formatUsageBucketSummary(label, tokens) {
+  const usage = usageWithDerivedTokenBuckets(tokens || emptyTokenUsage());
+  return `${label} non-cached ${formatTokenCount(usage.nonCachedTokens)} tokens, cached input ${formatTokenCount(usage.cachedTokens)} tokens, total ${formatTokenCount(usage.totalTokens)} tokens`;
 }
 
 function isMeasuredUsageRow(row) {
@@ -6744,19 +6753,19 @@ function buildCompactUsageReportLine(event, projectEventPath) {
     limit: 20,
   }) : null;
   if (isMeasuredUsageRow(event)) {
-    const base = `Usage: ${event.skill} ${formatTokenCount(event.tokens.totalTokens)} tokens`;
+    const base = formatUsageBucketSummary(`Usage: ${event.skill}`, event.tokens);
     if (pipelineReport) {
-      return `${base} | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
+      return `${base} | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}`;
     }
-    return `${base} | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens`;
+    return `${base} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}`;
   }
   const notIncluded = pipelineReport
     ? pipelineReport.notIncludedInTotal.invocationCount
     : projectReport.notIncludedInTotal.invocationCount;
   if (pipelineReport) {
-    return `Usage: ${event.skill} unavailable | pipeline total ${formatTokenCount(pipelineReport.totalUsage.totalTokens)} tokens | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens | not included: ${notIncluded} invocation(s)`;
+    return `Usage: ${event.skill} unavailable | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
   }
-  return `Usage: ${event.skill} unavailable | project total ${formatTokenCount(projectReport.totalUsage.totalTokens)} tokens | not included: ${notIncluded} invocation(s)`;
+  return `Usage: ${event.skill} unavailable | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
 }
 
 // ============================================================================

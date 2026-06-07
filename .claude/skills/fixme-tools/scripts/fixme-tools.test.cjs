@@ -6000,26 +6000,29 @@ test('usage finish: missing counters appends one unmeasured row to project and g
   assert(!Object.prototype.hasOwnProperty.call(projectRows[0], 'task'), 'usage row must not contain task field');
 });
 
-test('usage finish: measured compact report line has no delta plus prefix', () => {
+test('usage finish: measured compact report line separates cached and non-cached buckets', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-report-line.jsonl');
   appendJsonl(sourcePath, [
     codexTokenCount(
-      { input_tokens: 10, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 },
-      { input_tokens: 10, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 }
+      { input_tokens: 10, cached_input_tokens: 2, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 },
+      { input_tokens: 10, cached_input_tokens: 2, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 10 }
     ),
   ]);
   const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
   appendJsonl(sourcePath, [
     codexTokenCount(
-      { input_tokens: 40, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 45 },
-      { input_tokens: 30, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 35 }
+      { input_tokens: 40, cached_input_tokens: 5, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 45 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 5, reasoning_output_tokens: 0, total_tokens: 35 }
     ),
   ]);
   const result = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
   assert(result.ok, `usage finish should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.reportLine === 'Usage: fixme-write-plan 35 tokens | project total 35 tokens', `unexpected report line: ${result.data.reportLine}`);
+  assert(
+    result.data.reportLine === 'Usage: fixme-write-plan non-cached 32 tokens, cached input 3 tokens, total 35 tokens | project non-cached 32 tokens, cached input 3 tokens, total 35 tokens',
+    `unexpected report line: ${result.data.reportLine}`
+  );
   assert(!result.data.reportLine.includes('+35 tokens'), `report line should not include plus prefix: ${result.data.reportLine}`);
 });
 
@@ -6203,8 +6206,9 @@ test('usage report: project totals exclude unmeasured rows and include not-inclu
   const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
   assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
   assert(result.data.totalUsage.totalTokens === 135, `total tokens should be 135, got ${result.data.totalUsage.totalTokens}`);
-  assert(result.data.totalUsage.nonCachedTokens === 135, `non-cached tokens should be 135, got ${result.data.totalUsage.nonCachedTokens}`);
+  assert(result.data.totalUsage.nonCachedTokens === 115, `non-cached tokens should be 115, got ${result.data.totalUsage.nonCachedTokens}`);
   assert(result.data.totalUsage.cachedTokens === 20, `cached tokens should be 20, got ${result.data.totalUsage.cachedTokens}`);
+  assert(result.data.totalUsage.nonCachedTokens + result.data.totalUsage.cachedTokens === result.data.totalUsage.totalTokens, 'derived buckets should sum to total tokens');
   assert(result.data.notIncludedInTotal.invocationCount === 1, 'one unmeasured invocation excluded');
   assert(result.data.notIncludedInTotal.eventIds.includes('event_unmeasured'), 'unmeasured event listed');
   assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes unmeasured warning');
@@ -6371,7 +6375,7 @@ test('usage report: text output separates cached and non-cached usage', () => {
   const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
   assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
   assert(typeof result.data === 'string', 'text format returns raw string data in tests');
-  assert(result.data.includes('Non-cached usage: 135 tokens'), `missing non-cached usage line: ${result.data}`);
+  assert(result.data.includes('Non-cached usage: 115 tokens'), `missing non-cached usage line: ${result.data}`);
   assert(result.data.includes('Cached input: 20 tokens'), `missing cached input line: ${result.data}`);
   assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
   assert(result.data.includes('Not included in total: 1 invocation with unavailable exact counters'), `missing not-included line: ${result.data}`);
@@ -6440,8 +6444,9 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
   assert(bySkill.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'bySkill warning summary includes duplicate conflict group');
   assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose obsolete invocations field');
-  assert(bySkill.totalUsage.nonCachedTokens === 135, `bySkill non-cached tokens ${bySkill.totalUsage.nonCachedTokens}`);
+  assert(bySkill.totalUsage.nonCachedTokens === 115, `bySkill non-cached tokens ${bySkill.totalUsage.nonCachedTokens}`);
   assert(bySkill.totalUsage.cachedTokens === 20, `bySkill cached tokens ${bySkill.totalUsage.cachedTokens}`);
+  assert(bySkill.totalUsage.nonCachedTokens + bySkill.totalUsage.cachedTokens === bySkill.totalUsage.totalTokens, 'bySkill derived buckets should sum to total tokens');
 
   const byPipeline = result.data.byPipeline.find(row => row.pipelineRunId === pipelineRunId);
   assert(byPipeline.invocationCount === 2, `byPipeline invocationCount should exclude duplicate-conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
@@ -6455,8 +6460,9 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes unmeasured warning');
   assert(byPipeline.orchestratorUsage.totalTokens === 0, 'byPipeline includes orchestratorUsage subtotal object');
   assert(byPipeline.childUsage.totalTokens === 135, 'byPipeline includes childUsage subtotal object');
-  assert(byPipeline.totalUsage.nonCachedTokens === 135, `byPipeline non-cached tokens ${byPipeline.totalUsage.nonCachedTokens}`);
+  assert(byPipeline.totalUsage.nonCachedTokens === 115, `byPipeline non-cached tokens ${byPipeline.totalUsage.nonCachedTokens}`);
   assert(byPipeline.totalUsage.cachedTokens === 20, `byPipeline cached tokens ${byPipeline.totalUsage.cachedTokens}`);
+  assert(byPipeline.totalUsage.nonCachedTokens + byPipeline.totalUsage.cachedTokens === byPipeline.totalUsage.totalTokens, 'byPipeline derived buckets should sum to total tokens');
 });
 
 test('usage report: text output uses duplicate-conflict not-included language', () => {
@@ -6468,7 +6474,7 @@ test('usage report: text output uses duplicate-conflict not-included language', 
 
   const result = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
   assert(result.ok, `text report should succeed, got ${JSON.stringify(result.data)}`);
-  assert(result.data.includes('Non-cached usage: 135 tokens'), `missing non-cached usage line: ${result.data}`);
+  assert(result.data.includes('Non-cached usage: 115 tokens'), `missing non-cached usage line: ${result.data}`);
   assert(result.data.includes('Cached input: 20 tokens'), `missing cached input line: ${result.data}`);
   assert(result.data.includes('Total usage: 135 tokens'), `missing total usage line: ${result.data}`);
   assert(result.data.includes('Not included in total: 1 invocation'), `missing duplicate not-included line: ${result.data}`);
