@@ -20,7 +20,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 
 ## State Machine
 
-See [references/state-machine.md](references/state-machine.md) for the full transition rules, workflow resolution, legacy fallback states, retry semantics, and duration tracking.
+See [references/state-machine.md](references/state-machine.md) for the full transition rules, workflow resolution, retry semantics, and duration tracking.
 
 ## Operations
 
@@ -40,7 +40,7 @@ Creates a numbered ticket folder with `ticket.md`, plus `assets/`, `research/`, 
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--reason <reason>] [--pipeline <name>]
 ```
 
-Validates the transition against the state machine. When `--pipeline <name>` or ticket frontmatter `pipeline` is present, phase states are derived from the named workflow; otherwise the legacy fallback matrix is used. Records the transition in the frontmatter log. Updates duration tracking. Backward transitions require `--reason` and increment `current_attempt`.
+Validates the transition against the state machine. When `--pipeline <name>` or ticket frontmatter `pipeline` is present, phase states are derived from the named workflow; otherwise the built-in `standard` workflow is used. Records the transition in the frontmatter log. Updates duration tracking. Backward transitions require `--reason` and increment `current_attempt`.
 
 **list** - List all tickets in a session
 

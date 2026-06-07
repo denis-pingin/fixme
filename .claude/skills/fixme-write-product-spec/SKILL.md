@@ -6,7 +6,25 @@ argument-hint: "<feature description or path to source material>"
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## Task-Bound User Input Contract
+
+When the dispatch prompt contains `<task-state-owner>` with `ownerSkill: fixme-task`, this skill is running under a resumable `fixme-task`.
+
+Do not call AskUserQuestion or wait directly when running under `fixme-task`. If product behavior is unclear or a FIX item conflicts with a locked decision, return `FIXME_CHILD_ATTENTION_REQUIRED` as the final output and let `fixme-task` create the durable attention record:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: fixme-write-product-spec
+KIND: spec-decision
+ANSWER_MODE: decision-card
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
 # Write Product Specification
 
@@ -16,7 +34,7 @@ Write a product specification that defines what the feature does, why it exists,
 
 - **NO source code modifications.** Only create or edit product specification documents.
 - **NO implementation details.** Product specifications must not include APIs, schemas, components, functions, architecture, packages, or implementation steps.
-- **NO unresolved questions in the final specification.** If a product behavior is unclear, ask the user before finalizing.
+- **NO unresolved questions in the final specification.** If a product behavior is unclear, resolve it through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user before finalizing.
 - **NO assumptions.** Product behavior must come from user input, source material, existing user-visible behavior, or explicit user decisions.
 - **NO tables by default.** Follow `fixme-howto-write-product-spec` and use bullets for scan-friendly output.
 
@@ -81,8 +99,8 @@ Use code only to understand observable behavior. Do not transfer code structure 
 3. Read the decision log if it exists.
 4. In revision mode, read every FIX item and the cited specification sections.
 5. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
-6. If a FIX item conflicts with a locked decision, ask the user with a decision card.
-7. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
+6. If a FIX item conflicts with a locked decision, resolve it with a decision card through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly.
+7. Never silently drop a FIX item. Address it in the revised specification or route the conflict for user resolution.
 
 ## Product Decision Gate
 
@@ -94,7 +112,7 @@ Before writing the final specification, identify product choices that materially
 - deletion, migration, or replacement of old product concepts
 - acceptance criteria that could be interpreted multiple ways
 
-If any choice has more than one defensible answer, present it with `fixme-howto-present-decisions` and wait for the answer. Record the answer in the specification's Source Material and Decisions or Purpose and Scope section, whichever fits the document shape.
+If any choice has more than one defensible answer, present it with `fixme-howto-present-decisions`. When running under `fixme-task`, return it through `FIXME_CHILD_ATTENTION_REQUIRED`; standalone runs can wait for the answer directly. Record the answer in the specification's Source Material and Decisions or Purpose and Scope section, whichever fits the document shape.
 
 ## Save Location
 

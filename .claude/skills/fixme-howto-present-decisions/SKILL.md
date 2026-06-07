@@ -7,6 +7,8 @@ description: Shared decision presentation guidelines for the fixme pipeline. Def
 
 These guidelines govern how `ASK_USER` and `FIX_UNCLEAR` items are presented to users for decision-making. Every skill that produces or presents user-facing decision prompts MUST follow this format.
 
+Transport is owned by the caller. This skill defines decision-card content and format only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+
 These guidelines do not define the persisted format for final product specifications, technical specifications, implementation plans, review reports, or other saved artifacts unless that artifact's owning skill explicitly opts into decision cards. Saved artifacts should record resolved decisions in their own document format.
 
 The output is a decision card: a compact, self-contained block optimized for fast re-entry after context switching. It must guide the user from the high-level situation to the concrete tradeoff before asking them to choose.

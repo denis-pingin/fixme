@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
-**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixmeDir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
 # Fixme Tickets - Abstract Ticket Interface
 
@@ -16,7 +16,7 @@ Routes ticket and session operations to the configured backend. The backend is d
 
 ## Backend Resolution
 
-1. Read `<fixme-dir>/config.json` (using `fixme_dir` resolved above)
+1. Read `<fixme-dir>/config.json` (using `fixmeDir` resolved above)
 2. Extract `ticketBackend` field (e.g., `"fixme-tickets-md"`, `"fixme-tickets-linear"`)
 3. If missing or file doesn't exist, use `fixme-tickets-md`
 4. Dispatch the operation to `~/.claude/skills/{ticketBackend}/SKILL.md`

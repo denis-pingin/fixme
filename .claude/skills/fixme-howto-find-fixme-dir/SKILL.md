@@ -18,7 +18,7 @@ Resolve it BEFORE any operation that touches the fixme directory.
   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
   ```
 
-  and use the `fixme_dir` field from the JSON output. The CLI walks up from the working directory looking for `.fixme/` and handles the multi-root workspace case (where `.fixme/` lives at a parent project root, not at CWD).
+  and use the `fixmeDir` field from the JSON output. The CLI walks up from the working directory looking for `.fixme/` and handles the multi-root workspace case (where `.fixme/` lives at a parent project root, not at CWD).
 
 If `fixme-tools.cjs root` cannot run (e.g., the script is missing), STOP and report the failure to the user. **Do NOT fall back to a literal `.fixme/` relative path.** Falling back is the exact failure mode this rule exists to prevent.
 
@@ -36,11 +36,11 @@ Every actionable path that targets the fixme directory must use the resolved abs
 
 In a multi-root VS Code workspace the actual `.fixme/` directory lives at the parent project root, not at CWD. The current working directory of the skill is usually a sub-repo (the code project), so a literal `.fixme/` path silently resolves to a non-existent or wrong location. The skill then either reads nothing (and proceeds as if the file did not exist) or creates a fresh `.fixme/` inside the sub-repo, fragmenting state across the workspace.
 
-`fixme-tools.cjs root` is the only authority on where the fixme directory actually lives. It walks up the filesystem looking for `.fixme/` and respects the `sub_repos` config when a parent fixme directory is shared by multiple sub-projects.
+`fixme-tools.cjs root` is the only authority on where the fixme directory actually lives. It walks up the filesystem looking for `.fixme/` and respects the `subRepos` config when a parent fixme directory is shared by multiple sub-projects.
 
 ## Documented exception
 
-The `git clean --exclude=<pattern>` command takes a working-tree-relative pattern, not an absolute path. When excluding the fixme directory from git operations, the literal pattern `.fixme/` is the correct value. This is the only place in any fixme skill where literal `.fixme/` is allowed in an actionable command. Run from the resolved `fixme_root` (the parent of `<fixme-dir>`):
+The `git clean --exclude=<pattern>` command takes a working-tree-relative pattern, not an absolute path. When excluding the fixme directory from git operations, the literal pattern `.fixme/` is the correct value. This is the only place in any fixme skill where literal `.fixme/` is allowed in an actionable command. Run from the resolved `fixmeRoot` (the parent of `<fixme-dir>`):
 
 ```bash
 cd <fixme-root>

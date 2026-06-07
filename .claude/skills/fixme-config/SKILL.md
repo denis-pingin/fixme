@@ -12,7 +12,7 @@ argument-hint: "[init]"
 
 Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
-**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixmeDir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
 
 # Fixme Config
 
@@ -45,7 +45,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get
 ```
 
-`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, migrates legacy `pipelines` plus `workflowControls` into unified `workflows`, backfills newly added standard workflows, and preserves existing custom workflows and unknown keys.
+`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, backfills newly added standard workflows, validates final config fields, rejects obsolete config keys, and preserves existing custom workflows and unknown keys.
 
 Use the `config` object from `config get` as the current config. Do not read and rewrite `config.json` manually.
 

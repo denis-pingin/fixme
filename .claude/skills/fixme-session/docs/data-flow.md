@@ -32,10 +32,11 @@ fixme-session
 
 Ticket state is stored in ticket frontmatter and changed through `fixme-tickets`, which routes to the configured backend.
 
-There are two supported state shapes:
+Ticket state uses workflow-derived phase names plus structural states:
 
 - **Workflow-derived states:** when a ticket has a stored `pipeline` value or a transition uses `--pipeline`, enabled workflow phase names become ticket states. `full` uses `product-spec`, `technical-spec`, `plan`, `implement`, and `verify`; `bugfix` uses `investigate`, `research`, `plan`, `implement`, and `verify`.
-- **Legacy fallback states:** when no pipeline is known yet, the markdown backend still supports the historical state chain `investigating -> researching -> planning -> implementing -> verifying`. This preserves old tickets and session pre-investigation behavior.
+- **Default workflow:** when no project config or selected workflow exists yet, the built-in `standard` workflow supplies `plan` and `implement`.
+- **Invalid workflows:** malformed workflow config, removed workflow aliases, and removed phase names fail closed instead of falling back to another state chain.
 
 Structural states always exist: `queued`, `done`, `failed`, and `skipped`.
 
@@ -70,7 +71,8 @@ Path: `<session-dir>/session.md`
 | --- | --- | --- | --- |
 | `status` | Session create/stop/auto-close | `fixme-session` | Active or completed session lifecycle. |
 | `active_intakes[]` | `fixme-session` | `fixme-session` | Intake agents still in flight across context compaction. |
-| `active_task` | `fixme-session` | `fixme-session` | The one background `fixme-task` currently running. Added when needed even though it is not in the template. |
+| `active_task` | `fixme-session` | `fixme-session` | The one background `fixme-task` ticket path currently running. |
+| `activeRunStatusId` | `fixme-session` | `fixme-session` | The active background `fixme-task` run status id used for liveness and attention brokering. |
 | `tickets_done`, `tickets_failed`, `tickets_skipped`, `tickets_total` | `session summary` | Status/report flows | Session-level ticket counts. |
 | `duration_seconds` | `session summary` | Status/report flows | Session duration. |
 
@@ -111,9 +113,9 @@ Review level is resolved with `config review-level resolve`. Standard workflows 
 4. `intake-agent` fills the original report and structured fields, then returns the ticket to the queued pool.
 5. `fixme-session` loads project config and prepares the browser when a dev server is configured.
 6. For bug-fix sessions, `fixme-session` may run a synchronous investigation before background task dispatch. Investigation output is written under the ticket folder and can also be appended to the ticket.
-7. `fixme-session` records `active_task` and dispatches `fixme-task` in the background with `--ticket <ticket.md>` and the selected pipeline name.
+7. `fixme-session` records `active_task` and `activeRunStatusId`, then dispatches `fixme-task` in the background with `--ticket <ticket.md>` and the selected pipeline name.
 8. `fixme-task` resolves the workflow, builds a dispatch manifest, transitions ticket phase state at boundaries, dispatches each phase skill, runs review loops, and writes artifact paths into its own context.
-9. On background task completion, `fixme-session` clears `active_task`, inspects ticket state and task output, runs terminal cleanup, and transitions the ticket to `done`, `failed`, or `skipped`.
+9. On background task completion, `fixme-session` clears `active_task` and `activeRunStatusId`, inspects ticket state and task output, runs terminal cleanup, and transitions the ticket to `done`, `failed`, or `skipped`.
 
 ## Workflow Phase Flow
 
@@ -151,7 +153,7 @@ State is re-read from disk after every agent return and before every routing dec
 | Reader | When | Reads | Why |
 | --- | --- | --- | --- |
 | `fixme-session` | After intake returns | Session file and ticket list | Remove `active_intakes`, find queued work. |
-| `fixme-session` | After background task returns or on resume | Session file, ticket list, task output | Clear `active_task`, complete or fail the ticket. |
+| `fixme-session` | After background task returns or on resume | Session file, ticket list, task output, run status | Clear `active_task` and `activeRunStatusId`, complete or fail the ticket, and broker pending attention prompts before coarse status reporting. |
 | `fixme-task` | Before each phase transition | Ticket state through backend | Avoid stale state after compaction or external edits. |
 | Review handlers | Before classification | Artifact files, code map, decision log | Validate findings against current evidence. |
 

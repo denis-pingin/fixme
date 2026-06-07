@@ -6,7 +6,25 @@ argument-hint: "<path to plan file> [--repair]"
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## Task-Bound User Input Contract
+
+When the dispatch prompt contains `<task-state-owner>` with `ownerSkill: fixme-task`, this skill is running under a resumable `fixme-task`.
+
+Do not call AskUserQuestion or wait directly when running under `fixme-task`. If execution discovers an ambiguity, missing prerequisite, or plan contradiction that needs a user answer rather than an implementation repair, return `FIXME_CHILD_ATTENTION_REQUIRED` as the final output and let `fixme-task` create the durable attention record:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: fixme-execute-plan
+KIND: execution-ambiguity
+ANSWER_MODE: decision-card
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
 # Execute Plan
 

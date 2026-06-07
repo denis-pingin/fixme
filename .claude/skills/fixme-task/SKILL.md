@@ -1,6 +1,6 @@
 ---
 name: fixme-task
-description: End-to-end orchestrator that executes config-driven workflows with optional ticket state management. Supports intent flags for product specification, technical specification, planning, execution, and idea-to-production workflows. Loads workflow definitions from <fixme-dir>/config.json (or uses hardcoded standard workflows), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, task code map paths, compact review context packets, and ticket state transitions.
+description: End-to-end orchestrator that executes config-driven workflows with optional ticket state management. Supports intent flags for product specification, technical specification, planning, and execution workflows. Loads workflow definitions from <fixme-dir>/config.json (or uses hardcoded standard workflows), dispatches each phase's skills as isolated agents, manages review loops, decision persistence, artifact handoff, task code map paths, compact review context packets, and ticket state transitions.
 ---
 
 # Fixme Task - Config-Driven Workflow Orchestrator
@@ -14,7 +14,7 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never lose retrievable context.** Full artifacts stay available by path; dispatch prompts pass compact, task-scoped context packets. Do not paste full discussion history or unrelated decision-log entries into review cycles.
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
-- **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
+- **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers in direct standalone mode. In nested or attention mode, loop guards use durable attention and do not emit a Run Summary. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
 - **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
 - **Save follows the full user instruction.** Save-only requests write a deferred task and stop. Save-and-continue requests write the task brief first, then continue into the selected or auto-detected pipeline. Ambiguous save requests stop and ask; never guess.
@@ -67,7 +67,7 @@ Parse the invocation argument to extract intent, pipeline name, task description
 
 ### Fixme Root Resolution (FIRST)
 
-Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and store the `fixme_dir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
+Before anything else - before parsing arguments, before checking the filesystem for plans, before reading config - resolve `<fixme-dir>` per `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter; read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md` if not preloaded). Run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and store the `fixmeDir` value as `<fixme-dir>`. Never use a literal `.fixme/` path in any tool.
 
 When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<project>` block of the dispatch prompt. Sub-agents do NOT re-resolve - they use the value passed in.
 
@@ -77,9 +77,9 @@ The generated usage tracking block starts this active `fixme-task` invocation.
 
 Store the returned `invocationId` as `usageInvocationId`. Store the returned `pipelineRunId` as `pipelineRunId`.
 
-Standalone `fixme-task` has no incoming `pipeline_run_id`; `usage start` returns `pipelineRunId === usageInvocationId`.
+Standalone `fixme-task` has no incoming `pipelineRunId`; `usage start` returns `pipelineRunId === usageInvocationId`.
 
-Nested `fixme-task` receives a `pipeline_run_id` from its parent and must pass that value into usage start; the returned `pipelineRunId` reuses the parent value.
+Nested `fixme-task` receives a `pipelineRunId` from its parent and must pass that value into usage start; the returned `pipelineRunId` reuses the parent value.
 
 If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`, print the required warning, and continue without usage-linked child rows.
 
@@ -96,13 +96,14 @@ If usage start fails, set `usageInvocationId = null` and `pipelineRunId = null`,
 /fixme-task --technical-spec <product-spec-path>      -> pipeline="technical-spec", task="<product-spec-path>"
 /fixme-task --plan <technical-spec-path>              -> pipeline="plan-only", task="<technical-spec-path>"
 /fixme-task --execute <plan-path>                     -> pipeline="execute-only", task="<plan-path>"
-/fixme-task --idea-to-production build import flow    -> pipeline="full", task="build import flow"
+/fixme-task --pipeline full build import flow         -> pipeline="full", task="build import flow"
 /fixme-task --pipeline product-spec build import flow -> pipeline="product-spec", task="build import flow"
 /fixme-task --save build import flow                  -> saveIntent=true, continueAfterSave=false, task="build import flow"
 /fixme-task save it and proceed with planning         -> saveIntent=true, continueAfterSave=true, pipeline="standard"
 /fixme-task standard --save build import flow         -> ambiguous save intent; ask whether to save only or save then run standard
 /fixme-task --resume FIXME-23                         -> resumeRef="FIXME-23"
 /fixme-task --resume <ticket-path>                    -> resumeRef="<ticket-path>"
+/fixme-task --resume FIXME-23 --answer-attention <attention-id> -> resumeRef="FIXME-23", answerAttentionId="<attention-id>"
 ```
 
 Plain `/fixme-task ...` defaults to `standard`.
@@ -117,18 +118,20 @@ Plain `/fixme-task ...` defaults to `standard`.
    - Set `continueAfterSave=true` when the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving.
    - If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.
 5. Extract `--resume <FIXME-N|task.md|state.json|ticket.md|ticket-folder>` if present. Remove it from remaining args. Resume mode resolves the ref through `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
-6. Extract intent flags if present. Supported flags:
+6. Extract `--answer-attention <attention-id>` if present. Remove it from remaining args. This is valid only with `--resume`; it tells `fixme-task` to load the answered attention record, apply the answer to `pendingDecision`, and continue from the stored cursor.
+7. Extract intent flags if present. Supported flags:
    - `--product-spec` -> pipeline `product-spec`
    - `--tech-spec` -> pipeline `technical-spec`
    - `--technical-spec` -> pipeline `technical-spec`
    - `--plan` -> pipeline `plan-only`
    - `--execute` -> pipeline `execute-only`
-   - `--idea-to-production` remains accepted as a compatibility alias for `full`
-7. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
-8. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
-9. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
-10. The remaining args are the task description.
-11. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
+8. If more than one intent flag is present, ask the user which starting point to use. Do not guess.
+9. If both `--pipeline <name>` and an intent flag are present, they must resolve to the same pipeline. If they conflict, ask the user which one to use.
+10. If no explicit pipeline was set by `--pipeline` or an intent flag, check the first remaining word against pipeline names in `<fixme-dir>/config.json` plus the standard pipeline names listed in Config Loading. If it matches, use it and remove it from remaining args.
+11. The remaining args are the task description.
+12. If no explicit pipeline was found, leave pipeline as `auto` until Task Resolution and Pipeline Auto-Detection run.
+
+When `resumeRef` is present, resume an existing task continuation, never save a new task. This remains true when the latest user response was produced by a parent skill after an attention prompt. The task file and state file are already the context boundary.
 
 ### Pipeline Resolution Contract
 
@@ -137,7 +140,7 @@ Pipeline selection is a candidate-resolution step, not a free-form summary. Keep
 Eligible candidate sources:
 
 - `explicitPipelineArg`: latest invocation supplied `--pipeline <name>`
-- `intentFlag`: latest invocation supplied an intent flag such as `--idea-to-production`, `--plan`, or `--execute`
+- `intentFlag`: latest invocation supplied an intent flag such as `--plan` or `--execute`
 - `firstArgumentPipelineName`: latest invocation's first remaining argument matched a configured or standard pipeline name
 - `userProseIntent`: latest user invocation explicitly asked for a matching workflow, such as "write a plan", "execute the plan", or "end-to-end from idea"
 - `artifact`: selected or injected artifact shape determines the starting workflow, such as product spec, technical spec, or plan
@@ -149,7 +152,7 @@ Ineligible sources:
 - Assistant menu labels
 - Assistant summaries
 - Previous assistant wording
-- Brainstorm document handoff sections and legacy `Recommended Next Step` sections
+- Brainstorm document handoff and recommendation sections
 - Unrelated old files
 - Vague continuation words such as "proceed" unless they point to an eligible saved/resolved task
 
@@ -168,6 +171,8 @@ Input shape:
 ```
 
 Use the resolver output as `pipelineResolution`. Dispatch using `pipelineResolution.pipeline`. Do not hand-author the final pipeline after resolver output exists.
+
+Do not call `task save` or `task init` without `pipelineResolution`. These commands do not infer a default workflow; the orchestrator must resolve the pipeline first and pass the exact resolver output.
 
 ### Task Resolution
 
@@ -213,7 +218,7 @@ The orchestrator does not hand-write saved task markdown, the counter, or task s
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
 ```
 
-The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, `laterPlanningNotes`, and `pipelineResolution`. Optional keys: `scope.outOfScope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `source`, and `tags`. `pipelineHint` remains accepted only for legacy saved-task callers; new runs must use `pipelineResolution`.
+The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, `laterPlanningNotes`, and `pipelineResolution`. Optional keys: `scope.outOfScope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `source`, and `tags`. Do not send `pipelineHint` or `pipeline` in task-save JSON; the CLI rejects those fields.
 
 ### Save Mode Lossless Handoff Gate
 
@@ -272,7 +277,7 @@ created: "<YYYY-MM-DD>"
 updated: "<YYYY-MM-DD>"
 status: saved
 source: conversation
-pipeline_hint: "<standard|quick|full|bugfix|product-spec|technical-spec|plan-only|execute-only|auto>"
+pipeline: "<standard|quick|full|bugfix|product-spec|technical-spec|plan-only|execute-only>"
 tags: []
 ---
 
@@ -328,7 +333,7 @@ One sentence describing the outcome, not the implementation steps.
 
 ## Suggested Pipeline
 
-`<pipeline hint>`
+`<pipeline>`
 
 ## Later Planning Notes
 
@@ -389,7 +394,7 @@ Run auto-detection only when no explicit pipeline was selected by `--pipeline`, 
 **Brainstorm artifact handling:**
 
 - Brainstorm document handoff sections are assistant-authored metadata, not pipeline evidence.
-- Treat `## Handoff` and legacy `## Recommended Next Step` in brainstorm files as user-facing routing notes only.
+- Treat `## Handoff` and `## Recommended Next Step` in brainstorm files as user-facing routing notes only.
 - Do not select `plan-only` because a brainstorm artifact says to write an implementation plan.
 
 **Ambiguous detection:**
@@ -481,10 +486,9 @@ Load the workflow definition and project settings (using `<fixme-dir>` resolved 
 
 1. **Read `<fixme-dir>/config.json`** if it exists
 2. **Extract the selected workflow** from `workflows.<pipelineName>.phases`
-3. **If `workflows.<pipelineName>` is missing but legacy `pipelines.<pipelineName>` exists**, read that legacy array as the phase list and read `workflowControls.<pipelineName>.outerMaxCycles` as the legacy outer loop limit.
-4. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
-5. **If no config or no workflow key and no explicit pipeline was selected**, use the hardcoded `standard` workflow.
-6. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
+3. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
+4. **If no config or no workflow key and no explicit pipeline was selected**, use the hardcoded `standard` workflow.
+5. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
 
 ### Standard Workflow Metadata
 
@@ -746,10 +750,113 @@ Resume mode:
 1. Run `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
 2. Read the returned state path.
 3. Rebuild the live TodoWrite manifest from the workflow config and the semantic `cursor`.
-4. If `status` is `waitingForUser`, present `pendingDecision`.
+4. If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly. If `status` is `waitingForUser` without `answerAttentionId`, present `pendingDecision` only in a direct user-facing resume; in attention mode, return the existing `FIXME_ATTENTION_REQUIRED: <attention-id>` for the parent broker.
 5. If the cursor points at a dispatch step, re-dispatch that skill with the artifact and handoff data in the state file.
 6. If the saved task brief or state contains `Preparation Artifacts`, include only those explicit artifacts in the next dispatch context. Do not discover brainstorm or research files by recency.
 7. If a ticket-backed task has no task state but the ticket is at a phase boundary, initialize task state at that phase's first execute step. Do not guess from newest files.
+
+### Durable Attention Requests
+
+Human input belongs to the owner of the task state, but the owner is not always the user-facing runner. A `fixme-task` may be running directly in the main session, inline inside a parent skill, or inside a registered agent whose output is not automatically shown to the user. For that reason, every decision pause must be durable and resumable.
+
+If `fixme-task` is running in a non-user-facing context (`--nested`, a background session task, or any parent-provided `<liveness>` status id), do not wait on normal text output. Use the checkpoint-first attention path below to store the complete Review Classification block with `run attention set`, then return `FIXME_ATTENTION_REQUIRED: <attention-id>`. Direct user-facing runs may print the block and wait normally when no parent or broker owns the prompt surface.
+
+If attention mode is required but no current fixme-task liveness status id is available, stop with `FIXME_ATTENTION_BLOCKED`. Do not print a hidden prompt, do not create a new saved task, and do not guess that the parent will see normal output. The parent must restart or resume `fixme-task` with a `<liveness>` `statusId`.
+
+Agent escalation prompts are user-input prompts. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the Agent Escalation block with `run attention set`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>` instead of relying on hidden text output.
+
+Loop guard escalations are user-input prompts. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the Pipeline Escalation block with `run attention set`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. A loop guard escalation in nested mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary.
+
+Child skills never write `<fixme-dir>/decisions.md`, never own task-state user decisions, and never create a second saved task to collect an answer. When a child skill needs user input while running under `fixme-task`, it returns a child attention directive instead of waiting directly:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: <child-skill-name>
+KIND: <input-audit|design-decision|spec-decision|execution-ambiguity|other>
+ANSWER_MODE: <freeform|decision-card|multiple-choice>
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+When a dispatched child returns `FIXME_CHILD_ATTENTION_REQUIRED`, convert the child request into `run attention set` owned by `fixme-task`, using the checkpoint-first ordering below. Preserve the child output, dispatch inputs, artifact paths, `pendingDecision.attentionId`, `pendingDecision.attentionStatusId`, and cursor in `pendingDecision` so resume can re-dispatch the same child step after the answer is applied.
+
+When `fixme-task` needs user input in attention mode, it must:
+
+1. Build the complete user-facing prompt exactly as the Review Classification block or child-skill decision card should appear.
+2. Generate the attention id before checkpointing task state. Use a new id in the form `attn_<short-unique-suffix>` and include that same `attentionId` in the attention payload.
+3. Checkpoint task state before calling `run attention set`. Set state `waitingForUser` with `pendingDecision.attentionId`, `pendingDecision.attentionStatusId`, the same `sourceSkill`, the current `cursor`, and enough routing context to re-dispatch the same handler or child step. `pendingDecision.attentionStatusId` is the current fixme-task liveness status id.
+4. Store the prompt through:
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention set --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --data '<json-object>'
+   ```
+   Installed Codex skills use the Codex-installed tool path. The JSON payload must include `attentionId`, `ownerSkill: "fixme-task"`, `sourceSkill`, `kind`, `resumeRef`, absolute `taskStatePath`, `promptMarkdown`, and `answerMode`.
+5. If checkpointing fails, do not call `run attention set`. If `run attention set` fails after checkpointing, repair the checkpoint back to a non-waiting state or report `FIXME_ATTENTION_BLOCKED` with the failed command and attention id; do not return `FIXME_ATTENTION_REQUIRED` for a prompt the parent cannot show.
+6. After a successful `run attention set`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`; `run attention set` already marked the run as waiting, and ordinary pings are rejected while `currentCommand` points at active attention.
+7. Return a machine-readable directive as the final content:
+   ```text
+   FIXME_ATTENTION_REQUIRED: <attention-id>
+   OWNER_SKILL: fixme-task
+   RESUME_REF: <FIXME-N|task-path|state-path|ticket-path>
+   ```
+
+The parent runner, if any, is only a broker. It renders the attention prompt and records the answer through `run attention answer`; it never decides what the answer means. Only `fixme-task` writes the decision log after an attention answer, clears `pendingDecision`, and re-dispatches the same handler or child step.
+
+When invoked with `--resume <ref> --answer-attention <attention-id>`:
+
+1. Resolve the task state from `<ref>`.
+2. Verify the state is `waitingForUser`.
+3. Verify `pendingDecision.attentionId` matches `<attention-id>`.
+4. Load the answered attention record from `pendingDecision.attentionStatusId`.
+   Consume `--answer-attention` before any normal liveness ping, Agent dispatch, or status reset so the runtime does not reject the liveness update while the active `currentCommand: attention:<attention-id>` marker is still pending. Normal liveness resumes only after `run attention clear`.
+5. Use `answer.answerKind` to distinguish `decision` from `clarificationRequest`. If the answered attention record contains `answerKind: "clarificationRequest"`, treat it as Discussion Mode input. Do not write `<fixme-dir>/decisions.md`, do not clear `pendingDecision`, and do not advance the cursor.
+6. For a clarification turn, answer the clarification from the task-owned context, then clear the consumed attention before creating the replacement attention. For a clarification turn, build the replacement prompt, generate a new attention id, checkpoint `waitingForUser`, store the replacement prompt with `run attention set`, and return the new `FIXME_ATTENTION_REQUIRED: <attention-id>`. The replacement prompt includes the clarification answer plus the still-unresolved decision points.
+7. If `answer.answerKind` is `decision` but only some decision points are resolved, keep the parsed partial answers in `pendingDecision.partialAnswers`, do not write `<fixme-dir>/decisions.md`, do not advance the cursor, and clear the consumed attention before creating the replacement attention. For partial decision answers, build the replacement prompt for only the unresolved decision points, generate a new attention id, checkpoint `waitingForUser`, store that prompt with `run attention set`, and return the new `FIXME_ATTENTION_REQUIRED: <attention-id>`.
+8. If `answer.answerKind` is `decision` and the answer resolves the pending decision, apply the answer to the pending decision plus any `pendingDecision.partialAnswers`, write `<fixme-dir>/decisions.md` for every answered attention decision that constrains task behavior, run `run attention clear --fixme-dir <fixme-dir> --status-id <pendingDecision.attentionStatusId> --attention-id <attention-id>`, clear `pendingDecision`, set status back to `running`, and continue from the stored cursor. In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching.
+9. If the pending decision came from `FIXME_CHILD_ATTENTION_REQUIRED`, re-dispatch the same child step with the answered input, the same source artifact paths, and the current decision log. Do not advance the cursor until that child step returns a normal artifact or routing directive.
+
+If the attention record is missing, unanswered, or does not match `pendingDecision.attentionId`, stop and report the mismatch. Do not create a new saved task and do not re-ask a different question.
+
+#### Attention Resume Examples
+
+These examples are executable shapes, not new task creation. The saved task already exists; `--resume` points at it, and `--answer-attention` points at the answered durable prompt.
+
+Attention examples use the same checkpoint-first order as the main contract.
+
+**Inside `fixme-task`, handler asks for input:** If `fixme-handle-code-review` returns `HANDLER_RESULT: HAS_ASK_USER`, `fixme-task` first generates `attn_review_123`, checkpoints `pendingDecision.attentionId` and `pendingDecision.attentionStatusId`, then stores the Review Classification block:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention set --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --data '{"attentionId":"attn_review_123","ownerSkill":"fixme-task","sourceSkill":"fixme-handle-code-review","kind":"reviewDecision","resumeRef":"FIXME-13","taskStatePath":"<absolute-task-state-path>","promptMarkdown":"<Review Classification block>","answerMode":"decision-card"}'
+```
+
+Then it returns:
+
+```text
+FIXME_ATTENTION_REQUIRED: attn_review_123
+OWNER_SKILL: fixme-task
+RESUME_REF: FIXME-13
+```
+
+**Inside `fixme-task`, child skill asks for input:** If `fixme-write-plan`, `fixme-execute-plan`, or another child returns `FIXME_CHILD_ATTENTION_REQUIRED`, `fixme-task` creates the same `run attention set` record with `ownerSkill: "fixme-task"` and `sourceSkill` copied from the child directive. Parent brokers do not need to know whether the prompt came from native review routing or from `fixme-handle-plan-review`; both resume the same way.
+
+**Claude parent broker, inline nested task:** After `run attention show` and `run attention answer`, resume the existing nested task:
+
+```text
+Skill("fixme-task", "--nested --resume FIXME-13 --answer-attention attn_review_123")
+```
+
+If the parent has the current `fixmeTaskStatusId`, keep that same liveness status in the resumed invocation context. The status id is context, not a command-line flag.
+
+**Codex parent broker, inline nested task:** Load the installed Codex skill and run the same workflow arguments:
+
+```text
+$HOME/.codex/skills/fixme-task/SKILL.md
+args: --nested --resume FIXME-13 --answer-attention attn_review_123
+```
+
+Use `$HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs` for the preceding `run attention show` and `run attention answer` calls.
+
+**Background task broker:** A session broker resumes the `fixme-task` agent with the same `--resume FIXME-13 --answer-attention attn_review_123` arguments. In Claude this is an `Agent(subagent_type="fixme-task", ...)` resume prompt; in Codex this is `spawn_agent(agent_type="fixme-task", message=...)` with the resolved reasoning effort. In both runtimes, the broker only renders and records the user's answer; the resumed `fixme-task` consumes the answer, writes decisions, clears attention, and continues.
 
 ## Ticket Integration (Optional)
 
@@ -781,7 +888,7 @@ Backward transitions (review retry) require `--reason`. Forward transitions do n
 
 ### When no `--ticket` is provided:
 
-Standalone mode. Execute the pipeline identically but skip all ticket transition dispatches. If the run did not start from terminal save mode or `--resume`, first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. Standalone task state is mandatory so another session can resume without chat history.
+No-ticket mode, including nested parent dispatches, must still create or reuse a saved task state before the first phase dispatch. Execute the pipeline identically but skip all ticket transition dispatches. If the run did not start from terminal save mode or `--resume`, first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes. No-ticket task state is mandatory so another session can resume without chat history.
 
 ## Dispatch Gate (NON-NEGOTIABLE)
 
@@ -852,11 +959,11 @@ For the hardcoded standard pipeline (no ticket):
 Step 1  [plan]              Dispatch fixme-write-plan
 Step 2  [plan/review]       Dispatch fixme-review-plan
 Step 3  [plan/review]       Dispatch fixme-handle-plan-review
-Step 4  [plan/route]        Route: CLEAN->5, PLAN_REQUIRED->1 (max 3), FOLLOWUP_ONLY->5, HAS_ASK_USER->ask then re-run 3
+Step 4  [plan/route]        Route: CLEAN->5, PLAN_REQUIRED->1 (max 3), FOLLOWUP_ONLY->5, HAS_ASK_USER->decision input then re-run 3
 Step 5  [implement]         Dispatch fixme-execute-plan
 Step 6  [implement/review]  Dispatch fixme-review-code
 Step 7  [implement/review]  Dispatch fixme-handle-code-review
-Step 8  [implement/route]   Route: CLEAN->9, PLAN_REQUIRED->1 (outer, max workflows.<pipeline>.outerMaxCycles), IMPLEMENT_ONLY->5 repair mode, HAS_ASK_USER->ask then re-run 7
+Step 8  [implement/route]   Route: CLEAN->9, PLAN_REQUIRED->1 (outer, max workflows.<pipeline>.outerMaxCycles), IMPLEMENT_ONLY->5 repair mode, HAS_ASK_USER->decision input then re-run 7
 Step 9  [done]              Run Summary
 ```
 
@@ -869,12 +976,12 @@ Each routing entry specifies explicit jump targets:
 Handler route actions use this contract: `NEXT_ACTION: DONE | SPEC_REVISION | PLAN_REVISION | IMPLEMENT_REPAIR | ASK_USER_BATCH | FOLLOWUP_ONLY`. Spec handlers use `SPEC_REVISION`; plan/code handlers use `PLAN_REVISION` or `IMPLEMENT_REPAIR`. `FOLLOWUP_ONLY`, `ASK_USER_BATCH`, and `DONE` apply to all handlers.
 
 - **CLEAN**: advance to the next numbered step
-- **HAS_BLOCKING_FIX with SPEC_REVISION**: jump back to the specification phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
-- **HAS_BLOCKING_FIX with PLAN_REQUIRED (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate to user.
-- **HAS_BLOCKING_FIX with PLAN_REQUIRED (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate to user. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
+- **HAS_BLOCKING_FIX with SPEC_REVISION**: jump back to the specification phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate through the Loop Guard Escalation Format.
+- **HAS_BLOCKING_FIX with PLAN_REQUIRED (intra-phase)**: jump back to the phase's first execute step. Increment the phase review counter. If counter > `phase.review.maxCycles` (default 3): escalate through the Loop Guard Escalation Format.
+- **HAS_BLOCKING_FIX with PLAN_REQUIRED (cross-phase)**: jump back to the earlier phase's first execute step. Increment the outer loop counter. PLAN_REQUIRED findings use the outer loop and count against outerMaxCycles. If counter > `workflows.<pipelineName>.outerMaxCycles` (default 2): escalate through the Loop Guard Escalation Format. If ticket path provided: dispatch ticket backward transition with `--reason` before re-entering.
 - **HAS_BLOCKING_FIX with IMPLEMENT_ONLY**: jump back to the current implementation phase's execute step in repair mode. IMPLEMENT_ONLY findings route to fixme-execute-plan repair mode and do not count against outerMaxCycles.
 - **HAS_NONBLOCKING_FINDINGS**: print the review classification, record follow-up-only items in the run summary, and advance without re-running the producer. MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.
-- **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching), write to decision log, re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
+- **HAS_ASK_USER**: batch questions for user input through the direct-or-attention path (see ASK_USER Batching), write to the decision log after the answer is available, and re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 
 ### Edge-Case Validity Routing
 
@@ -1068,11 +1175,11 @@ Installed Codex skills use the Codex-installed tool path:
 node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent <agent-name>
 ```
 
-Store the returned `status_id` as the dispatched agent's liveness status. Do not dispatch the agent if `run start` fails. Surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `run start` fails. Surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Step 2.5 - Refresh this fixme-task invocation's own liveness while it waits on the dispatched agent:
 
-Before every Agent dispatch wait, ping the current fixme-task invocation if this fixme-task invocation received its own `<liveness>` `status_id`:
+Before every Agent dispatch wait, ping the current fixme-task invocation if this fixme-task invocation received its own `<liveness>` `statusId`:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command "waiting for <agent-name>"
@@ -1090,7 +1197,7 @@ After the dispatched agent returns, ping the current fixme-task invocation again
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command null
 ```
 
-If the current fixme-task invocation did not receive its own `<liveness>` `status_id`, skip only these parent heartbeat pings and continue the normal dispatch path. The child agent still receives its own liveness status id from Step 4.
+If the current fixme-task invocation did not receive its own `<liveness>` `statusId`, skip only these parent heartbeat pings and continue the normal dispatch path while no user-input prompt is pending. The child agent still receives its own liveness status id from Step 4. If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`.
 
 Step 3 - Print the banner as a single line of user-visible text before the Agent tool call:
 
@@ -1114,16 +1221,22 @@ Agent(
 
     <project>
     Project root: [path]
-    Fixme dir: [fixme_dir from root resolution]
+    Fixme dir: [fixmeDir from root resolution]
     </project>
 
     <usage>
-    pipeline_run_id: <pipelineRunId>
-    parent_invocation_id: <usageInvocationId>
+    pipelineRunId: <pipelineRunId>
+    parentInvocationId: <usageInvocationId>
     </usage>
 
+    <task-state-owner>
+    ownerSkill: fixme-task
+    resumeRef: <FIXME-N|task-path|state-path|ticket-path>
+    taskStatePath: <task-state-path>
+    </task-state-owner>
+
     <liveness>
-    status_id: <status_id from run start>
+    statusId: <statusId from run start>
     </liveness>
   "
 )
@@ -1131,9 +1244,11 @@ Agent(
 
 When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
 
-Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipeline_run_id` and the dispatching `fixme-task` `parent_invocation_id`; non-pipeline direct skill invocations omit both fields.
+Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipelineRunId` and the dispatching `fixme-task` `parentInvocationId`; non-pipeline direct skill invocations omit both fields.
 
-Always include the `<liveness>` block for every Agent dispatch after `run start` succeeds. The receiving agent uses `status_id` plus the `Fixme dir:` value in the `<project>` block to ping `fixme-tools.cjs run ping`.
+Include the `<task-state-owner>` block only when this dispatch is part of a resumable `fixme-task` run with a known task state. It tells child skills that user-facing pauses must return `FIXME_CHILD_ATTENTION_REQUIRED` to `fixme-task` instead of calling AskUserQuestion or waiting directly.
+
+Always include the `<liveness>` block for every Agent dispatch after `run start` succeeds. The receiving agent uses `statusId` plus the `Fixme dir:` value in the `<project>` block to ping `fixme-tools.cjs run ping`.
 
 The agent's role and operational procedures are already loaded by its agent definition. The dispatch prompt only contains task-specific inputs.
 
@@ -1195,7 +1310,7 @@ Codex reasoning quick reference:
 }
 ```
 
-Valid model override values: `opus`, `sonnet`, `haiku`, `inherit`. Config writes validate override values; legacy malformed values may still surface from an existing hand-edited config, so the visibility banner must be checked before dispatch.
+Valid model override values: `opus`, `sonnet`, `haiku`, `inherit`. Config writes validate override values; malformed hand-edited values may still surface from an existing config, so the visibility banner must be checked before dispatch.
 
 ### Ticket transition dispatch
 
@@ -1386,7 +1501,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step.
    - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
    - For **other phase skills**: re-dispatch with the original inputs plus a summary of what was already produced.
-4. **If the re-dispatched agent also returns without the expected directive**: escalate to user with structured context. Do NOT advance the manifest.
+4. **If the re-dispatched agent also returns without the expected directive**: escalate with structured context. In a direct user-facing run, present the Agent Escalation block and wait for the user's choice. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the Agent Escalation block with `run attention set`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. Do NOT advance the manifest.
 
    Present the escalation using this format:
 
@@ -1454,7 +1569,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
    - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.
-   - **HAS_ASK_USER**: batch questions to user (see ASK_USER Batching). Write answers to decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
+   - **HAS_ASK_USER**: batch questions for user input (see ASK_USER Batching). In a direct user-facing run, present the Review Classification block and wait normally. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the complete Review Classification block with `run attention set`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. After the answer is available, write answers to the decision log. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 6. Do NOT apply fixes yourself. Do NOT proceed past blocking fixes without dispatching the required producer. Follow-up-only items may proceed without a producer dispatch.
 
 **Run Summary step** (`[done]` entry, **standalone mode only** - does not exist in nested mode):
@@ -1470,8 +1585,8 @@ In nested mode (`--nested`) there is no Run Summary step. After the implement-ro
 Before sending any final response from this skill, verify one terminal condition is true:
 
 - Standalone mode completed the `[done]` Run Summary step.
-- The current handler route is `HAS_ASK_USER` and the Review Classification block has asked the user for decisions.
-- A loop guard escalated to the user.
+- The current handler route is `HAS_ASK_USER` and either a direct user-facing Review Classification block has asked the user for decisions, or attention mode stored that block and returned `FIXME_ATTENTION_REQUIRED: <attention-id>`.
+- A loop guard escalation in direct user-facing mode has asked the user for a choice, or attention mode stored the escalation and returned `FIXME_ATTENTION_REQUIRED: <attention-id>`.
 - The workflow failed or cannot continue after the documented recovery path.
 
 If none of these is true, do not final-answer. Continue the manifest from the current step. A Review Classification block with no user decision is never terminal by itself.
@@ -1518,7 +1633,7 @@ Rules:
 
 ## Review Classification Visibility
 
-Every review handler classification must be printed to the main conversation before routing continues. This is informational output, not a permission gate and not an invitation to bypass the pipeline.
+Every review handler classification must be emitted by `fixme-task` before routing continues. In a direct user-facing run, emit it in the main conversation. In a non-user-facing run, ordinary non-decision classifications can remain in `fixme-task` output; decision classifications must be stored as durable attention so the parent broker can render them to the user. This is informational output, not a permission gate and not an invitation to bypass the pipeline.
 
 ### When To Print
 
@@ -1527,7 +1642,7 @@ Print one Review Classification block after every handler output is validated an
 - `CLEAN`: print the block, then continue to the next manifest step.
 - `HAS_BLOCKING_FIX`: print the block, then loop through the configured route automatically.
 - `HAS_NONBLOCKING_FINDINGS`: print the block, then continue without a revision loop.
-- `HAS_ASK_USER`: print the block, then wait for the user decisions contained in that same block.
+- `HAS_ASK_USER`: in a direct user-facing run, print the block and wait for the user decisions contained in that same block. In attention mode, use the checkpoint-first attention path to store the same block through `run attention set`, return `FIXME_ATTENTION_REQUIRED: <attention-id>`, and continue only after `--answer-attention` resumes the task.
 
 Do not print raw reviewer findings before the handler runs. Raw reviewer findings may contain false positives; the handler-classified output is the user-visible source of truth.
 
@@ -1596,7 +1711,7 @@ Gather all items from the handler output:
 
 ### 2. Present to user
 
-**The user reads the Review Classification block directly. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
+**The user reads the Review Classification block directly in a user-facing run, or through the parent broker rendering `promptMarkdown` in attention mode. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
 
 #### Formatting Rules (NON-NEGOTIABLE)
 
@@ -1671,12 +1786,14 @@ Before sending the output to the user, verify:
 - [ ] Every section is separated by a blank line
 - [ ] Each decision block is copied verbatim from the handler's Question field
 - [ ] Each decision block follows the current `fixme-howto-present-decisions` schema
-- [ ] No legacy decision-card labels appear as schema fields: `The question`, `Changes`, `Upside`, `Downside`, or `Approach/Pros/Cons/Impact/Effort`
+- [ ] No obsolete decision-card labels appear as schema fields: `The question`, `Changes`, `Upside`, `Downside`, or `Approach/Pros/Cons/Impact/Effort`
 - [ ] Context explains WHAT the affected code does and WHERE it lives before stating the problem
 
 ### 3. Process answers
 
 Parse the user's response. Map each answer to its decision point.
+
+In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching. Load the answered attention record, parse the stored `answer.answer` text as the user's response, then apply the same mapping rules below.
 
 - If remaining questions exist (user didn't address all), re-present ONLY those and ask again.
 - Repeat until all decisions are resolved.
@@ -1695,20 +1812,20 @@ The loop only exits when the user has provided decisions (or "go with recommenda
 
 Write each answer to the decision log with a derived Locked Decision. Re-invoke the SAME handler with updated locked decisions (not restart the loop). The handler re-evaluates remaining findings against the new decisions - FIX_UNCLEAR items with approach answers become FIX items. ASK_USER items may become FIX, REJECT_*, or remain ASK_USER.
 
-If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate to user).
+If the handler produces MORE FIX_UNCLEAR or ASK_USER items after re-invocation: batch and present again (max 2 rounds of questions per handler invocation, then escalate through the same direct-or-attention user-input path).
 
 ## Loop Guards
 
-- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). Count only blocking revision loops. If blocking FIX items remain after max cycles, escalate to user using the format below.
-- **Implementation repair loop**: max `phase.review.maxCycles` iterations for the implement phase (default 3). Count only blocking `IMPLEMENT_ONLY` repair loops. If blocking implementation-only FIX items remain after max cycles, escalate to user using the format below.
-- **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). Count only blocking `PLAN_REQUIRED` cross-phase loops. If blocking plan-required FIX items remain after the configured number of full cycles, escalate to user using the format below.
+- **Phase review loop**: max `phase.review.maxCycles` iterations (default 3). Count only blocking revision loops. If blocking FIX items remain after max cycles, escalate using the format below.
+- **Implementation repair loop**: max `phase.review.maxCycles` iterations for the implement phase (default 3). Count only blocking `IMPLEMENT_ONLY` repair loops. If blocking implementation-only FIX items remain after max cycles, escalate using the format below.
+- **Outer loop**: max `workflows.<pipelineName>.outerMaxCycles` iterations (default 2). Count only blocking `PLAN_REQUIRED` cross-phase loops. If blocking plan-required FIX items remain after the configured number of full cycles, escalate using the format below.
 - **Stall detection**: track unresolved blocking issue count for each comparable loop route (`PLAN_REQUIRED` and `IMPLEMENT_ONLY`). If the unresolved blocking issue count is not lower than the previous comparable cycle, stop the loop and escalate as stalled.
 
 Do not increment any loop counter for `MINOR`, `INFO`, or `FOLLOWUP_ONLY` items.
 
 ### Loop Guard Escalation Format
 
-When escalating persistent issues to the user, follow top-down progressive disclosure. No routing metadata. The user needs enough context to make an informed decision.
+When escalating persistent issues to the user, follow top-down progressive disclosure. No routing metadata. The user needs enough context to make an informed decision. In a direct user-facing run, present this block and wait for the user's choice. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store this block as `promptMarkdown` through `run attention set`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`.
 
 ```markdown
 ## Pipeline Escalation: {phase name} review
@@ -1741,7 +1858,7 @@ but {K} remain unresolved.
 ## Error Handling
 
 - **Sub-skill agent fails unexpectedly or returns without expected routing directive**: follow the Directive Validation recovery procedure (auto-retry once, then escalate). If ticket path provided, include it in any escalation report (but do NOT transition to `failed` - the session owns that).
-- **Loop guard triggers**: present accumulated FIX items with context and options (see Loop Guards).
+- **Loop guard triggers**: present accumulated FIX items with context and options through the direct-or-attention path (see Loop Guards).
 - **Execute-plan surfaces a plan concern during execution**: route back through plan loop as a plan revision (not handled ad-hoc by executor).
 - **Execute-plan pre-existing failure proof**: include in execution results passed to code revision fixme-write-plan.
 - **Ticket transition fails**: log the error, continue pipeline execution. Ticket state is informational - a transition failure should not block work. Report the transition failure in the Run Summary.
@@ -1750,7 +1867,7 @@ but {K} remain unresolved.
 
 **Standalone mode only.** In nested mode (`--nested`), do NOT output a Run Summary at any point - the parent skill owns the final summary at its own terminal step. See "Nested mode" under "Creating the Manifest with TodoWrite" above.
 
-**ONLY output this after the final phase completes (with clean review or no review) or after a loop guard triggers. NEVER mid-pipeline. NEVER in nested mode.**
+**ONLY output this after the final phase completes (with clean review or no review), or after a loop guard triggers in a direct standalone run. NEVER mid-pipeline. NEVER in nested mode.**
 
 At completion, output:
 

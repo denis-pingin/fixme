@@ -55,10 +55,10 @@ Runs the `bugfix` workflow: investigate -> research -> plan -> implement -> veri
 ```text
 /fixme-task --plan /absolute/path/to/technical-spec.md
 /fixme-task --execute /absolute/path/to/plan.md
-/fixme-task --idea-to-production describe the full feature
+/fixme-task --pipeline full describe the full feature
 ```
 
-`--plan` runs the `plan-only` loop from source material. `--execute` runs `execute-only` implementation and code review from an existing plan. `--idea-to-production` remains an alias for `full`.
+`--plan` runs the `plan-only` loop from source material. `--execute` runs `execute-only` implementation and code review from an existing plan. `--pipeline full` runs the full workflow.
 
 ### Let fixme-task auto-detect the next step
 
@@ -193,7 +193,7 @@ Workflows are defined in `.fixme/config.json`:
 
 No config file? Falls back to standard workflows built into `fixme-task`. Plain `/fixme-task ...` uses the `standard` workflow unless the input clearly contains a product specification, technical specification, or implementation plan. Review level values are `strict | standard | lenient | fast-track | critical`, configured through `review.level`, `workflows.<workflow>.review.level`, phase `review.level`, and `pullRequestComments.review.level`.
 
-Legacy configs using `pipelines` plus `workflowControls` are migrated to `workflows` by `fixme-tools.cjs config migrate`.
+Configs must use `workflows`. `fixme-tools.cjs config migrate` creates missing final config defaults and rejects obsolete `pipelines`, `workflowControls`, and removed workflow aliases instead of translating them.
 
 Config CLI:
 
@@ -210,6 +210,10 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope p
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <absolute-fixme-dir> --agent <agent-name>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <absolute-fixme-dir> --status-id <status-id> --state <running|waiting|blocked|completed|failed> --checkpoint <dispatched|started|working|waiting|finalizing|done> --current-command <string|null>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <absolute-fixme-dir> --status-id <status-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention set --fixme-dir <absolute-fixme-dir> --status-id <status-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention show --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention answer --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention clear --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install --agents-src .claude/agents --codex-dir ~/.codex
 ```

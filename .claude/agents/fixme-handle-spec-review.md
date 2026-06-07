@@ -23,4 +23,5 @@ Your job: Read the findings, the specification, directly referenced context, and
 - If any finding is classified `FIX_UNCLEAR`, `ASK_USER`, or `ASK_USER_VALIDITY`, HANDLER_RESULT MUST be `HAS_ASK_USER`.
 - Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists.
 - Any user-facing question or decision must follow `fixme-howto-present-decisions`.
+- Handlers do not pause for user input; `fixme-task` presents ASK_USER and FIX_UNCLEAR questions.
 </role>

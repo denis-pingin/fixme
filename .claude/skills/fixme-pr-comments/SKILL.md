@@ -6,7 +6,7 @@ argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip
 
 ## Fixme Directory
 
-This skill does not interact with `<fixme-dir>` directly except for the liveness carve-out below. All pipeline state (decisions log, plans, config, ticket files - anything under the fixme directory) is owned exclusively by `fixme-task` and its sub-skills. This orchestrator's job is limited to:
+This skill does not interact with `<fixme-dir>` directly outside the carve-outs below: liveness and attention brokering. All pipeline state (decisions log, plans, config, ticket files - anything under the fixme directory) is owned exclusively by `fixme-task` and its sub-skills. This orchestrator's job is limited to:
 
 1. Fetching PR comments
 2. Analyzing each comment
@@ -14,19 +14,35 @@ This skill does not interact with `<fixme-dir>` directly except for the liveness
 4. Invoking `Skill("fixme-task", ...)` with the routed `CURRENT_PR_FIX` groups as a text argument
 5. Verifying, committing, replying to comments, resolving threads
 
-**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool except for liveness commands.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all pipeline state.
+**Never use a literal `.fixme/` path or any `<fixme-dir>/` path in any tool except for liveness and attention brokering commands.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all pipeline state.
 
-Liveness is the only allowed `<fixme-dir>` carve-out. This skill may resolve `<fixme-dir>`, create a run status, and read that same run status only through:
+Liveness and attention brokering are the only allowed `<fixme-dir>` carve-outs. This skill may resolve `<fixme-dir>`, create a run status, read that same run status, and broker a nested `fixme-task` attention prompt only through:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '<json-object>'
 ```
 
-Use only the `fixme_dir` field returned by `root`. Store the `run start` result's `status_id` as `fixmeTaskStatusId`. Do not read, write, list, or mutate any other `<fixme-dir>` path from this skill.
+Use only the `fixmeDir` field returned by `root`. Store the `run start` result's `statusId` as `fixmeTaskStatusId`. Do not read, write, list, or mutate any other `<fixme-dir>` path from this skill.
 
 When `fixme-task`'s SKILL.md says "the orchestrator writes to the decision log", **the orchestrator means `fixme-task` itself**, not the caller of `Skill("fixme-task")`. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
+
+If nested `fixme-task` returns `FIXME_ATTENTION_REQUIRED` or `run status` reports `currentCommand` in the form `attention:<attention-id>`, this skill becomes only the user-facing broker for that prompt:
+
+1. Call `run attention show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>`.
+2. Print the returned `promptMarkdown` exactly, then wait for the user's answer.
+3. If the user response is a decision answer, call `run attention answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
+4. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
+5. Use the `resumeRef` returned by `run attention show` and resume nested `fixme-task` with only `--nested --resume <resumeRef> --answer-attention <attention-id>`. The saved task state is the context boundary; do not re-pass the routed PR fix item text on an attention resume. In Claude inline mode this is `Skill("fixme-task", "--nested --resume <resumeRef> --answer-attention <attention-id>")`; in Codex inline mode load `$HOME/.codex/skills/fixme-task/SKILL.md` and run those same arguments. When resuming, reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>` so `fixme-task` can clear the original attention status. The status id is context, not a command-line flag.
+
+If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again. Resume nested `fixme-task` immediately with `--nested --resume <resumeRef> --answer-attention <attention-id>` and the same `<liveness>` `statusId: <fixmeTaskStatusId>` so an interrupted broker does not duplicate a user decision.
+
+If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"` and resume `fixme-task` exactly the same way. Do not answer the clarification in this parent skill. If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way.
+
+Do not write `<fixme-dir>/decisions.md`; `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
 
 # Address PR Comments
 
@@ -39,7 +55,7 @@ Automatically fetch, normalize, analyze, and address PR feedback from inline rev
 - **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
 - **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
 - **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
-- **Never touch `.fixme/` or `<fixme-dir>/` files except for the liveness carve-out.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are passed as text inputs to `Skill("fixme-task", args=...)`, never written to disk by this skill.
+- **Never touch `.fixme/` or `<fixme-dir>/` files outside the liveness and attention brokering carve-outs.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are passed as text inputs to `Skill("fixme-task", args=...)`, never written to disk by this skill.
 
 ## Audible Alerts
 
@@ -851,7 +867,7 @@ Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQU
 
 Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) within platform depth limits. The Skill tool runs fixme-task in the current session context (depth 0), allowing its Agent dispatches to land at depth 1.
 
-**ALWAYS pass `--nested` as the first argument.** This tells fixme-task that this skill owns the surrounding todo list (Steps 1-7 already completed, Steps 10-15 still pending) and that fixme-task must expand its own steps inline (`Step 9.1` ... `Step 9.9`) rather than replacing the list. Without `--nested`, fixme-task replaces the parent's todo list with its own 9-step manifest, destroying the recency anchor for Steps 10-15 (verify, commit, resolve) - the model will then frequently treat fixme-task's "Run Summary" step as the end of the workflow and stop instead of continuing back to verification, commit, and thread resolution. The `--nested` flag prevents this by keeping the parent's pending items visible throughout fixme-task's execution.
+**ALWAYS pass `--nested` as the first argument.** This tells fixme-task that this skill owns the surrounding todo list (Steps 1-7 already completed, Steps 10-15 still pending) and that fixme-task must expand its own steps inline (`Step 9.1` ... `Step 9.8`) rather than replacing the list. Nested fixme-task has no run-summary substep. Without `--nested`, fixme-task replaces the parent's todo list with its own 9-step standalone manifest, destroying the recency anchor for Steps 10-15 (verify, commit, resolve) - the model will then frequently treat fixme-task's "Run Summary" step as the end of the workflow and stop instead of continuing back to verification, commit, and thread resolution. The `--nested` flag prevents this by keeping the parent's pending items visible throughout fixme-task's execution.
 
 Before invoking `Skill("fixme-task", ...)`, create liveness for the nested pipeline:
 
@@ -860,7 +876,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
 ```
 
-Use the `fixme_dir` field returned by `root` as `<fixme-dir>`. Store the returned `status_id` as `fixmeTaskStatusId`. If either command fails, do not dispatch `fixme-task`; print the JSON error, fire `task_failed`, and stop.
+Use the `fixmeDir` field returned by `root` as `<fixme-dir>`. Store the returned `statusId` as `fixmeTaskStatusId`. If either command fails, do not dispatch `fixme-task`; print the JSON error, fire `task_failed`, and stop.
 
     Skill(
       skill="fixme-task",
@@ -872,7 +888,7 @@ Use the `fixme_dir` field returned by `root` as `<fixme-dir>`. Store the returne
       </project>
 
       <liveness>
-      status_id: <fixmeTaskStatusId>
+      statusId: <fixmeTaskStatusId>
       </liveness>
 
       Fix items:
@@ -883,7 +899,7 @@ Use the `fixme_dir` field returned by `root` as `<fixme-dir>`. Store the returne
       - [list FOLLOWUP_ONLY and INFO groups separately as non-dispatch context for the run summary]
     )
 
-fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In nested mode, its substeps appear as `Step 9.1` ... `Step 9.9` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
+fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In nested mode, its substeps appear as `Step 9.1` ... `Step 9.8` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
 
 **NOTE**: fixme-task runs inline in this session's context, not as an isolated agent. This is intentional - the Agent tool cannot be used from within an agent (platform constraint). The pipeline's sub-agents (fixme-write-plan, fixme-execute-plan, etc.) still get isolated context windows when dispatched by fixme-task via the Agent tool.
 
@@ -893,7 +909,7 @@ When waiting or reporting status while the nested pipeline is active, read liven
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
 ```
 
-Report the active agent, state, checkpoint, current command, and `updated_at`. If `run status` fails, print a warning with `fixmeTaskStatusId` and then fall back to the previous coarse signals.
+Report the active agent, state, checkpoint, current command, and `updatedAt`. If `currentCommand` is `attention:<attention-id>`, follow the attention broker path before reporting coarse progress. If `run status` fails, print a warning with `fixmeTaskStatusId` and then fall back to the previous coarse signals.
 
 ### 4. Verify All Changes
 

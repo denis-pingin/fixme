@@ -189,21 +189,10 @@ const STANDARD_PIPELINES = {
 
 const STANDARD_OUTER_MAX_CYCLES = 2;
 const STANDARD_PIPELINE_NAMES = Object.keys(STANDARD_PIPELINES);
+const REMOVED_WORKFLOW_NAMES = Object.freeze(['default', 'plan', 'execute', 'idea-to-production']);
+const OBSOLETE_REVIEW_KEYS = Object.freeze(['softness', 'mode']);
 const REVIEW_LEVELS = Object.freeze(['strict', 'standard', 'lenient', 'fast-track', 'critical']);
 const VALID_REVIEW_LEVELS = new Set(REVIEW_LEVELS);
-const LEGACY_WORKFLOW_ALIASES = Object.freeze({
-  default: 'standard',
-  plan: 'plan-only',
-  execute: 'execute-only',
-  'idea-to-production': 'full',
-});
-const LEGACY_SOFTNESS_LABEL_TO_LEVEL = Object.freeze({
-  strict: 'strict',
-  default: 'standard',
-  lenient: 'lenient',
-  tactical: 'fast-track',
-  panic: 'critical',
-});
 const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
 const VALID_RUNTIME_VALUES = new Set(['claude', 'codex']);
@@ -253,6 +242,39 @@ const KNOWN_FIXME_AGENTS = new Set([
 
 const RUN_STATES = Object.freeze(['running', 'waiting', 'blocked', 'completed', 'failed']);
 const RUN_CHECKPOINTS = Object.freeze(['dispatched', 'started', 'working', 'waiting', 'finalizing', 'done']);
+const RUN_ATTENTION_ANSWER_MODES = Object.freeze(['freeform', 'decision-card', 'multiple-choice']);
+const RUN_ATTENTION_ANSWER_KINDS = Object.freeze(['decision', 'clarificationRequest']);
+const RUN_ATTENTION_RECORD_STATUSES = Object.freeze(['waiting', 'answered']);
+const RUN_STATUS_FIELDS = new Set([
+  'schemaVersion',
+  'statusId',
+  'agent',
+  'state',
+  'checkpoint',
+  'currentCommand',
+  'updatedAt',
+]);
+const RUN_ATTENTION_RECORD_FIELDS = new Set([
+  'attentionId',
+  'ownerSkill',
+  'sourceSkill',
+  'parentSkill',
+  'kind',
+  'resumeRef',
+  'taskStatePath',
+  'promptMarkdown',
+  'answerMode',
+  'metadata',
+  'status',
+  'answer',
+  'createdAt',
+  'answeredAt',
+]);
+const RUN_ATTENTION_ANSWER_FIELDS = new Set([
+  'answer',
+  'answeredBy',
+  'answerKind',
+]);
 
 const USAGE_RUNTIMES = Object.freeze(['claude', 'codex', 'auto']);
 const USAGE_ROLES = Object.freeze(['skill', 'orchestrator', 'reviewer', 'handler', 'reporter', 'reference']);
@@ -260,8 +282,6 @@ const USAGE_OUTCOMES = Object.freeze(['complete', 'failed', 'aborted']);
 const USAGE_STATUS = Object.freeze({
   MEASURED: 'measured',
   UNMEASURED: 'unmeasured',
-  LEGACY_COMPLETE: 'complete',
-  LEGACY_PARTIAL: 'partial',
 });
 const USAGE_REASON_VALUES = Object.freeze([
   'verification_failed',
@@ -280,6 +300,7 @@ const USAGE_WARNING_CODES = Object.freeze({
   COUNTER_CONFLICT: 'COUNTER_CONFLICT',
   AMBIGUOUS_COUNTER_SOURCE: 'AMBIGUOUS_COUNTER_SOURCE',
   DUPLICATE_INVOCATION_CONFLICT: 'DUPLICATE_INVOCATION_CONFLICT',
+  UNSUPPORTED_USAGE_STATUS: 'UNSUPPORTED_USAGE_STATUS',
   CORRUPT_JSONL_LINE: 'CORRUPT_JSONL_LINE',
   TRAILING_INCOMPLETE_LINE: 'TRAILING_INCOMPLETE_LINE',
   DESTINATION_APPEND_FAILED: 'DESTINATION_APPEND_FAILED',
@@ -425,8 +446,12 @@ function resolveModel(agentName, fixmeRoot, options = {}) {
   } catch {
     return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
   }
+  if (!isPlainObject(config)) {
+    return applyRuntimeSettings(result, agentName, DEFAULT_MODEL);
+  }
+  assertNoObsoleteConfigKeys(config, configPath);
 
-  const models = (config && typeof config.models === 'object') ? config.models : null;
+  const models = isPlainObject(config.models) ? config.models : null;
   if (!requestedRuntime && models && typeof models.runtime === 'string') {
     result.runtime = resolveRuntime(models.runtime);
   }
@@ -869,7 +894,7 @@ function parseNestedObject(lines, baseIndent) {
 }
 
 /**
- * Parse an inline object like { from: queued, to: investigating, timestamp: "2026-...", reason: null }
+ * Parse an inline object like { from: queued, to: plan, timestamp: "2026-...", reason: null }
  */
 function parseInlineObject(str) {
   const inner = str.slice(1, -1).trim();
@@ -1081,18 +1106,6 @@ function extractTitle(body, slug) {
 // Transition Matrix
 // ============================================================================
 
-const TRANSITIONS = {
-  'queued':         ['investigating', 'skipped', 'failed'],
-  'investigating':  ['researching', 'skipped', 'failed'],
-  'researching':    ['planning', 'failed'],
-  'planning':       ['implementing', 'failed'],
-  'implementing':   ['verifying', 'failed'],
-  'verifying':      ['done', 'planning', 'failed'],
-  'done':           [],
-  'failed':         [],
-  'skipped':        [],
-};
-
 /**
  * Build a transition map from an ordered list of pipeline phase names.
  *
@@ -1104,7 +1117,7 @@ const TRANSITIONS = {
  */
 function buildTransitionsFromPhases(phases) {
   const t = {
-    'queued': [phases[0], 'skipped', 'failed'],
+    'queued': phases[0] ? [phases[0], 'skipped', 'failed'] : ['skipped', 'failed'],
     'done': [],
     'failed': [],
     'skipped': [],
@@ -1139,7 +1152,7 @@ function buildTransitionsFromPhases(phases) {
  * Resolution order:
  * 1. If startDir has .fixme/ -> return startDir (local takes priority)
  * 2. Walk up ancestors looking for a parent with .fixme/:
- *    a. If parent .fixme/config.json has sub_repos and startDir matches -> return parent
+ *    a. If parent .fixme/config.json has subRepos and startDir matches -> return parent
  *    b. If startDir (or any dir between startDir and parent) has .git -> return parent
  * 3. Never go above $HOME or filesystem root
  * 4. Fallback: return startDir
@@ -1174,11 +1187,14 @@ function findFixmeRoot(startDir) {
 
     const parentFixme = path.join(parent, '.fixme');
     if (fs.existsSync(parentFixme) && fs.statSync(parentFixme).isDirectory()) {
-      // Check config.json for sub_repos
+      // Check config.json for subRepos.
       const configPath = path.join(parentFixme, 'config.json');
       try {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const subRepos = config.sub_repos || [];
+        if (isPlainObject(config) && Object.prototype.hasOwnProperty.call(config, 'sub_repos')) {
+          throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: 'sub_repos' });
+        }
+        const subRepos = isPlainObject(config) ? (config.subRepos || []) : [];
 
         if (Array.isArray(subRepos) && subRepos.length > 0) {
           const relPath = path.relative(parent, resolved);
@@ -1187,7 +1203,10 @@ function findFixmeRoot(startDir) {
             return parent;
           }
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof CliJsonError) {
+          throw error;
+        }
         // config.json missing or malformed - fall back to .git heuristic
       }
 
@@ -1201,39 +1220,43 @@ function findFixmeRoot(startDir) {
   return startDir;
 }
 
+function loadPipelineWorkflow(pipelineName, fixmeRoot) {
+  const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
+  const normalizedName = normalizeWorkflowName(pipelineName);
+  if (!fs.existsSync(configPath)) {
+    return STANDARD_PIPELINES[normalizedName] ? makeStandardWorkflow(normalizedName) : null;
+  }
+
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    throw new Error(`Invalid config.json: ${e.message}`);
+  }
+
+  if (!isPlainObject(config)) {
+    throw new Error('Invalid config.json: top-level value must be an object');
+  }
+  assertNoObsoleteConfigKeys(config, configPath);
+  let workflow = getWorkflowDefinition(config, normalizedName);
+  if (!workflow && STANDARD_PIPELINES[normalizedName]) {
+    workflow = makeStandardWorkflow(normalizedName);
+  }
+  if (!workflow || !Array.isArray(workflow.phases)) return null;
+  const normalizedWorkflow = cloneJson(workflow);
+  // Filter out disabled phases (enabled defaults to true)
+  normalizedWorkflow.phases = normalizedWorkflow.phases
+    .filter(phase => phase.enabled !== false && phase.name);
+  return normalizedWorkflow;
+}
+
 /**
  * Load pipeline phase names from config.
  * Returns array of phase name strings, or null if pipeline not found.
  */
 function loadPipelinePhases(pipelineName, fixmeRoot) {
-  const configPath = path.join(fixmeRoot || process.cwd(), '.fixme', 'config.json');
-  const normalizedName = normalizeWorkflowName(pipelineName);
-  if (!fs.existsSync(configPath)) {
-    const standardWorkflow = STANDARD_PIPELINES[normalizedName];
-    return standardWorkflow ? standardWorkflow.map(phase => phase.name).filter(Boolean) : null;
-  }
-
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    let workflow = getWorkflowDefinition(config, normalizedName);
-    if (!workflow && isPlainObject(config.pipelines) && Array.isArray(config.pipelines[pipelineName])) {
-      workflow = {
-        outerMaxCycles: getLegacyOuterMaxCycles(config, pipelineName) || STANDARD_OUTER_MAX_CYCLES,
-        phases: config.pipelines[pipelineName],
-      };
-    }
-    if (!workflow && STANDARD_PIPELINES[normalizedName]) {
-      workflow = makeStandardWorkflow(normalizedName);
-    }
-    if (!workflow || !Array.isArray(workflow.phases)) return null;
-    // Filter out disabled phases (enabled defaults to true)
-    return workflow.phases
-      .filter(phase => phase.enabled !== false)
-      .map(phase => phase.name)
-      .filter(Boolean);
-  } catch (e) {
-    return null;
-  }
+  const workflow = loadPipelineWorkflow(pipelineName, fixmeRoot);
+  return workflow ? workflow.phases.map(phase => phase.name).filter(Boolean) : null;
 }
 
 // ============================================================================
@@ -1257,7 +1280,7 @@ function isPositiveInteger(value) {
 }
 
 function normalizeWorkflowName(name) {
-  return LEGACY_WORKFLOW_ALIASES[name] || name;
+  return name;
 }
 
 function isValidReviewLevel(value) {
@@ -1281,13 +1304,6 @@ function makeStandardWorkflow(name) {
   };
 }
 
-function getLegacyOuterMaxCycles(config, workflowName) {
-  if (!isPlainObject(config.workflowControls)) return null;
-  const controls = config.workflowControls[workflowName];
-  if (!isPlainObject(controls)) return null;
-  return isPositiveInteger(controls.outerMaxCycles) ? controls.outerMaxCycles : null;
-}
-
 function hasWorkflowPhases(workflow) {
   return isPlainObject(workflow) && Array.isArray(workflow.phases);
 }
@@ -1296,16 +1312,6 @@ function getWorkflowDefinition(config, workflowName) {
   if (isPlainObject(config.workflows) && hasWorkflowPhases(config.workflows[workflowName])) {
     return config.workflows[workflowName];
   }
-
-  // Legacy read support: old configs stored phases under pipelines.<name>
-  // and workflow-level controls under workflowControls.<name>.
-  if (isPlainObject(config.pipelines) && Array.isArray(config.pipelines[workflowName])) {
-    return {
-      outerMaxCycles: getLegacyOuterMaxCycles(config, workflowName) || STANDARD_OUTER_MAX_CYCLES,
-      phases: config.pipelines[workflowName],
-    };
-  }
-
   return null;
 }
 
@@ -1352,6 +1358,7 @@ function readConfigForGet(fixmeRoot) {
   if (!isPlainObject(config)) {
     throw new Error('Invalid config.json: top-level value must be an object');
   }
+  assertNoObsoleteConfigKeys(config, configPath);
 
   return { config, configPath };
 }
@@ -1411,14 +1418,6 @@ function ensureUsageConfig(config) {
   return changed;
 }
 
-const OLD_BUGFIX_FULL_WORKFLOW_TUPLES = [
-  ['investigate', 'fixme-investigate'],
-  ['research', 'fixme-research'],
-  ['plan', 'fixme-write-plan'],
-  ['implement', 'fixme-execute-plan'],
-  ['verify', 'fixme-browser-verify'],
-];
-
 const FINAL_FULL_WORKFLOW_TUPLES = [
   ['product-spec', 'fixme-write-product-spec'],
   ['technical-spec', 'fixme-write-technical-spec'],
@@ -1426,8 +1425,6 @@ const FINAL_FULL_WORKFLOW_TUPLES = [
   ['implement', 'fixme-execute-plan'],
   ['verify', 'fixme-browser-verify'],
 ];
-
-const LEGACY_FEATURE_FULL_WORKFLOW_TUPLES = FINAL_FULL_WORKFLOW_TUPLES.slice(0, 4);
 
 function workflowPrimarySkillTuples(workflow) {
   return workflow.phases.map(phase => [
@@ -1441,26 +1438,37 @@ function workflowMatchesTuples(workflow, tuples) {
   return jsonEqual(workflowPrimarySkillTuples(workflow), tuples);
 }
 
-function isOldBugfixWorkflow(workflow) {
-  return workflowMatchesTuples(workflow, OLD_BUGFIX_FULL_WORKFLOW_TUPLES);
-}
-
 function isFinalFullWorkflow(workflow) {
   return workflowMatchesTuples(workflow, FINAL_FULL_WORKFLOW_TUPLES);
 }
 
-function isLegacyFeatureFullWorkflow(workflow) {
-  return workflowMatchesTuples(workflow, LEGACY_FEATURE_FULL_WORKFLOW_TUPLES);
+function obsoleteReviewKeyPath(review, reviewPath) {
+  if (!isPlainObject(review)) return null;
+  for (const key of OBSOLETE_REVIEW_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(review, key)) {
+      return `${reviewPath}.${key}`;
+    }
+  }
+  return null;
+}
+
+function assertNoObsoleteReviewKeysForWrite(review, reviewPath) {
+  const obsoletePath = obsoleteReviewKeyPath(review, reviewPath);
+  if (obsoletePath) {
+    throw new Error(`Unsupported obsolete config key: ${obsoletePath}`);
+  }
+}
+
+function assertNoObsoleteReviewKeysForConfig(review, reviewPath, configPath) {
+  const obsoletePath = obsoleteReviewKeyPath(review, reviewPath);
+  if (obsoletePath) {
+    throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: obsoletePath });
+  }
 }
 
 function ensureFinalFullWorkflow(config, result) {
   const workflow = config.workflows && config.workflows.full;
   if (!hasWorkflowPhases(workflow)) return;
-  if (isLegacyFeatureFullWorkflow(workflow)) {
-    workflow.phases.push(cloneJson(STANDARD_PIPELINES.full[4]));
-    result.migrated = true;
-    return;
-  }
   if (!isFinalFullWorkflow(workflow)) {
     throw new CliJsonError({
       error: 'workflow_name_conflict',
@@ -1469,42 +1477,6 @@ function ensureFinalFullWorkflow(config, result) {
       reason: 'reserved_workflow_shape_mismatch',
     });
   }
-}
-
-function setReviewLevel(target, level) {
-  if (!isPlainObject(target.review)) target.review = {};
-  if (target.review.level !== level) {
-    target.review.level = level;
-    return true;
-  }
-  return false;
-}
-
-function legacySoftnessToLevel(value) {
-  if (Object.prototype.hasOwnProperty.call(LEGACY_SOFTNESS_LABEL_TO_LEVEL, value)) {
-    return LEGACY_SOFTNESS_LABEL_TO_LEVEL[value];
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value < 0 || value > 1) return null;
-    if (value <= 0.15) return 'strict';
-    if (value <= 0.45) return 'standard';
-    if (value <= 0.725) return 'lenient';
-    if (value < 0.925) return 'fast-track';
-    return 'critical';
-  }
-  return null;
-}
-
-function convertLegacySoftnessValue(value, configPath, result) {
-  const level = legacySoftnessToLevel(value);
-  if (level) return level;
-  result.warnings.push({
-    warning: 'invalid_legacy_review_softness',
-    configPath,
-    value,
-    fallback: 'next review-level fallback',
-  });
-  return null;
 }
 
 function validateFinalReviewLevels(config, configFilePath) {
@@ -1531,194 +1503,63 @@ function validateFinalReviewLevels(config, configFilePath) {
   }
 }
 
-function moveWorkflow(config, from, to, result, workflowMoveMap) {
-  if (!hasWorkflowPhases(config.workflows[from])) return false;
-  if (hasWorkflowPhases(config.workflows[to])) {
-    if (!jsonEqual(config.workflows[from], config.workflows[to])) {
-      throw new CliJsonError({ error: 'workflow_name_conflict', path: result.configPath, from, to });
-    }
-    delete config.workflows[from];
-  } else {
-    config.workflows[to] = config.workflows[from];
-    delete config.workflows[from];
-  }
-  workflowMoveMap.set(from, to);
-  result.renamedWorkflows.push({ from, to });
-  result.migrated = true;
-  return true;
-}
-
-function phaseReviewSurface(phase) {
-  const reviewSkills = phase && phase.review && Array.isArray(phase.review.skills) ? phase.review.skills : [];
-  if (reviewSkills.includes('fixme-review-spec')) return 'spec-review';
-  if (reviewSkills.includes('fixme-review-plan')) return 'plan-review';
-  if (reviewSkills.includes('fixme-review-code')) return 'code-review';
-  return null;
-}
-
-function convertLegacySoftness(config, workflowMoveMap, result) {
-  const softness = config.review && config.review.softness;
-  if (!isPlainObject(softness)) return;
-
-  if (Object.prototype.hasOwnProperty.call(softness, 'default')) {
-    const globalLevel = convertLegacySoftnessValue(softness.default, 'review.softness.default', result);
-    if (globalLevel && config.review.level !== globalLevel) {
-      config.review.level = globalLevel;
-      result.migrated = true;
-      result.migratedReviewLevel = true;
-    }
+function assertNoObsoleteConfigKeys(config, configPath = null) {
+  if (Object.prototype.hasOwnProperty.call(config, 'pipelines')) {
+    throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: 'pipelines' });
   }
 
-  if (isPlainObject(softness.workflows)) {
-    for (const [legacyWorkflowName, legacyWorkflow] of Object.entries(softness.workflows)) {
-      if (!isPlainObject(legacyWorkflow)) continue;
-      const workflowName = workflowMoveMap.get(legacyWorkflowName) || normalizeWorkflowName(legacyWorkflowName);
-      if (!hasWorkflowPhases(config.workflows[workflowName]) && STANDARD_PIPELINES[workflowName]) {
-        config.workflows[workflowName] = makeStandardWorkflow(workflowName);
-        if (!result.addedWorkflows.includes(workflowName)) result.addedWorkflows.push(workflowName);
-        result.migrated = true;
-      }
-      const workflow = config.workflows && config.workflows[workflowName];
-      if (!hasWorkflowPhases(workflow)) continue;
+  if (Object.prototype.hasOwnProperty.call(config, 'workflowControls')) {
+    throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: 'workflowControls' });
+  }
 
-      const workflowLevel = Object.prototype.hasOwnProperty.call(legacyWorkflow, 'default')
-        ? convertLegacySoftnessValue(legacyWorkflow.default, `review.softness.workflows.${legacyWorkflowName}.default`, result)
-        : null;
-      if (workflowLevel && setReviewLevel(workflow, workflowLevel)) {
-        result.migrated = true;
-        result.migratedReviewLevel = true;
-      }
+  if (Object.prototype.hasOwnProperty.call(config, 'sub_repos')) {
+    throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: 'sub_repos' });
+  }
 
-      if (isPlainObject(legacyWorkflow.phases)) {
-        for (const phase of workflow.phases) {
-          if (!Object.prototype.hasOwnProperty.call(legacyWorkflow.phases, phase.name)) continue;
-          const phaseLevel = convertLegacySoftnessValue(
-            legacyWorkflow.phases[phase.name],
-            `review.softness.workflows.${legacyWorkflowName}.phases.${phase.name}`,
-            result
-          );
-          if (phaseLevel && setReviewLevel(phase, phaseLevel)) {
-            result.migrated = true;
-            result.migratedReviewLevel = true;
-          }
-        }
+  if (isPlainObject(config.workflows)) {
+    for (const workflowName of REMOVED_WORKFLOW_NAMES) {
+      if (Object.prototype.hasOwnProperty.call(config.workflows, workflowName)) {
+        throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: `workflows.${workflowName}` });
       }
     }
   }
 
-  if (isPlainObject(softness.surfaces)) {
-    for (const name of STANDARD_PIPELINE_NAMES) {
-      if (!hasWorkflowPhases(config.workflows[name])) {
-        config.workflows[name] = makeStandardWorkflow(name);
-        if (!result.addedWorkflows.includes(name)) result.addedWorkflows.push(name);
-        result.migrated = true;
-      }
-    }
-    const surfaceLevels = {};
-    for (const surface of ['spec-review', 'plan-review', 'code-review']) {
-      if (Object.prototype.hasOwnProperty.call(softness.surfaces, surface)) {
-        surfaceLevels[surface] = convertLegacySoftnessValue(softness.surfaces[surface], `review.softness.surfaces.${surface}`, result);
-      }
-    }
-    for (const workflow of Object.values(config.workflows || {})) {
-      if (!hasWorkflowPhases(workflow)) continue;
-      for (const phase of workflow.phases) {
-        if (!isPlainObject(phase) || !isPlainObject(phase.review)) continue;
-        if (phase.review.level !== undefined) continue;
-        if (workflow.review && workflow.review.level !== undefined) continue;
-        const surface = phaseReviewSurface(phase);
-        const surfaceLevel = surface && surfaceLevels[surface];
-        if (surfaceLevel && setReviewLevel(phase, surfaceLevel)) {
-          result.migrated = true;
-          result.migratedReviewLevel = true;
-        }
-      }
-    }
+  assertNoObsoleteReviewKeysForConfig(config.review, 'review', configPath);
+
+  if (isPlainObject(config.pullRequestComments)) {
+    assertNoObsoleteReviewKeysForConfig(config.pullRequestComments.review, 'pullRequestComments.review', configPath);
   }
 
-  const prLevel = isPlainObject(softness.surfaces) && Object.prototype.hasOwnProperty.call(softness.surfaces, 'pr-comments')
-    ? convertLegacySoftnessValue(softness.surfaces['pr-comments'], 'review.softness.surfaces.pr-comments', result)
-    : null;
-  if (prLevel) {
-    if (!isPlainObject(config.pullRequestComments)) config.pullRequestComments = {};
-    if (setReviewLevel(config.pullRequestComments, prLevel)) {
-      result.migrated = true;
-      result.migratedReviewLevel = true;
+  if (isPlainObject(config.workflows)) {
+    for (const [workflowName, workflow] of Object.entries(config.workflows)) {
+      if (!isPlainObject(workflow)) continue;
+      if (Object.prototype.hasOwnProperty.call(workflow, 'pipeline')) {
+        throw new CliJsonError({ error: 'unsupported_obsolete_config', path: configPath, configPath: `workflows.${workflowName}.pipeline` });
+      }
+      assertNoObsoleteReviewKeysForConfig(workflow.review, `workflows.${workflowName}.review`, configPath);
+      if (!Array.isArray(workflow.phases)) continue;
+      workflow.phases.forEach((phase, index) => {
+        if (!isPlainObject(phase)) return;
+        assertNoObsoleteReviewKeysForConfig(phase.review, `workflows.${workflowName}.phases[${index}].review`, configPath);
+      });
     }
   }
-
-  delete config.review.softness;
-  result.removedLegacyReviewKeys.push('review.softness');
-  result.migrated = true;
 }
 
 function applyConfigMigration(config, configPath = null) {
   const result = {
     migrated: false,
     addedWorkflows: [],
-    migratedLegacyWorkflows: [],
-    removedLegacyKeys: [],
-    renamedWorkflows: [],
-    migratedReviewLevel: false,
-    removedLegacyReviewKeys: [],
     warnings: [],
     configPath,
   };
-  const workflowMoveMap = new Map();
-
   if (!isPlainObject(config.workflows)) {
     config.workflows = {};
     result.migrated = true;
   }
 
   validateFinalReviewLevels(config, configPath);
-
-  if (isPlainObject(config.pipelines)) {
-    for (const [name, phases] of Object.entries(config.pipelines)) {
-      if (!Array.isArray(phases) || hasWorkflowPhases(config.workflows[name])) continue;
-      config.workflows[name] = {
-        outerMaxCycles: getLegacyOuterMaxCycles(config, name) || STANDARD_OUTER_MAX_CYCLES,
-        phases: cloneJson(phases),
-      };
-      result.migrated = true;
-      result.migratedLegacyWorkflows.push(name);
-    }
-  }
-
-  if (isPlainObject(config.workflowControls)) {
-    for (const [name, controls] of Object.entries(config.workflowControls)) {
-      if (!hasWorkflowPhases(config.workflows[name])) continue;
-      if (isPositiveInteger(config.workflows[name].outerMaxCycles)) continue;
-      if (isPlainObject(controls) && isPositiveInteger(controls.outerMaxCycles)) {
-        config.workflows[name].outerMaxCycles = controls.outerMaxCycles;
-        result.migrated = true;
-      }
-    }
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'pipelines')) {
-    delete config.pipelines;
-    result.migrated = true;
-    result.removedLegacyKeys.push('pipelines');
-  }
-
-  if (Object.prototype.hasOwnProperty.call(config, 'workflowControls')) {
-    delete config.workflowControls;
-    result.migrated = true;
-    result.removedLegacyKeys.push('workflowControls');
-  }
-
-  if (hasWorkflowPhases(config.workflows.full)) {
-    if (isOldBugfixWorkflow(config.workflows.full)) {
-      moveWorkflow(config, 'full', 'bugfix', result, workflowMoveMap);
-    } else {
-      ensureFinalFullWorkflow(config, result);
-    }
-  }
-
-  for (const [from, to] of Object.entries(LEGACY_WORKFLOW_ALIASES)) {
-    moveWorkflow(config, from, to, result, workflowMoveMap);
-  }
+  assertNoObsoleteConfigKeys(config, configPath);
 
   ensureFinalFullWorkflow(config, result);
 
@@ -1727,12 +1568,9 @@ function applyConfigMigration(config, configPath = null) {
     result.migrated = true;
   }
 
-  convertLegacySoftness(config, workflowMoveMap, result);
-
   if (!Object.prototype.hasOwnProperty.call(config.review, 'level')) {
     config.review.level = 'standard';
     result.migrated = true;
-    result.migratedReviewLevel = true;
   }
 
   for (const name of STANDARD_PIPELINE_NAMES) {
@@ -1785,11 +1623,21 @@ function isWorkflowName(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
 }
 
+function isRemovedWorkflowName(value) {
+  return REMOVED_WORKFLOW_NAMES.includes(value);
+}
+
+function assertWorkflowNameNotRemoved(workflowName) {
+  if (isRemovedWorkflowName(workflowName)) {
+    throw new Error(`Removed workflow name is not supported: ${workflowName}`);
+  }
+}
+
 function isSupportedConfigKey(parts) {
   const [top, second, third] = parts;
 
   if (top === 'ticketBackend') return parts.length === 1;
-  if (top === 'sub_repos') return parts.length === 1;
+  if (top === 'subRepos') return parts.length === 1;
   if (top === 'project') return parts.length >= 1;
   if (top === 'review') return parts.length === 2 && second === 'level';
   if (top === 'pullRequestComments') return parts.length === 3 && second === 'review' && third === 'level';
@@ -1804,6 +1652,7 @@ function isSupportedConfigKey(parts) {
 
   if (top === 'workflows') {
     if (!isWorkflowName(second)) return false;
+    if (isRemovedWorkflowName(second)) return false;
     if (parts.length === 2) return true;
     if (parts.length === 3) return ['phases', 'outerMaxCycles'].includes(third);
     if (parts.length === 4 && third === 'review' && parts[3] === 'level') return true;
@@ -1906,7 +1755,7 @@ function validatePipeline(pipeline, workflowName) {
       throw new Error(`${fieldPrefix}.name must be a non-empty string`);
     }
     if (seenPhaseNames.has(phase.name)) {
-      throw new Error(`pipelines.${workflowName} has duplicate phase name '${phase.name}'`);
+      throw new Error(`workflows.${workflowName}.phases has duplicate phase name '${phase.name}'`);
     }
     seenPhaseNames.add(phase.name);
 
@@ -1922,6 +1771,7 @@ function validatePipeline(pipeline, workflowName) {
       if (!isPlainObject(normalizedPhase.review)) {
         throw new Error(`${fieldPrefix}.review must be an object when present`);
       }
+      assertNoObsoleteReviewKeysForWrite(normalizedPhase.review, `${fieldPrefix}.review`);
       if (normalizedPhase.review.enabled !== undefined && typeof normalizedPhase.review.enabled !== 'boolean') {
         throw new Error(`${fieldPrefix}.review.enabled must be a boolean when present`);
       }
@@ -1949,8 +1799,12 @@ function validatePipeline(pipeline, workflowName) {
 }
 
 function validateWorkflow(workflow, workflowName) {
+  assertWorkflowNameNotRemoved(workflowName);
   if (!isPlainObject(workflow)) {
     throw new Error(`workflows.${workflowName} must be an object`);
+  }
+  if (Object.prototype.hasOwnProperty.call(workflow, 'pipeline')) {
+    throw new Error(`Unsupported obsolete config key: workflows.${workflowName}.pipeline`);
   }
 
   const validation = validatePipeline(workflow.phases, workflowName);
@@ -1966,6 +1820,7 @@ function validateWorkflow(workflow, workflowName) {
     if (!isPlainObject(normalized.review)) {
       throw new Error(`workflows.${workflowName}.review must be an object when present`);
     }
+    assertNoObsoleteReviewKeysForWrite(normalized.review, `workflows.${workflowName}.review`);
     if (normalized.review.level !== undefined) {
       validateReviewLevelValue(normalized.review.level, `workflows.${workflowName}.review.level`);
     }
@@ -1993,8 +1848,8 @@ function validateConfigSetValue(parts, value) {
     }
   }
 
-  if (top === 'sub_repos') {
-    validateStringArray(value, 'sub_repos', true);
+  if (top === 'subRepos') {
+    validateStringArray(value, 'subRepos', true);
   }
 
   if (top === 'models' && second === 'profile') {
@@ -2136,11 +1991,6 @@ function configMigrate(fixmeRoot) {
     created: !existed,
     migrated: migration.migrated || !existed,
     addedWorkflows: migration.addedWorkflows,
-    migratedLegacyWorkflows: migration.migratedLegacyWorkflows,
-    removedLegacyKeys: migration.removedLegacyKeys,
-    renamedWorkflows: migration.renamedWorkflows,
-    migratedReviewLevel: migration.migratedReviewLevel,
-    removedLegacyReviewKeys: migration.removedLegacyReviewKeys,
     warnings: migration.warnings,
   });
 }
@@ -2180,6 +2030,7 @@ function readConfigForResolve(fixmeRoot) {
   if (!isPlainObject(config)) {
     throw new Error('Invalid config.json: top-level value must be an object');
   }
+  assertNoObsoleteConfigKeys(config, configPath);
 
   return { config, configPath, existed: true };
 }
@@ -2377,6 +2228,7 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
   if (!isWorkflowName(workflowName)) {
     throw new Error('Workflow name is required and must contain only letters, numbers, underscores, or hyphens');
   }
+  assertWorkflowNameNotRemoved(workflowName);
   if (!flags.data) {
     throw new Error('--data is required for config workflow configure');
   }
@@ -2391,7 +2243,11 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
     throw new Error('--data must be a JSON object');
   }
 
-  const phases = data.phases || data.pipeline;
+  if (Object.prototype.hasOwnProperty.call(data, 'pipeline')) {
+    throw new Error('workflow configure data must use phases; pipeline is not supported');
+  }
+
+  const phases = data.phases;
   const validation = validatePipeline(phases, workflowName);
   const hasOuterMaxCycles = Object.prototype.hasOwnProperty.call(data, 'outerMaxCycles');
   if (hasOuterMaxCycles && !isPositiveInteger(data.outerMaxCycles)) {
@@ -2406,6 +2262,7 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
     if (!isPlainObject(data.review)) {
       throw new Error('review must be an object when present');
     }
+    assertNoObsoleteReviewKeysForWrite(data.review, `workflows.${workflowName}.review`);
     if (data.review.level !== undefined) {
       validateReviewLevelValue(data.review.level, `workflows.${workflowName}.review.level`);
     }
@@ -2434,7 +2291,7 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
 
 /**
  * Resolve the transition map for a given ticket.
- * Priority: --pipeline flag -> ticket frontmatter pipeline -> hardcoded default.
+ * Priority: --pipeline flag -> ticket frontmatter pipeline -> standard workflow.
  */
 function resolveTransitions(fm, flags, fixmeRoot) {
   // 1. Check --pipeline flag (also stores it in frontmatter for future use)
@@ -2444,14 +2301,16 @@ function resolveTransitions(fm, flags, fixmeRoot) {
 
   if (rawPipelineName) {
     const phases = loadPipelinePhases(rawPipelineName, fixmeRoot);
-    if (phases && phases.length > 0) {
-      const pipelineName = normalizeWorkflowName(rawPipelineName);
-      return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName };
+    if (!phases || phases.length === 0) {
+      throw new Error(`Workflow not found or has no enabled phases: ${rawPipelineName}`);
     }
+    const pipelineName = normalizeWorkflowName(rawPipelineName);
+    return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName };
   }
 
-  // 3. Fallback to hardcoded default
-  return { transitions: TRANSITIONS, phases: null, pipelineName: null };
+  // 3. Fallback to the final standard workflow
+  const phases = loadPipelinePhases('standard', fixmeRoot) || STANDARD_PIPELINES.standard.map(phase => phase.name);
+  return { transitions: buildTransitionsFromPhases(phases), phases, pipelineName: 'standard' };
 }
 
 /**
@@ -2465,9 +2324,6 @@ function requiresReason(fromState, toState, phases) {
     const fromIdx = phases.indexOf(fromState);
     const toIdx = phases.indexOf(toState);
     if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) return true;
-  } else {
-    // Legacy fallback: hardcoded retry check
-    if (fromState === 'verifying' && toState === 'planning') return true;
   }
   return false;
 }
@@ -2631,18 +2487,6 @@ function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
         );
       }
     }
-  } else {
-    // Legacy fallback
-    if (currentState === 'verifying' && newState === 'planning') {
-      const currentAttempt = fm.current_attempt || 0;
-      const maxAttempts = fm.max_attempts || 3;
-      if (currentAttempt >= maxAttempts - 1) {
-        return error(
-          `Retry limit reached: attempt ${currentAttempt + 1} of ${maxAttempts} (max_attempts). ` +
-          `Transition verifying -> planning denied.`
-        );
-      }
-    }
   }
 
   // Check reason requirement
@@ -2672,7 +2516,7 @@ function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
     durations[currentState].seconds = Math.round((new Date(now) - entered) / 1000);
   }
 
-  // Preserve cumulative seconds for states visited multiple times (e.g., planning on retry)
+  // Preserve cumulative seconds for states visited multiple times (e.g., plan on retry)
   const hadPriorEntry = durations[newState] && durations[newState].entered;
   const priorSeconds = (durations[newState] && typeof durations[newState].seconds === 'number') ? durations[newState].seconds : 0;
   const priorAccumulated = (durations[newState] && typeof durations[newState].prior_seconds === 'number') ? durations[newState].prior_seconds : 0;
@@ -2700,11 +2544,6 @@ function ticketTransition(ticketPath, newState, flags, fixmeRoot) {
     const fromIdx = phases.indexOf(currentState);
     const toIdx = phases.indexOf(newState);
     if (fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx) {
-      fm.current_attempt = (fm.current_attempt || 0) + 1;
-    }
-  } else {
-    // Legacy fallback
-    if (currentState === 'verifying' && newState === 'planning') {
       fm.current_attempt = (fm.current_attempt || 0) + 1;
     }
   }
@@ -2957,9 +2796,7 @@ function formatLockedDecisions(decisions) {
 
 function buildTaskMarkdown(data, taskRef, slug, date) {
   const title = data.title || titleFromSlug(slug) || 'Saved Fixme Task';
-  const pipelineHint = isPlainObject(data.pipelineResolution) && data.pipelineResolution.pipeline
-    ? data.pipelineResolution.pipeline
-    : (data.pipelineHint || 'auto');
+  const pipeline = data.pipelineResolution.pipeline;
   const frontmatter = {
     title,
     label: taskRef,
@@ -2968,7 +2805,7 @@ function buildTaskMarkdown(data, taskRef, slug, date) {
     updated: date,
     status: 'saved',
     source: data.source || 'conversation',
-    pipeline_hint: pipelineHint,
+    pipeline,
     tags: Array.isArray(data.tags) ? data.tags : [],
   };
 
@@ -3015,7 +2852,7 @@ ${markdownList(data.openQuestions, 'None.')}
 
 ## Suggested Pipeline
 
-\`${pipelineHint}\`
+\`${pipeline}\`
 
 ## Later Planning Notes
 
@@ -3027,10 +2864,12 @@ ${markdownList(data.laterPlanningNotes, 'Plan from this saved task brief.')}
 
 function firstPipelineCursor(pipelineName, fixmeRoot) {
   const normalizedPipeline = normalizeWorkflowName(pipelineName || 'standard');
-  const phases = loadPipelinePhases(normalizedPipeline, fixmeRoot) || loadPipelinePhases('standard', fixmeRoot) || ['plan'];
-  const phase = phases[0] || 'plan';
-  const workflow = makeStandardWorkflow(STANDARD_PIPELINES[normalizedPipeline] ? normalizedPipeline : 'standard');
-  const configuredPhase = workflow.phases.find(candidate => candidate.name === phase);
+  const workflow = loadPipelineWorkflow(normalizedPipeline, fixmeRoot);
+  if (!workflow || !Array.isArray(workflow.phases) || workflow.phases.length === 0) {
+    throw new Error(`Workflow not found or has no enabled phases: ${normalizedPipeline}`);
+  }
+  const configuredPhase = workflow.phases[0];
+  const phase = configuredPhase.name;
   const skill = configuredPhase && Array.isArray(configuredPhase.skills) && configuredPhase.skills.length > 0
     ? configuredPhase.skills[0]
     : null;
@@ -3103,6 +2942,14 @@ function assertCamelCaseJsonKeys(value, label, pathParts = []) {
   }
 }
 
+function assertKnownJsonFields(value, label, allowedFields) {
+  for (const key of Object.keys(value || {})) {
+    if (!allowedFields.has(key)) {
+      throw new Error(`Unsupported ${label} field: ${key}`);
+    }
+  }
+}
+
 const PIPELINE_RESOLUTION_SOURCE_PRIORITY = Object.freeze({
   explicitPipelineArg: 100,
   intentFlag: 95,
@@ -3110,7 +2957,6 @@ const PIPELINE_RESOLUTION_SOURCE_PRIORITY = Object.freeze({
   userProseIntent: 80,
   artifact: 70,
   resumeState: 60,
-  legacyPipelineHint: 50,
   default: 0,
 });
 
@@ -3207,6 +3053,15 @@ function resolvePipelineCandidates(candidates) {
   };
 }
 
+function validatePipelineResolutionWorkflow(pipelineResolution, fixmeRoot, context) {
+  const pipeline = pipelineResolution && pipelineResolution.pipeline;
+  const phases = loadPipelinePhases(pipeline, fixmeRoot);
+  if (!phases || phases.length === 0) {
+    throw new Error(`${context} workflow not found or has no enabled phases: ${pipeline}`);
+  }
+  return pipelineResolution;
+}
+
 function normalizeProvidedPipelineResolution(value) {
   if (!isPlainObject(value)) {
     throw new Error('pipelineResolution must be an object');
@@ -3231,63 +3086,57 @@ function normalizeProvidedPipelineResolution(value) {
   };
 }
 
-function resolvePipelineFromData(data) {
+function resolvePipelineFromData(data, fixmeRoot) {
   assertCamelCaseJsonKeys(data, 'pipeline resolve data');
-  if (isPlainObject(data.pipelineResolution)) {
-    return normalizeProvidedPipelineResolution(data.pipelineResolution);
-  }
-  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
-  return resolvePipelineCandidates(candidates);
+  const pipelineResolution = isPlainObject(data.pipelineResolution)
+    ? normalizeProvidedPipelineResolution(data.pipelineResolution)
+    : resolvePipelineCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+  return validatePipelineResolutionWorkflow(pipelineResolution, fixmeRoot, 'pipeline resolution');
 }
 
-function legacyPipelineResolution(rawPipeline, evidence, reason) {
-  if (!rawPipeline) return defaultPipelineResolution();
-  return resolvePipelineCandidates([{
-    pipeline: rawPipeline,
-    source: 'legacyPipelineHint',
-    evidence,
-    reason,
-  }]);
+function pipelineResolutionForTaskSaveData(data, fixmeRoot) {
+  if (Object.prototype.hasOwnProperty.call(data, 'pipelineHint') || Object.prototype.hasOwnProperty.call(data, 'pipeline')) {
+    throw new Error('task save data no longer accepts pipelineHint or pipeline; use pipelineResolution');
+  }
+  if (!isPlainObject(data.pipelineResolution)) {
+    throw new Error('task save requires pipelineResolution');
+  }
+  return validatePipelineResolutionWorkflow(
+    normalizeProvidedPipelineResolution(data.pipelineResolution),
+    fixmeRoot,
+    'task save pipeline resolution',
+  );
 }
 
-function pipelineResolutionForTaskSaveData(data) {
-  if (isPlainObject(data.pipelineResolution)) {
-    return normalizeProvidedPipelineResolution(data.pipelineResolution);
+function pipelineResolutionForTaskInitFlags(flags, fixmeRoot) {
+  if (Object.prototype.hasOwnProperty.call(flags, 'pipeline')) {
+    throw new Error('task init no longer accepts --pipeline; use --pipeline-resolution');
   }
-  const rawPipeline = data.pipelineHint || data.pipeline;
-  return legacyPipelineResolution(rawPipeline, rawPipeline ? 'pipelineHint' : null, rawPipeline
-    ? 'Existing task save input supplied pipelineHint.'
-    : 'No eligible pipeline candidate was provided.');
+
+  if (!Object.prototype.hasOwnProperty.call(flags, 'pipeline-resolution') || flags['pipeline-resolution'] === true) {
+    throw new Error('task init requires --pipeline-resolution');
+  }
+
+  const data = parseTaskData(flags['pipeline-resolution']);
+  assertCamelCaseJsonKeys(data, '--pipeline-resolution');
+  return validatePipelineResolutionWorkflow(
+    normalizeProvidedPipelineResolution(data),
+    fixmeRoot,
+    'task init pipeline resolution',
+  );
 }
 
-function pipelineResolutionForTaskInitFlags(flags) {
-  if (flags['pipeline-resolution'] && flags['pipeline-resolution'] !== true) {
-    const data = parseTaskData(flags['pipeline-resolution']);
-    assertCamelCaseJsonKeys(data, '--pipeline-resolution');
-    return normalizeProvidedPipelineResolution(data);
-  }
-
-  if (flags.pipeline && flags.pipeline !== true) {
-    return resolvePipelineCandidates([{
-      pipeline: flags.pipeline,
-      source: 'explicitPipelineArg',
-      evidence: `--pipeline ${flags.pipeline}`,
-      reason: 'Latest invocation supplied --pipeline.',
-    }]);
-  }
-
-  return defaultPipelineResolution();
-}
-
-function pipelineResolve(flags) {
+function pipelineResolve(flags, fixmeRoot) {
   const data = parseTaskData(flags.data);
-  return output(resolvePipelineFromData(data));
+  return output(resolvePipelineFromData(data, fixmeRoot));
 }
 
 function taskSave(flags, fixmeRoot) {
   const data = parseTaskData(flags.data);
   assertCamelCaseJsonKeys(data, '--data');
   validateTaskSaveHandoffData(data);
+  const pipelineResolution = pipelineResolutionForTaskSaveData(data, fixmeRoot);
+  const pipeline = pipelineResolution.pipeline;
   const taskDir = taskDirectory(fixmeRoot);
   fs.mkdirSync(taskDir, { recursive: true });
 
@@ -3303,23 +3152,21 @@ function taskSave(flags, fixmeRoot) {
   const taskPath = path.join(taskDir, `${date}-${taskRef}-${slug}.md`);
   const statePath = path.join(taskDir, `${date}-${taskRef}-${slug}.state.json`);
   const now = new Date().toISOString();
-  const pipelineResolution = pipelineResolutionForTaskSaveData(data);
-  const pipeline = pipelineResolution.pipeline;
   const taskData = {
     ...data,
-    pipelineHint: pipeline,
     pipelineResolution,
   };
-
-  writeTaskCounter(taskDir, number + 1);
-  fs.writeFileSync(taskPath, buildTaskMarkdown(taskData, taskRef, slug, date));
-  writeJsonAtomic(statePath, defaultTaskState({
+  const state = defaultTaskState({
     projectRoot: fixmeRoot,
     pipeline,
     pipelineResolution,
     fixmeRoot,
     now,
-  }));
+  });
+
+  writeTaskCounter(taskDir, number + 1);
+  fs.writeFileSync(taskPath, buildTaskMarkdown(taskData, taskRef, slug, date));
+  writeJsonAtomic(statePath, state);
 
   return output({
     mode: 'standalone',
@@ -3342,7 +3189,7 @@ function taskStatePathForTask(taskPath) {
 }
 
 function taskInit(flags, fixmeRoot) {
-  const pipelineResolution = pipelineResolutionForTaskInitFlags(flags);
+  const pipelineResolution = pipelineResolutionForTaskInitFlags(flags, fixmeRoot);
   const pipeline = pipelineResolution.pipeline;
   const projectRoot = flags['project-root'] && flags['project-root'] !== true
     ? path.resolve(String(flags['project-root']))
@@ -3678,12 +3525,119 @@ const TASK_CHECKPOINT_FIELDS = new Set([
   'pendingDecision',
 ]);
 
-function mergeTaskState(previous, patch) {
-  for (const key of Object.keys(patch)) {
-    if (!TASK_CHECKPOINT_FIELDS.has(key)) {
-      throw new Error(`Unsupported task checkpoint field: ${key}`);
+const TASK_CHECKPOINT_FORBIDDEN_FIELDS = new Set([
+  'currentSpecificationPath',
+  'currentStep',
+  'manifest',
+]);
+
+function assertSupportedTaskCheckpointFields(value, pathParts = []) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertSupportedTaskCheckpointFields(item, pathParts.concat(String(index))));
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const currentPath = pathParts.concat(key).join('.');
+    if (pathParts.length === 0 && !TASK_CHECKPOINT_FIELDS.has(key)) {
+      throw new Error(`Unsupported task checkpoint field: ${currentPath}`);
+    }
+    if (TASK_CHECKPOINT_FORBIDDEN_FIELDS.has(key)) {
+      throw new Error(`Unsupported task checkpoint field: ${currentPath}`);
+    }
+    assertSupportedTaskCheckpointFields(child, pathParts.concat(key));
+  }
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function assertCheckpointObject(value, fieldPath) {
+  if (!isPlainObject(value)) {
+    throw new Error(`${fieldPath} must be a JSON object`);
+  }
+}
+
+function assertCheckpointNullableObject(value, fieldPath) {
+  if (value !== null && !isPlainObject(value)) {
+    throw new Error(`${fieldPath} must be null or a JSON object`);
+  }
+}
+
+function assertCheckpointString(value, fieldPath) {
+  if (!isNonEmptyString(value)) {
+    throw new Error(`${fieldPath} must be a non-empty string`);
+  }
+}
+
+function assertTaskCheckpointShape(patch) {
+  if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
+    assertCheckpointString(patch.status, 'status');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
+    assertCheckpointObject(patch.cursor, 'cursor');
+    for (const field of ['phase', 'stage', 'dispatchMode']) {
+      if (Object.prototype.hasOwnProperty.call(patch.cursor, field)) {
+        assertCheckpointString(patch.cursor[field], `cursor.${field}`);
+      }
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(patch.cursor, 'skill') &&
+      patch.cursor.skill !== null
+    ) {
+      assertCheckpointString(patch.cursor.skill, 'cursor.skill');
     }
   }
+
+  for (const field of ['artifacts', 'handoff']) {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) {
+      assertCheckpointObject(patch[field], field);
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'loops')) {
+    assertCheckpointObject(patch.loops, 'loops');
+    if (
+      Object.prototype.hasOwnProperty.call(patch.loops, 'outerCycles') &&
+      !isNonNegativeInteger(patch.loops.outerCycles)
+    ) {
+      throw new Error('loops.outerCycles must be a non-negative integer');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch.loops, 'phaseReviewCycles')) {
+      if (!Array.isArray(patch.loops.phaseReviewCycles)) {
+        throw new Error('loops.phaseReviewCycles must be an array');
+      }
+      patch.loops.phaseReviewCycles.forEach((entry, index) => {
+        if (!isPlainObject(entry)) {
+          throw new Error(`loops.phaseReviewCycles.${index} must be a JSON object`);
+        }
+        if (Object.prototype.hasOwnProperty.call(entry, 'phase')) {
+          assertCheckpointString(entry.phase, `loops.phaseReviewCycles.${index}.phase`);
+        }
+        if (
+          Object.prototype.hasOwnProperty.call(entry, 'cycles') &&
+          !isNonNegativeInteger(entry.cycles)
+        ) {
+          throw new Error(`loops.phaseReviewCycles.${index}.cycles must be a non-negative integer`);
+        }
+      });
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'pendingDecision')) {
+    assertCheckpointNullableObject(patch.pendingDecision, 'pendingDecision');
+  }
+}
+
+function mergeTaskState(previous, patch) {
+  assertSupportedTaskCheckpointFields(patch);
+  assertTaskCheckpointShape(patch);
   return {
     ...mergePlainObjects(previous, patch),
     updatedAt: new Date().toISOString(),
@@ -4175,7 +4129,7 @@ function getUsageTrackingBlock(skillName, runtime) {
     `node ${toolPath} usage start --skill ${skillName} --runtime ${runtime} --role ${role}`,
     '```',
     '',
-    'If the dispatch prompt includes `pipeline_run_id`, include `--pipeline-run-id <pipeline_run_id>`. If it includes `parent_invocation_id`, include `--parent-invocation-id <parent_invocation_id>`. Never pass the reserved task flag.',
+    'If the dispatch prompt includes `pipelineRunId`, include `--pipeline-run-id <pipelineRunId>`. If it includes `parentInvocationId`, include `--parent-invocation-id <parentInvocationId>`. Never pass the reserved task flag.',
     '',
     'Store the returned `invocationId`. On normal completion, run `usage finish --invocation-id <invocationId> --outcome complete`. On failure, use `--outcome failed --reason <reason>`. On abort, use `--outcome aborted --reason <reason>`. Reasons must be one of: `verification_failed`, `user_aborted`, `usage_tracking_failed`, `runtime_error`, `dispatch_failed`, `timeout`, `invalid_usage_request`, or `unknown`.',
     '',
@@ -4185,12 +4139,12 @@ function getUsageTrackingBlock(skillName, runtime) {
     '',
     '## Fixme Agent Liveness',
     '',
-    'If the dispatch prompt does not include `status_id`, skip this liveness block.',
+    'If the dispatch prompt does not include `statusId`, skip this liveness block.',
     '',
-    'If the dispatch prompt includes `status_id`, use the `Fixme dir:` value from the `<project>` block as `<fixme-dir>`. Ping liveness through the same installed runtime tool path:',
+    'If the dispatch prompt includes `statusId`, use the `Fixme dir:` value from the `<project>` block as `<fixme-dir>`. Ping liveness through the same installed runtime tool path:',
     '',
     '```bash',
-    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <status_id> --state running --checkpoint started --current-command null`,
+    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <statusId> --state running --checkpoint started --current-command null`,
     '```',
     '',
     'Use only these states: `running`, `waiting`, `blocked`, `completed`, `failed`.',
@@ -4199,14 +4153,16 @@ function getUsageTrackingBlock(skillName, runtime) {
     'Ping `running/working` before main work. Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
     'Before waiting on any Agent, Skill, or child dispatch, ping `running/working` with `--current-command "waiting for <child-name>"`; after the child returns, ping again with `--current-command null`.',
     '',
+    'If `run status` shows `currentCommand` starting with `attention:`, do not send ordinary `run ping` until the owning skill consumes the answer with `run attention clear`. Attention records own their waiting status; after `run attention set` succeeds, return or broker the attention directive directly.',
+    '',
     'Before pausing for user input or parent instruction, ping `waiting/waiting`. If blocked, ping `blocked/waiting`. Before normal final output, ping `completed/done`. On failure, ping `failed/done`.',
     '',
-    'Do not relay liveness command JSON to the user unless it fails. If a liveness ping fails, print a warning with the skill name, `status_id`, failed operation, and fallback, then continue the normal skill path.',
+    'Do not relay liveness command JSON to the user unless it fails. If a liveness ping fails, print a warning with the skill name, `statusId`, failed operation, and fallback, then continue the normal skill path.',
     '',
     'Example ping shape:',
     '',
     '```bash',
-    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <status_id> --state running --checkpoint working --current-command "yarn test"`,
+    `node ${toolPath} run ping --fixme-dir <fixme-dir> --status-id <statusId> --state running --checkpoint working --current-command "yarn test"`,
     '```',
     FIXME_USAGE_TRACKING_CLOSE,
   ].join('\n');
@@ -4694,7 +4650,7 @@ function validateRunAgent(agent) {
 }
 
 function validateRequiredRunId(rawStatusId) {
-  const statusId = validateUsageId(rawStatusId, 'status_id');
+  const statusId = validateUsageId(rawStatusId, 'statusId');
   if (!statusId) {
     throw new Error('--status-id is required');
   }
@@ -4735,9 +4691,232 @@ function runStatusPath(fixmeDir, statusId) {
   return path.join(fixmeDir, 'runs', statusId, 'status.json');
 }
 
+function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
+  assertKnownJsonFields(rawStatus, 'run status', RUN_STATUS_FIELDS);
+  if (rawStatus.schemaVersion !== 1) {
+    throw new Error('run status schemaVersion must be 1');
+  }
+  if (typeof rawStatus.statusId !== 'string' || !rawStatus.statusId.trim()) {
+    throw new Error('run status statusId is required');
+  }
+  if (expectedStatusId && rawStatus.statusId !== expectedStatusId) {
+    throw new Error('run status statusId does not match requested statusId');
+  }
+  if (typeof rawStatus.agent !== 'string' || !rawStatus.agent.trim()) {
+    throw new Error('run status agent is required');
+  }
+  if (!RUN_STATES.includes(rawStatus.state)) {
+    throw new Error(`Unsupported run state: ${rawStatus.state}`);
+  }
+  if (!RUN_CHECKPOINTS.includes(rawStatus.checkpoint)) {
+    throw new Error(`Unsupported run checkpoint: ${rawStatus.checkpoint}`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(rawStatus, 'currentCommand')) {
+    throw new Error('run status currentCommand is required');
+  }
+  if (rawStatus.currentCommand !== null && typeof rawStatus.currentCommand !== 'string') {
+    throw new Error('run status currentCommand must be a string or null');
+  }
+  if (typeof rawStatus.updatedAt !== 'string' || Number.isNaN(Date.parse(rawStatus.updatedAt))) {
+    throw new Error('run status updatedAt must be an ISO timestamp');
+  }
+  return {
+    schemaVersion: rawStatus.schemaVersion,
+    statusId: rawStatus.statusId,
+    agent: rawStatus.agent,
+    state: rawStatus.state,
+    checkpoint: rawStatus.checkpoint,
+    currentCommand: rawStatus.currentCommand,
+    updatedAt: rawStatus.updatedAt,
+  };
+}
+
+function readRunStatusFile(statusPath, statusId = null) {
+  const rawStatus = readJsonFileStrict(statusPath);
+  assertCamelCaseJsonKeys(rawStatus, 'run status');
+  return normalizeRunStatusRecord(rawStatus, statusId);
+}
+
+function runAttentionDirectory(fixmeDir, statusId) {
+  return path.join(fixmeDir, 'runs', statusId, 'attention');
+}
+
+function runAttentionPath(fixmeDir, statusId, attentionId) {
+  return path.join(runAttentionDirectory(fixmeDir, statusId), `${attentionId}.json`);
+}
+
+function validateAttentionId(rawAttentionId) {
+  const attentionId = validateUsageId(rawAttentionId, 'attentionId');
+  if (!attentionId) {
+    throw new Error('--attention-id is required');
+  }
+  if (!attentionId.startsWith('attn_')) {
+    throw new Error('attentionId must start with attn_');
+  }
+  return attentionId;
+}
+
+function normalizeOptionalAttentionId(data) {
+  if (!Object.prototype.hasOwnProperty.call(data, 'attentionId')) {
+    return generateUsageId('attn');
+  }
+  if (typeof data.attentionId !== 'string') {
+    throw new Error('attentionId must be a non-empty string');
+  }
+  if (!data.attentionId.trim()) {
+    throw new Error('attentionId must be a non-empty string');
+  }
+  if (data.attentionId.trim() !== data.attentionId) {
+    throw new Error('attentionId must not contain surrounding whitespace');
+  }
+  return validateAttentionId(data.attentionId);
+}
+
+function requireRecordString(record, key, label) {
+  if (typeof record[key] !== 'string' || record[key].trim().length === 0) {
+    throw new Error(`${label} ${key} is required`);
+  }
+  return record[key];
+}
+
+function requireOptionalRecordString(record, key, label) {
+  if (record[key] === null || record[key] === undefined) return null;
+  if (typeof record[key] !== 'string' || record[key].trim().length === 0) {
+    throw new Error(`${label} ${key} must be a non-empty string or null`);
+  }
+  return record[key];
+}
+
+function requireRecordIsoTimestamp(record, key, label) {
+  if (typeof record[key] !== 'string' || Number.isNaN(Date.parse(record[key]))) {
+    throw new Error(`${label} ${key} must be an ISO timestamp`);
+  }
+}
+
+function normalizeRunAttentionRecord(record, attentionId) {
+  assertKnownJsonFields(record, 'run attention record', RUN_ATTENTION_RECORD_FIELDS);
+  if (record.attentionId !== attentionId) {
+    const actualAttentionId = typeof record.attentionId === 'string' ? record.attentionId : String(record.attentionId);
+    throw new Error(`Run attention record id mismatch: expected ${attentionId}, got ${actualAttentionId}`);
+  }
+
+  const ownerSkill = requireRecordString(record, 'ownerSkill', 'run attention record');
+  const kind = requireRecordString(record, 'kind', 'run attention record');
+  const sourceSkill = requireOptionalRecordString(record, 'sourceSkill', 'run attention record');
+  const parentSkill = requireOptionalRecordString(record, 'parentSkill', 'run attention record');
+  const resumeRef = requireOptionalRecordString(record, 'resumeRef', 'run attention record');
+  const taskStatePath = requireOptionalRecordString(record, 'taskStatePath', 'run attention record');
+  const answerMode = requireRecordString(record, 'answerMode', 'run attention record');
+  if (typeof record.promptMarkdown !== 'string' || record.promptMarkdown.trim().length === 0) {
+    throw new Error('run attention record promptMarkdown is required');
+  }
+  if (!RUN_ATTENTION_ANSWER_MODES.includes(answerMode)) {
+    throw new Error(`Unsupported run attention answerMode: ${answerMode}`);
+  }
+  if (ownerSkill === 'fixme-task' && !sourceSkill) {
+    throw new Error('run attention record sourceSkill is required for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !resumeRef) {
+    throw new Error('run attention record resumeRef is required for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !taskStatePath) {
+    throw new Error('run attention record taskStatePath is required for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !path.isAbsolute(taskStatePath)) {
+    throw new Error('run attention record taskStatePath must be absolute for fixme-task owner');
+  }
+  if (!isPlainObject(record.metadata)) {
+    throw new Error('run attention record metadata must be a JSON object');
+  }
+  if (!RUN_ATTENTION_RECORD_STATUSES.includes(record.status)) {
+    throw new Error(`Unsupported run attention record status: ${record.status}`);
+  }
+  requireRecordIsoTimestamp(record, 'createdAt', 'run attention record');
+  if (record.status === 'waiting') {
+    if (record.answer !== null) {
+      throw new Error('run attention record answer must be null while waiting');
+    }
+    if (record.answeredAt !== null) {
+      throw new Error('run attention record answeredAt must be null while waiting');
+    }
+  } else {
+    if (!isPlainObject(record.answer)) {
+      throw new Error('run attention record answer must be a JSON object when answered');
+    }
+    assertKnownJsonFields(record.answer, 'run attention record answer', RUN_ATTENTION_ANSWER_FIELDS);
+    if (typeof record.answer.answer !== 'string' || record.answer.answer.trim().length === 0) {
+      throw new Error('run attention record answer.answer must be a non-empty string');
+    }
+    if (!RUN_ATTENTION_ANSWER_KINDS.includes(record.answer.answerKind)) {
+      throw new Error(`Unsupported run attention answerKind: ${record.answer.answerKind}`);
+    }
+    if (record.answer.answeredBy !== 'user') {
+      throw new Error('run attention record answer.answeredBy must be user');
+    }
+    requireRecordIsoTimestamp(record, 'answeredAt', 'run attention record');
+  }
+
+  return {
+    attentionId: record.attentionId,
+    ownerSkill,
+    sourceSkill,
+    parentSkill,
+    kind,
+    resumeRef,
+    taskStatePath,
+    promptMarkdown: record.promptMarkdown,
+    answerMode,
+    metadata: record.metadata,
+    status: record.status,
+    answer: record.answer,
+    createdAt: record.createdAt,
+    answeredAt: record.answeredAt,
+  };
+}
+
+function readRunStatusForAttention(fixmeDir, statusId) {
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    throw new Error(`Run status not found: ${statusId}`);
+  }
+  return { statusPath, status: readRunStatusFile(statusPath, statusId) };
+}
+
+function requireRunReadyForAttentionSet(status) {
+  if (status.currentCommand && String(status.currentCommand).startsWith('attention:')) {
+    throw new Error(`Run already has pending attention: ${status.currentCommand}`);
+  }
+  if (status.state === 'completed' || status.state === 'failed') {
+    throw new Error(`Cannot set attention for terminal run state: ${status.state}`);
+  }
+}
+
+function requireRunWaitingOnAttention(status, attentionId) {
+  if (status.state !== 'waiting' || status.currentCommand !== `attention:${attentionId}`) {
+    throw new Error(`Run is not waiting on attention: ${attentionId}`);
+  }
+}
+
+function isRunAttentionCommand(command) {
+  return typeof command === 'string' && command.startsWith('attention:');
+}
+
+function requireRunPingCanUpdate(previous, nextState, nextCurrentCommand) {
+  if (!isRunAttentionCommand(previous.currentCommand)) {
+    return;
+  }
+
+  const keepsSameAttention = nextState === 'waiting' && nextCurrentCommand === previous.currentCommand;
+  const terminalFailure = nextState === 'failed';
+  if (!keepsSameAttention && !terminalFailure) {
+    throw new Error(`Run has pending attention: ${previous.currentCommand}; use run attention clear before updating liveness`);
+  }
+}
+
 function writeRunStatus(statusPath, status) {
+  assertCamelCaseJsonKeys(status, 'run status');
   writeJsonAtomic(statusPath, status);
-  return { ...status, status_path: statusPath };
+  return { ...status, statusPath };
 }
 
 function runStart(flags) {
@@ -4746,13 +4925,13 @@ function runStart(flags) {
   const statusId = generateUsageId('run');
   const statusPath = runStatusPath(fixmeDir, statusId);
   return output(writeRunStatus(statusPath, {
-    schema_version: 1,
-    status_id: statusId,
+    schemaVersion: 1,
+    statusId,
     agent,
     state: 'running',
     checkpoint: 'dispatched',
-    current_command: null,
-    updated_at: new Date().toISOString(),
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
   }));
 }
 
@@ -4767,15 +4946,16 @@ function runPing(flags) {
     return error(`Run status not found: ${statusId}`);
   }
 
-  const previous = readJsonFileStrict(statusPath);
+  const previous = readRunStatusFile(statusPath, statusId);
+  requireRunPingCanUpdate(previous, state, currentCommand);
   const next = {
-    schema_version: 1,
-    status_id: statusId,
+    schemaVersion: 1,
+    statusId,
     agent: validateRunAgent(previous.agent),
     state,
     checkpoint,
-    current_command: currentCommand,
-    updated_at: new Date().toISOString(),
+    currentCommand,
+    updatedAt: new Date().toISOString(),
   };
   return output(writeRunStatus(statusPath, next));
 }
@@ -4787,7 +4967,275 @@ function runStatus(flags) {
   if (!fs.existsSync(statusPath)) {
     return error(`Run status not found: ${statusId}`);
   }
-  return output({ ...readJsonFileStrict(statusPath), status_path: statusPath });
+  return output({ ...readRunStatusFile(statusPath, statusId), statusPath });
+}
+
+function normalizeRequiredAttentionDataString(data, key, errorMessage) {
+  const value = data[key];
+  if (typeof value !== 'string') {
+    throw new Error(errorMessage);
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(errorMessage);
+  }
+  return normalized;
+}
+
+function normalizeOptionalAttentionDataString(data, key, errorMessage) {
+  if (!Object.prototype.hasOwnProperty.call(data, key)) {
+    return null;
+  }
+  if (typeof data[key] !== 'string') {
+    throw new Error(errorMessage);
+  }
+  const normalized = data[key].trim();
+  if (!normalized) {
+    throw new Error(errorMessage);
+  }
+  return normalized;
+}
+
+function normalizeAttentionSetData(rawData) {
+  const data = parseTaskData(rawData);
+  assertCamelCaseJsonKeys(data, 'run attention data');
+
+  const ownerSkill = normalizeRequiredAttentionDataString(data, 'ownerSkill', 'run attention data requires ownerSkill');
+  const kind = normalizeRequiredAttentionDataString(data, 'kind', 'run attention data requires kind');
+  const sourceSkill = normalizeOptionalAttentionDataString(
+    data,
+    'sourceSkill',
+    ownerSkill === 'fixme-task'
+      ? 'run attention data requires sourceSkill for fixme-task owner'
+      : 'run attention data sourceSkill must be a non-empty string',
+  );
+  const parentSkill = normalizeOptionalAttentionDataString(data, 'parentSkill', 'run attention data parentSkill must be a non-empty string');
+  const resumeRef = normalizeOptionalAttentionDataString(
+    data,
+    'resumeRef',
+    ownerSkill === 'fixme-task'
+      ? 'run attention data requires resumeRef for fixme-task owner'
+      : 'run attention data resumeRef must be a non-empty string',
+  );
+  const taskStatePath = normalizeOptionalAttentionDataString(
+    data,
+    'taskStatePath',
+    ownerSkill === 'fixme-task'
+      ? 'run attention data requires taskStatePath for fixme-task owner'
+      : 'run attention data taskStatePath must be a non-empty string',
+  );
+  const answerMode = normalizeOptionalAttentionDataString(
+    data,
+    'answerMode',
+    ownerSkill === 'fixme-task'
+      ? 'run attention data requires answerMode for fixme-task owner'
+      : 'run attention data answerMode must be a non-empty string',
+  );
+
+  if (typeof data.promptMarkdown !== 'string' || data.promptMarkdown.trim().length === 0) {
+    throw new Error('run attention data requires non-empty promptMarkdown');
+  }
+  if (ownerSkill === 'fixme-task' && !sourceSkill) {
+    throw new Error('run attention data requires sourceSkill for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !resumeRef) {
+    throw new Error('run attention data requires resumeRef for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !taskStatePath) {
+    throw new Error('run attention data requires taskStatePath for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !path.isAbsolute(taskStatePath)) {
+    throw new Error('run attention data taskStatePath must be absolute for fixme-task owner');
+  }
+  if (ownerSkill === 'fixme-task' && !answerMode) {
+    throw new Error('run attention data requires answerMode for fixme-task owner');
+  }
+  if (answerMode && !RUN_ATTENTION_ANSWER_MODES.includes(answerMode)) {
+    throw new Error(`Unsupported run attention answerMode: ${answerMode}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, 'metadata') && !isPlainObject(data.metadata)) {
+    throw new Error('run attention data metadata must be a JSON object');
+  }
+
+  const now = new Date().toISOString();
+  const attentionId = normalizeOptionalAttentionId(data);
+
+  return {
+    attentionId,
+    ownerSkill,
+    sourceSkill,
+    parentSkill,
+    kind,
+    resumeRef,
+    taskStatePath,
+    promptMarkdown: data.promptMarkdown,
+    answerMode: answerMode || 'freeform',
+    metadata: data.metadata || {},
+    status: 'waiting',
+    answer: null,
+    createdAt: now,
+    answeredAt: null,
+  };
+}
+
+function attentionOutput(record, fixmeDir, statusId) {
+  return {
+    ...record,
+    statusId,
+    attentionPath: runAttentionPath(fixmeDir, statusId, record.attentionId),
+  };
+}
+
+function runAttentionSet(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const { statusPath, status } = readRunStatusForAttention(fixmeDir, statusId);
+  const record = normalizeAttentionSetData(flags.data);
+  const attentionPath = runAttentionPath(fixmeDir, statusId, record.attentionId);
+  const attentionCommand = `attention:${record.attentionId}`;
+  if (fs.existsSync(attentionPath) && status.currentCommand === attentionCommand) {
+    throw new Error(`Run attention already exists: ${record.attentionId}`);
+  }
+  requireRunReadyForAttentionSet(status);
+
+  writeJsonAtomic(attentionPath, record);
+  try {
+    writeRunStatus(statusPath, {
+      schemaVersion: 1,
+      statusId,
+      agent: validateRunAgent(status.agent),
+      state: 'waiting',
+      checkpoint: 'waiting',
+      currentCommand: attentionCommand,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    try {
+      fs.rmSync(attentionPath, { force: true });
+    } catch (cleanupError) {
+      throw new Error(`${error.message}; failed to remove unreferenced attention record ${attentionPath}: ${cleanupError.message}`);
+    }
+    throw error;
+  }
+
+  return output(attentionOutput(record, fixmeDir, statusId));
+}
+
+function readAttentionRecord(fixmeDir, statusId, rawAttentionId) {
+  const { status } = readRunStatusForAttention(fixmeDir, statusId);
+  const attentionId = validateAttentionId(rawAttentionId);
+  const attentionPath = runAttentionPath(fixmeDir, statusId, attentionId);
+  if (!fs.existsSync(attentionPath)) {
+    throw new Error(`Run attention not found: ${attentionId}`);
+  }
+  const record = readJsonFileStrict(attentionPath);
+  assertCamelCaseJsonKeys(record, 'run attention record');
+  return { attentionId, attentionPath, record: normalizeRunAttentionRecord(record, attentionId), runStatus: status };
+}
+
+function runAttentionShow(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const { attentionId, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
+  requireRunWaitingOnAttention(runStatus, attentionId);
+  return output(attentionOutput(record, fixmeDir, statusId));
+}
+
+function runAttentionAnswer(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const { attentionId, attentionPath, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
+  requireRunWaitingOnAttention(runStatus, attentionId);
+  if (record.status === 'answered') {
+    throw new Error(`Run attention already answered: ${record.attentionId}`);
+  }
+  const answer = parseTaskData(flags.data);
+  assertCamelCaseJsonKeys(answer, 'run attention answer data');
+  assertKnownJsonFields(answer, 'run attention answer data', RUN_ATTENTION_ANSWER_FIELDS);
+  if (!Object.prototype.hasOwnProperty.call(answer, 'answer')) {
+    throw new Error('run attention answer data requires answer');
+  }
+  if (typeof answer.answer !== 'string' || answer.answer.trim().length === 0) {
+    throw new Error('run attention answer data requires non-empty answer');
+  }
+  if (!answer.answerKind || typeof answer.answerKind !== 'string') {
+    throw new Error('run attention answer data requires answerKind');
+  }
+  if (!RUN_ATTENTION_ANSWER_KINDS.includes(answer.answerKind)) {
+    throw new Error(`Unsupported run attention answerKind: ${answer.answerKind}`);
+  }
+  if (!answer.answeredBy || typeof answer.answeredBy !== 'string') {
+    throw new Error('run attention answer data requires answeredBy');
+  }
+  if (answer.answeredBy !== 'user') {
+    throw new Error('run attention answer data answeredBy must be user');
+  }
+
+  const next = {
+    ...record,
+    status: 'answered',
+    answer,
+    answeredAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(attentionPath, next);
+  return output(attentionOutput(next, fixmeDir, statusId));
+}
+
+function runAttentionClear(flags) {
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const { attentionId, attentionPath, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
+  requireRunWaitingOnAttention(runStatus, attentionId);
+  if (record.status !== 'answered') {
+    throw new Error(`Run attention is not answered: ${attentionId}`);
+  }
+
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(runStatus.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
+  const warnings = [];
+  let recordRemoved = true;
+  try {
+    fs.rmSync(attentionPath, { force: true });
+  } catch (error) {
+    recordRemoved = false;
+    warnings.push({
+      code: 'ATTENTION_RECORD_CLEANUP_FAILED',
+      message: `Run attention status was cleared, but the stale attention record could not be removed: ${error.message}`,
+      attentionPath,
+    });
+  }
+
+  return output({
+    statusId,
+    attentionId,
+    cleared: true,
+    recordRemoved,
+    warnings,
+  });
+}
+
+function runAttention(args, flags) {
+  const action = args[0] || '';
+  switch (action) {
+    case 'set':
+      return runAttentionSet(flags);
+    case 'show':
+      return runAttentionShow(flags);
+    case 'answer':
+      return runAttentionAnswer(flags);
+    case 'clear':
+      return runAttentionClear(flags);
+    default:
+      return error(`Unknown run attention action: '${action}'. Valid: set, show, answer, clear`);
+  }
 }
 
 function explicitUsageSourcePath(runtime, explicitPath) {
@@ -5297,6 +5745,28 @@ function usageCliResult(data, exitCode = 0) {
   process.exit(exitCode);
 }
 
+function hasUsageFixmeDirFlag(flags) {
+  return Object.prototype.hasOwnProperty.call(flags, 'fixme-dir');
+}
+
+function resolveUsageFixmeDir(flags, fixmeRoot) {
+  if (hasUsageFixmeDirFlag(flags)) {
+    const rawFixmeDir = flags['fixme-dir'];
+    if (rawFixmeDir === true || rawFixmeDir === '') {
+      const err = new Error('--fixme-dir requires a path value');
+      err.code = 'INVALID_USAGE_PATH';
+      throw err;
+    }
+    return path.resolve(String(rawFixmeDir));
+  }
+  if (!fixmeRoot) {
+    const err = new Error('--fixme-dir is required when no Fixme root was resolved');
+    err.code = 'MISSING_USAGE_FIXME_DIR';
+    throw err;
+  }
+  return path.join(fixmeRoot, '.fixme');
+}
+
 function usageStart(flags, fixmeRoot) {
   if (Object.prototype.hasOwnProperty.call(flags, 'task')) {
     return usageCliError('UNSUPPORTED_USAGE_TASK', '--task is reserved for a future usage schema and is not supported in v1');
@@ -5317,8 +5787,13 @@ function usageStart(flags, fixmeRoot) {
     return usageCliError(e.code || 'USAGE_RUNTIME_ERROR', e.message);
   }
 
-  const fixmeDir = flags['fixme-dir'] ? path.resolve(flags['fixme-dir']) : path.join(fixmeRoot, '.fixme');
-  const projectRoot = flags['project-root'] ? path.resolve(flags['project-root']) : path.dirname(fixmeDir);
+  let fixmeDir;
+  try {
+    fixmeDir = resolveUsageFixmeDir(flags, fixmeRoot);
+  } catch (e) {
+    return usageCliError(e.code || 'INVALID_USAGE_PATH', e.message);
+  }
+  const projectRoot = flags['project-root'] ? path.resolve(String(flags['project-root'])) : path.dirname(fixmeDir);
   if (!path.isAbsolute(fixmeDir) || !path.isAbsolute(projectRoot)) {
     return usageCliError('INVALID_USAGE_PATH', '--fixme-dir and --project-root must resolve to absolute paths');
   }
@@ -5366,7 +5841,7 @@ function usageStart(flags, fixmeRoot) {
     pendingPath,
     runtime,
     startedAt,
-    finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete`,
+    finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete --fixme-dir "${fixmeDir}"`,
   });
 }
 
@@ -5388,14 +5863,14 @@ function validateOutcomeAndReason(outcome, rawReason) {
   return { ok: true, outcome, outcomeReason: reason };
 }
 
-function findPendingPath(invocationId, fixmeRoot) {
+function findPendingPath(invocationId, fixmeDir) {
   const id = validateUsageId(invocationId, 'invocationId');
   if (!id) {
     const err = new Error('--invocation-id is required');
     err.code = 'MISSING_INVOCATION_ID';
     throw err;
   }
-  return path.join(usagePendingDir(path.join(fixmeRoot, '.fixme')), `${id}.json`);
+  return path.join(usagePendingDir(fixmeDir), `${id}.json`);
 }
 
 function canonicalJson(value) {
@@ -5568,12 +6043,19 @@ function buildFinalizedUsageEvent(pending, outcomeResult, counterResult) {
   };
 }
 
-function usagePrintAfterFinish(fixmeRoot) {
+function usagePrintAfterFinishForFixmeDir(fixmeDir) {
+  const configPath = path.join(fixmeDir, 'config.json');
   try {
-    const { config } = readConfigForWrite(fixmeRoot);
-    applyConfigMigration(config, configPathForRoot(fixmeRoot));
+    const config = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      : {};
+    if (!isPlainObject(config)) {
+      throw new Error('top-level value must be an object');
+    }
+    applyConfigMigration(config, configPath);
     return config.usage.printAfterFinish !== false;
-  } catch (_) {
+  } catch (e) {
+    process.stderr.write(`Warning: failed to read usage.printAfterFinish from ${configPath}; using default true: ${e.message}\n`);
     return true;
   }
 }
@@ -5588,9 +6070,9 @@ function usageFinish(flags, fixmeRoot) {
 
   let pendingPath;
   try {
-    pendingPath = findPendingPath(flags['invocation-id'], fixmeRoot);
+    pendingPath = findPendingPath(flags['invocation-id'], resolveUsageFixmeDir(flags, fixmeRoot));
   } catch (e) {
-    return usageCliError(e.code || 'INVALID_USAGE_ID', e.message);
+    return usageCliError(e.code || 'INVALID_USAGE_REQUEST', e.message);
   }
   if (!fs.existsSync(pendingPath)) {
     return usageCliError('PENDING_USAGE_NOT_FOUND', `Pending usage invocation not found: ${flags['invocation-id']}`);
@@ -5650,7 +6132,7 @@ function usageFinish(flags, fixmeRoot) {
 
   fs.rmSync(pendingPath, { force: true });
 
-  const suppressed = flags.quiet === true || flags.quiet === '' || !usagePrintAfterFinish(fixmeRoot);
+  const suppressed = flags.quiet === true || flags.quiet === '' || !usagePrintAfterFinishForFixmeDir(pending.fixmeDir);
   const reportLine = suppressed ? null : buildCompactUsageReportLine(finalizedEvent, projectEventPath);
   return usageCliResult({
     eventId: finalizedEvent.eventId,
@@ -5710,42 +6192,34 @@ function formatTokenCount(value) {
   return Number(value || 0).toLocaleString('en-US');
 }
 
-function normalizeUsageStatus(status) {
-  if (status === USAGE_STATUS.LEGACY_PARTIAL) return USAGE_STATUS.UNMEASURED;
-  if (status === USAGE_STATUS.LEGACY_COMPLETE) return USAGE_STATUS.MEASURED;
-  return status;
-}
-
-function normalizeUsageRowForReport(row) {
-  const status = normalizeUsageStatus(row.status);
-  return status === row.status ? row : { ...row, status };
-}
-
 function isMeasuredUsageRow(row) {
-  return normalizeUsageStatus(row.status) === USAGE_STATUS.MEASURED && !!row.tokens;
+  return row.status === USAGE_STATUS.MEASURED && !!row.tokens;
+}
+
+function isSupportedUsageStatus(row) {
+  return row && (row.status === USAGE_STATUS.MEASURED || row.status === USAGE_STATUS.UNMEASURED);
 }
 
 function usageSummaryRow(event) {
-  const normalizedEvent = normalizeUsageRowForReport(event);
-  const tokens = usageWithDerivedTokenBuckets(normalizedEvent.tokens);
+  const tokens = usageWithDerivedTokenBuckets(event.tokens);
   return {
-    eventId: normalizedEvent.eventId,
-    invocationId: normalizedEvent.invocationId,
-    skill: normalizedEvent.skill,
-    role: normalizedEvent.role,
-    runtime: normalizedEvent.runtime,
-    status: normalizedEvent.status,
-    outcome: normalizedEvent.outcome,
-    outcomeReason: normalizedEvent.outcomeReason,
-    startedAt: normalizedEvent.startedAt,
-    finishedAt: normalizedEvent.finishedAt,
-    durationMs: normalizedEvent.durationMs,
-    pipelineRunId: normalizedEvent.pipelineRunId,
-    parentInvocationId: normalizedEvent.parentInvocationId,
+    eventId: event.eventId,
+    invocationId: event.invocationId,
+    skill: event.skill,
+    role: event.role,
+    runtime: event.runtime,
+    status: event.status,
+    outcome: event.outcome,
+    outcomeReason: event.outcomeReason,
+    startedAt: event.startedAt,
+    finishedAt: event.finishedAt,
+    durationMs: event.durationMs,
+    pipelineRunId: event.pipelineRunId,
+    parentInvocationId: event.parentInvocationId,
     nonCachedTokens: tokens && typeof tokens.nonCachedTokens === 'number' ? tokens.nonCachedTokens : null,
     cachedTokens: tokens && typeof tokens.cachedTokens === 'number' ? tokens.cachedTokens : null,
     totalTokens: tokens && typeof tokens.totalTokens === 'number' ? tokens.totalTokens : null,
-    warningCodes: (normalizedEvent.warnings || []).map(warning => warning.code).filter(Boolean),
+    warningCodes: (event.warnings || []).map(warning => warning.code).filter(Boolean),
   };
 }
 
@@ -5844,11 +6318,24 @@ function warningSummaryFromWarnings(warnings) {
 function buildUsageReport({ scope, eventPath, rows, fileWarnings, filters, limit }) {
   const filtered = filterUsageRows(rows, filters);
   const normalized = normalizeUsageRows(filtered);
-  const reportRows = normalized.rows.map(normalizeUsageRowForReport);
   const totalUsage = emptyTokenUsage();
   const notIncludedEventIds = [];
   const warningEvents = [...fileWarnings];
   const completeRows = [];
+  const reportRows = [];
+
+  for (const row of normalized.rows) {
+    if (!isSupportedUsageStatus(row)) {
+      if (row.eventId) notIncludedEventIds.push(row.eventId);
+      warningEvents.push({
+        code: USAGE_WARNING_CODES.UNSUPPORTED_USAGE_STATUS,
+        eventId: row.eventId,
+        message: `Unsupported usage status for ${row.invocationId || row.eventId || 'unknown invocation'}: ${row.status}`,
+      });
+      continue;
+    }
+    reportRows.push(row);
+  }
 
   for (const conflict of normalized.conflicts) {
     notIncludedEventIds.push(...conflict.eventIds);
@@ -6012,7 +6499,10 @@ function formatUsageReportText(report) {
   if (report.notIncludedInTotal.invocationCount > 0) {
     const plural = report.notIncludedInTotal.invocationCount === 1 ? 'invocation' : 'invocations';
     const warningCodes = report.warningSummary.map(warning => warning.code);
-    if (warningCodes.includes(USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT)) {
+    if (
+      warningCodes.includes(USAGE_WARNING_CODES.DUPLICATE_INVOCATION_CONFLICT) ||
+      warningCodes.includes(USAGE_WARNING_CODES.UNSUPPORTED_USAGE_STATUS)
+    ) {
       lines.push(`Not included in total: ${report.notIncludedInTotal.invocationCount} ${plural}`);
       lines.push(`Warnings: ${warningCodes.join(', ')}`);
     } else {
@@ -6046,9 +6536,14 @@ function usageReport(flags, fixmeRoot) {
     return usageCliError('INVALID_USAGE_LIMIT', '--limit must be a positive integer');
   }
 
-  const eventPath = scope === 'project'
-    ? usageProjectEventPath(path.join(fixmeRoot, '.fixme'))
-    : usageGlobalEventPath();
+  let eventPath;
+  try {
+    eventPath = scope === 'project'
+      ? usageProjectEventPath(resolveUsageFixmeDir(flags, fixmeRoot))
+      : usageGlobalEventPath();
+  } catch (e) {
+    return usageCliError(e.code || 'INVALID_USAGE_REQUEST', e.message);
+  }
   const file = readUsageEventFile(eventPath);
   const report = buildUsageReport({
     scope,
@@ -6142,8 +6637,8 @@ function errorPayload(payload) {
 function rootCommand() {
   const fixmeRoot = findFixmeRoot(process.cwd());
   return output({
-    fixme_root: fixmeRoot,
-    fixme_dir: path.join(fixmeRoot, '.fixme'),
+    fixmeRoot,
+    fixmeDir: path.join(fixmeRoot, '.fixme'),
   });
 }
 
@@ -6156,16 +6651,23 @@ function main() {
   const command = allArgs[0];
   const subcommand = allArgs[1] || '';
   const { args, flags } = parseArgs(allArgs.slice(2));
-  const fixmeRoot = findFixmeRoot(process.cwd());
 
   try {
+    let resolvedFixmeRoot = null;
+    const getFixmeRoot = () => {
+      if (resolvedFixmeRoot === null) {
+        resolvedFixmeRoot = findFixmeRoot(process.cwd());
+      }
+      return resolvedFixmeRoot;
+    };
+
     switch (command) {
       case 'ticket':
         switch (subcommand) {
           case 'create':
             return ticketCreate(args[0], flags);
           case 'transition':
-            return ticketTransition(args[0], args[1], flags, fixmeRoot);
+            return ticketTransition(args[0], args[1], flags, getFixmeRoot());
           case 'list':
             return ticketList(args[0], flags);
           case 'next':
@@ -6179,15 +6681,15 @@ function main() {
       case 'task':
         switch (subcommand) {
           case 'save':
-            return taskSave(flags, fixmeRoot);
+            return taskSave(flags, getFixmeRoot());
           case 'init':
-            return taskInit(flags, fixmeRoot);
+            return taskInit(flags, getFixmeRoot());
           case 'checkpoint':
             return taskCheckpoint(flags);
           case 'resolve':
-            return taskResolve(args[0], fixmeRoot);
+            return taskResolve(args[0], getFixmeRoot());
           case 'attach-artifact':
-            return taskAttachArtifact(flags, fixmeRoot);
+            return taskAttachArtifact(flags, getFixmeRoot());
           default:
             return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact`);
         }
@@ -6195,7 +6697,7 @@ function main() {
       case 'pipeline':
         switch (subcommand) {
           case 'resolve':
-            return pipelineResolve(flags);
+            return pipelineResolve(flags, getFixmeRoot());
           default:
             return error(`Unknown pipeline subcommand: '${subcommand}'. Valid: resolve`);
         }
@@ -6217,9 +6719,9 @@ function main() {
           case 'detect':
             return contextDetect(flags);
           case 'save':
-            return contextSave(flags, fixmeRoot);
+            return contextSave(flags, getFixmeRoot());
           case 'load':
-            return contextLoad(flags, fixmeRoot);
+            return contextLoad(flags, getFixmeRoot());
           default:
             return error(`Unknown context subcommand: '${subcommand}'. Valid: detect, save, load`);
         }
@@ -6228,15 +6730,15 @@ function main() {
         switch (subcommand) {
           case 'ensure':
           case 'migrate':
-            return configMigrate(fixmeRoot);
+            return configMigrate(getFixmeRoot());
           case 'get':
-            return configGet(args[0], fixmeRoot);
+            return configGet(args[0], getFixmeRoot());
           case 'set':
-            return configSet(args[0], args[1], fixmeRoot);
+            return configSet(args[0], args[1], getFixmeRoot());
           case 'workflow':
             switch (args[0]) {
               case 'configure':
-                return configWorkflowConfigure(args[1], flags, fixmeRoot);
+                return configWorkflowConfigure(args[1], flags, getFixmeRoot());
               default:
                 return error(`Unknown config workflow subcommand: '${args[0] || ''}'. Valid: configure`);
             }
@@ -6245,7 +6747,7 @@ function main() {
           case 'review-level':
             switch (args[0]) {
               case 'resolve':
-                return configReviewLevelResolve(flags, fixmeRoot);
+                return configReviewLevelResolve(flags, getFixmeRoot());
               default:
                 return error(`Unknown config review-level subcommand: '${args[0] || ''}'. Valid: resolve`);
             }
@@ -6280,13 +6782,13 @@ function main() {
       case 'usage':
         switch (subcommand) {
           case 'start':
-            return usageStart(flags, fixmeRoot);
+            return usageStart(flags, hasUsageFixmeDirFlag(flags) ? null : getFixmeRoot());
           case 'finish':
-            return usageFinish(flags, fixmeRoot);
+            return usageFinish(flags, hasUsageFixmeDirFlag(flags) ? null : getFixmeRoot());
           case 'report':
-            return usageReport(flags, fixmeRoot);
+            return usageReport(flags, flags.scope === 'global' || hasUsageFixmeDirFlag(flags) ? null : getFixmeRoot());
           default:
-            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start`);
+            return usageCliError('UNKNOWN_USAGE_SUBCOMMAND', `Unknown usage subcommand: '${subcommand}'. Valid: start, finish, report`);
         }
 
       case 'run':
@@ -6297,8 +6799,10 @@ function main() {
             return runPing(flags);
           case 'status':
             return runStatus(flags);
+          case 'attention':
+            return runAttention(args, flags);
           default:
-            return error(`Unknown run subcommand: '${subcommand}'. Valid: start, ping, status`);
+            return error(`Unknown run subcommand: '${subcommand}'. Valid: start, ping, status, attention`);
         }
 
       case 'root':
@@ -6313,7 +6817,7 @@ function main() {
           return error('Usage: fixme-tools.cjs alert <event> [--resolve]\n  Events: user_input, task_finished, task_failed');
         }
         const resolveOnly = flags.resolve === true || flags.resolve === '';
-        const result = runAlert(event, fixmeRoot, { resolveOnly });
+        const result = runAlert(event, getFixmeRoot(), { resolveOnly });
         // Unknown event is a usage error; other disabled states (alerts disabled,
         // unsupported platform) are legitimate no-ops and exit cleanly.
         if (!result.enabled && result.reason && /^unknown event/.test(result.reason)) {
@@ -6328,7 +6832,7 @@ function main() {
         if (!agentName) {
           return error('Usage: fixme-tools.cjs resolve-model <agent-name>');
         }
-        return output(resolveModel(agentName, fixmeRoot, { runtime: flags.runtime }));
+        return output(resolveModel(agentName, getFixmeRoot(), { runtime: flags.runtime }));
       }
 
       default:

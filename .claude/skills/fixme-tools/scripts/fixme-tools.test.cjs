@@ -73,6 +73,17 @@ function runInDir(args, cwd) {
   }
 }
 
+function pipelineResolutionFlag(pipeline, fields = {}) {
+  const resolution = {
+    pipeline,
+    source: 'explicitPipelineArg',
+    evidence: `--pipeline ${pipeline}`,
+    reason: 'Test supplies the selected workflow explicitly.',
+    ...fields,
+  };
+  return `--pipeline-resolution '${JSON.stringify(resolution)}'`;
+}
+
 function runToolPath(toolPath, args, options = {}) {
   try {
     const result = execSync(`node "${toolPath}" ${args}`, {
@@ -139,6 +150,18 @@ function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-test-'));
   tmpDirs.push(dir);
   return dir;
+}
+
+function createObsoleteSubReposCwd() {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    sub_repos: ['frontend'],
+  }, null, 2));
+  const cwd = path.join(workspace, 'frontend');
+  fs.mkdirSync(cwd, { recursive: true });
+  return cwd;
 }
 
 function writeProjectConfig(baseDir, config) {
@@ -228,7 +251,7 @@ function createPipelineConfig(baseDir) {
   return fixmeDir;
 }
 
-function createLegacyPipelineConfig(baseDir) {
+function createObsoletePipelineConfig(baseDir) {
   const fixmeDir = path.join(baseDir, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
@@ -403,7 +426,7 @@ test('list: scans NNNN-slug/ticket.md folders', () => {
   const sessionDir = createTmpDir();
   fs.writeFileSync(path.join(sessionDir, 'session.md'), '---\nname: test\n---\n');
   createTicketFolder(sessionDir, '0001', 'bug-a', 'queued');
-  createTicketFolder(sessionDir, '0002', 'bug-b', 'investigating');
+  createTicketFolder(sessionDir, '0002', 'bug-b', 'plan');
 
   const result = run(`ticket list "${sessionDir}"`);
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
@@ -418,7 +441,7 @@ test('list: filters by state', () => {
   const sessionDir = createTmpDir();
   fs.writeFileSync(path.join(sessionDir, 'session.md'), '---\nname: test\n---\n');
   createTicketFolder(sessionDir, '0001', 'bug-a', 'queued');
-  createTicketFolder(sessionDir, '0002', 'bug-b', 'investigating');
+  createTicketFolder(sessionDir, '0002', 'bug-b', 'plan');
   createTicketFolder(sessionDir, '0003', 'bug-c', 'queued');
 
   const result = run(`ticket list "${sessionDir}" --state queued`);
@@ -443,7 +466,7 @@ console.log('\n=== ticket next tests (ticket-centric layout) ===\n');
 
 test('next: returns first queued ticket', () => {
   const sessionDir = createTmpDir();
-  createTicketFolder(sessionDir, '0001', 'bug-a', 'investigating');
+  createTicketFolder(sessionDir, '0001', 'bug-a', 'plan');
   createTicketFolder(sessionDir, '0002', 'bug-b', 'queued');
   createTicketFolder(sessionDir, '0003', 'bug-c', 'queued');
 
@@ -456,7 +479,7 @@ test('next: returns first queued ticket', () => {
 
 test('next: returns null when no queued tickets', () => {
   const sessionDir = createTmpDir();
-  createTicketFolder(sessionDir, '0001', 'bug-a', 'investigating');
+  createTicketFolder(sessionDir, '0001', 'bug-a', 'plan');
 
   const result = run(`ticket next "${sessionDir}"`);
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
@@ -573,24 +596,24 @@ test('dir: ticket dir subcommand is rejected as unknown', () => {
 
 console.log('\n=== ticket transition tests (new layout) ===\n');
 
-test('transition: queued -> investigating works with ticket.md in folder', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'my-bug', 'queued');
+test('transition: queued -> plan works with ticket.md in folder', () => {
+  const base = createTmpDir();
+  const ticketPath = createTicketFolder(base, '0001', 'my-bug', 'queued');
 
-  const result = run(`ticket transition "${ticketPath}" investigating`);
+  const result = runInDir(`ticket transition "${ticketPath}" plan`, base);
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
   assert(result.data.from === 'queued', `from should be queued, got ${result.data.from}`);
-  assert(result.data.to === 'investigating', `to should be investigating, got ${result.data.to}`);
+  assert(result.data.to === 'plan', `to should be plan, got ${result.data.to}`);
 
   const content = fs.readFileSync(ticketPath, 'utf8');
-  assert(content.includes('state: investigating'), 'State should be investigating');
+  assert(content.includes('state: plan'), 'State should be plan');
 });
 
 test('transition: queued -> failed with reason succeeds', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0003', 'test', 'queued');
+  const base = createTmpDir();
+  const ticketPath = createTicketFolder(base, '0003', 'test', 'queued');
 
-  const result = run(`ticket transition "${ticketPath}" failed --reason "Intake failed"`);
+  const result = runInDir(`ticket transition "${ticketPath}" failed --reason "Intake failed"`, base);
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
   assert(result.data.from === 'queued', `from should be queued, got ${result.data.from}`);
   assert(result.data.to === 'failed', `to should be failed, got ${result.data.to}`);
@@ -601,27 +624,27 @@ test('transition: queued -> failed with reason succeeds', () => {
 });
 
 test('transition: queued -> failed without reason errors', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0003', 'test2', 'queued');
+  const base = createTmpDir();
+  const ticketPath = createTicketFolder(base, '0003', 'test2', 'queued');
 
-  const result = run(`ticket transition "${ticketPath}" failed`);
+  const result = runInDir(`ticket transition "${ticketPath}" failed`, base);
   assert(!result.ok, 'Should fail');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('--reason'), `Error should mention --reason: ${result.data.error}`);
 });
 
 test('transition: directory path auto-resolves to ticket.md', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'dir-test', 'queued');
+  const base = createTmpDir();
+  const ticketPath = createTicketFolder(base, '0001', 'dir-test', 'queued');
   const ticketDir = path.dirname(ticketPath);
 
-  const result = run(`ticket transition "${ticketDir}" investigating`);
+  const result = runInDir(`ticket transition "${ticketDir}" plan`, base);
   assert(result.ok, `Expected success with dir path, got: ${JSON.stringify(result.data)}`);
   assert(result.data.from === 'queued', `from should be queued, got ${result.data.from}`);
-  assert(result.data.to === 'investigating', `to should be investigating, got ${result.data.to}`);
+  assert(result.data.to === 'plan', `to should be plan, got ${result.data.to}`);
 
   const content = fs.readFileSync(ticketPath, 'utf8');
-  assert(content.includes('state: investigating'), 'State should be investigating');
+  assert(content.includes('state: plan'), 'State should be plan');
 });
 
 test('rename: directory path auto-resolves to ticket.md', () => {
@@ -700,18 +723,131 @@ test('run start: creates dispatched status for a known fixme agent', () => {
   const result = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-review-code`);
 
   assert(result.ok, `Expected success, got: ${JSON.stringify(result.data)}`);
-  assert(/^run_[A-Za-z0-9_-]+$/.test(result.data.status_id), `status_id should be generated run id, got ${result.data.status_id}`);
-  assert(result.data.status_path === path.join(fixmeDir, 'runs', result.data.status_id, 'status.json'), `status_path should be under fixme runs dir, got ${result.data.status_path}`);
-  assert(fs.existsSync(result.data.status_path), 'status.json should exist');
+  assert(/^run_[A-Za-z0-9_-]+$/.test(result.data.statusId), `statusId should be generated run id, got ${result.data.statusId}`);
+  assert(result.data.statusPath === path.join(fixmeDir, 'runs', result.data.statusId, 'status.json'), `statusPath should be under fixme runs dir, got ${result.data.statusPath}`);
+  assert(fs.existsSync(result.data.statusPath), 'status.json should exist');
 
-  const status = readJson(result.data.status_path);
-  assert(status.schema_version === 1, 'schema_version should be 1');
-  assert(status.status_id === result.data.status_id, 'status_id should match');
+  const status = readJson(result.data.statusPath);
+  assert(status.schemaVersion === 1, 'schemaVersion should be 1');
+  assert(status.statusId === result.data.statusId, 'statusId should match');
   assert(status.agent === 'fixme-review-code', `agent should be fixme-review-code, got ${status.agent}`);
   assert(status.state === 'running', `state should be running, got ${status.state}`);
   assert(status.checkpoint === 'dispatched', `checkpoint should be dispatched, got ${status.checkpoint}`);
-  assert(status.current_command === null, 'current_command should be null');
-  assert(typeof status.updated_at === 'string' && !Number.isNaN(Date.parse(status.updated_at)), `updated_at should be ISO timestamp, got ${status.updated_at}`);
+  assert(status.currentCommand === null, 'currentCommand should be null');
+  assert(typeof status.updatedAt === 'string' && !Number.isNaN(Date.parse(status.updatedAt)), `updatedAt should be ISO timestamp, got ${status.updatedAt}`);
+});
+
+test('run commands: explicit fixmeDir is independent from cwd config resolution', () => {
+  const target = createTmpDir();
+  const fixmeDir = path.join(target, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const pollutedWorkspace = createTmpDir();
+  const pollutedFixmeDir = path.join(pollutedWorkspace, '.fixme');
+  fs.mkdirSync(pollutedFixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(pollutedFixmeDir, 'config.json'), JSON.stringify({
+    sub_repos: ['frontend']
+  }, null, 2));
+  const pollutedCwd = path.join(pollutedWorkspace, 'frontend');
+  fs.mkdirSync(pollutedCwd, { recursive: true });
+
+  const started = runInDir(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`, pollutedCwd);
+  assert(started.ok, `run start should use explicit fixmeDir instead of cwd config, got: ${JSON.stringify(started.data)}`);
+
+  const status = runInDir(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`, pollutedCwd);
+  assert(status.ok, `run status should use explicit fixmeDir instead of cwd config, got: ${JSON.stringify(status.data)}`);
+  assert(status.data.statusId === started.data.statusId, `statusId should match, got ${JSON.stringify(status.data)}`);
+});
+
+test('run status: uses camelCase liveness JSON and rejects snake_case files', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+  assert(started.data.statusId, `run start should return statusId, got: ${JSON.stringify(started.data)}`);
+  assert(started.data.statusPath, `run start should return statusPath, got: ${JSON.stringify(started.data)}`);
+  assert(!Object.prototype.hasOwnProperty.call(started.data, 'status_id'), 'run start should not return status_id');
+  assert(!Object.prototype.hasOwnProperty.call(started.data, 'status_path'), 'run start should not return status_path');
+
+  const status = readJson(started.data.statusPath);
+  assert(status.schemaVersion === 1, `status file should use schemaVersion, got ${JSON.stringify(status)}`);
+  assert(status.statusId === started.data.statusId, `status file should use statusId, got ${JSON.stringify(status)}`);
+  assert(status.currentCommand === null, `status file should use currentCommand, got ${JSON.stringify(status)}`);
+  assert(typeof status.updatedAt === 'string' && !Number.isNaN(Date.parse(status.updatedAt)), `status file should use updatedAt, got ${JSON.stringify(status)}`);
+  assert(!Object.prototype.hasOwnProperty.call(status, 'schema_version'), 'status file should not use schema_version');
+  assert(!Object.prototype.hasOwnProperty.call(status, 'status_id'), 'status file should not use status_id');
+  assert(!Object.prototype.hasOwnProperty.call(status, 'current_command'), 'status file should not use current_command');
+  assert(!Object.prototype.hasOwnProperty.call(status, 'updated_at'), 'status file should not use updated_at');
+
+  const obsoleteStatusId = 'run_obsoleteSnakeCase';
+  const obsoleteStatusPath = path.join(fixmeDir, 'runs', obsoleteStatusId, 'status.json');
+  fs.mkdirSync(path.dirname(obsoleteStatusPath), { recursive: true });
+  fs.writeFileSync(obsoleteStatusPath, JSON.stringify({
+    schema_version: 1,
+    status_id: obsoleteStatusId,
+    agent: 'fixme-task',
+    state: 'waiting',
+    checkpoint: 'waiting',
+    current_command: 'attention:attn_obsolete',
+    updated_at: new Date().toISOString(),
+  }, null, 2) + '\n');
+
+  const readObsolete = run(`run status --fixme-dir "${fixmeDir}" --status-id ${obsoleteStatusId}`);
+  assert(!readObsolete.ok, 'snake_case run status should be rejected');
+  assert(readObsolete.data.error.includes('must use camelCase JSON keys'), `snake_case status error should mention camelCase, got ${readObsolete.data.error}`);
+
+  const missingStatusId = 'run_missingStatusId';
+  const missingStatusPath = path.join(fixmeDir, 'runs', missingStatusId, 'status.json');
+  fs.mkdirSync(path.dirname(missingStatusPath), { recursive: true });
+  fs.writeFileSync(missingStatusPath, JSON.stringify({
+    schemaVersion: 1,
+    agent: 'fixme-task',
+    state: 'waiting',
+    checkpoint: 'waiting',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+
+  const readMissingStatusId = run(`run status --fixme-dir "${fixmeDir}" --status-id ${missingStatusId}`);
+  assert(!readMissingStatusId.ok, 'run status should reject files missing statusId');
+  assert(readMissingStatusId.data.error.includes('run status statusId is required'), `missing statusId error should mention statusId, got ${readMissingStatusId.data.error}`);
+
+  const mismatchedStatusId = 'run_mismatchedStatusId';
+  const mismatchedStatusPath = path.join(fixmeDir, 'runs', mismatchedStatusId, 'status.json');
+  fs.mkdirSync(path.dirname(mismatchedStatusPath), { recursive: true });
+  fs.writeFileSync(mismatchedStatusPath, JSON.stringify({
+    schemaVersion: 1,
+    statusId: 'run_differentStatusId',
+    agent: 'fixme-task',
+    state: 'waiting',
+    checkpoint: 'waiting',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+
+  const readMismatchedStatusId = run(`run status --fixme-dir "${fixmeDir}" --status-id ${mismatchedStatusId}`);
+  assert(!readMismatchedStatusId.ok, 'run status should reject files whose statusId does not match the requested run');
+  assert(readMismatchedStatusId.data.error.includes('run status statusId does not match requested statusId'), `mismatched statusId error should mention mismatch, got ${readMismatchedStatusId.data.error}`);
+
+  const unknownFieldStatusId = 'run_unknownField';
+  const unknownFieldStatusPath = path.join(fixmeDir, 'runs', unknownFieldStatusId, 'status.json');
+  fs.mkdirSync(path.dirname(unknownFieldStatusPath), { recursive: true });
+  fs.writeFileSync(unknownFieldStatusPath, JSON.stringify({
+    schemaVersion: 1,
+    statusId: unknownFieldStatusId,
+    agent: 'fixme-task',
+    state: 'waiting',
+    checkpoint: 'waiting',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+    oldStatus: 'waiting-for-user',
+  }, null, 2) + '\n');
+
+  const readUnknownFieldStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${unknownFieldStatusId}`);
+  assert(!readUnknownFieldStatus.ok, 'run status should reject unknown camelCase fields');
+  assert(readUnknownFieldStatus.data.error.includes('Unsupported run status field: oldStatus'), `unknown field error should mention oldStatus, got ${readUnknownFieldStatus.data.error}`);
 });
 
 test('run ping and status: updates and reads current liveness status', () => {
@@ -721,18 +857,18 @@ test('run ping and status: updates and reads current liveness status', () => {
   const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-execute-plan`);
   assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
 
-  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state running --checkpoint working --current-command "yarn test"`);
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command "yarn test"`);
   assert(pinged.ok, `run ping should succeed, got: ${JSON.stringify(pinged.data)}`);
-  assert(pinged.data.status_path === started.data.status_path, 'ping should return same status_path');
+  assert(pinged.data.statusPath === started.data.statusPath, 'ping should return same statusPath');
 
-  const read = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id}`);
+  const read = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
   assert(read.ok, `run status should succeed, got: ${JSON.stringify(read.data)}`);
-  assert(read.data.status_id === started.data.status_id, 'status_id should match');
+  assert(read.data.statusId === started.data.statusId, 'statusId should match');
   assert(read.data.agent === 'fixme-execute-plan', `agent should be preserved, got ${read.data.agent}`);
   assert(read.data.state === 'running', `state should be running, got ${read.data.state}`);
   assert(read.data.checkpoint === 'working', `checkpoint should be working, got ${read.data.checkpoint}`);
-  assert(read.data.current_command === 'yarn test', `current_command should be yarn test, got ${read.data.current_command}`);
-  assert(read.data.updated_at >= started.data.updated_at, 'updated_at should not move backwards');
+  assert(read.data.currentCommand === 'yarn test', `currentCommand should be yarn test, got ${read.data.currentCommand}`);
+  assert(read.data.updatedAt >= started.data.updatedAt, 'updatedAt should not move backwards');
 });
 
 test('run ping: accepts null current command and terminal state', () => {
@@ -742,12 +878,12 @@ test('run ping: accepts null current command and terminal state', () => {
   const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
   assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
 
-  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state completed --checkpoint done --current-command null`);
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state completed --checkpoint done --current-command null`);
 
   assert(pinged.ok, `run ping should succeed, got: ${JSON.stringify(pinged.data)}`);
   assert(pinged.data.state === 'completed', `state should be completed, got ${pinged.data.state}`);
   assert(pinged.data.checkpoint === 'done', `checkpoint should be done, got ${pinged.data.checkpoint}`);
-  assert(pinged.data.current_command === null, 'current_command should be null');
+  assert(pinged.data.currentCommand === null, 'currentCommand should be null');
 });
 
 test('run start: rejects non-agent skills and invalid fixme-dir paths', () => {
@@ -767,13 +903,800 @@ test('run ping: rejects invalid state and checkpoint values', () => {
   const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
   assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
 
-  const badState = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state paused --checkpoint working --current-command null`);
+  const badState = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state paused --checkpoint working --current-command null`);
   assert(!badState.ok, 'invalid state should be rejected');
   assert(badState.data.error.includes('Unsupported run state'), `error should mention unsupported state, got ${badState.data.error}`);
 
-  const badCheckpoint = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.status_id} --state running --checkpoint task-execution --current-command null`);
+  const badCheckpoint = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint task-execution --current-command null`);
   assert(!badCheckpoint.ok, 'invalid checkpoint should be rejected');
   assert(badCheckpoint.data.error.includes('Unsupported run checkpoint'), `error should mention unsupported checkpoint, got ${badCheckpoint.data.error}`);
+});
+
+test('run attention: stores prompt, records answer, and clears durable attention', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-13',
+    taskStatePath: path.join(fixmeDir, 'tasks', '2026-06-05-FIXME-13-demo.state.json'),
+    promptMarkdown: '## Review Classification\n\nPlease provide your decision.',
+    answerMode: 'freeform',
+  });
+
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+
+  assert(set.ok, `run attention set should succeed, got: ${JSON.stringify(set.data)}`);
+  assertNoSnakeCaseKeys(set.data, 'run attention set output');
+  assert(/^attn_[A-Za-z0-9_-]+$/.test(set.data.attentionId), `attentionId should be generated, got ${set.data.attentionId}`);
+  assert(set.data.statusId === started.data.statusId, 'attention output should include statusId');
+  assert(set.data.status === 'waiting', `attention status should be waiting, got ${set.data.status}`);
+  assert(fs.existsSync(set.data.attentionPath), 'attention file should exist');
+
+  const runStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(runStatus.ok, `run status should succeed, got: ${JSON.stringify(runStatus.data)}`);
+  assert(runStatus.data.state === 'waiting', `run state should be waiting, got ${runStatus.data.state}`);
+  assert(runStatus.data.checkpoint === 'waiting', `run checkpoint should be waiting, got ${runStatus.data.checkpoint}`);
+  assert(runStatus.data.currentCommand === `attention:${set.data.attentionId}`, `currentCommand should point at attention id, got ${runStatus.data.currentCommand}`);
+
+  const shown = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id ${set.data.attentionId}`);
+  assert(shown.ok, `run attention show should succeed, got: ${JSON.stringify(shown.data)}`);
+  assertNoSnakeCaseKeys(shown.data, 'run attention show output');
+  assert(shown.data.promptMarkdown.includes('Please provide your decision.'), 'promptMarkdown should be preserved');
+  assert(shown.data.ownerSkill === 'fixme-task', `ownerSkill should be fixme-task, got ${shown.data.ownerSkill}`);
+  assert(shown.data.status === 'waiting', `shown status should be waiting, got ${shown.data.status}`);
+
+  const answerData = JSON.stringify({ answer: '1: A', answeredBy: 'user', answerKind: 'decision' });
+  const answered = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id ${set.data.attentionId} --data '${answerData}'`);
+  assert(answered.ok, `run attention answer should succeed, got: ${JSON.stringify(answered.data)}`);
+  assertNoSnakeCaseKeys(answered.data, 'run attention answer output');
+  assert(answered.data.status === 'answered', `answered status should be answered, got ${answered.data.status}`);
+  assert(answered.data.answer.answer === '1: A', `answer should be stored, got ${JSON.stringify(answered.data.answer)}`);
+  assert(typeof answered.data.answeredAt === 'string' && !Number.isNaN(Date.parse(answered.data.answeredAt)), `answeredAt should be ISO, got ${answered.data.answeredAt}`);
+
+  const cleared = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id ${set.data.attentionId}`);
+  assert(cleared.ok, `run attention clear should succeed, got: ${JSON.stringify(cleared.data)}`);
+  assertNoSnakeCaseKeys(cleared.data, 'run attention clear output');
+  assert(!fs.existsSync(set.data.attentionPath), 'attention file should be removed after clear');
+
+  const finalStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(finalStatus.ok, `run status after attention clear should succeed, got: ${JSON.stringify(finalStatus.data)}`);
+  assert(finalStatus.data.state === 'running', `run state should return to running, got ${finalStatus.data.state}`);
+  assert(finalStatus.data.checkpoint === 'working', `run checkpoint should return to working, got ${finalStatus.data.checkpoint}`);
+  assert(finalStatus.data.currentCommand === null, `currentCommand should be cleared, got ${finalStatus.data.currentCommand}`);
+});
+
+test('run attention: rejects blank prompts and malformed metadata', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const blankPromptRun = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(blankPromptRun.ok, `run start should succeed, got: ${JSON.stringify(blankPromptRun.data)}`);
+  const blankPrompt = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-blank-prompt',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'blank-prompt.state.json'),
+    promptMarkdown: '   ',
+    answerMode: 'decision-card',
+  });
+
+  const blankPromptSet = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${blankPromptRun.data.statusId} --data '${blankPrompt}'`);
+  assert(!blankPromptSet.ok, 'attention set with blank promptMarkdown should fail');
+  assert(blankPromptSet.data.error.includes('run attention data requires non-empty promptMarkdown'), `blank prompt error should mention promptMarkdown, got ${blankPromptSet.data.error}`);
+
+  const metadataRun = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(metadataRun.ok, `run start should succeed, got: ${JSON.stringify(metadataRun.data)}`);
+  const malformedMetadata = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-metadata',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'metadata.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+    metadata: ['lost-routing-context'],
+  });
+
+  const malformedMetadataSet = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${metadataRun.data.statusId} --data '${malformedMetadata}'`);
+  assert(!malformedMetadataSet.ok, 'attention set with non-object metadata should fail');
+  assert(malformedMetadataSet.data.error.includes('run attention data metadata must be a JSON object'), `metadata error should mention object metadata, got ${malformedMetadataSet.data.error}`);
+});
+
+test('run attention: rejects blank optional routing fields when provided', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const baseData = {
+    ownerSkill: 'fixme-session',
+    kind: 'sessionDecision',
+    promptMarkdown: 'Session decision prompt.',
+  };
+  const blankFields = [
+    ['sourceSkill', 'run attention data sourceSkill must be a non-empty string'],
+    ['parentSkill', 'run attention data parentSkill must be a non-empty string'],
+    ['resumeRef', 'run attention data resumeRef must be a non-empty string'],
+    ['taskStatePath', 'run attention data taskStatePath must be a non-empty string'],
+    ['answerMode', 'run attention data answerMode must be a non-empty string'],
+  ];
+
+  for (const [field, expectedError] of blankFields) {
+    const data = JSON.stringify({ ...baseData, [field]: '   ' });
+    const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${data}'`);
+    assert(!set.ok, `attention set with blank ${field} should fail`);
+    assert(set.data.error.includes(expectedError), `blank ${field} error should mention non-empty field, got ${set.data.error}`);
+  }
+
+  const nullParentSkill = JSON.stringify({ ...baseData, parentSkill: null });
+  const nullSet = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${nullParentSkill}'`);
+  assert(!nullSet.ok, 'attention set with null parentSkill should fail');
+  assert(nullSet.data.error.includes('run attention data parentSkill must be a non-empty string'), `null parentSkill error should mention non-empty field, got ${nullSet.data.error}`);
+});
+
+test('run attention: rejects invalid provided attention ids instead of generating replacements', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const baseData = {
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-attention-id',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'attention-id.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  };
+  const invalidIds = [
+    ['   ', 'attentionId must be a non-empty string'],
+    [null, 'attentionId must be a non-empty string'],
+    [' attn_with_padding ', 'attentionId must not contain surrounding whitespace'],
+  ];
+
+  for (const [attentionId, expectedError] of invalidIds) {
+    const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+    assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+    const data = JSON.stringify({ ...baseData, attentionId });
+    const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${data}'`);
+    assert(!set.ok, `attention set with invalid attentionId ${JSON.stringify(attentionId)} should fail`);
+    assert(set.data.error.includes(expectedError), `attentionId error should mention non-empty id, got ${set.data.error}`);
+  }
+});
+
+test('run attention: rejects duplicate attention ids and answer overwrite', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_duplicate_test',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    resumeRef: 'FIXME-duplicate',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'duplicate.state.json'),
+    promptMarkdown: 'Choose a plan option.',
+    answerMode: 'decision-card',
+  });
+  const first = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(first.ok, `first run attention set should succeed, got: ${JSON.stringify(first.data)}`);
+
+  const duplicate = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(!duplicate.ok, 'duplicate run attention set should fail');
+  assert(duplicate.data.error.includes('Run attention already exists'), `duplicate error should mention existing attention, got ${duplicate.data.error}`);
+
+  const firstAnswer = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_duplicate_test --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(firstAnswer.ok, `first run attention answer should succeed, got: ${JSON.stringify(firstAnswer.data)}`);
+
+  const secondAnswer = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_duplicate_test --data '${JSON.stringify({ answer: 'B', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(!secondAnswer.ok, 'second run attention answer should fail');
+  assert(secondAnswer.data.error.includes('Run attention already answered'), `second answer error should mention already answered, got ${secondAnswer.data.error}`);
+});
+
+test('run attention: set replaces stale unreferenced attention records', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const runDir = path.join(fixmeDir, 'runs', started.data.statusId);
+  const attentionDir = path.join(runDir, 'attention');
+  const attentionPath = path.join(attentionDir, 'attn_stale_replace.json');
+  fs.mkdirSync(attentionDir, { recursive: true });
+  fs.writeFileSync(attentionPath, JSON.stringify({
+    attentionId: 'attn_stale_replace',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-stale-old',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'stale-old.state.json'),
+    promptMarkdown: 'Stale prompt.',
+    answerMode: 'decision-card',
+    metadata: {},
+    status: 'answered',
+    answer: { answer: 'old', answeredBy: 'user', answerKind: 'decision' },
+    createdAt: new Date().toISOString(),
+    answeredAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_stale_replace',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-stale-new',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'stale-new.state.json'),
+    promptMarkdown: 'Fresh prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should replace stale unreferenced records, got: ${JSON.stringify(set.data)}`);
+  assert(set.data.promptMarkdown === 'Fresh prompt.', `fresh prompt should replace stale prompt, got ${set.data.promptMarkdown}`);
+
+  const shown = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_stale_replace`);
+  assert(shown.ok, `replaced attention should be showable, got: ${JSON.stringify(shown.data)}`);
+  assert(shown.data.promptMarkdown === 'Fresh prompt.', `shown prompt should be fresh, got ${shown.data.promptMarkdown}`);
+  assert(shown.data.resumeRef === 'FIXME-stale-new', `resumeRef should be fresh, got ${shown.data.resumeRef}`);
+});
+
+test('run attention: rejects attention records whose embedded id does not match the requested id', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_integrity_check',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-integrity',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'integrity.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const corruptedRecord = readJson(set.data.attentionPath);
+  fs.writeFileSync(set.data.attentionPath, JSON.stringify({
+    ...corruptedRecord,
+    attentionId: 'attn_wrong_record',
+  }, null, 2) + '\n');
+
+  const shown = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_integrity_check`);
+  assert(!shown.ok, 'show should reject mismatched attention record ids');
+  assert(shown.data.error.includes('Run attention record id mismatch'), `mismatch error should mention record id mismatch, got ${shown.data.error}`);
+});
+
+test('run attention: rejects attention records with unsupported persisted status', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_status_integrity',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-status-integrity',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'status-integrity.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const corruptedRecord = readJson(set.data.attentionPath);
+  fs.writeFileSync(set.data.attentionPath, JSON.stringify({
+    ...corruptedRecord,
+    status: 'halfAnswered',
+  }, null, 2) + '\n');
+
+  const shown = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_status_integrity`);
+  assert(!shown.ok, 'show should reject unsupported stored attention status');
+  assert(shown.data.error.includes('Unsupported run attention record status'), `status error should mention unsupported status, got ${shown.data.error}`);
+});
+
+test('run attention: rejects malformed persisted attention records', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_shape_integrity',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-shape-integrity',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'shape-integrity.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const validRecord = readJson(set.data.attentionPath);
+  fs.writeFileSync(set.data.attentionPath, JSON.stringify({
+    ...validRecord,
+    oldPromptPath: '/tmp/old-prompt.md',
+  }, null, 2) + '\n');
+
+  const shownWithUnknownField = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_shape_integrity`);
+  assert(!shownWithUnknownField.ok, 'show should reject unknown camelCase attention fields');
+  assert(shownWithUnknownField.data.error.includes('Unsupported run attention record field: oldPromptPath'), `unknown field error should mention oldPromptPath, got ${shownWithUnknownField.data.error}`);
+
+  const missingPromptRecord = { ...validRecord };
+  delete missingPromptRecord.promptMarkdown;
+  fs.writeFileSync(set.data.attentionPath, JSON.stringify(missingPromptRecord, null, 2) + '\n');
+
+  const shownWithoutPrompt = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_shape_integrity`);
+  assert(!shownWithoutPrompt.ok, 'show should reject records missing promptMarkdown');
+  assert(shownWithoutPrompt.data.error.includes('run attention record promptMarkdown is required'), `missing prompt error should mention promptMarkdown, got ${shownWithoutPrompt.data.error}`);
+
+  const answeredRecordWithUnknownAnswerField = {
+    ...validRecord,
+    status: 'answered',
+    answer: {
+      answer: 'A',
+      answeredBy: 'user',
+      answerKind: 'decision',
+      oldDecisionId: 'D1',
+    },
+    answeredAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(set.data.attentionPath, JSON.stringify(answeredRecordWithUnknownAnswerField, null, 2) + '\n');
+
+  const shownWithUnknownAnswerField = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_shape_integrity`);
+  assert(!shownWithUnknownAnswerField.ok, 'show should reject unknown camelCase answer fields');
+  assert(shownWithUnknownAnswerField.data.error.includes('Unsupported run attention record answer field: oldDecisionId'), `unknown answer field error should mention oldDecisionId, got ${shownWithUnknownAnswerField.data.error}`);
+});
+
+test('run attention: normal pings cannot overwrite pending attention markers', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_ping_guard',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    resumeRef: 'FIXME-ping-guard',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'ping-guard.state.json'),
+    promptMarkdown: 'Choose a plan option.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `run attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command "waiting for fixme-write-plan"`);
+  assert(!pinged.ok, 'run ping should not overwrite pending attention');
+  assert(pinged.data.error.includes('Run has pending attention'), `ping error should mention pending attention, got ${pinged.data.error}`);
+
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(status.ok, `run status should succeed, got: ${JSON.stringify(status.data)}`);
+  assert(status.data.state === 'waiting', `run state should still be waiting, got ${status.data.state}`);
+  assert(status.data.currentCommand === 'attention:attn_ping_guard', `currentCommand should still point at attention, got ${status.data.currentCommand}`);
+
+  const answered = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_ping_guard --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answered.ok, `answer should still succeed after rejected ping, got: ${JSON.stringify(answered.data)}`);
+});
+
+test('run attention: show rejects stale prompts when run is no longer waiting', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_show_stale',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-show-stale',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'show-stale.state.json'),
+    promptMarkdown: 'Stale question.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `run attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const failed = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state failed --checkpoint done --current-command null`);
+  assert(failed.ok, `terminal failure cleanup should succeed, got: ${JSON.stringify(failed.data)}`);
+
+  const shown = run(`run attention show --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_show_stale`);
+  assert(!shown.ok, 'run attention show should not render stale prompts');
+  assert(shown.data.error.includes('Run is not waiting on attention'), `stale show error should mention run wait state, got ${shown.data.error}`);
+});
+
+test('run attention: rejects overlapping pending attention and stale answers', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const firstData = JSON.stringify({
+    attentionId: 'attn_first_pending',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-overlap',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'overlap.state.json'),
+    promptMarkdown: 'First question.',
+    answerMode: 'freeform',
+  });
+  const secondData = JSON.stringify({
+    attentionId: 'attn_second_pending',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-overlap',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'overlap.state.json'),
+    promptMarkdown: 'Second question.',
+    answerMode: 'freeform',
+  });
+
+  const first = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${firstData}'`);
+  assert(first.ok, `first attention set should succeed, got: ${JSON.stringify(first.data)}`);
+
+  const second = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${secondData}'`);
+  assert(!second.ok, 'second pending attention should fail');
+  assert(second.data.error.includes('Run already has pending attention'), `overlap error should mention pending attention, got ${second.data.error}`);
+
+  const staleStatus = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state failed --checkpoint done --current-command null`);
+  assert(staleStatus.ok, `terminal failure cleanup should succeed, got: ${JSON.stringify(staleStatus.data)}`);
+
+  const staleAnswer = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_first_pending --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(!staleAnswer.ok, 'stale attention answer should fail after terminal failure cleanup');
+  assert(staleAnswer.data.error.includes('Run is not waiting on attention'), `stale answer error should mention run wait state, got ${staleAnswer.data.error}`);
+});
+
+test('run attention: failed set removes invisible attention record', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_set_recovery',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-set-recovery',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'set-recovery.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+
+  const runDir = path.join(fixmeDir, 'runs', started.data.statusId);
+  const attentionDir = path.join(runDir, 'attention');
+  const attentionPath = path.join(attentionDir, 'attn_set_recovery.json');
+  const statusPath = path.join(runDir, 'status.json');
+  const status = readJson(statusPath);
+  fs.writeFileSync(statusPath, JSON.stringify({ ...status, agent: 'not-a-fixme-agent' }, null, 2) + '\n');
+
+  const failedSet = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(!failedSet.ok, 'set should fail when status cannot be updated');
+  assert(!fs.existsSync(attentionPath), 'failed set should remove the unreferenced attention record');
+});
+
+test('run attention: clear rejects unanswered and stale attention', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_clear_guard',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-clear-guard',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'clear-guard.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const unansweredClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_guard`);
+  assert(!unansweredClear.ok, 'clear should fail before the attention has an answer');
+  assert(unansweredClear.data.error.includes('Run attention is not answered'), `unanswered clear error should mention unanswered attention, got ${unansweredClear.data.error}`);
+
+  const answered = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_guard --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answered.ok, `attention answer should succeed, got: ${JSON.stringify(answered.data)}`);
+
+  const staleStatus = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state failed --checkpoint done --current-command null`);
+  assert(staleStatus.ok, `terminal failure cleanup should succeed, got: ${JSON.stringify(staleStatus.data)}`);
+
+  const staleClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_guard`);
+  assert(!staleClear.ok, 'clear should fail after terminal failure cleanup');
+  assert(staleClear.data.error.includes('Run is not waiting on attention'), `stale clear error should mention stale attention, got ${staleClear.data.error}`);
+  assert(fs.existsSync(set.data.attentionPath), 'stale clear should leave the answered attention record for recovery');
+});
+
+test('run attention: failed clear preserves answered record for recovery', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_clear_recovery',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-clear-recovery',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'clear-recovery.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const answered = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_recovery --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answered.ok, `attention answer should succeed, got: ${JSON.stringify(answered.data)}`);
+
+  const runDir = path.join(fixmeDir, 'runs', started.data.statusId);
+  const statusPath = path.join(runDir, 'status.json');
+  const previousStatus = readJson(statusPath);
+  fs.writeFileSync(statusPath, JSON.stringify({ ...previousStatus, agent: 'not-a-fixme-agent' }, null, 2) + '\n');
+
+  const failedClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_recovery`);
+  assert(!failedClear.ok, 'clear should fail when status cannot be updated');
+  assert(fs.existsSync(set.data.attentionPath), 'failed clear should preserve the answered attention record');
+
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(status.ok, `run status should remain readable, got: ${JSON.stringify(status.data)}`);
+  assert(status.data.currentCommand === 'attention:attn_clear_recovery', `status should still point at attention, got ${status.data.currentCommand}`);
+});
+
+test('run attention: clear succeeds with warning when stale record cleanup fails', () => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return;
+  }
+
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_clear_cleanup_warning',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-clear-cleanup-warning',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'clear-cleanup-warning.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const answered = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_cleanup_warning --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answered.ok, `attention answer should succeed, got: ${JSON.stringify(answered.data)}`);
+
+  const attentionDir = path.dirname(set.data.attentionPath);
+  try {
+    fs.chmodSync(attentionDir, 0o555);
+
+    const cleared = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_clear_cleanup_warning`);
+    assert(cleared.ok, `clear should succeed after restoring status, got: ${JSON.stringify(cleared.data)}`);
+    assertNoSnakeCaseKeys(cleared.data, 'run attention cleanup-warning output');
+    assert(cleared.data.cleared === true, 'clear output should report cleared');
+    assert(cleared.data.recordRemoved === false, 'clear output should report the stale record was not removed');
+    assert(cleared.data.warnings.some(w => w.code === 'ATTENTION_RECORD_CLEANUP_FAILED'), 'clear output should warn about failed record cleanup');
+
+    const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+    assert(status.ok, `run status should succeed after cleanup warning, got: ${JSON.stringify(status.data)}`);
+    assert(status.data.currentCommand === null, `currentCommand should be cleared, got ${status.data.currentCommand}`);
+  } finally {
+    try { fs.chmodSync(attentionDir, 0o755); } catch (_) {}
+  }
+});
+
+test('run attention: answer requires explicit decision or clarification kind', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const attentionData = JSON.stringify({
+    attentionId: 'attn_answer_kind_required',
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-answer-kind',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'answer-kind.state.json'),
+    promptMarkdown: 'Decision prompt.',
+    answerMode: 'decision-card',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `attention set should succeed, got: ${JSON.stringify(set.data)}`);
+
+  const missingKind = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'A' })}'`);
+  assert(!missingKind.ok, 'attention answer without answerKind should fail');
+  assert(missingKind.data.error.includes('run attention answer data requires answerKind'), `missing kind error should mention answerKind, got ${missingKind.data.error}`);
+
+  const invalidKind = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'maybe' })}'`);
+  assert(!invalidKind.ok, 'attention answer with invalid answerKind should fail');
+  assert(invalidKind.data.error.includes('Unsupported run attention answerKind'), `invalid kind error should mention supported values, got ${invalidKind.data.error}`);
+
+  const missingActor = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'A', answerKind: 'decision' })}'`);
+  assert(!missingActor.ok, 'attention answer without answeredBy should fail');
+  assert(missingActor.data.error.includes('run attention answer data requires answeredBy'), `missing actor error should mention answeredBy, got ${missingActor.data.error}`);
+
+  const nonUserActor = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'A', answeredBy: 'assistant', answerKind: 'decision' })}'`);
+  assert(!nonUserActor.ok, 'attention answer not attributed to the user should fail');
+  assert(nonUserActor.data.error.includes('run attention answer data answeredBy must be user'), `non-user actor error should mention user attribution, got ${nonUserActor.data.error}`);
+
+  const blankAnswer = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: '   ', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(!blankAnswer.ok, 'attention answer with blank answer should fail');
+  assert(blankAnswer.data.error.includes('run attention answer data requires non-empty answer'), `blank answer error should mention answer content, got ${blankAnswer.data.error}`);
+
+  const extraAnswerField = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision', oldDecisionId: 'D1' })}'`);
+  assert(!extraAnswerField.ok, 'attention answer with unsupported fields should fail');
+  assert(extraAnswerField.data.error.includes('Unsupported run attention answer data field: oldDecisionId'), `extra answer field error should mention oldDecisionId, got ${extraAnswerField.data.error}`);
+
+  const clarification = run(`run attention answer --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --attention-id attn_answer_kind_required --data '${JSON.stringify({ answer: 'What does option A mean?', answeredBy: 'user', answerKind: 'clarificationRequest' })}'`);
+  assert(clarification.ok, `clarification answer should succeed, got: ${JSON.stringify(clarification.data)}`);
+  assert(clarification.data.answer.answerKind === 'clarificationRequest', `answerKind should be stored, got ${JSON.stringify(clarification.data.answer)}`);
+});
+
+test('run attention: rejects terminal run states', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const completed = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state completed --checkpoint done --current-command null`);
+  assert(completed.ok, `run ping completed should succeed, got: ${JSON.stringify(completed.data)}`);
+
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-terminal',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'terminal.state.json'),
+    promptMarkdown: 'Question after completion.',
+    answerMode: 'freeform',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(!set.ok, 'run attention set should fail for completed run');
+  assert(set.data.error.includes('Cannot set attention for terminal run state'), `terminal state error should mention terminal state, got ${set.data.error}`);
+});
+
+test('run attention: fixme-task owner requires resumable task references', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const missingReferences = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    promptMarkdown: 'Question without resume data.',
+    answerMode: 'freeform',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${missingReferences}'`);
+  assert(!set.ok, 'fixme-task attention without resume references should fail');
+  assert(set.data.error.includes('run attention data requires resumeRef for fixme-task owner'), `error should mention missing resumeRef, got ${set.data.error}`);
+
+  const blankResumeRef = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: '   ',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'blank-resume.state.json'),
+    promptMarkdown: 'Question with blank resume data.',
+    answerMode: 'freeform',
+  });
+  const blankResume = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${blankResumeRef}'`);
+  assert(!blankResume.ok, 'fixme-task attention with blank resumeRef should fail');
+  assert(blankResume.data.error.includes('run attention data requires resumeRef for fixme-task owner'), `error should mention blank resumeRef, got ${blankResume.data.error}`);
+
+  const relativeStatePath = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-relative-state',
+    taskStatePath: 'tasks/relative.state.json',
+    promptMarkdown: 'Question with a relative state path.',
+    answerMode: 'freeform',
+  });
+  const relativeState = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${relativeStatePath}'`);
+  assert(!relativeState.ok, 'fixme-task attention with relative taskStatePath should fail');
+  assert(relativeState.data.error.includes('run attention data taskStatePath must be absolute for fixme-task owner'), `error should mention absolute taskStatePath, got ${relativeState.data.error}`);
+});
+
+test('run attention: fixme-task owner requires source skill and supported answer mode', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(started.ok, `run start should succeed, got: ${JSON.stringify(started.data)}`);
+
+  const missingSourceSkill = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-source-skill',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'source-skill.state.json'),
+    promptMarkdown: 'Question without source skill.',
+    answerMode: 'freeform',
+  });
+  const missingSource = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${missingSourceSkill}'`);
+  assert(!missingSource.ok, 'fixme-task attention without sourceSkill should fail');
+  assert(missingSource.data.error.includes('run attention data requires sourceSkill for fixme-task owner'), `error should mention missing sourceSkill, got ${missingSource.data.error}`);
+
+  const blankSourceSkill = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: '   ',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-source-skill',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'source-skill.state.json'),
+    promptMarkdown: 'Question with blank source skill.',
+    answerMode: 'freeform',
+  });
+  const blankSource = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${blankSourceSkill}'`);
+  assert(!blankSource.ok, 'fixme-task attention with blank sourceSkill should fail');
+  assert(blankSource.data.error.includes('run attention data requires sourceSkill for fixme-task owner'), `error should mention blank sourceSkill, got ${blankSource.data.error}`);
+
+  const missingAnswerMode = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-answer-mode',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'answer-mode.state.json'),
+    promptMarkdown: 'Question without answer mode.',
+  });
+  const missingMode = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${missingAnswerMode}'`);
+  assert(!missingMode.ok, 'fixme-task attention without answerMode should fail');
+  assert(missingMode.data.error.includes('run attention data requires answerMode for fixme-task owner'), `error should mention missing answerMode, got ${missingMode.data.error}`);
+
+  const invalidAnswerMode = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-answer-mode',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'answer-mode.state.json'),
+    promptMarkdown: 'Question with invalid answer mode.',
+    answerMode: 'checkbox',
+  });
+  const invalidMode = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${invalidAnswerMode}'`);
+  assert(!invalidMode.ok, 'fixme-task attention with invalid answerMode should fail');
+  assert(invalidMode.data.error.includes('Unsupported run attention answerMode'), `error should mention unsupported answerMode, got ${invalidMode.data.error}`);
 });
 
 // ============================================================================
@@ -839,6 +1762,33 @@ test('pipeline resolve: selects highest-priority eligible pipeline candidate', (
   assert(result.data.candidates.length === 1, `only eligible candidate should remain, got ${JSON.stringify(result.data.candidates)}`);
 });
 
+test('pipeline resolve: rejects removed workflow aliases and obsolete config', () => {
+  const aliasRoot = createTmpDir();
+  fs.mkdirSync(path.join(aliasRoot, '.fixme'), { recursive: true });
+  const aliasData = JSON.stringify({
+    candidates: [
+      {
+        pipeline: 'default',
+        source: 'explicitPipelineArg',
+        evidence: '--pipeline default',
+        reason: 'Removed workflow aliases are not valid workflow names.',
+      },
+    ],
+  });
+
+  const aliasResult = runInDir(`pipeline resolve --data '${aliasData}'`, aliasRoot);
+  assert(!aliasResult.ok, 'removed workflow alias should fail pipeline resolution');
+  assert(aliasResult.data.error.includes('pipeline resolution workflow not found'), `alias error should fail workflow lookup, got ${aliasResult.data.error}`);
+
+  const obsoleteConfigRoot = createTmpDir();
+  createObsoletePipelineConfig(obsoleteConfigRoot);
+  const defaultData = JSON.stringify({ candidates: [] });
+  const obsoleteResult = runInDir(`pipeline resolve --data '${defaultData}'`, obsoleteConfigRoot);
+  assert(!obsoleteResult.ok, 'obsolete config should fail pipeline resolution');
+  assert(obsoleteResult.data.error === 'unsupported_obsolete_config', `obsolete config should return JSON error, got ${JSON.stringify(obsoleteResult.data)}`);
+  assert(obsoleteResult.data.configPath === 'pipelines', `obsolete config should report pipelines path, got ${JSON.stringify(obsoleteResult.data)}`);
+});
+
 test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -863,7 +1813,12 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
     constraints: ['No numbered durable manifest.'],
     knownContext: ['Existing saved task labels use FIXME-N.'],
     openQuestions: [],
-    pipelineHint: 'standard',
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
     laterPlanningNotes: ['Persist only fields needed for the next dispatch.'],
     source: 'test',
   });
@@ -894,8 +1849,8 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(state.status === 'running', `status should be running, got ${state.status}`);
   assert(state.pipeline === 'standard', `pipeline should be standard, got ${state.pipeline}`);
   assert(state.pipelineResolution.pipeline === 'standard', `pipelineResolution.pipeline should be standard, got ${state.pipelineResolution && state.pipelineResolution.pipeline}`);
-  assert(state.pipelineResolution.source === 'legacyPipelineHint', `pipelineResolution.source should be legacyPipelineHint, got ${state.pipelineResolution && state.pipelineResolution.source}`);
-  assert(state.pipelineResolution.evidence === 'pipelineHint', `pipelineResolution.evidence should be pipelineHint, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
+  assert(state.pipelineResolution.source === 'explicitPipelineArg', `pipelineResolution.source should be explicitPipelineArg, got ${state.pipelineResolution && state.pipelineResolution.source}`);
+  assert(state.pipelineResolution.evidence === '--pipeline standard', `pipelineResolution.evidence should be --pipeline standard, got ${state.pipelineResolution && state.pipelineResolution.evidence}`);
   assert(state.cursor.phase === 'plan', `cursor.phase should be plan, got ${state.cursor.phase}`);
   assert(state.cursor.stage === 'execute', `cursor.stage should be execute, got ${state.cursor.stage}`);
   assert(state.cursor.skill === 'fixme-write-plan', `cursor.skill should be fixme-write-plan, got ${state.cursor.skill}`);
@@ -916,6 +1871,76 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(!Object.prototype.hasOwnProperty.call(state, 'currentStep'), 'state should not include currentStep');
   assert(!Object.prototype.hasOwnProperty.call(state, 'manifest'), 'state should not include manifest');
   assert(!Object.prototype.hasOwnProperty.call(state.artifacts, 'decisionLogPath'), 'artifacts should not include decisionLogPath');
+});
+
+test('task save: rejects obsolete pipelineHint and pipeline fields', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const baseData = {
+    title: 'Reject Pipeline Hint',
+    taskGoal: 'Ensure task save uses final pipeline resolution data.',
+    agreedApproach: ['Use pipelineResolution only.'],
+    userVisibleBehavior: ['Old task-save pipeline fields are rejected.'],
+    scope: { inScope: ['task CLI save'], outOfScope: [] },
+    laterPlanningNotes: ['Validate final pipeline resolution before planning.'],
+  };
+
+  for (const field of ['pipelineHint', 'pipeline']) {
+    const data = JSON.stringify({ ...baseData, [field]: 'standard' });
+    const result = runInDir(`task save --data '${data}'`, projectRoot);
+    assert(!result.ok, `task save with ${field} should fail`);
+    assert(result.data.error.includes('task save data no longer accepts pipelineHint or pipeline'), `error should mention final pipelineResolution, got ${result.data.error}`);
+  }
+});
+
+test('task save: requires pipelineResolution before writing artifacts', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Require Pipeline Resolution',
+    taskGoal: 'Ensure task save does not infer a workflow.',
+    agreedApproach: ['Resolve the workflow before saving task state.'],
+    userVisibleBehavior: ['Missing pipeline resolution fails visibly.'],
+    scope: { inScope: ['task CLI save'], outOfScope: [] },
+    laterPlanningNotes: ['Pass the selected pipelineResolution from the orchestrator.'],
+  });
+
+  const result = runInDir(`task save --data '${data}'`, projectRoot);
+  const taskDir = path.join(projectRoot, '.fixme', 'tasks');
+
+  assert(!result.ok, 'task save without pipelineResolution should fail');
+  assert(result.data.error.includes('task save requires pipelineResolution'), `error should require pipelineResolution, got ${result.data.error}`);
+  assert(!fs.existsSync(taskDir) || fs.readdirSync(taskDir).length === 0, 'missing pipelineResolution should not write task artifacts');
+});
+
+test('task save: rejects invalid pipeline resolution before writing artifacts', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const data = JSON.stringify({
+    title: 'Reject Removed Alias',
+    taskGoal: 'Ensure task save does not create artifacts for invalid workflows.',
+    agreedApproach: ['Validate the selected workflow before reserving a task number.'],
+    userVisibleBehavior: ['Invalid saved-task workflow input fails without creating a saved task.'],
+    scope: { inScope: ['task CLI save'], outOfScope: [] },
+    laterPlanningNotes: ['Use final workflow names only.'],
+    pipelineResolution: {
+      pipeline: 'default',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline default',
+      reason: 'Removed workflow aliases are not valid workflow names.',
+    },
+  });
+
+  const result = runInDir(`task save --data '${data}'`, projectRoot);
+  const taskDir = path.join(projectRoot, '.fixme', 'tasks');
+
+  assert(!result.ok, 'task save with invalid workflow should fail');
+  assert(result.data.error.includes('task save pipeline resolution workflow not found'), `error should mention failed workflow lookup, got ${result.data.error}`);
+  assert(!fs.existsSync(path.join(taskDir, '.counter')), 'counter should not advance when pipeline resolution is invalid');
+  assert(!fs.existsSync(taskDir) || fs.readdirSync(taskDir).length === 0, 'invalid pipeline resolution should not write task artifacts');
 });
 
 test('task save: rejects skeletal handoffs that are not self-contained', () => {
@@ -983,7 +2008,7 @@ test('task save: persists explicit pipeline resolution in task state', () => {
   assert(state.cursor.phase === 'technical-spec', `cursor should use technical-spec workflow first phase, got ${state.cursor.phase}`);
 });
 
-test('task resolve: resolves FIXME label and legacy task path to canonical state paths', () => {
+test('task resolve: resolves FIXME label and task path to canonical state paths', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
 
@@ -997,7 +2022,12 @@ test('task resolve: resolves FIXME label and legacy task path to canonical state
       outOfScope: ['Ticket-backed task resolution'],
     },
     laterPlanningNotes: ['Assert each reference resolves to the same canonical task and state paths.'],
-    pipelineHint: 'plan-only',
+    pipelineResolution: {
+      pipeline: 'plan-only',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline plan-only',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
     source: 'test',
   });
 
@@ -1037,7 +2067,12 @@ test('task attach-artifact: indexes preparation artifact on saved task brief and
       outOfScope: ['Executing the prepared task'],
     },
     laterPlanningNotes: ['Read the attached preparation artifacts before planning execution.'],
-    pipelineHint: 'standard',
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
     source: 'test',
   });
 
@@ -1090,7 +2125,7 @@ test('task init: creates ticket-backed task state and resolves ticket folder', (
   const ticketPath = createTicketFolder(sessionDir, '0001', 'resume-ticket', 'queued');
   const ticketDir = path.dirname(ticketPath);
 
-  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
 
   assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
   assertNoSnakeCaseKeys(initialized.data, 'task init output');
@@ -1117,6 +2152,32 @@ test('task init: creates ticket-backed task state and resolves ticket folder', (
   assert(resolved.data.mode === 'ticket', `mode should be ticket, got ${resolved.data.mode}`);
   assert(resolved.data.ticketPath === ticketPath, 'resolved ticketPath should match ticket path');
   assert(resolved.data.statePath === initialized.data.statePath, 'resolved statePath should match initialized state path');
+});
+
+test('task init: rejects obsolete --pipeline shortcut', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0002', 'shortcut-ticket', 'queued');
+
+  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+
+  assert(!initialized.ok, 'task init should reject obsolete --pipeline shortcut');
+  assert(initialized.data.error.includes('task init no longer accepts --pipeline'), `error should mention --pipeline-resolution, got ${initialized.data.error}`);
+  assert(!fs.existsSync(path.join(path.dirname(ticketPath), 'task-state.json')), 'rejected shortcut must not write task state');
+});
+
+test('task init: requires pipeline resolution before writing task state', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0003', 'missing-resolution-ticket', 'queued');
+
+  const initialized = runInDir(`task init --ticket "${ticketPath}" --project-root "${projectRoot}"`, projectRoot);
+
+  assert(!initialized.ok, 'task init without pipeline resolution should fail');
+  assert(initialized.data.error.includes('task init requires --pipeline-resolution'), `error should require --pipeline-resolution, got ${initialized.data.error}`);
+  assert(!fs.existsSync(path.join(path.dirname(ticketPath), 'task-state.json')), 'missing pipeline resolution must not write task state');
 });
 
 test('task init: persists provided pipeline resolution in ticket-backed task state', () => {
@@ -1151,13 +2212,35 @@ test('task init: persists provided pipeline resolution in ticket-backed task sta
   assert(state.cursor.phase === 'investigate', `cursor should use bugfix workflow first phase, got ${state.cursor.phase}`);
 });
 
+test('task init: cursor uses custom workflow first phase skill', () => {
+  const projectRoot = createTmpDir();
+  writeProjectConfig(projectRoot, {
+    workflows: {
+      custom: workflowWithPhases([
+        { name: 'triage', skills: ['fixme-research'] },
+        { name: 'plan', skills: ['fixme-write-plan'] },
+      ]),
+    },
+  });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0004', 'custom-ticket', 'queued');
+
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('custom')} --project-root "${projectRoot}"`, projectRoot);
+
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+  const state = readJson(initialized.data.statePath);
+  assert(state.pipeline === 'custom', `pipeline should be custom, got ${state.pipeline}`);
+  assert(state.cursor.phase === 'triage', `cursor phase should use first custom phase, got ${state.cursor.phase}`);
+  assert(state.cursor.skill === 'fixme-research', `cursor skill should use first custom phase skill, got ${state.cursor.skill}`);
+});
+
 test('task init: rejects non-markdown task paths without overwriting input', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
   const taskPath = path.join(projectRoot, 'not-a-task.txt');
   fs.writeFileSync(taskPath, 'keep this content');
 
-  const initialized = runInDir(`task init --task "${taskPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+  const initialized = runInDir(`task init --task "${taskPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
 
   assert(!initialized.ok, 'task init should reject non-markdown task paths');
   assert(initialized.data.error.includes('Task path must end with .md'), `error should mention .md task path, got ${initialized.data.error}`);
@@ -1169,7 +2252,7 @@ test('task checkpoint: merges allowed camelCase state fields and rejects invalid
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
   const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
   const ticketPath = createTicketFolder(sessionDir, '0002', 'checkpoint-ticket', 'queued');
-  const initialized = runInDir(`task init --ticket "${ticketPath}" --pipeline standard --project-root "${projectRoot}"`, projectRoot);
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
   assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
 
   const patch = JSON.stringify({
@@ -1222,323 +2305,256 @@ test('task checkpoint: merges allowed camelCase state fields and rejects invalid
   const dynamicPhaseKey = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"loops":{"phaseReviewCycles":{"product-spec":1}}}'`, projectRoot);
   assert(!dynamicPhaseKey.ok, 'hyphenated dynamic phase key should fail');
   assert(dynamicPhaseKey.data.error.includes('camelCase'), `error should mention camelCase, got ${dynamicPhaseKey.data.error}`);
+
+  const nestedCurrentStep = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"cursor":{"currentStep":5}}'`, projectRoot);
+  assert(!nestedCurrentStep.ok, 'nested currentStep checkpoint field should fail');
+  assert(nestedCurrentStep.data.error.includes('Unsupported task checkpoint field'), `error should mention unsupported field, got ${nestedCurrentStep.data.error}`);
+  assert(nestedCurrentStep.data.error.includes('cursor.currentStep'), `error should include nested path, got ${nestedCurrentStep.data.error}`);
+
+  const nestedCurrentSpecificationPath = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"artifacts":{"currentSpecificationPath":"/abs/spec.md"}}'`, projectRoot);
+  assert(!nestedCurrentSpecificationPath.ok, 'nested currentSpecificationPath checkpoint field should fail');
+  assert(nestedCurrentSpecificationPath.data.error.includes('Unsupported task checkpoint field'), `error should mention unsupported field, got ${nestedCurrentSpecificationPath.data.error}`);
+  assert(nestedCurrentSpecificationPath.data.error.includes('artifacts.currentSpecificationPath'), `error should include nested path, got ${nestedCurrentSpecificationPath.data.error}`);
+
+  const nestedManifest = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"pendingDecision":{"manifest":[{"step":1}]}}'`, projectRoot);
+  assert(!nestedManifest.ok, 'nested manifest checkpoint field should fail');
+  assert(nestedManifest.data.error.includes('Unsupported task checkpoint field'), `error should mention unsupported field, got ${nestedManifest.data.error}`);
+  assert(nestedManifest.data.error.includes('pendingDecision.manifest'), `error should include nested path, got ${nestedManifest.data.error}`);
+
+  const invalidStatus = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"status":{"state":"running"}}'`, projectRoot);
+  assert(!invalidStatus.ok, 'object status checkpoint value should fail');
+  assert(invalidStatus.data.error.includes('status must be a non-empty string'), `status error should mention string value, got ${invalidStatus.data.error}`);
+
+  const invalidCursor = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"cursor":"implement"}'`, projectRoot);
+  assert(!invalidCursor.ok, 'string cursor checkpoint value should fail');
+  assert(invalidCursor.data.error.includes('cursor must be a JSON object'), `cursor error should mention object value, got ${invalidCursor.data.error}`);
+
+  const invalidCursorPhase = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"cursor":{"phase":{}}}'`, projectRoot);
+  assert(!invalidCursorPhase.ok, 'object cursor.phase checkpoint value should fail');
+  assert(invalidCursorPhase.data.error.includes('cursor.phase must be a non-empty string'), `cursor phase error should mention string value, got ${invalidCursorPhase.data.error}`);
+
+  const invalidOuterCycles = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"loops":{"outerCycles":-1}}'`, projectRoot);
+  assert(!invalidOuterCycles.ok, 'negative outerCycles checkpoint value should fail');
+  assert(invalidOuterCycles.data.error.includes('loops.outerCycles must be a non-negative integer'), `outerCycles error should mention non-negative integer, got ${invalidOuterCycles.data.error}`);
+
+  const invalidPendingDecision = runInDir(`task checkpoint --state "${initialized.data.statePath}" --data '{"pendingDecision":"ask user"}'`, projectRoot);
+  assert(!invalidPendingDecision.ok, 'string pendingDecision checkpoint value should fail');
+  assert(invalidPendingDecision.data.error.includes('pendingDecision must be null or a JSON object'), `pendingDecision error should mention null or object, got ${invalidPendingDecision.data.error}`);
 });
 
 // ============================================================================
-// Test Suite: new state transitions -- happy path through all 9 states
+// Test Suite: final workflow state transitions
 // ============================================================================
 
-console.log('\n=== new state transitions: happy path ===\n');
+console.log('\n=== final workflow state transitions ===\n');
 
-test('happy path: queued -> investigating -> researching -> planning -> implementing -> verifying -> done', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'full-path', 'queued');
+function createBugfixWorkflowTicket(slug, overrides = {}) {
+  const base = createTmpDir();
+  const sessionDir = path.join(base, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
 
-  const states = ['investigating', 'researching', 'planning', 'implementing', 'verifying', 'done'];
-  for (const nextState of states) {
-    const result = run(`ticket transition "${ticketPath}" ${nextState}`);
-    assert(result.ok, `Transition to ${nextState} should succeed, got: ${JSON.stringify(result.data)}`);
+  let content = fs.readFileSync(ticketPath, 'utf8');
+  if (overrides.removeMaxAttempts) {
+    content = content.replace(/max_attempts: 3\n/, '');
   }
+  if (overrides.max_attempts !== undefined) {
+    content = content.replace(/max_attempts: 3/, `max_attempts: ${overrides.max_attempts}`);
+  }
+  if (overrides.current_attempt !== undefined) {
+    content = content.replace(/current_attempt: 0/, `current_attempt: ${overrides.current_attempt}`);
+  }
+  fs.writeFileSync(ticketPath, content);
 
-  // Verify final state
+  return { base, sessionDir, ticketPath };
+}
+
+function transitionTicket(base, ticketPath, nextState, suffix = '') {
+  return runInDir(`ticket transition "${ticketPath}" ${nextState}${suffix}`, base);
+}
+
+function walkBugfixTicket(base, ticketPath, states, slug = path.basename(path.dirname(ticketPath))) {
+  for (const [index, state] of states.entries()) {
+    const suffix = index === 0 && state === 'investigate' ? ' --pipeline bugfix' : '';
+    const result = transitionTicket(base, ticketPath, state, suffix);
+    assert(result.ok, `Walk to ${state} should succeed for ${slug}, got: ${JSON.stringify(result.data)}`);
+  }
+}
+
+function walkToVerify(slug, overrides = {}) {
+  const context = createBugfixWorkflowTicket(slug, overrides);
+  walkBugfixTicket(context.base, context.ticketPath, ['investigate', 'research', 'plan', 'implement', 'verify'], slug);
+  return context;
+}
+
+test('happy path: queued -> investigate -> research -> plan -> implement -> verify -> done', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('full-path');
+
+  walkBugfixTicket(base, ticketPath, ['investigate', 'research', 'plan', 'implement', 'verify', 'done'], 'full-path');
+
   const content = fs.readFileSync(ticketPath, 'utf8');
   assert(content.includes('state: done'), 'Final state should be done');
-
-  // Verify transitions log has 6 entries
-  // Parse the ticket to check transitions count
   const transitions = content.match(/from:/g);
   assert(transitions && transitions.length === 6, `Should have 6 transitions, got ${transitions ? transitions.length : 0}`);
 });
 
-// ============================================================================
-// Test Suite: retry path (verifying -> planning)
-// ============================================================================
+test('retry: verify -> plan with --reason succeeds and increments attempt', () => {
+  const { base, ticketPath } = walkToVerify('retry-test');
 
-console.log('\n=== retry path: verifying -> planning ===\n');
-
-test('retry: verifying -> planning with --reason succeeds and increments attempt', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'retry-test', 'queued');
-
-  // Walk to verifying
-  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
-  for (const s of walkStates) {
-    const r = run(`ticket transition "${ticketPath}" ${s}`);
-    assert(r.ok, `Walk to ${s} should succeed`);
-  }
-
-  // Retry: verifying -> planning with reason
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Build failed"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Build failed"');
   assert(result.ok, `Retry transition should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.from === 'verifying', `from should be verifying, got ${result.data.from}`);
-  assert(result.data.to === 'planning', `to should be planning, got ${result.data.to}`);
+  assert(result.data.from === 'verify', `from should be verify, got ${result.data.from}`);
+  assert(result.data.to === 'plan', `to should be plan, got ${result.data.to}`);
 
-  // Verify current_attempt incremented
   const content = fs.readFileSync(ticketPath, 'utf8');
   assert(content.includes('current_attempt: 1'), `current_attempt should be 1, content: ${content.substring(0, 500)}`);
-
-  // Verify reason appears in transitions log
   assert(content.includes('Build failed'), 'Reason should appear in transitions');
 });
 
-// ============================================================================
-// Test Suite: invalid old transition (investigating -> fixing)
-// ============================================================================
+test('invalid: investigate -> fixing is rejected', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('invalid-test');
 
-console.log('\n=== invalid old transitions ===\n');
+  walkBugfixTicket(base, ticketPath, ['investigate'], 'invalid-test');
 
-test('invalid: investigating -> fixing is rejected', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'invalid-test', 'queued');
-
-  // Walk to investigating
-  const r = run(`ticket transition "${ticketPath}" investigating`);
-  assert(r.ok, 'Walk to investigating should succeed');
-
-  // Try the old invalid transition
-  const result = run(`ticket transition "${ticketPath}" fixing`);
-  assert(!result.ok, 'investigating -> fixing should fail');
+  const result = transitionTicket(base, ticketPath, 'fixing');
+  assert(!result.ok, 'investigate -> fixing should fail');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('Valid transitions from'), `Error should list valid transitions: ${result.data.error}`);
 });
 
-// ============================================================================
-// Test Suite: new failure paths (researching/planning/implementing -> failed)
-// ============================================================================
+test('failure: research -> failed with --reason succeeds', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('fail-research');
 
-console.log('\n=== new failure paths ===\n');
+  walkBugfixTicket(base, ticketPath, ['investigate', 'research'], 'fail-research');
 
-test('failure: researching -> failed with --reason succeeds', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-research', 'queued');
-
-  const r1 = run(`ticket transition "${ticketPath}" investigating`);
-  assert(r1.ok, 'Walk to investigating should succeed');
-  const r2 = run(`ticket transition "${ticketPath}" researching`);
-  assert(r2.ok, 'Walk to researching should succeed');
-
-  // Verify we're actually in researching before testing failure path
   const pre = fs.readFileSync(ticketPath, 'utf8');
-  assert(pre.includes('state: researching'), 'Should be in researching state before failure test');
+  assert(pre.includes('state: research'), 'Should be in research state before failure test');
 
-  const result = run(`ticket transition "${ticketPath}" failed --reason "No root cause found"`);
-  assert(result.ok, `researching -> failed should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.from === 'researching', `from should be researching, got ${result.data.from}`);
+  const result = transitionTicket(base, ticketPath, 'failed', ' --reason "No root cause found"');
+  assert(result.ok, `research -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'research', `from should be research, got ${result.data.from}`);
 
   const content = fs.readFileSync(ticketPath, 'utf8');
   assert(content.includes('state: failed'), 'State should be failed');
 });
 
-test('failure: planning -> failed with --reason succeeds', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-plan', 'queued');
+test('failure: plan -> failed with --reason succeeds', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('fail-plan');
 
-  const r1 = run(`ticket transition "${ticketPath}" investigating`);
-  assert(r1.ok, 'Walk to investigating should succeed');
-  const r2 = run(`ticket transition "${ticketPath}" researching`);
-  assert(r2.ok, 'Walk to researching should succeed');
-  const r3 = run(`ticket transition "${ticketPath}" planning`);
-  assert(r3.ok, 'Walk to planning should succeed');
+  walkBugfixTicket(base, ticketPath, ['investigate', 'research', 'plan'], 'fail-plan');
 
-  // Verify we're actually in planning
   const pre = fs.readFileSync(ticketPath, 'utf8');
-  assert(pre.includes('state: planning'), 'Should be in planning state before failure test');
+  assert(pre.includes('state: plan'), 'Should be in plan state before failure test');
 
-  const result = run(`ticket transition "${ticketPath}" failed --reason "No viable fix"`);
-  assert(result.ok, `planning -> failed should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.from === 'planning', `from should be planning, got ${result.data.from}`);
+  const result = transitionTicket(base, ticketPath, 'failed', ' --reason "No viable fix"');
+  assert(result.ok, `plan -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'plan', `from should be plan, got ${result.data.from}`);
 
   const content = fs.readFileSync(ticketPath, 'utf8');
   assert(content.includes('state: failed'), 'State should be failed');
 });
 
-test('failure: implementing -> failed with --reason succeeds', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'fail-impl', 'queued');
+test('failure: implement -> failed with --reason succeeds', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('fail-impl');
 
-  const r1 = run(`ticket transition "${ticketPath}" investigating`);
-  assert(r1.ok, 'Walk to investigating should succeed');
-  const r2 = run(`ticket transition "${ticketPath}" researching`);
-  assert(r2.ok, 'Walk to researching should succeed');
-  const r3 = run(`ticket transition "${ticketPath}" planning`);
-  assert(r3.ok, 'Walk to planning should succeed');
-  const r4 = run(`ticket transition "${ticketPath}" implementing`);
-  assert(r4.ok, 'Walk to implementing should succeed');
+  walkBugfixTicket(base, ticketPath, ['investigate', 'research', 'plan', 'implement'], 'fail-impl');
 
-  // Verify we're actually in implementing
   const pre = fs.readFileSync(ticketPath, 'utf8');
-  assert(pre.includes('state: implementing'), 'Should be in implementing state before failure test');
+  assert(pre.includes('state: implement'), 'Should be in implement state before failure test');
 
-  const result = run(`ticket transition "${ticketPath}" failed --reason "Implementation blocked"`);
-  assert(result.ok, `implementing -> failed should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.from === 'implementing', `from should be implementing, got ${result.data.from}`);
+  const result = transitionTicket(base, ticketPath, 'failed', ' --reason "Implementation blocked"');
+  assert(result.ok, `implement -> failed should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.from === 'implement', `from should be implement, got ${result.data.from}`);
 
   const content = fs.readFileSync(ticketPath, 'utf8');
   assert(content.includes('state: failed'), 'State should be failed');
 });
 
-// ============================================================================
-// Test Suite: cumulative durations on state re-entry
-// ============================================================================
+test('cumulative: plan duration preserved across retry', () => {
+  const { base, ticketPath } = createBugfixWorkflowTicket('cumul-test');
 
-console.log('\n=== cumulative durations on re-entry ===\n');
+  walkBugfixTicket(base, ticketPath, ['investigate', 'research', 'plan'], 'cumul-test');
 
-test('cumulative: planning duration preserved across retry', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'cumul-test', 'queued');
-
-  // Walk to planning
-  run(`ticket transition "${ticketPath}" investigating`);
-  run(`ticket transition "${ticketPath}" researching`);
-  run(`ticket transition "${ticketPath}" planning`);
-
-  // Read the ticket to note the first planning.entered timestamp
   const content1 = fs.readFileSync(ticketPath, 'utf8');
-  // The planning duration entry should exist with an entered timestamp
-  assert(content1.includes('planning:'), 'Should have planning duration entry after first visit');
+  assert(content1.includes('plan:'), 'Should have plan duration entry after first visit');
 
-  // Continue through implementing -> verifying
-  run(`ticket transition "${ticketPath}" implementing`);
-  run(`ticket transition "${ticketPath}" verifying`);
+  walkBugfixTicket(base, ticketPath, ['implement', 'verify'], 'cumul-test');
 
-  // Read ticket -- planning should now have seconds computed (exited when going to implementing)
   const content2 = fs.readFileSync(ticketPath, 'utf8');
-  // planning entry should have seconds field (even if 0, since transitions are fast)
-  assert(content2.includes('planning:'), 'planning duration should still exist');
+  assert(content2.includes('plan:'), 'plan duration should still exist');
 
-  // Retry: verifying -> planning
-  run(`ticket transition "${ticketPath}" planning --reason "Tests failed"`);
+  transitionTicket(base, ticketPath, 'plan', ' --reason "Tests failed"');
 
-  // Read ticket after re-entry
   const content3 = fs.readFileSync(ticketPath, 'utf8');
-  // The planning entry should have a NEW entered timestamp
-  assert(content3.includes('planning:'), 'planning duration should exist after re-entry');
-  // Check for prior_seconds field (cumulative tracking)
-  assert(content3.includes('prior_seconds:'), 'planning should have prior_seconds field for cumulative tracking');
+  assert(content3.includes('plan:'), 'plan duration should exist after re-entry');
+  assert(content3.includes('prior_seconds:'), 'plan should have prior_seconds field for cumulative tracking');
 });
-
-// ============================================================================
-// Test Suite: max_attempts enforcement on verifying -> planning
-// ============================================================================
 
 console.log('\n=== max_attempts enforcement ===\n');
 
-/**
- * Helper: create a ticket and walk it to verifying state.
- * Optionally set current_attempt and max_attempts in frontmatter before the walk.
- */
-function walkToVerifying(sessionDir, slug, overrides) {
-  const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
-
-  // Apply frontmatter overrides before walking
-  if (overrides) {
-    let content = fs.readFileSync(ticketPath, 'utf8');
-    if (overrides.max_attempts !== undefined) {
-      content = content.replace(/max_attempts: 3/, `max_attempts: ${overrides.max_attempts}`);
-    }
-    if (overrides.current_attempt !== undefined) {
-      content = content.replace(/current_attempt: 0/, `current_attempt: ${overrides.current_attempt}`);
-    }
-    fs.writeFileSync(ticketPath, content);
-  }
-
-  // Walk to verifying
-  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
-  for (const s of walkStates) {
-    const r = run(`ticket transition "${ticketPath}" ${s}`);
-    assert(r.ok, `Walk to ${s} should succeed for ${slug}`);
-  }
-
-  return ticketPath;
-}
-
 test('max_attempts: allows retry when current_attempt=0, max_attempts=3', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-0of3', {});
+  const { base, ticketPath } = walkToVerify('allow-retry-0of3');
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Tests failed"');
   assert(result.ok, `Should allow retry at attempt 0/3, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+  assert(result.data.to === 'plan', `Should transition to plan, got ${result.data.to}`);
 });
 
 test('max_attempts: allows retry when current_attempt=1, max_attempts=3', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-1of3', { current_attempt: 1 });
+  const { base, ticketPath } = walkToVerify('allow-retry-1of3', { current_attempt: 1 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed again"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Tests failed again"');
   assert(result.ok, `Should allow retry at attempt 1/3, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+  assert(result.data.to === 'plan', `Should transition to plan, got ${result.data.to}`);
 });
 
 test('max_attempts: rejects retry when current_attempt=2, max_attempts=3', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-2of3', { current_attempt: 2 });
+  const { base, ticketPath } = walkToVerify('reject-retry-2of3', { current_attempt: 2 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Tests failed yet again"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Tests failed yet again"');
   assert(!result.ok, 'Should reject retry at attempt 2/3');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
 });
 
 test('max_attempts: rejects retry when current_attempt=0, max_attempts=1', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-0of1', { max_attempts: 1 });
+  const { base, ticketPath } = walkToVerify('reject-retry-0of1', { max_attempts: 1 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Only one attempt allowed"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Only one attempt allowed"');
   assert(!result.ok, 'Should reject retry at attempt 0/1');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
 });
 
 test('max_attempts: allows retry when current_attempt=0, max_attempts=2', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'allow-retry-0of2', { max_attempts: 2 });
+  const { base, ticketPath } = walkToVerify('allow-retry-0of2', { max_attempts: 2 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Second chance"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Second chance"');
   assert(result.ok, `Should allow retry at attempt 0/2, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.to === 'planning', `Should transition to planning, got ${result.data.to}`);
+  assert(result.data.to === 'plan', `Should transition to plan, got ${result.data.to}`);
 });
 
 test('max_attempts: rejects retry when current_attempt=1, max_attempts=2', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'reject-retry-1of2', { current_attempt: 1, max_attempts: 2 });
+  const { base, ticketPath } = walkToVerify('reject-retry-1of2', { current_attempt: 1, max_attempts: 2 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "No more retries"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "No more retries"');
   assert(!result.ok, 'Should reject retry at attempt 1/2');
   assert(result.data && result.data.error, 'Should have error message');
   assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
 });
 
 test('max_attempts: error message contains attempt count and max', () => {
-  const sessionDir = createTmpDir();
-  const ticketPath = walkToVerifying(sessionDir, 'error-msg-check', { current_attempt: 2, max_attempts: 3 });
+  const { base, ticketPath } = walkToVerify('error-msg-check', { current_attempt: 2, max_attempts: 3 });
 
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Check message"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Check message"');
   assert(!result.ok, 'Should reject retry');
   assert(result.data.error.includes('3 of 3'), `Error should contain attempt counts: ${result.data.error}`);
-  assert(result.data.error.includes('verifying -> planning denied'), `Error should mention denied transition: ${result.data.error}`);
+  assert(result.data.error.includes('verify -> plan denied'), `Error should mention denied transition: ${result.data.error}`);
 });
 
 test('max_attempts: defaults to max_attempts=3 when field missing', () => {
-  const sessionDir = createTmpDir();
-  // Create ticket without max_attempts in frontmatter
-  const ticketPath = createTicketFolder(sessionDir, '0001', 'no-max-field', 'queued');
+  const { base, ticketPath } = walkToVerify('no-max-field', { removeMaxAttempts: true, current_attempt: 2 });
 
-  // Remove max_attempts line from frontmatter entirely
-  let content = fs.readFileSync(ticketPath, 'utf8');
-  content = content.replace(/max_attempts: 3\n/, '');
-  content = content.replace(/current_attempt: 0/, 'current_attempt: 2');
-  fs.writeFileSync(ticketPath, content);
-
-  // Walk to verifying
-  const walkStates = ['investigating', 'researching', 'planning', 'implementing', 'verifying'];
-  for (const s of walkStates) {
-    const r = run(`ticket transition "${ticketPath}" ${s}`);
-    assert(r.ok, `Walk to ${s} should succeed`);
-  }
-
-  // Should reject -- current_attempt=2 >= max_attempts(3) - 1
-  const result = run(`ticket transition "${ticketPath}" planning --reason "Defaults test"`);
+  const result = transitionTicket(base, ticketPath, 'plan', ' --reason "Defaults test"');
   assert(!result.ok, 'Should reject when defaulting to max_attempts=3 with current_attempt=2');
   assert(result.data.error.includes('Retry limit reached'), `Error should mention retry limit: ${result.data.error}`);
 });
@@ -1641,7 +2657,7 @@ test('buildTransitions: full pipeline [investigate, research, plan, implement, v
 
 console.log('\n=== dynamic state machine: CLI integration ===\n');
 
-test('pipeline flag: legacy default alias stores final standard pipeline name', () => {
+test('pipeline flag: rejects removed default workflow alias', () => {
   const base = createTmpDir();
   createPipelineConfig(base);
   const sessionResult = runInDir(`session create "${base}" --name pipe-session`, base);
@@ -1650,15 +2666,32 @@ test('pipeline flag: legacy default alias stores final standard pipeline name', 
   const ticketPath = createResult.data.path;
 
   const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
-  assert(t1.ok, `Transition failed: ${JSON.stringify(t1.data)}`);
-  assert(t1.data.to === 'plan', `to should be plan, got ${t1.data.to}`);
+  assert(!t1.ok, 'removed default workflow alias should fail');
+  assert(t1.data.error.includes('Workflow not found or has no enabled phases'), `removed alias should fail workflow lookup, got ${t1.data.error}`);
 
   const frontmatterLines = readTicketFrontmatterLines(ticketPath);
-  assert(frontmatterLines.includes('pipeline: standard'), 'legacy default alias should be stored as standard in frontmatter');
-  assert(!frontmatterLines.includes('pipeline: default'), 'legacy default alias should be removed from frontmatter');
+  assert(!frontmatterLines.includes('pipeline: standard'), 'failed alias transition should not write standard pipeline');
+  assert(!frontmatterLines.includes('pipeline: default'), 'failed alias transition should not write default pipeline');
 });
 
-test('pipeline frontmatter: legacy stored default remains transitionable and normalizes on write', () => {
+test('pipeline flag: removed alias cannot take terminal transition', () => {
+  const base = createTmpDir();
+  createPipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name alias-terminal-session`, base);
+  const sessionDir = sessionResult.data.path;
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug alias-terminal-test`, base);
+  const ticketPath = createResult.data.path;
+
+  const result = runInDir(`ticket transition "${ticketPath}" failed --pipeline default --reason "Blocked"`, base);
+
+  assert(!result.ok, 'removed workflow alias should not allow terminal transitions');
+  assert(result.data.error.includes('Workflow not found or has no enabled phases'), `removed alias should fail workflow lookup, got ${result.data.error}`);
+  const frontmatterLines = readTicketFrontmatterLines(ticketPath);
+  assert(!frontmatterLines.includes('state: failed'), 'failed alias transition should not update state');
+  assert(!frontmatterLines.includes('pipeline: default'), 'failed alias transition should not write removed alias');
+});
+
+test('pipeline frontmatter: rejects removed default workflow alias', () => {
   const base = createTmpDir();
   createPipelineConfig(base);
   const sessionResult = runInDir(`session create "${base}" --name stored-alias-session`, base);
@@ -1668,14 +2701,15 @@ test('pipeline frontmatter: legacy stored default remains transitionable and nor
   setTicketFrontmatterField(ticketPath, 'pipeline', 'default');
 
   const beforeFrontmatter = readTicketFrontmatterLines(ticketPath);
-  assert(beforeFrontmatter.includes('pipeline: default'), 'test setup should store legacy alias in frontmatter');
+  assert(beforeFrontmatter.includes('pipeline: default'), 'test setup should store removed alias in frontmatter');
 
   const t1 = runInDir(`ticket transition "${ticketPath}" plan`, base);
-  assert(t1.ok, `Stored alias transition should succeed: ${JSON.stringify(t1.data)}`);
+  assert(!t1.ok, 'stored removed alias should not transition');
+  assert(t1.data.error.includes('Workflow not found or has no enabled phases'), `stored alias should fail workflow lookup, got ${t1.data.error}`);
 
   const afterFrontmatter = readTicketFrontmatterLines(ticketPath);
-  assert(afterFrontmatter.includes('pipeline: standard'), 'stored legacy alias should normalize after successful transition');
-  assert(!afterFrontmatter.includes('pipeline: default'), 'stored legacy alias should be removed from frontmatter after normalization');
+  assert(afterFrontmatter.includes('pipeline: default'), 'failed transition should not rewrite frontmatter alias');
+  assert(!afterFrontmatter.includes('pipeline: standard'), 'failed transition should not normalize alias');
 });
 
 test('pipeline flag: bugfix is the final investigate workflow and full is feature lifecycle', () => {
@@ -1739,28 +2773,48 @@ test('pipeline: backward transition requires reason and increments attempt', () 
   assert(content.includes('current_attempt: 1'), 'current_attempt should be 1 after backward transition');
 });
 
-test('pipeline: legacy pipelines config remains readable before migration', () => {
+test('pipeline: obsolete pipelines config is rejected before migration', () => {
   const base = createTmpDir();
-  createLegacyPipelineConfig(base);
-  const sessionResult = runInDir(`session create "${base}" --name legacy-pipeline-session`, base);
+  createObsoletePipelineConfig(base);
+  const sessionResult = runInDir(`session create "${base}" --name obsolete-pipeline-session`, base);
   const sessionDir = sessionResult.data.path;
 
-  const createResult = runInDir(`ticket create "${sessionDir}" --slug legacy-pipeline-test`, base);
+  const createResult = runInDir(`ticket create "${sessionDir}" --slug obsolete-pipeline-test`, base);
   const ticketPath = createResult.data.path;
 
   const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, base);
-  assert(t1.ok, `Legacy pipeline transition should succeed: ${JSON.stringify(t1.data)}`);
-  assert(t1.data.to === 'plan', `to should be plan, got ${t1.data.to}`);
+  assert(!t1.ok, 'obsolete pipelines config should not be readable');
+  assert(t1.data.error === 'unsupported_obsolete_config', `obsolete pipelines config should return JSON error, got ${JSON.stringify(t1.data)}`);
+  assert(t1.data.configPath === 'pipelines', `obsolete pipelines config should report pipelines path, got ${JSON.stringify(t1.data)}`);
 });
 
-test('fallback: legacy transitions when no --pipeline and no pipeline in frontmatter', () => {
+test('fallback: no config uses final standard workflow transitions', () => {
   const base = createTmpDir();
   // No createPipelineConfig -- no config.json exists
   const ticketPath = createTicketFolder(base, '0001', 'fallback-test', 'queued');
 
-  const result = run(`ticket transition "${ticketPath}" investigating`);
-  assert(result.ok, `Fallback transition should succeed: ${JSON.stringify(result.data)}`);
-  assert(result.data.to === 'investigating', `Should transition to investigating, got ${result.data.to}`);
+  const oldResult = runInDir(`ticket transition "${ticketPath}" investigating`, base);
+  assert(!oldResult.ok, 'old no-config transition state should fail');
+  assert(oldResult.data.error.includes('Invalid transition'), `old transition should be invalid, got ${oldResult.data.error}`);
+
+  const result = runInDir(`ticket transition "${ticketPath}" plan`, base);
+  assert(result.ok, `Fallback standard transition should succeed: ${JSON.stringify(result.data)}`);
+  assert(result.data.to === 'plan', `Should transition to plan, got ${result.data.to}`);
+});
+
+test('workflow config: malformed config fails instead of using built-in standard', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), 'not valid json {{{');
+  const sessionDir = path.join(fixmeDir, 'sessions', 'bad-config-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'bad-config-test', 'queued');
+
+  const result = runInDir(`ticket transition "${ticketPath}" plan`, base);
+
+  assert(!result.ok, 'malformed config should not fall back to built-in standard');
+  assert(result.data.error.includes('Invalid config.json'), `error should mention invalid config, got ${result.data.error}`);
+  assert(readTicketFrontmatterLines(ticketPath).includes('state: queued'), 'malformed config should not update ticket state');
 });
 
 // ── context commands (config.json migration) ─────────────────────────
@@ -1867,9 +2921,9 @@ test('context save writes to config.json project key', () => {
   assert(config.project !== undefined, 'config should have project key');
   assert(config.project.devServer.url === 'http://localhost:3000', 'project.devServer.url correct');
   assert(config.project.framework === 'react', 'project.framework correct');
-  // Must NOT have created the legacy yaml context file
-  const legacyYamlPath = path.join(fixmeDir, ['project', 'context.yaml'].join('-'));
-  assert(!fs.existsSync(legacyYamlPath), 'legacy yaml file must not exist');
+  // Must NOT have created the obsolete yaml context file
+  const obsoleteYamlPath = path.join(fixmeDir, ['project', 'context.yaml'].join('-'));
+  assert(!fs.existsSync(obsoleteYamlPath), 'obsolete yaml file must not exist');
 });
 
 test('context save preserves existing config keys', () => {
@@ -1880,7 +2934,7 @@ test('context save preserves existing config keys', () => {
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
     ticketBackend: 'fixme-tickets-md',
     models: { profile: 'balanced' },
-    workflows: { default: { outerMaxCycles: 2, phases: [{ name: 'plan', skills: ['fixme-write-plan'] }] } }
+    workflows: { standard: { outerMaxCycles: 2, phases: [{ name: 'plan', skills: ['fixme-write-plan'] }] } }
   }, null, 2));
   const projectData = JSON.stringify({
     devServer: { url: 'http://localhost:5173', command: 'yarn dev', hmr: true },
@@ -1953,123 +3007,110 @@ test('config migrate creates final standard workflows and review level defaults'
   assert(!config.workflows.quick.phases.some(phase => phase.review), 'quick should have no review blocks');
   assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', `full phases should be feature lifecycle, got ${phaseNames(config.workflows.full)}`);
   assert(phaseNames(config.workflows.bugfix) === 'investigate -> research -> plan -> implement -> verify', `bugfix phases should be investigate workflow, got ${phaseNames(config.workflows.bugfix)}`);
-  assert(!config.workflows.default, 'default legacy workflow should not be written');
-  assert(!config.workflows.plan, 'plan legacy workflow should not be written');
-  assert(!config.workflows.execute, 'execute legacy workflow should not be written');
-  assert(!config.workflows['idea-to-production'], 'idea-to-production legacy workflow should not be written');
+  assert(!config.workflows.default, 'removed default workflow should not be written');
+  assert(!config.workflows.plan, 'removed plan workflow should not be written');
+  assert(!config.workflows.execute, 'removed execute workflow should not be written');
+  assert(!config.workflows['idea-to-production'], 'removed idea-to-production workflow should not be written');
 });
 
-test('config migrate renames legacy workflow names and moves legacy full bugfix workflow', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    workflows: {
-      default: workflowWithPhases([{ name: 'legacy-standard', skills: ['legacy-standard-skill'] }], { outerMaxCycles: 7 }),
-      plan: workflowWithPhases([{ name: 'legacy-plan', skills: ['legacy-plan-skill'] }]),
-      execute: workflowWithPhases([{ name: 'legacy-execute', skills: ['legacy-execute-skill'] }]),
-      'idea-to-production': workflowWithPhases([
-        { name: 'product-spec', skills: ['fixme-write-product-spec'] },
-        { name: 'technical-spec', skills: ['fixme-write-technical-spec'] },
-        { name: 'plan', skills: ['fixme-write-plan'] },
-        { name: 'implement', skills: ['fixme-execute-plan'] },
-      ]),
-      full: workflowWithPhases([
-        { name: 'investigate', skills: ['fixme-investigate'] },
-        { name: 'research', skills: ['fixme-research'] },
-        { name: 'plan', skills: ['fixme-write-plan'] },
-        { name: 'implement', skills: ['fixme-execute-plan'] },
-        { name: 'verify', skills: ['fixme-browser-verify'] },
-      ], { outerMaxCycles: 5 }),
+test('config migrate rejects obsolete config keys without conversion', () => {
+  const cases = [
+    {
+      name: 'pipelines',
+      expectedConfigPath: 'pipelines',
+      config: { pipelines: { standard: [{ name: 'plan', skills: ['fixme-write-plan'] }] } },
     },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-
-  assert(config.workflows.standard.phases[0].name === 'legacy-standard', 'default should rename to standard');
-  assert(config.workflows.standard.outerMaxCycles === 7, 'renamed standard should keep outerMaxCycles');
-  assert(config.workflows['plan-only'].phases[0].name === 'legacy-plan', 'plan should rename to plan-only');
-  assert(config.workflows['execute-only'].phases[0].name === 'legacy-execute', 'execute should rename to execute-only');
-  assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', 'idea-to-production should rename to final full and add verify');
-  assert(config.workflows.bugfix.phases[0].name === 'investigate', 'old full bugfix workflow should move to bugfix');
-  assert(!config.workflows.default && !config.workflows.plan && !config.workflows.execute && !config.workflows['idea-to-production'], 'legacy workflow keys should be removed');
-  assert(result.data.renamedWorkflows.some(entry => entry.from === 'full' && entry.to === 'bugfix'), 'migration result should report full -> bugfix move');
-});
-
-test('config migrate upgrades legacy feature full workflow by adding verify', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    workflows: {
-      full: workflowWithPhases([
-        { name: 'product-spec', skills: ['fixme-write-product-spec'] },
-        { name: 'technical-spec', skills: ['fixme-write-technical-spec'] },
-        { name: 'plan', skills: ['fixme-write-plan'] },
-        { name: 'implement', skills: ['fixme-execute-plan'] },
-      ]),
+    {
+      name: 'workflowControls',
+      expectedConfigPath: 'workflowControls',
+      config: { workflowControls: { standard: { outerMaxCycles: 3 } } },
     },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-
-  assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', `full phases should add verify, got ${phaseNames(config.workflows.full)}`);
-  assert(config.workflows.full.phases[4].skills[0] === 'fixme-browser-verify', 'added verify phase should use browser verification skill');
-});
-
-test('config migrate rejects custom idea-to-production instead of writing invalid full workflow', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    workflows: {
-      'idea-to-production': workflowWithPhases([{ name: 'legacy-full', skills: ['legacy-full-skill'] }]),
+    {
+      name: 'sub_repos',
+      expectedConfigPath: 'sub_repos',
+      config: { sub_repos: ['frontend'] },
     },
-  });
-  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
-  const result = runInDir('config migrate', tmp);
-  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
-
-  assert(!result.ok, 'custom idea-to-production should fail instead of becoming reserved full');
-  assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
-  assert(result.data.workflow === 'full', `expected full workflow conflict, got ${JSON.stringify(result.data)}`);
-  assert(!('from' in result.data) || result.data.from !== result.data.to, `reserved workflow conflict should not report a self-rename: ${JSON.stringify(result.data)}`);
-  assert(before === after, 'failed migration should not write config');
-});
-
-test('config migrate aborts conflicting custom full workflow without writing', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    workflows: {
-      full: workflowWithPhases([{ name: 'custom-one', skills: ['custom-skill'] }]),
-      'idea-to-production': workflowWithPhases([{ name: 'product-spec', skills: ['fixme-write-product-spec'] }]),
+    {
+      name: 'workflow alias default',
+      expectedConfigPath: 'workflows.default',
+      config: { workflows: { default: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'] }]) } },
     },
-  });
-  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
-  const result = runInDir('config migrate', tmp);
-  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+    {
+      name: 'workflow alias default empty object',
+      expectedConfigPath: 'workflows.default',
+      config: { workflows: { default: {} } },
+    },
+    {
+      name: 'workflow alias plan',
+      expectedConfigPath: 'workflows.plan',
+      config: { workflows: { plan: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'] }]) } },
+    },
+    {
+      name: 'workflow alias execute',
+      expectedConfigPath: 'workflows.execute',
+      config: { workflows: { execute: workflowWithPhases([{ name: 'implement', skills: ['fixme-execute-plan'] }]) } },
+    },
+    {
+      name: 'workflow alias idea-to-production',
+      expectedConfigPath: 'workflows.idea-to-production',
+      config: { workflows: { 'idea-to-production': workflowWithPhases([{ name: 'product-spec', skills: ['fixme-write-product-spec'] }]) } },
+    },
+    {
+      name: 'review softness',
+      expectedConfigPath: 'review.softness',
+      config: { review: { softness: { default: 'default' } } },
+    },
+  ];
 
-  assert(!result.ok, 'conflicting full workflow should fail');
-  assert(result.data && result.data.error === 'workflow_name_conflict', `expected JSON workflow_name_conflict, got ${JSON.stringify(result.data)}`);
-  assert(before === after, 'conflicting migration should not write config');
+  for (const testCase of cases) {
+    const tmp = createTmpDir();
+    writeProjectConfig(tmp, testCase.config);
+    const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+    const result = runInDir('config migrate', tmp);
+    const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+    assert(!result.ok, `${testCase.name} should fail`);
+    assert(result.data && result.data.error === 'unsupported_obsolete_config', `${testCase.name} should return unsupported_obsolete_config: ${JSON.stringify(result.data)}`);
+    assert(result.data.configPath === testCase.expectedConfigPath, `${testCase.name} should report ${testCase.expectedConfigPath}, got ${JSON.stringify(result.data)}`);
+    assert(before === after, `${testCase.name} failed migration should not write config`);
+  }
 });
 
-test('config migrate requires exact old bugfix full phase names and primary skills', () => {
+test('config read commands reject obsolete config keys without conversion', () => {
+  const commands = [
+    'config get',
+    'config review-level resolve',
+  ];
+
+  for (const command of commands) {
+    const tmp = createTmpDir();
+    writeProjectConfig(tmp, {
+      workflows: { standard: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'] }]) },
+      pipelines: { standard: [{ name: 'plan', skills: ['fixme-write-plan'] }] },
+    });
+    const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+    const result = runInDir(command, tmp);
+    const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+    assert(!result.ok, `${command} should reject obsolete config`);
+    assert(result.data && result.data.error === 'unsupported_obsolete_config', `${command} should return unsupported_obsolete_config: ${JSON.stringify(result.data)}`);
+    assert(result.data.configPath === 'pipelines', `${command} should report pipelines path: ${JSON.stringify(result.data)}`);
+    assert(before === after, `${command} should not write config`);
+  }
+});
+
+test('config migrate rejects non-final full workflow shapes without conversion', () => {
   const tmp = createTmpDir();
   writeProjectConfig(tmp, {
     workflows: {
-      full: workflowWithPhases([
-        { name: 'custom-investigate', skills: ['fixme-investigate'] },
-        { name: 'research', skills: ['fixme-research'] },
-        { name: 'plan', skills: ['fixme-write-plan'] },
-        { name: 'implement', skills: ['fixme-execute-plan'] },
-        { name: 'verify', skills: ['fixme-browser-verify'] },
-      ]),
+      full: workflowWithPhases(STANDARD_PIPELINES.full.slice(0, 4)),
     },
   });
   const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
   const result = runInDir('config migrate', tmp);
   const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
 
-  assert(!result.ok, 'legacy full with custom phase names should fail instead of moving to bugfix');
+  assert(!result.ok, 'non-final full workflow should fail instead of being converted');
   assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
   assert(path.isAbsolute(result.data.path), `workflow conflict should include absolute path, got ${JSON.stringify(result.data)}`);
   assert(before === after, 'failed migration should not write config');
@@ -2096,167 +3137,6 @@ test('config migrate requires exact final full phase names and primary skills', 
   assert(result.data && result.data.error === 'workflow_name_conflict', `expected workflow_name_conflict, got ${JSON.stringify(result.data)}`);
   assert(path.isAbsolute(result.data.path), `workflow conflict should include absolute path, got ${JSON.stringify(result.data)}`);
   assert(before === after, 'failed migration should not write config');
-});
-
-test('config migrate converts legacy review softness to final review levels', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    review: {
-      softness: {
-        default: 'default',
-        surfaces: { 'pr-comments': 'tactical' },
-        workflows: {
-          default: {
-            default: 'lenient',
-            phases: { plan: 'strict', implement: 'panic' },
-          },
-        },
-      },
-    },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-
-  assert(config.review.level === 'standard', 'legacy global default should convert to standard');
-  assert(config.workflows.standard.review.level === 'lenient', 'legacy workflow softness should convert to workflow review.level');
-  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === 'strict', 'legacy phase strict should convert to phase review.level');
-  assert(config.workflows.standard.phases.find(phase => phase.name === 'implement').review.level === 'critical', 'legacy phase panic should convert to critical');
-  assert(config.pullRequestComments.review.level === 'fast-track', 'legacy PR tactical surface should convert to fast-track');
-  assert(!config.review.softness, 'legacy softness config should be removed');
-});
-
-test('config migrate converts legacy float softness and review surfaces into review-enabled phases', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    review: {
-      softness: {
-        default: 0.9,
-        surfaces: {
-          'spec-review': 'lenient',
-          'plan-review': 'strict',
-          'code-review': 'panic',
-          'pr-comments': 'tactical',
-        },
-        workflows: {
-          standard: { phases: { plan: 'default' } },
-        },
-      },
-    },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-
-  assert(config.review.level === 'fast-track', `legacy float 0.9 should convert to fast-track, got ${config.review.level}`);
-  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === 'standard', 'legacy phase override should beat plan-review surface');
-  assert(config.workflows.standard.phases.find(phase => phase.name === 'implement').review.level === 'critical', 'code-review surface should convert into implement review-enabled phases');
-  assert(config.workflows['plan-only'].phases.find(phase => phase.name === 'plan').review.level === 'strict', 'plan-review surface should convert into plan review-enabled phases');
-  assert(config.workflows.full.phases.find(phase => phase.name === 'product-spec').review.level === 'lenient', 'spec-review surface should convert into product spec phase');
-  assert(config.workflows.full.phases.find(phase => phase.name === 'technical-spec').review.level === 'lenient', 'spec-review surface should convert into technical spec phase');
-  assert(config.pullRequestComments.review.level === 'fast-track', 'PR review surface should still convert to pullRequestComments.review.level');
-});
-
-test('config migrate converts legacy float softness using final review-level bands', () => {
-  const cases = [
-    [0, 'strict'],
-    [0.15, 'strict'],
-    [0.1501, 'standard'],
-    [0.45, 'standard'],
-    [0.4501, 'lenient'],
-    [0.725, 'lenient'],
-    [0.7251, 'fast-track'],
-    [0.9249, 'fast-track'],
-    [0.925, 'critical'],
-    [1, 'critical'],
-  ];
-
-  for (const [value, expectedLevel] of cases) {
-    const tmp = createTmpDir();
-    writeProjectConfig(tmp, {
-      review: {
-        softness: {
-          default: value,
-        },
-      },
-    });
-
-    const result = runInDir('config migrate', tmp);
-    assert(result.ok, `migration should succeed for ${value}: ${JSON.stringify(result.data)}`);
-    const config = readProjectConfig(tmp);
-    assert(config.review.level === expectedLevel, `legacy float ${value} should convert to ${expectedLevel}, got ${config.review.level}`);
-  }
-});
-
-test('config migrate warns for invalid present legacy softness values and falls through', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    review: {
-      softness: {
-        default: 'bogus',
-        surfaces: {
-          'plan-review': 1.1,
-          'pr-comments': -0.01,
-        },
-        workflows: {
-          standard: {
-            default: 'wat',
-            phases: {
-              plan: 2,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed with warnings: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-  const warnings = result.data.warnings || [];
-
-  assert(config.review.level === 'standard', `invalid global softness should fall through to final default standard, got ${config.review.level}`);
-  assert(!config.workflows.standard.review || config.workflows.standard.review.level === undefined, 'invalid workflow softness should not write workflow review.level');
-  assert(config.workflows.standard.phases.find(phase => phase.name === 'plan').review.level === undefined, 'invalid phase and surface softness should not write phase review.level');
-  assert(!config.pullRequestComments || !config.pullRequestComments.review || config.pullRequestComments.review.level === undefined, 'invalid PR softness should not write pullRequestComments.review.level');
-  assert(warnings.some(warning => warning.configPath === 'review.softness.default'), `missing warning for review.softness.default: ${JSON.stringify(warnings)}`);
-  assert(warnings.some(warning => warning.configPath === 'review.softness.workflows.standard.default'), `missing warning for workflow default: ${JSON.stringify(warnings)}`);
-  assert(warnings.some(warning => warning.configPath === 'review.softness.workflows.standard.phases.plan'), `missing warning for workflow phase: ${JSON.stringify(warnings)}`);
-  assert(warnings.some(warning => warning.configPath === 'review.softness.surfaces.plan-review'), `missing warning for plan-review surface: ${JSON.stringify(warnings)}`);
-  assert(warnings.some(warning => warning.configPath === 'review.softness.surfaces.pr-comments'), `missing warning for PR comments surface: ${JSON.stringify(warnings)}`);
-});
-
-test('config migrate uses actual workflow moves for legacy workflow review softness', () => {
-  const tmp = createTmpDir();
-  writeProjectConfig(tmp, {
-    workflows: {
-      full: workflowWithPhases([
-        { name: 'investigate', skills: ['fixme-investigate'] },
-        { name: 'research', skills: ['fixme-research'] },
-        { name: 'plan', skills: ['fixme-write-plan'] },
-        { name: 'implement', skills: ['fixme-execute-plan'] },
-        { name: 'verify', skills: ['fixme-browser-verify'] },
-      ], { outerMaxCycles: 5 }),
-    },
-    review: {
-      softness: {
-        default: 'default',
-        workflows: {
-          full: { default: 'panic' },
-        },
-      },
-    },
-  });
-
-  const result = runInDir('config migrate', tmp);
-  assert(result.ok, `migration should succeed: ${JSON.stringify(result.data)}`);
-  const config = readProjectConfig(tmp);
-
-  assert(config.workflows.bugfix.review.level === 'critical', 'legacy full workflow softness should move to final bugfix review.level');
-  assert(!config.workflows.full.review || config.workflows.full.review.level !== 'critical', 'final full must not inherit old bugfix full softness');
-  assert(result.data.renamedWorkflows.some(entry => entry.from === 'full' && entry.to === 'bugfix'), 'migration result should report full -> bugfix move');
 });
 
 test('config migrate rejects invalid final review levels before writing', () => {
@@ -2332,15 +3212,131 @@ test('config set and workflow configure validate final review level fields', () 
 
   result = runInDir('config set review.level "\\"panic\\""', tmp);
   assert(!result.ok, 'invalid review.level should fail');
-  const legacyReviewKey = ['review', 'softness', 'default'].join('.');
-  result = runInDir(`config set ${legacyReviewKey} "\\"strict\\""`, tmp);
-  assert(!result.ok, 'legacy review filter key should be unsupported');
-  const legacyModeKey = ['review', 'mode'].join('.');
-  result = runInDir(`config set ${legacyModeKey} "\\"lenient\\""`, tmp);
-  assert(!result.ok, 'legacy review mode key should be unsupported');
-  const legacyScopeKey = ['fix', 'Scope', 'default'].join('.');
-  result = runInDir(`config set ${legacyScopeKey} "\\"current\\""`, tmp);
-  assert(!result.ok, 'legacy scope key should be unsupported');
+  const obsoleteReviewKey = ['review', 'softness', 'default'].join('.');
+  result = runInDir(`config set ${obsoleteReviewKey} "\\"strict\\""`, tmp);
+  assert(!result.ok, 'obsolete review filter key should be unsupported');
+  const obsoleteModeKey = ['review', 'mode'].join('.');
+  result = runInDir(`config set ${obsoleteModeKey} "\\"lenient\\""`, tmp);
+  assert(!result.ok, 'obsolete review mode key should be unsupported');
+  const obsoleteScopeKey = ['fix', 'Scope', 'default'].join('.');
+  result = runInDir(`config set ${obsoleteScopeKey} "\\"current\\""`, tmp);
+  assert(!result.ok, 'obsolete scope key should be unsupported');
+});
+
+test('config set accepts subRepos and rejects obsolete sub_repos', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir(`config set subRepos '["frontend","backend"]'`, tmp);
+  assert(result.ok, `subRepos should be accepted: ${JSON.stringify(result.data)}`);
+
+  const config = readProjectConfig(tmp);
+  assert(arraysEqual(config.subRepos, ['frontend', 'backend']), `subRepos should be written as camelCase: ${JSON.stringify(config)}`);
+  assert(!Object.prototype.hasOwnProperty.call(config, 'sub_repos'), 'config set must not write sub_repos');
+
+  const obsoleteRoot = createTmpDir();
+  result = runInDir(`config set sub_repos '["frontend"]'`, obsoleteRoot);
+  assert(!result.ok, 'obsolete sub_repos should be rejected');
+  assert(result.data.error.includes('Unsupported config key'), `sub_repos error should be unsupported key, got ${result.data.error}`);
+  assert(!fs.existsSync(path.join(obsoleteRoot, '.fixme', 'config.json')), 'rejected sub_repos write should not create config');
+});
+
+test('config writes and migration reject obsolete nested review fields', () => {
+  const basePhase = { name: 'plan', skills: ['fixme-write-plan'] };
+  const phaseSoftnessWorkflow = JSON.stringify({
+    phases: [
+      { ...basePhase, review: { skills: ['fixme-review-plan'], softness: 'lenient' } },
+    ],
+  });
+  const workflowSoftnessWorkflow = JSON.stringify({
+    review: { softness: 'strict' },
+    phases: [basePhase],
+  });
+  const workflowModeWorkflow = JSON.stringify({
+    review: { mode: 'lenient' },
+    phases: [basePhase],
+  });
+
+  const writeCases = [
+    {
+      name: 'workflow configure phase review softness',
+      command: `config workflow configure custom --data '${phaseSoftnessWorkflow}'`,
+      expectedNeedle: 'softness',
+    },
+    {
+      name: 'workflow configure workflow review softness',
+      command: `config workflow configure custom --data '${workflowSoftnessWorkflow}'`,
+      expectedNeedle: 'softness',
+    },
+    {
+      name: 'workflow configure workflow review mode',
+      command: `config workflow configure custom --data '${workflowModeWorkflow}'`,
+      expectedNeedle: 'mode',
+    },
+    {
+      name: 'config set workflow object with phase review softness',
+      command: `config set workflows.custom '${phaseSoftnessWorkflow}'`,
+      expectedNeedle: 'softness',
+    },
+  ];
+
+  for (const testCase of writeCases) {
+    const tmp = createTmpDir();
+    const result = runInDir(testCase.command, tmp);
+    assert(!result.ok, `${testCase.name} should fail`);
+    assert(result.data.error.includes(testCase.expectedNeedle), `${testCase.name} error should name obsolete field: ${result.data.error}`);
+    assert(!fs.existsSync(path.join(tmp, '.fixme', 'config.json')), `${testCase.name} should not create config`);
+  }
+
+  const migrateCases = [
+    {
+      name: 'top-level review mode',
+      expectedConfigPath: 'review.mode',
+      config: { review: { mode: 'lenient' } },
+    },
+    {
+      name: 'workflow review softness',
+      expectedConfigPath: 'workflows.standard.review.softness',
+      config: { workflows: { standard: workflowWithPhases([basePhase], { review: { softness: 'strict' } }) } },
+    },
+    {
+      name: 'workflow review mode',
+      expectedConfigPath: 'workflows.standard.review.mode',
+      config: { workflows: { standard: workflowWithPhases([basePhase], { review: { mode: 'lenient' } }) } },
+    },
+    {
+      name: 'phase review softness',
+      expectedConfigPath: 'workflows.standard.phases[0].review.softness',
+      config: { workflows: { standard: workflowWithPhases([{ ...basePhase, review: { skills: ['fixme-review-plan'], softness: 'lenient' } }]) } },
+    },
+    {
+      name: 'phase review mode',
+      expectedConfigPath: 'workflows.standard.phases[0].review.mode',
+      config: { workflows: { standard: workflowWithPhases([{ ...basePhase, review: { skills: ['fixme-review-plan'], mode: 'lenient' } }]) } },
+    },
+    {
+      name: 'pull request review softness',
+      expectedConfigPath: 'pullRequestComments.review.softness',
+      config: { pullRequestComments: { review: { softness: 'fast-track' } } },
+    },
+    {
+      name: 'pull request review mode',
+      expectedConfigPath: 'pullRequestComments.review.mode',
+      config: { pullRequestComments: { review: { mode: 'lenient' } } },
+    },
+  ];
+
+  for (const testCase of migrateCases) {
+    const tmp = createTmpDir();
+    writeProjectConfig(tmp, testCase.config);
+    const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+    const result = runInDir('config migrate', tmp);
+    const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+
+    assert(!result.ok, `${testCase.name} should fail migration`);
+    assert(result.data.error === 'unsupported_obsolete_config', `${testCase.name} should return unsupported_obsolete_config: ${JSON.stringify(result.data)}`);
+    assert(result.data.configPath === testCase.expectedConfigPath, `${testCase.name} should report ${testCase.expectedConfigPath}, got ${JSON.stringify(result.data)}`);
+    assert(before === after, `${testCase.name} failed migration should not write config`);
+  }
 });
 
 test('config review-level resolve uses selector validation and fallback order', () => {
@@ -2449,6 +3445,102 @@ test('config workflow configure rejects invalid cycle counts', () => {
   assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
 });
 
+test('config workflow writes and migration reject obsolete pipeline phase alias', () => {
+  const tmp = createTmpDir();
+  const workflow = JSON.stringify({
+    pipeline: [
+      { name: 'plan', skills: ['fixme-write-plan'] },
+    ],
+  });
+
+  let result = runInDir(`config workflow configure custom --data '${workflow}'`, tmp);
+
+  assert(!result.ok, 'workflow configure should reject data.pipeline alias');
+  assert(result.data.error.includes('workflow configure data must use phases'), `error should mention phases, got ${result.data.error}`);
+  assert(!fs.existsSync(path.join(tmp, '.fixme', 'config.json')), 'rejected workflow alias should not create config');
+
+  const workflowWithPhasesAndPipeline = JSON.stringify({
+    phases: [
+      { name: 'plan', skills: ['fixme-write-plan'] },
+    ],
+    pipeline: [
+      { name: 'implement', skills: ['fixme-execute-plan'] },
+    ],
+  });
+
+  const setRoot = createTmpDir();
+  result = runInDir(`config set workflows.custom '${workflowWithPhasesAndPipeline}'`, setRoot);
+  assert(!result.ok, 'config set workflow object should reject data.pipeline alias');
+  assert(result.data.error.includes('workflows.custom.pipeline'), `config set error should name obsolete pipeline alias, got ${result.data.error}`);
+  assert(!fs.existsSync(path.join(setRoot, '.fixme', 'config.json')), 'rejected workflow object alias should not create config');
+
+  const migrateRoot = createTmpDir();
+  writeProjectConfig(migrateRoot, {
+    workflows: {
+      custom: {
+        phases: [
+          { name: 'plan', skills: ['fixme-write-plan'] },
+        ],
+        pipeline: [
+          { name: 'implement', skills: ['fixme-execute-plan'] },
+        ],
+      },
+    },
+  });
+  const before = fs.readFileSync(path.join(migrateRoot, '.fixme', 'config.json'), 'utf8');
+  result = runInDir('config migrate', migrateRoot);
+  const after = fs.readFileSync(path.join(migrateRoot, '.fixme', 'config.json'), 'utf8');
+  assert(!result.ok, 'config migrate should reject workflow data.pipeline alias');
+  assert(result.data.error === 'unsupported_obsolete_config', `workflow data.pipeline should return unsupported_obsolete_config: ${JSON.stringify(result.data)}`);
+  assert(result.data.configPath === 'workflows.custom.pipeline', `workflow data.pipeline should report path, got ${JSON.stringify(result.data)}`);
+  assert(before === after, 'failed workflow data.pipeline migration should not write config');
+});
+
+test('config write commands reject removed workflow names before writing config', () => {
+  const workflow = JSON.stringify({
+    phases: [
+      { name: 'plan', skills: ['fixme-write-plan'] },
+    ],
+  });
+  const removedWorkflowNames = ['default', 'plan', 'execute', 'idea-to-production'];
+
+  for (const workflowName of removedWorkflowNames) {
+    const setWorkflowRoot = createTmpDir();
+    let result = runInDir(`config set workflows.${workflowName} '${workflow}'`, setWorkflowRoot);
+    assert(!result.ok, `config set should reject removed workflow name ${workflowName}`);
+    assert(result.data.error.includes('Unsupported config key'), `error should reject removed workflow key ${workflowName}, got ${result.data.error}`);
+    assert(!fs.existsSync(path.join(setWorkflowRoot, '.fixme', 'config.json')), `rejected removed workflow set should not create config for ${workflowName}`);
+
+    const setWorkflowFieldRoot = createTmpDir();
+    result = runInDir(`config set workflows.${workflowName}.outerMaxCycles 4`, setWorkflowFieldRoot);
+    assert(!result.ok, `config set nested workflow field should reject removed workflow name ${workflowName}`);
+    assert(result.data.error.includes('Unsupported config key'), `nested error should reject removed workflow key ${workflowName}, got ${result.data.error}`);
+    assert(!fs.existsSync(path.join(setWorkflowFieldRoot, '.fixme', 'config.json')), `rejected removed workflow field set should not create config for ${workflowName}`);
+
+    const configureRoot = createTmpDir();
+    result = runInDir(`config workflow configure ${workflowName} --data '${workflow}'`, configureRoot);
+    assert(!result.ok, `workflow configure should reject removed workflow name ${workflowName}`);
+    assert(result.data.error.includes('Removed workflow name is not supported'), `workflow configure error should mention removed name ${workflowName}, got ${result.data.error}`);
+    assert(!fs.existsSync(path.join(configureRoot, '.fixme', 'config.json')), `rejected removed workflow configure should not create config for ${workflowName}`);
+  }
+});
+
+test('config workflow configure duplicate phase error uses workflows path', () => {
+  const tmp = createTmpDir();
+  const workflow = JSON.stringify({
+    phases: [
+      { name: 'plan', skills: ['fixme-write-plan'] },
+      { name: 'plan', skills: ['fixme-review-plan'] },
+    ],
+  });
+
+  const result = runInDir(`config workflow configure custom --data '${workflow}'`, tmp);
+
+  assert(!result.ok, 'workflow configure should reject duplicate phase names');
+  assert(result.data.error.includes('workflows.custom.phases has duplicate phase name'), `error should use workflows path, got ${result.data.error}`);
+  assert(!result.data.error.includes('pipelines.'), `error should not mention obsolete pipelines path, got ${result.data.error}`);
+});
+
 test('config set validates and writes workflow outerMaxCycles', () => {
   const tmp = createTmpDir();
   const result = runInDir('config set workflows.standard.outerMaxCycles 6', tmp);
@@ -2457,7 +3549,7 @@ test('config set validates and writes workflow outerMaxCycles', () => {
   const config = JSON.parse(fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8'));
   assert(config.workflows.standard.outerMaxCycles === 6, 'outerMaxCycles should be written');
   assert(Array.isArray(config.workflows.standard.phases), 'config set should migrate standard workflows');
-  assert(config.workflowControls === undefined, 'config set must not write legacy workflowControls');
+  assert(config.workflowControls === undefined, 'config set must not write obsolete workflowControls');
 });
 
 test('config set rejects unknown config keys', () => {
@@ -2541,7 +3633,21 @@ test('findFixmeRoot: walks up to parent with .fixme/ when sub-dir has .git', () 
   assert(result === workspace, `Should return parent workspace, got ${result}`);
 });
 
-test('findFixmeRoot: respects sub_repos config', () => {
+test('findFixmeRoot: respects subRepos config', () => {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    subRepos: ['frontend', 'backend']
+  }));
+  const subRepo = path.join(workspace, 'frontend');
+  fs.mkdirSync(subRepo, { recursive: true });
+  // No .git needed when subRepos matches
+  const result = findFixmeRoot(subRepo);
+  assert(result === workspace, `Should return parent via subRepos match, got ${result}`);
+});
+
+test('findFixmeRoot: rejects obsolete sub_repos config', () => {
   const workspace = createTmpDir();
   const fixmeDir = path.join(workspace, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
@@ -2550,21 +3656,46 @@ test('findFixmeRoot: respects sub_repos config', () => {
   }));
   const subRepo = path.join(workspace, 'frontend');
   fs.mkdirSync(subRepo, { recursive: true });
-  // No .git needed when sub_repos matches
-  const result = findFixmeRoot(subRepo);
-  assert(result === workspace, `Should return parent via sub_repos match, got ${result}`);
+
+  let threw = false;
+  try {
+    findFixmeRoot(subRepo);
+  } catch (error) {
+    threw = true;
+    assert(error instanceof Error, 'obsolete sub_repos should throw an error object');
+    assert(error.payload && error.payload.error === 'unsupported_obsolete_config', `sub_repos should throw JSON error payload, got ${JSON.stringify(error.payload)}`);
+    assert(error.payload.configPath === 'sub_repos', `sub_repos should report config path, got ${JSON.stringify(error.payload)}`);
+  }
+  assert(threw, 'obsolete sub_repos should fail root resolution');
 });
 
-test('findFixmeRoot: ignores parent .fixme/ when sub_repos does not match', () => {
+test('root command reports obsolete sub_repos as JSON error', () => {
   const workspace = createTmpDir();
   const fixmeDir = path.join(workspace, '.fixme');
   fs.mkdirSync(fixmeDir, { recursive: true });
   fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
-    sub_repos: ['frontend', 'backend']
+    sub_repos: ['frontend']
+  }));
+  const subRepo = path.join(workspace, 'frontend');
+  fs.mkdirSync(subRepo, { recursive: true });
+
+  const result = runInDir('root', subRepo);
+  assert(!result.ok, 'root command should fail on obsolete sub_repos');
+  assert(result.data && result.data.error === 'unsupported_obsolete_config', `root command should return JSON error, got ${JSON.stringify(result)}`);
+  assert(result.data.configPath === 'sub_repos', `root command should report obsolete key, got ${JSON.stringify(result.data)}`);
+  assert(!result.stderr || !result.stderr.includes('Error:'), `root command should not leak an uncaught stack, got ${result.stderr}`);
+});
+
+test('findFixmeRoot: ignores parent .fixme/ when subRepos does not match', () => {
+  const workspace = createTmpDir();
+  const fixmeDir = path.join(workspace, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    subRepos: ['frontend', 'backend']
   }));
   const unrelated = path.join(workspace, 'scripts');
   fs.mkdirSync(unrelated, { recursive: true });
-  // No .git and not in sub_repos
+  // No .git and not in subRepos
   const result = findFixmeRoot(unrelated);
   assert(result === unrelated, `Should NOT match unrelated dir, got ${result}`);
 });
@@ -2613,7 +3744,7 @@ test('findFixmeRoot: parent .fixme/ without config.json AND no .git falls back',
   const subDir = path.join(workspace, 'scripts');
   fs.mkdirSync(subDir, { recursive: true });
   const result = findFixmeRoot(subDir);
-  assert(result === subDir, `Should fall back when no .git and no sub_repos match, got ${result}`);
+  assert(result === subDir, `Should fall back when no .git and no subRepos match, got ${result}`);
 });
 
 // ============================================================================
@@ -2622,13 +3753,15 @@ test('findFixmeRoot: parent .fixme/ without config.json AND no .git falls back',
 
 console.log('\n=== root CLI command ===\n');
 
-test('root: returns fixme_root and fixme_dir for local .fixme/', () => {
+test('root: returns camelCase fixmeRoot and fixmeDir for local .fixme/', () => {
   const tmp = fs.realpathSync(createTmpDir());
   fs.mkdirSync(path.join(tmp, '.fixme'), { recursive: true });
   const result = runInDir('root', tmp);
   assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.fixme_root === tmp, `fixme_root should be ${tmp}, got ${result.data.fixme_root}`);
-  assert(result.data.fixme_dir === path.join(tmp, '.fixme'), `fixme_dir should end with .fixme, got ${result.data.fixme_dir}`);
+  assert(result.data.fixmeRoot === tmp, `fixmeRoot should be ${tmp}, got ${result.data.fixmeRoot}`);
+  assert(result.data.fixmeDir === path.join(tmp, '.fixme'), `fixmeDir should end with .fixme, got ${result.data.fixmeDir}`);
+  assert(!Object.prototype.hasOwnProperty.call(result.data, 'fixme_root'), 'root output should not expose fixme_root');
+  assert(!Object.prototype.hasOwnProperty.call(result.data, 'fixme_dir'), 'root output should not expose fixme_dir');
 });
 
 test('root: resolves to parent when .fixme/ is in parent and sub-dir has .git', () => {
@@ -2639,16 +3772,16 @@ test('root: resolves to parent when .fixme/ is in parent and sub-dir has .git', 
   fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
   const result = runInDir('root', subRepo);
   assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.fixme_root === workspace, `fixme_root should be workspace, got ${result.data.fixme_root}`);
-  assert(result.data.fixme_dir === path.join(workspace, '.fixme'), `fixme_dir should be in workspace, got ${result.data.fixme_dir}`);
+  assert(result.data.fixmeRoot === workspace, `fixmeRoot should be workspace, got ${result.data.fixmeRoot}`);
+  assert(result.data.fixmeDir === path.join(workspace, '.fixme'), `fixmeDir should be in workspace, got ${result.data.fixmeDir}`);
 });
 
 test('root: falls back to CWD when no .fixme/ found', () => {
   const tmp = fs.realpathSync(createTmpDir());
   const result = runInDir('root', tmp);
   assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
-  assert(result.data.fixme_root === tmp, `fixme_root should be CWD, got ${result.data.fixme_root}`);
-  assert(result.data.fixme_dir === path.join(tmp, '.fixme'), `fixme_dir should be CWD/.fixme, got ${result.data.fixme_dir}`);
+  assert(result.data.fixmeRoot === tmp, `fixmeRoot should be CWD, got ${result.data.fixmeRoot}`);
+  assert(result.data.fixmeDir === path.join(tmp, '.fixme'), `fixmeDir should be CWD/.fixme, got ${result.data.fixmeDir}`);
 });
 
 // ============================================================================
@@ -2674,7 +3807,7 @@ test('multi-root: ticket transition uses pipeline from parent .fixme/config.json
   const ticketPath = createResult.data.path;
 
   // Transition using pipeline from parent config - CWD is subRepo
-  const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline default`, subRepo);
+  const t1 = runInDir(`ticket transition "${ticketPath}" plan --pipeline standard`, subRepo);
   assert(t1.ok, `Transition should use parent config, got: ${JSON.stringify(t1.data)}`);
   assert(t1.data.to === 'plan', `Should transition to plan, got ${t1.data.to}`);
 });
@@ -2989,6 +4122,19 @@ test('resolve-model: malformed config falls back gracefully', () => {
   assert(res.data.source === 'default', `source: ${res.data.source}`);
 });
 
+test('resolve-model: rejects obsolete config keys instead of silently using models', () => {
+  const dir = createTmpDir();
+  writeProjectConfig(dir, {
+    models: { profile: 'budget' },
+    pipelines: { standard: [{ name: 'plan', skills: ['fixme-write-plan'] }] },
+  });
+
+  const res = runInDir('resolve-model fixme-write-plan', dir);
+  assert(!res.ok, 'obsolete config should fail model resolution');
+  assert(res.data && res.data.error === 'unsupported_obsolete_config', `resolve-model should return unsupported_obsolete_config, got ${JSON.stringify(res.data)}`);
+  assert(res.data.configPath === 'pipelines', `resolve-model should report obsolete config path, got ${JSON.stringify(res.data)}`);
+});
+
 // ============================================================================
 // Codex agent install tests
 // ============================================================================
@@ -3148,11 +4294,17 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');
   assert(installedTask.includes('## Fixme Usage Tracking'), 'installed Codex skill should include usage tracking block');
   assert(installedTask.includes('## Fixme Agent Liveness'), 'installed Codex skill should include liveness block');
-  assert(installedTask.includes('run ping --fixme-dir <fixme-dir> --status-id <status_id>'), 'Codex liveness block should use run ping');
-  assert(installedTask.includes('If the dispatch prompt does not include `status_id`, skip this liveness block.'), 'Codex liveness block should be optional when no status_id exists');
+  assert(installedTask.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'Codex liveness block should use run ping');
+  assert(installedTask.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'Codex liveness block should be optional when no statusId exists');
+  assert(installedTask.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'Codex liveness block should not ping over active attention');
   assert(installedTask.includes('--runtime codex'), 'Codex usage block should pass --runtime codex');
   assert(!installedTask.includes('--runtime auto'), 'Codex usage block should not pass --runtime auto');
   assert(!installedTask.includes('--task'), 'usage block must not pass --task');
+  assert(installedTask.includes('If the dispatch prompt includes `pipelineRunId`'), 'Codex usage block should detect camelCase pipelineRunId prompt metadata');
+  assert(installedTask.includes('--pipeline-run-id <pipelineRunId>'), 'Codex usage block should map camelCase prompt metadata to CLI flag');
+  assert(installedTask.includes('If it includes `parentInvocationId`'), 'Codex usage block should detect camelCase parentInvocationId prompt metadata');
+  assert(!installedTask.includes('pipeline_run_id'), 'Codex installed skill should not use snake_case pipeline_run_id prompt metadata');
+  assert(!installedTask.includes('parent_invocation_id'), 'Codex installed skill should not use snake_case parent_invocation_id prompt metadata');
   assert(installedTask.includes('Only run this block when `fixme-task` is the active skill invocation.'), 'usage block should have active-skill guard');
   assert(installedTask.includes('--role orchestrator'), 'fixme-task should be instrumented as orchestrator');
   assert(installedTask.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
@@ -3205,11 +4357,17 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
 
   assert(task.includes('## Fixme Usage Tracking'), 'Claude task skill should include usage tracking block');
   assert(task.includes('## Fixme Agent Liveness'), 'Claude task skill should include liveness block');
-  assert(task.includes('run ping --fixme-dir <fixme-dir> --status-id <status_id>'), 'Claude liveness block should use run ping');
-  assert(task.includes('If the dispatch prompt does not include `status_id`, skip this liveness block.'), 'Claude liveness block should be optional when no status_id exists');
+  assert(task.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'Claude liveness block should use run ping');
+  assert(task.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'Claude liveness block should be optional when no statusId exists');
+  assert(task.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'Claude liveness block should not ping over active attention');
   assert(task.includes('--runtime claude'), 'Claude usage block should pass --runtime claude');
   assert(!task.includes('--runtime auto'), 'Claude usage block should not pass --runtime auto');
   assert(!task.includes('--task'), 'usage block must not pass --task');
+  assert(task.includes('If the dispatch prompt includes `pipelineRunId`'), 'Claude usage block should detect camelCase pipelineRunId prompt metadata');
+  assert(task.includes('--pipeline-run-id <pipelineRunId>'), 'Claude usage block should map camelCase prompt metadata to CLI flag');
+  assert(task.includes('If it includes `parentInvocationId`'), 'Claude usage block should detect camelCase parentInvocationId prompt metadata');
+  assert(!task.includes('pipeline_run_id'), 'Claude installed skill should not use snake_case pipeline_run_id prompt metadata');
+  assert(!task.includes('parent_invocation_id'), 'Claude installed skill should not use snake_case parent_invocation_id prompt metadata');
   assert(task.includes('--role orchestrator'), 'fixme-task role mapping');
   assert(reviewer.includes('--role reviewer'), 'fixme-review-* role mapping');
   assert(handler.includes('--role handler'), 'fixme-handle-* role mapping');
@@ -3321,12 +4479,34 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('usage report --scope'), 'fixme-tools skill should document usage report');
   assert(toolsSkill.includes('run start --fixme-dir'), 'fixme-tools skill should document run start');
   assert(toolsSkill.includes('run ping --fixme-dir'), 'fixme-tools skill should document run ping');
+  assert(toolsSkill.includes('run ping` refuses non-terminal updates that would replace an active `currentCommand: attention:<attentionId>`'), 'fixme-tools skill should document that pings cannot hide pending attention');
   assert(toolsSkill.includes('run status --fixme-dir'), 'fixme-tools skill should document run status');
+  assert(toolsSkill.includes('`run status` reads the current JSON file and rejects stored status files with unsupported top-level fields'), 'fixme-tools skill should document persisted run status shape checks');
   assert(toolsSkill.includes('task save --data'), 'fixme-tools skill should document task save');
   assert(toolsSkill.includes('task save` rejects skeletal inputs that are not self-contained handoffs'), 'fixme-tools skill should document task save handoff validation');
   assert(toolsSkill.includes('task init --ticket'), 'fixme-tools skill should document task init for tickets');
+  assert(toolsSkill.includes('`task save` and `task init` both require the caller to pass a resolved `pipelineResolution`'), 'fixme-tools skill should document resolved pipeline requirement');
   assert(toolsSkill.includes('task checkpoint --state'), 'fixme-tools skill should document task checkpoint');
+  assert(toolsSkill.includes('`task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, and `pendingDecision` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth'), 'fixme-tools skill should document checkpoint shape and forbidden field validation');
   assert(toolsSkill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'fixme-tools skill should document task resolve');
+  assert(toolsSkill.includes('run attention set --fixme-dir'), 'fixme-tools skill should document run attention set');
+  assert(toolsSkill.includes('run attention answer --fixme-dir'), 'fixme-tools skill should document run attention answer');
+  assert(toolsSkill.includes('`run attention set` requires non-empty `ownerSkill`, `kind`, and `promptMarkdown`'), 'fixme-tools skill should document required attention prompt fields');
+  assert(toolsSkill.includes('Provided `attentionId` values must be non-empty strings starting with `attn_` and must not contain surrounding whitespace'), 'fixme-tools skill should document provided attention id validation');
+  assert(toolsSkill.includes('requires every provided routing string field to be non-empty'), 'fixme-tools skill should document routing field string validation');
+  assert(toolsSkill.includes('rejects malformed `metadata` unless it is a JSON object'), 'fixme-tools skill should document attention metadata shape');
+  assert(toolsSkill.includes('`run attention set` rejects overlapping pending attention and terminal run states'), 'fixme-tools skill should document attention set invariants');
+  assert(toolsSkill.includes("`run attention answer` stores the user's non-empty answer"), 'fixme-tools skill should document non-empty answer requirements');
+  assert(toolsSkill.includes('`run attention answer` only accepts the attention currently referenced by `currentCommand`'), 'fixme-tools skill should document stale answer protection');
+  assert(toolsSkill.includes('`run attention answer` requires `answerKind: "decision"` or `answerKind: "clarificationRequest"`'), 'fixme-tools skill should document explicit answer kind requirements');
+  assert(toolsSkill.includes('`run attention answer` requires `answeredBy: "user"`'), 'fixme-tools skill should document answer attribution requirements');
+  assert(toolsSkill.includes('`run attention answer` rejects unsupported answer fields; answer payloads are exactly `answer`, `answeredBy`, and `answerKind`'), 'fixme-tools skill should document closed answer payload shape');
+  assert(toolsSkill.includes('For `ownerSkill: "fixme-task"`, `run attention set` also requires `resumeRef` and `taskStatePath`'), 'fixme-tools skill should document fixme-task attention resume requirements');
+  assert(toolsSkill.includes('fixme-task `taskStatePath` must be absolute'), 'fixme-tools skill should document absolute task state paths for fixme-task attention');
+  assert(toolsSkill.includes('For `ownerSkill: "fixme-task"`, `run attention set` also requires `sourceSkill` and a supported `answerMode`'), 'fixme-tools skill should document fixme-task attention source and answer mode requirements');
+  assert(toolsSkill.includes('`run attention show` only renders the attention currently referenced by `currentCommand`'), 'fixme-tools skill should document attention show safety requirements');
+  assert(toolsSkill.includes('Attention reads reject stored records with unsupported top-level fields, missing `promptMarkdown`, malformed `metadata`, invalid timestamps, answer-shape mismatches, mismatched `attentionId`, or unsupported `status`.'), 'fixme-tools skill should document persisted attention record integrity checks');
+  assert(toolsSkill.includes('`run attention clear` only clears an answered attention record that is still referenced by `currentCommand`'), 'fixme-tools skill should document attention clear safety requirements');
 });
 
 test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {
@@ -3334,9 +4514,17 @@ test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', (
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('usageInvocationId'), 'fixme-task should name its usage invocation state');
   assert(skill.includes('pipelineRunId'), 'fixme-task should name the shared pipelineRunId state');
-  assert(skill.includes('pipeline_run_id: <pipelineRunId>'), 'child prompts should include pipeline_run_id');
-  assert(skill.includes('parent_invocation_id: <usageInvocationId>'), 'child prompts should include parent_invocation_id');
-  assert(skill.includes('Nested `fixme-task` receives a `pipeline_run_id`'), 'nested pipeline ID reuse should be explicit');
+  assert(skill.includes('pipelineRunId: <pipelineRunId>'), 'child prompts should include camelCase pipelineRunId');
+  assert(skill.includes('parentInvocationId: <usageInvocationId>'), 'child prompts should include camelCase parentInvocationId');
+  assert(skill.includes('Nested `fixme-task` receives a `pipelineRunId`'), 'nested pipeline ID reuse should be explicit');
+  assert(skill.includes('ownerSkill: fixme-task'), 'task-state owner prompt should use camelCase ownerSkill');
+  assert(skill.includes('resumeRef: <FIXME-N|task-path|state-path|ticket-path>'), 'task-state owner prompt should use camelCase resumeRef');
+  assert(skill.includes('taskStatePath: <task-state-path>'), 'task-state owner prompt should use camelCase taskStatePath');
+  assert(!skill.includes('pipeline_run_id'), 'fixme-task prompt contract should not use snake_case pipeline_run_id');
+  assert(!skill.includes('parent_invocation_id'), 'fixme-task prompt contract should not use snake_case parent_invocation_id');
+  assert(!skill.includes('owner_skill:'), 'fixme-task prompt contract should not use snake_case owner_skill');
+  assert(!skill.includes('resume_ref:'), 'fixme-task prompt contract should not use snake_case resume_ref');
+  assert(!skill.includes('task_state_path:'), 'fixme-task prompt contract should not use snake_case task_state_path');
 });
 
 test('fixme-task skill: creates liveness status for every dispatched agent', () => {
@@ -3344,7 +4532,7 @@ test('fixme-task skill: creates liveness status for every dispatched agent', () 
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <agent-name>'), 'fixme-task should create liveness status before each Agent dispatch');
   assert(skill.includes('<liveness>'), 'child prompts should include liveness block');
-  assert(skill.includes('status_id: <status_id from run start>'), 'child prompts should include status_id');
+  assert(skill.includes('statusId: <statusId from run start>'), 'child prompts should include statusId');
   assert(skill.includes('Do not dispatch the agent if `run start` fails.'), 'fixme-task should fail closed when liveness setup fails');
 });
 
@@ -3356,24 +4544,154 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
 });
 
+test('fixme-task skill: owns durable attention requests and answer resume', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('--answer-attention <attention-id>'), 'fixme-task should document answer-attention resume input');
+  assert(skill.includes('FIXME_ATTENTION_REQUIRED: <attention-id>'), 'fixme-task should return a machine-readable attention directive');
+  assert(skill.includes('state `waitingForUser` with `pendingDecision.attentionId`'), 'fixme-task should checkpoint waiting state with attention id');
+  assert(skill.includes('pendingDecision.attentionStatusId'), 'fixme-task should store the run status id that owns the attention record');
+  assert(skill.includes('Generate the attention id before checkpointing task state'), 'fixme-task should allocate the attention id before writing resumable state');
+  assert(skill.includes('Checkpoint task state before calling `run attention set`'), 'fixme-task should make resume metadata durable before exposing the prompt');
+  assert(skill.includes('absolute `taskStatePath`'), 'fixme-task should pass an absolute task state path to attention records');
+  assert(skill.includes('"taskStatePath":"<absolute-task-state-path>"'), 'fixme-task attention example should use an absolute task state path placeholder');
+  assert(!skill.includes('store the Agent Escalation block with `run attention set`, checkpoint'), 'agent escalation instructions should not expose attention before checkpointing');
+  assert(!skill.includes('store the Pipeline Escalation block with `run attention set`, checkpoint'), 'loop guard instructions should not expose attention before checkpointing');
+  assert(!skill.includes('store the complete Review Classification block with `run attention set`, checkpoint'), 'review decision instructions should not expose attention before checkpointing');
+  assert(skill.includes('Load the answered attention record from `pendingDecision.attentionStatusId`'), 'answer resume should load attention from task state, not implicit current status');
+  assert(skill.includes('If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly.'), 'answer-attention resumes should not present pendingDecision directly');
+  assert(skill.includes('Consume `--answer-attention` before any normal liveness ping, Agent dispatch, or status reset so the runtime does not reject the liveness update while the active `currentCommand: attention:<attention-id>` marker is still pending'), 'answer resume should clear pending attention before normal liveness resumes');
+  assert(skill.includes('run attention clear'), 'answer resume should clear durable attention after consuming it');
+  assert(skill.includes('write `<fixme-dir>/decisions.md` for every answered attention decision that constrains task behavior'), 'answer resume should persist task-constraining child decisions');
+  assert(skill.includes('re-dispatch the same child step with the answered input'), 'answer resume should feed child attention answers back to the child step');
+  assert(skill.includes('Only `fixme-task` writes the decision log after an attention answer'), 'fixme-task should preserve decision ownership');
+  assert(skill.includes('Use `answer.answerKind` to distinguish `decision` from `clarificationRequest`'), 'answer resume should use explicit answer kind');
+  assert(skill.includes('If the answered attention record contains `answerKind: "clarificationRequest"`, treat it as Discussion Mode input.'), 'answer resume should support clarification turns without treating them as decisions');
+  assert(skill.includes('clear the consumed attention before creating the replacement attention'), 'clarification replacement attention should avoid overlapping pending attention');
+  assert(skill.includes('For a clarification turn, build the replacement prompt, generate a new attention id, checkpoint `waitingForUser`, store the replacement prompt with `run attention set`, and return'), 'clarification turns should re-prompt through checkpoint-first durable attention');
+  assert(skill.includes('If `answer.answerKind` is `decision` but only some decision points are resolved, keep the parsed partial answers in `pendingDecision.partialAnswers`'), 'partial attention decisions should be preserved before re-prompting unresolved points');
+  assert(skill.includes('For partial decision answers, build the replacement prompt for only the unresolved decision points, generate a new attention id, checkpoint `waitingForUser`, store that prompt with `run attention set`, and return'), 'partial attention decisions should re-prompt through checkpoint-first durable attention');
+  assert(!skill.includes('Then create a new durable attention prompt with the clarification answer plus the still-unresolved decision points, checkpoint'), 'clarification turns should not create replacement attention before checkpointing');
+  assert(!skill.includes('clear the consumed attention before creating a replacement prompt for only the unresolved decision points, checkpoint'), 'partial decisions should not create replacement attention before checkpointing');
+  assert(skill.includes('resume an existing task continuation, never save a new task'), 'resume mode should forbid duplicate saved-task creation');
+  assert(skill.includes('Attention Resume Examples'), 'fixme-task should include concrete attention resume examples');
+  assert(skill.includes('Attention examples use the same checkpoint-first order'), 'fixme-task examples should explicitly preserve checkpoint-first ordering');
+  assert(!skill.includes('Then it checkpoints `pendingDecision.attentionId` and returns:'), 'fixme-task examples should not checkpoint after exposing attention');
+  assert(skill.includes('Skill("fixme-task", "--nested --resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should document the Claude inline resume shape');
+  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'fixme-task should document the Codex installed-skill resume shape');
+  assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'fixme-task should document the Claude background agent resume shape');
+  assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'fixme-task should document the Codex background agent resume shape');
+  assert(skill.includes('The status id is context, not a command-line flag.'), 'fixme-task should clarify how liveness status is carried on resume');
+  const ticketModeSentences = skill.match(/^Ticket mode\. The orchestrator tracks pipeline progress via ticket state transitions\.$/gm) || [];
+  assert(ticketModeSentences.length === 1, `ticket mode intro should appear once, got ${ticketModeSentences.length}`);
+});
+
+test('fixme-task skill: native ASK_USER pauses use durable attention when not user-facing', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('If `fixme-task` is running in a non-user-facing context (`--nested`, a background session task, or any parent-provided `<liveness>` status id), do not wait on normal text output.'), 'nested/background native ASK_USER should not wait on hidden output');
+  assert(skill.includes('Use the checkpoint-first attention path below to store the complete Review Classification block with `run attention set`'), 'native ASK_USER should store the full review block through checkpoint-first attention');
+  assert(skill.includes('Direct user-facing runs may print the block and wait normally'), 'direct fixme-task should still allow normal user-facing prompts');
+  assert(skill.includes('If attention mode is required but no current fixme-task liveness status id is available, stop with `FIXME_ATTENTION_BLOCKED`'), 'attention mode should fail closed without a task liveness id');
+  assert(skill.includes('After a successful `run attention set`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
+  assert(skill.includes('In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching'), 'answer-attention should feed native ASK_USER batching');
+  assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the checkpoint-first attention path'), 'agent escalation should use checkpoint-first durable attention when nested');
+  assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the checkpoint-first attention path'), 'loop guard escalation should use checkpoint-first durable attention when nested');
+  assert(skill.includes('A loop guard escalation in nested mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary'), 'nested loop guard should not output a hidden run summary');
+  assert(skill.includes('or after a loop guard triggers in direct standalone mode'), 'top-level run-summary rule should not imply nested loop guards emit summaries');
+  assert(skill.includes('If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`'), 'missing parent liveness fallback should not hide later prompt failures');
+  assert(!skill.includes('Every review handler classification must be printed to the main conversation'), 'review visibility should not assume nested output reaches the main conversation');
+  assert(!skill.includes('HAS_ASK_USER->ask then re-run'), 'manifest shorthand should not imply direct asking');
+  assert(!skill.includes('batch questions to user (see ASK_USER Batching)'), 'native ASK_USER routing should not use stale direct-wait wording');
+  assert(!skill.includes('or after a loop guard triggers. If you feel'), 'top-level run-summary rule should not keep unconditional loop-guard wording');
+});
+
+test('fixme-task skill: converts child attention requests into owned durable attention', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('FIXME_CHILD_ATTENTION_REQUIRED'), 'fixme-task should define child attention request directives');
+  assert(skill.includes('convert the child request into `run attention set`'), 'fixme-task should create durable attention for child requests');
+  assert(skill.includes('Child skills never write `<fixme-dir>/decisions.md`'), 'child skills should not own decision persistence');
+});
+
+test('fixme-pr-comments skill: brokers nested fixme-task attention without owning decisions', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('If nested `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect nested task attention directives');
+  assert(skill.includes('run attention show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through fixme-tools');
+  assert(skill.includes('run attention answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should record user answers through fixme-tools');
+  assert(skill.includes('Use the `resumeRef` returned by `run attention show`'), 'PR comments should resume from the attention record resumeRef');
+  assert(skill.includes('Skill("fixme-task", "--nested --resume <resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
+  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the Codex inline resume invocation');
+  assert(!skill.includes('if the runtime requires a fresh invocation'), 'PR comments should not make attention resume optional');
+  assert(!skill.includes('same routed fix items plus `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should not re-pass routed fix item text during attention resume');
+  assert(skill.includes('reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>`'), 'PR comments should reuse the same task run status when resuming');
+  assert(skill.includes('The status id is context, not a command-line flag.'), 'PR comments should clarify liveness status is not a CLI argument');
+  assert(skill.includes('If the user response is a decision answer, call `run attention answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should scope decision answers at the answer-write step');
+  assert(skill.includes('If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.'), 'PR comments should scope clarification requests at the answer-write step');
+  assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'PR comments should broker clarification requests without answering them');
+  assert(skill.includes('If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again'), 'PR comments should resume already answered attention instead of re-prompting');
+  assert(skill.includes('Resume nested `fixme-task` immediately with `--nested --resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should preserve nested mode when resuming already answered attention');
+  assert(!skill.includes('Resume nested `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should not drop nested mode on already answered attention resumes');
+  assert(skill.includes('If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'PR comments should broker clarification follow-up attention prompts');
+  assert(skill.includes('Do not write `<fixme-dir>/decisions.md`; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own nested task decisions');
+});
+
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('active_run_status_id'), 'fixme-session should track active_run_status_id');
+  assert(skill.includes('activeRunStatusId'), 'fixme-session should track activeRunStatusId');
   assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'fixme-session should create liveness status before background fixme-task');
-  assert(skill.includes('status_id: <status_id from run start>'), 'background prompt should include status_id');
-  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <active_run_status_id>'), 'status flow should read liveness status');
+  assert(skill.includes('statusId: <statusId from run start>'), 'background prompt should include statusId');
+  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'status flow should read liveness status');
+});
+
+test('fixme-session data flow: documents background liveness state', () => {
+  const dataFlowPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'docs', 'data-flow.md');
+  const dataFlow = fs.readFileSync(dataFlowPath, 'utf8');
+  assert(dataFlow.includes('`activeRunStatusId`'), 'session data-flow doc should name activeRunStatusId');
+  assert(dataFlow.includes('The active background `fixme-task` run status id used for liveness and attention brokering.'), 'session data-flow doc should describe activeRunStatusId ownership');
+  assert(dataFlow.includes('records `active_task` and `activeRunStatusId`'), 'session dispatch flow should record both active task fields');
+  assert(dataFlow.includes('clears `active_task` and `activeRunStatusId`'), 'session completion flow should clear both active task fields');
+  assert(dataFlow.includes('Session file, ticket list, task output, run status'), 'session refresh points should include run status reads');
+  assert(!dataFlow.includes('Legacy fallback states'), 'session data-flow doc must not document removed legacy fallback states');
+  assert(!dataFlow.includes('investigating -> researching -> planning -> implementing -> verifying'), 'session data-flow doc must not document removed historical state chain');
+});
+
+test('fixme-session skill: brokers background fixme-task attention without owning decisions', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('If `run status` reports `currentCommand` in the form `attention:<attention-id>`'), 'session should detect background task attention');
+  assert(skill.includes('run attention show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through fixme-tools');
+  assert(skill.includes('run attention answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should record user answers through fixme-tools');
+  assert(skill.includes('Use the `resumeRef` returned by `run attention show`'), 'session should resume from the attention record resumeRef');
+  assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'session should document Claude background task resume');
+  assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'session should document Codex background task resume');
+  assert(skill.includes('reuse the same `<liveness>` `statusId: <activeRunStatusId>`'), 'session should reuse the same background run status when resuming');
+  assert(skill.includes('The status id is context, not a command-line flag.'), 'session should clarify liveness status is not a CLI argument');
+  assert(skill.includes('If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `run attention answer`.'), 'session should scope decision answers at the answer-write step');
+  assert(skill.includes('If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command.'), 'session should scope clarification requests at the answer-write step');
+  assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'session should broker clarification requests without answering them');
+  assert(skill.includes('If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again'), 'session should resume already answered attention instead of re-prompting');
+  assert(skill.includes('If the resumed background `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'session should broker clarification follow-up attention prompts');
+  assert(skill.includes('Do not write `<fixme-dir>/decisions.md`; the background `fixme-task` resumes and writes decisions itself.'), 'session should not own background task decisions');
 });
 
 test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('Liveness is the only allowed `<fixme-dir>` carve-out'), 'PR comments should permit only the liveness carve-out');
+  assert(skill.includes('Liveness and attention brokering are the only allowed `<fixme-dir>` carve-outs'), 'PR comments should permit only liveness and attention carve-outs');
+  assert(!skill.includes('except for liveness commands'), 'PR comments should not keep stale liveness-only carve-out wording');
+  assert(!skill.includes('except for the liveness carve-out'), 'PR comments should not keep stale liveness-only carve-out prose');
+  assert(!skill.includes('except for liveness carve-out'), 'PR comments should not keep stale liveness-only hard-constraint prose');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
   assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should create liveness status before nested fixme-task');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the nested fixme-task status id');
-  assert(skill.includes('status_id: <fixmeTaskStatusId>'), 'nested fixme-task args should include status_id');
+  assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'nested fixme-task args should include statusId');
   assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'parent wait loop should read nested fixme-task liveness');
+  assert(skill.includes('If `currentCommand` is `attention:<attention-id>`, follow the attention broker path before reporting coarse progress'), 'parent wait loop should broker attention instead of just reporting it');
+  assert(skill.includes('`Step 9.1` ... `Step 9.8`'), 'PR comments should describe nested fixme-task as eight substeps');
+  assert(!skill.includes('`Step 9.1` ... `Step 9.9`'), 'PR comments should not imply nested fixme-task has a run-summary substep');
 });
 
 test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {
@@ -3381,7 +4699,7 @@ test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', (
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('For `Run configured fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`.'), 'brainstorm should map the fixme-task menu option to the fixme-task agent');
   assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <selected-fixme-agent>'), 'brainstorm should create liveness before downstream dispatch');
-  assert(skill.includes('status_id: <status_id from run start>'), 'brainstorm downstream args should include liveness status_id');
+  assert(skill.includes('statusId: <statusId from run start>'), 'brainstorm downstream args should include liveness statusId');
   assert(skill.includes('Do not dispatch the downstream skill if `run start` fails.'), 'brainstorm should fail closed when liveness setup fails');
 });
 
@@ -3403,6 +4721,125 @@ test('fixme-brainstorm skill: labels routing options in B A C order with configu
   assert(!menu.includes('Run full fixme-task workflow'), 'routing menu should not imply the workflow named full');
 });
 
+test('fixme-brainstorm skill: dispatch and resumed task modes never show save or routing menus', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('In standalone direct mode, write the brainstorm document and present the routing menu.'), 'routing menu hard constraint should be scoped to standalone direct mode');
+  assert(!skill.includes('Always write the brainstorm document and present the routing menu.'), 'routing menu hard constraint should not contradict dispatch mode');
+  assert(skill.includes('### Step 9: Present the routing menu (standalone direct mode only)'), 'routing menu process step should be scoped to standalone direct mode');
+  assert(skill.includes('Skip this step in dispatch mode or resumed saved-task mode.'), 'routing menu process step should explicitly skip dispatch and resumed saved-task modes');
+  assert(skill.includes('In dispatch mode, never present the routing menu.'), 'dispatch mode should not show downstream routing choices');
+  assert(skill.includes('If `resumeRef:` is present, treat this as an existing saved task continuation.'), 'brainstorm should recognize resumed saved task context');
+  assert(skill.includes('Do not offer `Save only`, `Write implementation plan`, or `Run configured fixme-task workflow` in resumed or dispatch mode.'), 'resumed or dispatch mode should forbid duplicate save/routing options');
+  assert(skill.includes('return `FIXME_CHILD_ATTENTION_REQUIRED`'), 'brainstorm should hand user prompts back to fixme-task when not user-facing');
+});
+
+test('fixme child skills: task-bound non-user-facing prompts return child attention requests', () => {
+  for (const name of [
+    'fixme-brainstorm',
+    'fixme-investigate',
+    'fixme-research',
+    'fixme-write-product-spec',
+    'fixme-write-technical-spec',
+    'fixme-write-plan',
+    'fixme-execute-plan',
+    'fixme-browser-verify',
+  ]) {
+    const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('Task-Bound User Input Contract'), `${name} should define task-bound input routing`);
+    assert(skill.includes('with `ownerSkill: fixme-task`'), `${name} should detect task-bound mode with camelCase ownerSkill`);
+    assert(!skill.includes('owner_skill: fixme-task'), `${name} should not use snake_case owner_skill in task-bound mode detection`);
+    assert(skill.includes('FIXME_CHILD_ATTENTION_REQUIRED'), `${name} should return child attention directives`);
+    assert(skill.includes('Do not call AskUserQuestion or wait directly when running under `fixme-task`'), `${name} should not pause directly under fixme-task`);
+  }
+});
+
+test('fixme review handlers: ASK_USER output never pauses directly', () => {
+  for (const name of [
+    'fixme-handle-spec-review',
+    'fixme-handle-plan-review',
+    'fixme-handle-code-review',
+  ]) {
+    const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('Handlers do not pause for user input; `fixme-task` presents ASK_USER and FIX_UNCLEAR questions.'), `${name} should leave user pauses to fixme-task`);
+  }
+});
+
+test('fixme reviewers: task-bound uncertainty stays in report output', () => {
+  for (const name of [
+    'fixme-review-spec',
+    'fixme-review-plan',
+    'fixme-review-code',
+  ]) {
+    const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('Reviewers do not pause for task-bound user decisions.'), `${name} should not pause for task-bound user decisions`);
+    assert(skill.includes('When running under `fixme-task`, put unresolved choices in the report'), `${name} should hand uncertainty to the handler`);
+  }
+});
+
+test('fixme agent roles: task-bound user input follows durable attention contracts', () => {
+  for (const name of [
+    'fixme-write-product-spec',
+    'fixme-write-technical-spec',
+    'fixme-write-plan',
+    'fixme-execute-plan',
+    'fixme-investigate',
+    'fixme-research',
+    'fixme-browser-verify',
+  ]) {
+    const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', `${name}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('FIXME_CHILD_ATTENTION_REQUIRED'), `${name} agent should name the child attention directive`);
+    assert(agent.includes('Do not call AskUserQuestion or wait directly when task-bound'), `${name} agent should forbid direct task-bound pauses`);
+  }
+
+  for (const name of [
+    'fixme-review-spec',
+    'fixme-review-plan',
+    'fixme-review-code',
+  ]) {
+    const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', `${name}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('Reviewers do not pause for task-bound user decisions.'), `${name} agent should keep task-bound uncertainty in report output`);
+  }
+
+  for (const name of [
+    'fixme-handle-spec-review',
+    'fixme-handle-plan-review',
+    'fixme-handle-code-review',
+  ]) {
+    const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', `${name}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('Handlers do not pause for user input; `fixme-task` presents ASK_USER and FIX_UNCLEAR questions.'), `${name} agent should leave user pauses to fixme-task`);
+  }
+
+  const taskAgentPath = path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-task.md');
+  const taskAgent = fs.readFileSync(taskAgentPath, 'utf8');
+  assert(taskAgent.includes('FIXME_CHILD_ATTENTION_REQUIRED'), 'fixme-task agent should route child attention directives');
+  assert(taskAgent.includes('FIXME_ATTENTION_REQUIRED'), 'fixme-task agent should name the parent-visible attention directive');
+  assert(taskAgent.includes('native review decisions, agent escalations, and loop guard escalations'), 'fixme-task agent should route every task-owned prompt through attention when nested');
+  assert(taskAgent.includes('clarifying questions in attention answers'), 'fixme-task agent should handle clarification turns without decision-log writes');
+  assert(taskAgent.includes('--answer-attention'), 'fixme-task agent should support answer-attention resumes');
+});
+
+test('fixme shared decision howtos: define format without overriding task-bound transport', () => {
+  for (const name of [
+    'fixme-howto-present-decisions',
+    'fixme-howto-importance',
+    'fixme-howto-write-product-spec',
+    'fixme-howto-write-technical-spec',
+    'fixme-howto-review-spec',
+  ]) {
+    const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('Transport is owned by the caller'), `${name} should not own prompt routing`);
+    assert(skill.includes('Task-bound runs under `fixme-task` use the Task-Bound User Input Contract'), `${name} should point task-bound decisions to durable attention`);
+  }
+});
+
 test('fixme-brainstorm skill: artifact does not write a downstream pipeline hint', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-brainstorm', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -3422,6 +4859,7 @@ test('fixme-task skill: ignores brainstorm handoff text for pipeline resolution'
 
   assert(skill.includes('Brainstorm document handoff sections are assistant-authored metadata, not pipeline evidence.'), 'fixme-task should treat brainstorm handoff text as ineligible pipeline evidence');
   assert(skill.includes('Do not select `plan-only` because a brainstorm artifact says to write an implementation plan.'), 'fixme-task should not convert brainstorm handoff text into plan-only');
+  assert(skill.includes('Do not call `task save` or `task init` without `pipelineResolution`.'), 'fixme-task should require resolved pipeline data before task save/init');
 });
 
 test('fixme router: routes natural-language saved task preparation sequences', () => {
@@ -3502,6 +4940,8 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
   assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
+  assert(skill.includes('No-ticket mode, including nested parent dispatches, must still create or reuse a saved task state before the first phase dispatch.'), 'no-ticket nested dispatches should still have durable task state');
+  assert(skill.includes('This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the saved task boundary');
   assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
   assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');
@@ -3844,12 +5284,12 @@ test('fixme-handle-spec-review uses the same unified routing contract as plan/co
   assert(specHandler.includes('NONBLOCKING_COUNT: <number>'), 'spec handler should count nonblocking findings');
   assert(specHandler.includes('NEXT_ACTION: DONE | SPEC_REVISION | ASK_USER_BATCH | FOLLOWUP_ONLY'), 'spec handler next-action should include SPEC_REVISION and FOLLOWUP_ONLY');
   assert(specHandler.includes('MINOR and INFO findings never trigger a revision loop by themselves'), 'spec handler should keep nonblocking findings out of loops');
-  assert(!specHandler.includes('HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER'), 'spec handler should no longer emit the legacy two-state directive');
+  assert(!specHandler.includes('HANDLER_RESULT: CLEAN | HAS_FIX | HAS_ASK_USER'), 'spec handler should no longer emit the obsolete two-state directive');
   assert(!specHandler.includes('SPEC_LOOP_EXIT'), 'spec handler should no longer use SPEC_LOOP_EXIT; CLEAN with DONE replaces it');
 
   assert(specAgent.includes('HAS_BLOCKING_FIX'), 'spec handler agent role text should enumerate HAS_BLOCKING_FIX');
   assert(specAgent.includes('HAS_NONBLOCKING_FINDINGS'), 'spec handler agent role text should enumerate HAS_NONBLOCKING_FINDINGS');
-  assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(specAgent), 'spec handler agent role text should not enumerate the legacy two-state directive');
+  assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(specAgent), 'spec handler agent role text should not enumerate the obsolete two-state directive');
 });
 
 test('fixme review handler agents enumerate the unified three-state directive', () => {
@@ -3859,7 +5299,7 @@ test('fixme review handler agents enumerate the unified three-state directive', 
     const agent = fs.readFileSync(agentPath, 'utf8');
     assert(agent.includes('HAS_BLOCKING_FIX'), `${agentName} role text should enumerate HAS_BLOCKING_FIX`);
     assert(agent.includes('HAS_NONBLOCKING_FINDINGS'), `${agentName} role text should enumerate HAS_NONBLOCKING_FINDINGS`);
-    assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(agent), `${agentName} role text should not enumerate the legacy two-state directive`);
+    assert(!/Output HANDLER_RESULT: CLEAN, HAS_FIX, or HAS_ASK_USER/.test(agent), `${agentName} role text should not enumerate the obsolete two-state directive`);
   }
 });
 
@@ -3976,11 +5416,13 @@ test('fixme-session defaults bug sessions to final bugfix workflow', () => {
 
   assert(session.includes('Default: `"bugfix"` for bug fix sessions'), 'session dispatch should default bug fixes to bugfix');
   assert(session.includes('ticket transition <ticket-folder>/ticket.md investigate --pipeline <pipeline name from step 4>'), 'session investigation pre-phase should transition to investigate with selected pipeline');
+  assert(session.includes('| 0002 | sidebar-overflow | implement |'), 'session status example should use final workflow phase names');
   assert(!session.includes('Default: `"full"` for bug fix sessions'), 'session dispatch must not default bug fixes to full');
   assert(!session.includes('ticket transition <ticket-folder>/ticket.md investigating'), 'session dispatch must not use non-phase state investigating');
+  assert(!session.includes('| 0002 | sidebar-overflow | implementing |'), 'session status example must not use removed legacy state names');
   assert(!session.includes('ticket transition <ticket-folder>/ticket.md investigate`'), 'session dispatch must not use bare investigate transition without pipeline');
   assert(investigationAgent.includes('transitioned to `investigate`'), 'investigation agent should refer to final investigate phase');
-  assert(!investigationAgent.includes('transitioned to "investigating"'), 'investigation agent must not refer to legacy investigating state');
+  assert(!investigationAgent.includes('transitioned to "investigating"'), 'investigation agent must not refer to removed investigating state');
 });
 
 test('fixme-task and fixme-config document final review-level workflows', () => {
@@ -4004,7 +5446,9 @@ test('fixme-task and fixme-config document final review-level workflows', () => 
 
   assert(task.includes('--plan` -> pipeline `plan-only`'), 'task docs should map --plan to plan-only');
   assert(task.includes('--execute` -> pipeline `execute-only`'), 'task docs should map --execute to execute-only');
-  assert(task.includes('`--idea-to-production` remains accepted as a compatibility alias for `full`'), 'task docs should keep idea-to-production as alias only');
+  assert(task.includes('/fixme-task --pipeline full'), 'task docs should use final full workflow selection');
+  assert(!task.includes('--idea-to-production'), 'task docs must not mention removed idea-to-production flag');
+  assert(!task.includes('compatibility alias'), 'task docs must not preserve compatibility alias wording');
   assert(task.includes('Plain `/fixme-task ...` defaults to `standard`'), 'task docs should default plain tasks to standard');
   assert(task.includes('use the hardcoded `standard` workflow'), 'config loading should fall back to standard');
   assert(!task.includes('use the hardcoded `default` workflow'), 'config loading must not mention hardcoded default workflow');
@@ -4476,6 +5920,34 @@ function startUsage(ctx, extra = '') {
   return result.data;
 }
 
+test('usage start and finish: explicit fixmeDir is independent from cwd config resolution', () => {
+  const ctx = createUsageWorkspace();
+  const pollutedCwd = createObsoleteSubReposCwd();
+
+  const started = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --fixme-dir "${ctx.fixmeDir}" --project-root "${ctx.projectRoot}"`, pollutedCwd, ctx.env);
+  assert(started.ok, `usage start should use explicit fixmeDir instead of cwd config, got: ${JSON.stringify(started.data)}`);
+  assert(started.data.finishCommand.includes(`--fixme-dir "${ctx.fixmeDir}"`), `finishCommand should carry explicit fixmeDir, got: ${started.data.finishCommand}`);
+  assert(fs.existsSync(started.data.pendingPath), 'pending file should exist under explicit fixmeDir');
+
+  const pending = readJson(started.data.pendingPath);
+  assert(pending.fixmeDir === ctx.fixmeDir, `pending fixmeDir should be explicit path, got ${pending.fixmeDir}`);
+  assert(pending.projectRoot === ctx.projectRoot, `pending projectRoot should be explicit path, got ${pending.projectRoot}`);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete --fixme-dir "${ctx.fixmeDir}"`, pollutedCwd, ctx.env);
+  assert(finished.ok, `usage finish should use explicit fixmeDir instead of cwd config, got: ${JSON.stringify(finished.data)}`);
+  assert(readJsonl(ctx.projectEvents).length === 1, 'finish should append one project event');
+  assert(readJsonl(ctx.globalEvents).length === 1, 'finish should append one global event');
+});
+
+test('usage start: valueless fixmeDir flag is rejected before creating pending state', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex --fixme-dir', ctx.projectRoot, ctx.env);
+  assert(!result.ok, 'valueless --fixme-dir should fail');
+  assert(result.data.code === 'INVALID_USAGE_PATH', `expected INVALID_USAGE_PATH, got ${JSON.stringify(result.data)}`);
+  assert(!fs.existsSync(path.join(ctx.projectRoot, 'true')), 'valueless flag must not create a literal true directory');
+  assert(!fs.existsSync(path.join(ctx.fixmeDir, 'usage', 'pending')), 'pending directory should not exist');
+});
+
 test('usage finish: missing counters appends one unmeasured row to project and global events', () => {
   const ctx = createUsageWorkspace();
   const started = startUsage(ctx);
@@ -4663,6 +6135,28 @@ function writeUsageEvents(filePath, rows, trailing = true) {
   fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + (trailing ? '\n' : ''));
 }
 
+test('usage report: explicit fixmeDir and global scope are independent from cwd config resolution', () => {
+  const ctx = createUsageWorkspace();
+  const event = usageEvent({ eventId: 'event_explicit_report', invocationId: 'usage_explicit_report', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
+  writeUsageEvents(ctx.projectEvents, [event]);
+  writeUsageEvents(ctx.globalEvents, [event]);
+  const pollutedCwd = createObsoleteSubReposCwd();
+
+  const project = runInDirWithEnv(`usage report --scope project --fixme-dir "${ctx.fixmeDir}"`, pollutedCwd, ctx.env);
+  assert(project.ok, `project report should use explicit fixmeDir instead of cwd config, got: ${JSON.stringify(project.data)}`);
+  assert(project.data.totalUsage.totalTokens === 135, `project total should be 135, got ${project.data.totalUsage.totalTokens}`);
+
+  const global = runInDirWithEnv('usage report --scope global', pollutedCwd, ctx.env);
+  assert(global.ok, `global report should not resolve cwd config, got: ${JSON.stringify(global.data)}`);
+  assert(global.data.totalUsage.totalTokens === 135, `global total should be 135, got ${global.data.totalUsage.totalTokens}`);
+});
+
+test('usage: unknown subcommand lists all valid usage subcommands', () => {
+  const result = run('usage wat');
+  assert(!result.ok, 'unknown usage subcommand should fail');
+  assert(String(result.data.error).includes('Valid: start, finish, report'), `valid subcommands should be complete, got ${JSON.stringify(result.data)}`);
+});
+
 test('usage report: project totals exclude unmeasured rows and include not-included count', () => {
   const ctx = createUsageWorkspace();
   const complete = usageEvent({ eventId: 'event_complete', invocationId: 'usage_complete', projectRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir });
@@ -4687,44 +6181,31 @@ test('usage report: project totals exclude unmeasured rows and include not-inclu
   assert(result.data.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'warning summary includes unmeasured warning');
 });
 
-test('usage report: legacy partial rows are displayed as unmeasured', () => {
+test('usage report: unsupported status rows are excluded with warnings', () => {
   const ctx = createUsageWorkspace();
   writeUsageEvents(ctx.projectEvents, [
     usageEvent({
-      eventId: 'event_legacy_partial',
-      invocationId: 'usage_legacy_partial',
+      eventId: 'event_unknown_status',
+      invocationId: 'usage_unknown_status',
       projectRoot: ctx.projectRoot,
       fixmeDir: ctx.fixmeDir,
-      status: 'partial',
-      tokens: null,
-      warnings: [{ code: 'COUNTERS_UNAVAILABLE', message: 'Counters unavailable.' }],
+      status: 'unknownStatus',
     }),
   ]);
 
   const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
   assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
-  assert(result.data.recent[0].status === 'unmeasured', `legacy partial should report as unmeasured, got ${result.data.recent[0].status}`);
-  assert(result.data.bySkill[0].unmeasuredCount === 1, 'legacy partial row should count as unmeasured');
-  assert(!Object.prototype.hasOwnProperty.call(result.data.bySkill[0], 'partialCount'), 'report should not expose partialCount');
-});
+  assert(result.data.recent.length === 0, 'unsupported status row should not appear in recent rows');
+  assert(result.data.totalUsage.totalTokens === 0, `unsupported status should not count tokens, got ${result.data.totalUsage.totalTokens}`);
+  assert(result.data.notIncludedInTotal.invocationCount === 1, 'unsupported status should be excluded from totals');
+  assert(result.data.notIncludedInTotal.eventIds.includes('event_unknown_status'), 'unsupported status event should be listed');
+  assert(result.data.bySkill.length === 0, 'unsupported status row should not create skill groups');
+  assert(result.data.warningSummary.some(w => w.code === 'UNSUPPORTED_USAGE_STATUS' && w.eventIds.includes('event_unknown_status')), 'unsupported status warning should be summarized');
 
-test('usage report: legacy complete rows are displayed as measured', () => {
-  const ctx = createUsageWorkspace();
-  writeUsageEvents(ctx.projectEvents, [
-    usageEvent({
-      eventId: 'event_legacy_complete',
-      invocationId: 'usage_legacy_complete',
-      projectRoot: ctx.projectRoot,
-      fixmeDir: ctx.fixmeDir,
-      status: 'complete',
-    }),
-  ]);
-
-  const result = runInDirWithEnv('usage report --scope project', ctx.projectRoot, ctx.env);
-  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
-  assert(result.data.recent[0].status === 'measured', `legacy complete should report as measured, got ${result.data.recent[0].status}`);
-  assert(result.data.bySkill[0].measuredCount === 1, 'legacy complete row should count as measured');
-  assert(!Object.prototype.hasOwnProperty.call(result.data.bySkill[0], 'completeCount'), 'report should not expose completeCount');
+  const text = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
+  assert(text.ok, `text report should succeed, got ${JSON.stringify(text.data)}`);
+  assert(text.data.includes('Warnings: UNSUPPORTED_USAGE_STATUS'), `text report should show unsupported status warning, got ${text.data}`);
+  assert(!text.data.includes('unavailable exact counters'), `unsupported status should not be described as unavailable counters, got ${text.data}`);
 });
 
 test('usage report: identical duplicates count once and conflicting duplicates are excluded', () => {
@@ -4923,11 +6404,13 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(bySkill.invocationCount === 2, `bySkill invocationCount should exclude duplicate-conflict groups, got ${bySkill.invocationCount}`);
   assert(bySkill.measuredCount === 1, `bySkill measuredCount ${bySkill.measuredCount}`);
   assert(bySkill.unmeasuredCount === 1, `bySkill unmeasuredCount ${bySkill.unmeasuredCount}`);
-  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'completeCount'), 'bySkill should not expose completeCount');
-  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'partialCount'), 'bySkill should not expose partialCount');
+  assert(
+    Object.keys(bySkill).filter(key => key.endsWith('Count')).every(key => ['invocationCount', 'measuredCount', 'unmeasuredCount'].includes(key)),
+    'bySkill should expose only documented count fields'
+  );
   assert(bySkill.notIncludedInTotal.invocationCount === 2, `bySkill excluded count ${bySkill.notIncludedInTotal.invocationCount}`);
   assert(bySkill.warningSummary.some(w => w.code === 'DUPLICATE_INVOCATION_CONFLICT' && w.count === 1), 'bySkill warning summary includes duplicate conflict group');
-  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose legacy invocations field');
+  assert(!Object.prototype.hasOwnProperty.call(bySkill, 'invocations'), 'bySkill should not expose obsolete invocations field');
   assert(bySkill.totalUsage.nonCachedTokens === 135, `bySkill non-cached tokens ${bySkill.totalUsage.nonCachedTokens}`);
   assert(bySkill.totalUsage.cachedTokens === 20, `bySkill cached tokens ${bySkill.totalUsage.cachedTokens}`);
 
@@ -4935,8 +6418,10 @@ test('usage report: JSON grouping schema includes documented counts and exclusio
   assert(byPipeline.invocationCount === 2, `byPipeline invocationCount should exclude duplicate-conflict groups, got ${byPipeline && byPipeline.invocationCount}`);
   assert(byPipeline.measuredCount === 1, `byPipeline measuredCount ${byPipeline.measuredCount}`);
   assert(byPipeline.unmeasuredCount === 1, `byPipeline unmeasuredCount ${byPipeline.unmeasuredCount}`);
-  assert(!Object.prototype.hasOwnProperty.call(byPipeline, 'completeCount'), 'byPipeline should not expose completeCount');
-  assert(!Object.prototype.hasOwnProperty.call(byPipeline, 'partialCount'), 'byPipeline should not expose partialCount');
+  assert(
+    Object.keys(byPipeline).filter(key => key.endsWith('Count')).every(key => ['invocationCount', 'measuredCount', 'unmeasuredCount'].includes(key)),
+    'byPipeline should expose only documented count fields'
+  );
   assert(byPipeline.notIncludedInTotal.invocationCount === 2, `byPipeline excluded count ${byPipeline.notIncludedInTotal.invocationCount}`);
   assert(byPipeline.warningSummary.some(w => w.code === 'COUNTERS_UNAVAILABLE' && w.count === 1), 'byPipeline warning summary includes unmeasured warning');
   assert(byPipeline.orchestratorUsage.totalTokens === 0, 'byPipeline includes orchestratorUsage subtotal object');

@@ -17,7 +17,25 @@ allowed-tools:
 
 Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`).
 
-**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixme_dir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+**Short version:** run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and use the `fixmeDir` field from the JSON output as `<fixme-dir>`. Never use a literal `.fixme/` path in any Bash command, Read/Write/Edit path, or Grep/Glob pattern.
+
+## Task-Bound User Input Contract
+
+When the dispatch prompt contains `<task-state-owner>` with `ownerSkill: fixme-task`, this skill is running under a resumable `fixme-task`.
+
+Do not call AskUserQuestion or wait directly when running under `fixme-task`. If user input is needed, return `FIXME_CHILD_ATTENTION_REQUIRED` as the final output and let `fixme-task` create the durable attention record:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: fixme-brainstorm
+KIND: brainstorm-decision
+ANSWER_MODE: <freeform|decision-card|multiple-choice>
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+Do not write `<fixme-dir>/decisions.md`, do not create a new saved task, and do not offer downstream routing choices in this mode.
 
 # Fixme Brainstorm
 
@@ -34,7 +52,7 @@ This skill is the missing front step: it explores the idea collaboratively until
 - **NO source code modifications.** The writable artifacts are the brainstorm document under `<fixme-dir>/brainstorms/` and, when task-bound, the saved task preparation artifact index. Downstream skills handle code.
 - **NO assumptions.** Every decision must come from the user's input. Speculation is allowed if explicitly flagged with "assumption:" in the conversation and recorded as a deferred question.
 - **NO multi-question prompts.** Ask one question at a time. Use AskUserQuestion with concrete multiple-choice options when possible.
-- **NO auto-routing.** Always write the brainstorm document and present the routing menu. Dispatch downstream skills only when the user explicitly picks one.
+- **NO auto-routing.** In standalone direct mode, write the brainstorm document and present the routing menu. In dispatch or resumed saved-task mode, write the brainstorm document and return artifact directives only. Dispatch downstream skills only when the user explicitly picks one from a user-facing standalone routing menu.
 - **NO scope creep.** When the user surfaces a separate capability, capture it in the deferred section and steer back to the current topic. Do not silently expand the brainstorm.
 
 ## Input Resolution
@@ -323,7 +341,9 @@ Append a line to `<fixme-dir>/decisions.md` for each new decision if that file e
 
 If this brainstorm is task-bound, run `task attach-artifact --task <ref> --data '<json-object>'` now so future `fixme-task --resume <ref>` runs can discover the brainstorm without chat history.
 
-### Step 9: Present the routing menu
+### Step 9: Present the routing menu (standalone direct mode only)
+
+Skip this step in dispatch mode or resumed saved-task mode. In those modes, return artifact directives only and let the owning orchestrator continue from the saved task state.
 
 Fire `user_input` alert. Then use AskUserQuestion to route to the next step:
 
@@ -350,7 +370,7 @@ Dispatch the selected skill via the Skill tool (`Skill(skill="fixme-task", args=
 - The absolute brainstorm path
 - The original topic (one sentence)
 - The resolved `<fixme-dir>` value if dispatching as an agent
-- The liveness `status_id` when the selected downstream skill maps to a known Fixme agent
+- The liveness `statusId` when the selected downstream skill maps to a known Fixme agent
 
 For "Save only", skip dispatch.
 
@@ -369,7 +389,7 @@ Use this mapping:
 
 For `Run configured fixme-task workflow`, set `<selected-fixme-agent>` to `fixme-task`. `Save only` has no dispatch.
 
-Store the returned `status_id`. Do not dispatch the downstream skill if `run start` fails. Surface the JSON error, fire `task_failed`, and stop.
+Store the returned `statusId`. Do not dispatch the downstream skill if `run start` fails. Surface the JSON error, fire `task_failed`, and stop.
 
 Include liveness in the downstream dispatch arguments:
 
@@ -379,7 +399,7 @@ Fixme dir: <fixme-dir>
 </project>
 
 <liveness>
-status_id: <status_id from run start>
+statusId: <statusId from run start>
 </liveness>
 ```
 
@@ -412,12 +432,17 @@ When an orchestrator (e.g. fixme-task) dispatches this skill as the first phase 
 - `Fixme dir: <absolute-path>` in the `<project>` block
 - `Topic:` line with the topic
 - Optional `Route:` line that pre-selects the routing choice (e.g. `Route: product-spec`)
+- Optional `resumeRef:` line when the brainstorm is part of an existing saved task continuation
 
 In dispatch mode:
 
 - Use the passed `Fixme dir:` value directly. Do not re-resolve.
 - Run the same Socratic loop and write the brainstorm document.
-- If `Route:` was passed, skip the routing menu and return the brainstorm path plus the route as the result. The orchestrator handles the next dispatch.
+- In dispatch mode, never present the routing menu.
+- If `resumeRef:` is present, treat this as an existing saved task continuation.
+- Do not offer `Save only`, `Write implementation plan`, or `Run configured fixme-task workflow` in resumed or dispatch mode.
+- If user input is needed while running in a non-user-facing dispatch, return `FIXME_CHILD_ATTENTION_REQUIRED` so the owning `fixme-task` can create durable attention and the parent broker can present it.
+- Return only artifact directives such as `BRAINSTORM_PATH: <absolute path>` plus any pre-selected `Route:` value. The orchestrator handles the next dispatch.
 
 ## Anti-patterns
 

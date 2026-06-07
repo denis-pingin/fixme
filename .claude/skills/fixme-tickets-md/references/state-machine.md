@@ -8,17 +8,15 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <tic
 
 ## State Sources
 
-The markdown backend supports workflow-derived states and a legacy fallback.
-
-### Workflow-Derived States
+The markdown backend supports workflow-derived states.
 
 When a transition includes `--pipeline <name>` or the ticket frontmatter already has `pipeline: <name>`, `fixme-tools.cjs` loads the named workflow from `<fixme-dir>/config.json`.
 
 Resolution order:
 
 1. `workflows.<name>.phases`
-2. Legacy `pipelines.<name>` read support
-3. No workflow found, fall back to the legacy transition matrix
+2. Built-in standard workflow definitions when the selected workflow is one of the standard names
+3. Built-in `standard` workflow when no config exists and no explicit workflow was selected
 
 Enabled phase names become valid states. Phases with `"enabled": false` are skipped.
 
@@ -35,7 +33,7 @@ Standard workflow examples:
 | `plan-only` | `plan` |
 | `execute-only` | `implement` |
 
-Legacy ticket pipeline values `default`, `plan`, `execute`, and `idea-to-production` are accepted as aliases and normalized to final names on the next successful ticket write.
+Removed workflow aliases such as `default`, `plan`, `execute`, and `idea-to-production` are not normalized. A ticket with one of those names must be corrected to a final workflow name before it can transition.
 
 ### Structural States
 
@@ -47,16 +45,6 @@ These states are always present:
 | `done` | Work completed successfully | Yes |
 | `failed` | Work could not be completed. Reason is stored in `failure_reason`. | Yes |
 | `skipped` | Ticket intentionally skipped. Reason is stored in `failure_reason`. | Yes |
-
-### Legacy Fallback States
-
-If no workflow can be resolved, the backend uses this historical state chain:
-
-```text
-queued -> investigating -> researching -> planning -> implementing -> verifying -> done
-```
-
-Legacy fallback exists for old tickets and session flows that have not stored `pipeline` yet.
 
 ## Workflow Transition Rules
 
@@ -80,26 +68,11 @@ Rules:
 - `skipped` requires `--reason`.
 - `done` does not require a reason.
 
-## Legacy Transition Rules
-
-When no workflow is resolved, valid transitions are:
-
-| From | Valid To |
-| --- | --- |
-| `queued` | `investigating`, `skipped`, `failed` |
-| `investigating` | `researching`, `skipped`, `failed` |
-| `researching` | `planning`, `failed` |
-| `planning` | `implementing`, `failed` |
-| `implementing` | `verifying`, `failed` |
-| `verifying` | `done`, `planning`, `failed` |
-
-In legacy mode, `verifying -> planning` is the only backward retry transition. It requires `--reason` and increments `current_attempt`.
-
 ## Pipeline Storage
 
 When `ticket transition` receives `--pipeline <name>` and the ticket has no `pipeline` value, the command stores that pipeline name in ticket frontmatter. Later transitions can omit `--pipeline` and will reuse the stored workflow.
 
-The flag is still named `--pipeline` for backward compatibility, even though the current config object is named `workflows`.
+The flag is named `--pipeline` because it selects the workflow used to derive ticket states.
 
 ## Retry Semantics
 
@@ -138,7 +111,7 @@ transitions:
 
 | Transition | Owner |
 | --- | --- |
-| `queued -> <first workflow phase>` | `fixme-task` when running with `--ticket`; session pre-investigation may use legacy fallback before pipeline storage. |
+| `queued -> <first workflow phase>` | `fixme-task` when running with `--ticket`. |
 | `<phase> -> <next phase>` | `fixme-task` at phase boundaries. |
 | `<phase> -> <earlier phase>` | `fixme-task` after handler routing requires a retry. |
 | `<last phase> -> done` | `fixme-session` for session tickets; standalone `fixme-task` reports completion without session cleanup. |

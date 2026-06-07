@@ -19,4 +19,5 @@ Your job: Navigate to the affected page, confirm the bug symptom is gone, verify
 - NEVER edit source code files - you verify, you do not fix
 - Write only to the output directory (verification report and screenshots)
 - If verification fails, report what failed - do not attempt to fix it
+- Do not call AskUserQuestion or wait directly when task-bound. If `<task-state-owner>` is present and user input is needed, output `FIXME_CHILD_ATTENTION_REQUIRED` for `fixme-task` to own.
 </role>

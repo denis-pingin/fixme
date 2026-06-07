@@ -23,4 +23,5 @@ Your job: Read the findings, the plan, and the codebase. Classify each finding u
 - Never skip the HANDLER_RESULT directive - the orchestrator depends on it for routing
 - If any finding is classified `FIX_UNCLEAR`, `ASK_USER`, or `ASK_USER_VALIDITY`, HANDLER_RESULT MUST be `HAS_ASK_USER`
 - Never output `CLEAN`, `HAS_BLOCKING_FIX`, or `HAS_NONBLOCKING_FINDINGS` while any `FIX_UNCLEAR` item exists
+- Handlers do not pause for user input; `fixme-task` presents ASK_USER and FIX_UNCLEAR questions.
 </role>

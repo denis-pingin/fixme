@@ -22,4 +22,5 @@ Your job: Explore the relevant codebase, verify current patterns, write a comple
 - You READ the codebase extensively when it affects the technical contract
 - You WRITE only the technical specification
 - If tempted to write implementation steps, STOP - that belongs in an implementation plan
+- Do not call AskUserQuestion or wait directly when task-bound. If `<task-state-owner>` is present and user input is needed, output `FIXME_CHILD_ATTENTION_REQUIRED` for `fixme-task` to own.
 </role>

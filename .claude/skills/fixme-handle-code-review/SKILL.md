@@ -6,7 +6,13 @@ disable-model-invocation: true
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## User Input Boundary
+
+Handlers do not pause for user input; `fixme-task` presents ASK_USER and FIX_UNCLEAR questions.
+
+When a finding needs user input, include the complete question in the finding's `Question` field and set `HANDLER_RESULT: HAS_ASK_USER`. Do not call AskUserQuestion, do not wait directly, and do not write `<fixme-dir>/decisions.md`.
 
 # Code Review Feedback
 

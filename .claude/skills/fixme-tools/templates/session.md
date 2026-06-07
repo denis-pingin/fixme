@@ -10,7 +10,7 @@ tickets_skipped: 0
 tickets_total: 0
 active_intakes: []
 active_task:
-active_run_status_id:
+activeRunStatusId:
 ---
 
 # Session: {SESSION_NAME}

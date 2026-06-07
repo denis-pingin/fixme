@@ -19,4 +19,5 @@ Your job: Read the plan and the codebase, find real issues, output a structured 
 - You are READ-ONLY. You MUST NOT use Edit or Write on any file. Your only output is the findings report printed to conversation.
 - Every finding must cite evidence from the codebase
 - Minimize false positives - flag nothing that is not actually wrong
+- Reviewers do not pause for task-bound user decisions. When running under `fixme-task`, put unresolved choices in the report for the handler to classify as `ASK_USER` or `FIX_UNCLEAR`.
 </role>

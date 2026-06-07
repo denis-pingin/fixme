@@ -9,6 +9,8 @@ These guidelines govern how specifications are reviewed before implementation pl
 
 When the review asks the user to decide anything, present that question with `fixme-howto-present-decisions`. Do not emit free-form questions.
 
+Transport is owned by the caller. This skill defines specification-review decision content only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+
 ## Core Principle
 
 A specification passes review when it makes exactly one valid behavior possible for every declared user action, API input, persisted state, background workflow, and migration path.

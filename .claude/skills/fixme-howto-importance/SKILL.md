@@ -47,6 +47,8 @@ Level route values are:
 blocking-fix | follow-up | decision-needed | dismissed
 ```
 
+Transport is owned by the caller. This skill defines route meaning only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+
 - `blocking-fix`: fix in the current workflow before advancing.
 - `follow-up`: record visibly for later work; do not hide it.
 - `decision-needed`: ask the user because validity, supported behavior, or fix approach cannot be selected safely from evidence.

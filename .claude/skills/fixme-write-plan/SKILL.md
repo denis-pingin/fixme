@@ -6,7 +6,25 @@ argument-hint: "<task description or path to spec>"
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## Task-Bound User Input Contract
+
+When the dispatch prompt contains `<task-state-owner>` with `ownerSkill: fixme-task`, this skill is running under a resumable `fixme-task`.
+
+Do not call AskUserQuestion or wait directly when running under `fixme-task`. If the Input Audit, Design Decision Checkpoint, or rewrite/revision conflict needs a user answer, return `FIXME_CHILD_ATTENTION_REQUIRED` as the final output and let `fixme-task` create the durable attention record:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: fixme-write-plan
+KIND: plan-decision
+ANSWER_MODE: decision-card
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
 # Write Plan
 
@@ -23,7 +41,7 @@ Every gap, ambiguity, or wrong assumption in the plan cascades downstream and co
 ## Hard Constraints
 
 - **NO source code modifications.** Only create/edit the plan document and matching task code map. If tempted to "quickly fix" something in the codebase, stop. That's the executor's job.
-- **NO assumptions.** If anything is unclear about the task, the codebase, or the approach - surface it in the Questions section or ask the user directly. Never guess.
+- **NO assumptions.** If anything is unclear about the task, the codebase, or the approach - surface it in the Questions section, or use the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly. Never guess.
 - **NO thought process in the plan.** No "we could do X or Y" discussions, no tradeoff analysis, no "I considered...". The plan states what to do, not what was considered. Decisions are made before they enter the plan.
 - **NO ambiguity.** Every step must be actionable by an engineer who has never seen this codebase. If a step could be interpreted two ways, it's wrong.
 - **NO delegation of design to the executor.** If a step requires the executor to decide *what* to write (not just *how* to type it), the step is incomplete. The plan makes all design decisions. The executor makes zero. See the Delegation Test below.
@@ -189,7 +207,7 @@ Collect all questions from steps 2-4 into a single numbered list. Every question
 **If the questions list is non-empty:** enter the resolution loop:
 
 1. **Output** the full numbered question list as formatted text (markdown renders in text output).
-2. **Ask** the user via AskUserQuestion: "I have [N] questions to resolve before planning. See above. You can answer specific questions by number, or accept all recommendations." with the option "Proceed with recommendations".
+2. **Ask** for resolution. When running under `fixme-task`, return `FIXME_CHILD_ATTENTION_REQUIRED` with all questions in `PROMPT_MARKDOWN`. In standalone mode, ask the user via AskUserQuestion: "I have [N] questions to resolve before planning. See above. You can answer specific questions by number, or accept all recommendations." with the option "Proceed with recommendations".
 3. **Process the response:**
    - If "Proceed with recommendations": lock ALL questions to their recommended answers, marked as **assumed** (see below).
    - If the user answers some questions explicitly: lock those to the user's answers, marked as **confirmed**. For any question the user did NOT answer, lock to the recommendation, marked as **assumed**.
@@ -201,7 +219,7 @@ Collect all questions from steps 2-4 into a single numbered list. Every question
 
    Two confidence levels:
 
-   - **[confirmed]**: User explicitly chose this (answered the question directly, or carried forward from a prior plan where it was confirmed). To override, you MUST ask the user again with the new evidence. Never silently override.
+   - **[confirmed]**: User explicitly chose this (answered the question directly, or carried forward from a prior plan where it was confirmed). To override, you MUST resolve the decision again with the new evidence through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly. Never silently override.
    - **[assumed]**: Recommendation accepted by default (user did not explicitly answer this question during the Input Audit or Design Decision Checkpoint). If codebase exploration reveals concrete evidence that contradicts this decision, you MAY re-evaluate: present the evidence and the conflicting decision to the user as a new question. The bar is "concrete evidence from the codebase," not "I thought about it more and changed my mind."
 
    **The `[assumed]` tag may ONLY be applied to decisions that went through a Question Resolution Loop (Input Audit or Design Decision Checkpoint).** A design decision discovered during codebase exploration that was never presented to the user is NOT assumed - it is unconfirmed. Unconfirmed decisions must go through the Design Decision Checkpoint (below) before entering the plan. Marking exploration-phase decisions as `[assumed]` to bypass user confirmation is the single most common planning failure mode.
@@ -264,7 +282,7 @@ The Input Audit resolved structural ambiguities before codebase exploration bega
 Classify each discovery:
 
 - **Design decisions** (multiple viable approaches exist, the plan's structure or architecture changes depending on which is chosen): these are NOT unknowns to defer - they are decisions the user must make. Collect them for the Design Decision Checkpoint below.
-- **Blocking unknowns** (a single factual question where the plan cannot proceed without the answer - e.g., "does this API support pagination?"): ask the user directly via AskUserQuestion. Do not guess.
+- **Blocking unknowns** (a single factual question where the plan cannot proceed without the answer - e.g., "does this API support pagination?"): use the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly via AskUserQuestion. Do not guess.
 - **Informational context** (the plan is correct regardless, but the executor benefits from knowing - e.g., "the API response is double-nested"): collect in the Questions section at the end of the plan.
 - **Known flaws** (you discovered that a planned approach won't work - e.g., a route conflict, a spacing bug): these are NOT questions. Fix them in the plan before writing. If you can't fix it without a design decision, it's a design decision - collect it for the checkpoint.
 
@@ -299,7 +317,7 @@ The Input Audit prevents premature confidence before exploration. This checkpoin
 
 ## Plan And Code Map Save Location
 
-Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixme_dir` returned by `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
+Save to `<fixme-dir>/plans/<date>-<feature-name>.md`. Resolve `<fixme-dir>` from the `Fixme dir` field in the dispatch prompt (when dispatched by fixme-task) or from the `fixmeDir` returned by `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (when running standalone). Do NOT derive the path from `Project root` or CWD - in multi-root workspaces they point to the code sub-repo, not to where `.fixme/` lives. Create the directory if it doesn't exist. Use ISO date format: `YYYY-MM-DD`.
 
 Save the matching task code map to `<fixme-dir>/context/<plan-filename-stem>-code-map.md`. Create `<fixme-dir>/context/` if needed. Follow the structure in `fixme-howto-code-map`.
 
@@ -397,7 +415,7 @@ Use the exact saved plan and code map paths. In revision mode, these are the exi
 [Informational context for the executor - things that are true regardless of the plan's approach but useful to know during implementation. If none, omit this section.
 
 This section is NOT a place to defer:
-- **Correctness concerns** ("this might not work because...") - fix the plan or ask the user
+- **Correctness concerns** ("this might not work because...") - fix the plan or use the Task-Bound User Input Contract / standalone user prompt as appropriate
 - **Feasibility risks** ("if routing issues arise...") - resolve before writing the plan
 - **Design decisions** ("we could do X or Y") - decide via the Design Decision Checkpoint
 - **Known flaws** ("the executor may need to override this") - that means the plan is incomplete

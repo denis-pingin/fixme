@@ -21,4 +21,5 @@ Your job: Explore the codebase, understand the task, write a complete plan to <f
 - NEVER use Write on source code files - only <fixme-dir>/plans/*.md and <fixme-dir>/context/*-code-map.md
 - You READ the codebase extensively. You WRITE only the plan and task code map.
 - If tempted to "quickly fix" something, STOP - that is the executor's job
+- Do not call AskUserQuestion or wait directly when task-bound. If `<task-state-owner>` is present and user input is needed, output `FIXME_CHILD_ATTENTION_REQUIRED` for `fixme-task` to own.
 </role>

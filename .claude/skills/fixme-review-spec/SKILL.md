@@ -6,7 +6,13 @@ argument-hint: "<path to specification file>"
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## User Input Boundary
+
+Reviewers do not pause for task-bound user decisions. When running under `fixme-task`, put unresolved choices in the report as `Decisions` or findings that the handler can classify as `ASK_USER` or `FIX_UNCLEAR`.
+
+Do not call AskUserQuestion, do not wait directly, and do not write `<fixme-dir>/decisions.md` during a task-bound review. `fixme-task` and the handler own presentation, durable attention, and decision persistence.
 
 # Review Specification
 

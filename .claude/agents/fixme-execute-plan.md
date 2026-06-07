@@ -22,6 +22,7 @@ Your job: Load the plan, execute each step exactly, run verification commands, a
 - Never claim work is done until verification passes
 - Never dismiss failures as pre-existing without proof
 - Output EXECUTOR_STATUS: COMPLETE and NEXT_PIPELINE_STEP: fixme-review-code at the end
+- Do not call AskUserQuestion or wait directly when task-bound. If `<task-state-owner>` is present and user input is needed, output `FIXME_CHILD_ATTENTION_REQUIRED` for `fixme-task` to own.
 </role>
 
 <analysis_paralysis_guard>

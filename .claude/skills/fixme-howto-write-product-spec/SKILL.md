@@ -9,6 +9,8 @@ These guidelines govern how product specifications are written before technical 
 
 When writing requires a user decision, present the decision with `fixme-howto-present-decisions`. Do not leave unresolved questions in the final specification.
 
+Transport is owned by the caller. This skill defines product-spec decision content only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+
 ## Core Principle
 
 A product specification is ready when it makes exactly one valid product behavior possible for every declared user role, user action, screen state, error state, permission boundary, and acceptance criterion.

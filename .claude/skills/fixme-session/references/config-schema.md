@@ -97,20 +97,13 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level re
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config review-level resolve --path pullRequestComments
 ```
 
-`config ensure` and `config migrate` run the same migration path. They create a missing config file, move legacy `pipelines` and `workflowControls` into `workflows`, add missing standard workflows, convert old review filtering fields to `review.level`, add alert defaults, and preserve unknown custom fields.
+`config ensure` and `config migrate` run the same migration path. They create a missing config file, add missing standard workflows, validate final review-level fields, reject obsolete config keys, add alert defaults, and preserve unknown custom fields.
 
 ## Workflows
 
 Workflow names are final names: `standard`, `quick`, `full`, `bugfix`, `product-spec`, `technical-spec`, `plan-only`, and `execute-only`.
 
-Legacy workflow aliases are accepted for compatibility and normalized on write:
-
-| Legacy | Final |
-| --- | --- |
-| `default` | `standard` |
-| `plan` | `plan-only` |
-| `execute` | `execute-only` |
-| `idea-to-production` | `full` |
+Removed workflow aliases such as `default`, `plan`, `execute`, and `idea-to-production` are rejected instead of normalized.
 
 Each workflow has:
 

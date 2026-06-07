@@ -17,7 +17,7 @@ Resolve `<fixme-dir>` before running report commands:
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
 ```
 
-Use the returned `fixme_dir` value as the current project Fixme directory. Do not use a relative `.fixme/` path.
+Use the returned `fixmeDir` value as the current project Fixme directory. Do not use a relative `.fixme/` path.
 
 ## Usage Tracking
 

@@ -8,7 +8,7 @@ Fixme is a suite of Claude Code skills, Codex-adapted skill copies, and matching
 
 1. **fixme-session** - A long-lived bug fix session orchestrator. Accepts bug reports, creates tickets, and dispatches fixme-task in the background per ticket. Stays responsive for intake and status queries while tasks execute.
 
-2. **fixme-task** - A config-driven workflow executor. Reads workflow definitions from `.fixme/config.json`, falls back to standard workflows or legacy `pipelines`, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries.
+2. **fixme-task** - A config-driven workflow executor. Reads workflow definitions from `.fixme/config.json`, falls back to built-in standard workflows when no config exists, executes phases in order, manages review loops within phases, and optionally updates ticket state at phase boundaries. Obsolete config keys such as `pipelines`, `workflowControls`, and old workflow aliases are rejected instead of migrated.
 
 ## Commands
 
@@ -93,6 +93,10 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs alert --list-sounds
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <absolute-fixme-dir> --agent <agent-name>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <absolute-fixme-dir> --status-id <status-id> --state <running|waiting|blocked|completed|failed> --checkpoint <dispatched|started|working|waiting|finalizing|done> --current-command <string|null>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <absolute-fixme-dir> --status-id <status-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention set --fixme-dir <absolute-fixme-dir> --status-id <status-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention show --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention answer --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention clear --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
 
 # Codex skill and agent installation
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-skills install --skills-src .claude/skills --codex-dir ~/.codex
@@ -190,7 +194,7 @@ The state machine is derived from the workflow configuration in `.fixme/config.j
 queued -> A -> B -> C -> done
 ```
 
-Terminal states: `done`, `failed`, `skipped`. Backward transitions (any phase to any earlier phase) allowed with `--reason`. Legacy hardcoded transitions used as fallback when no pipeline is configured.
+Terminal states: `done`, `failed`, `skipped`. Backward transitions (any phase to any earlier phase) are allowed with `--reason`. When no workflow is configured, the built-in `standard` workflow is used.
 
 ### fixme-task Pipeline Flow
 

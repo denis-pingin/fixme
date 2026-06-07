@@ -21,4 +21,5 @@ Your job: Read the specification, apply the shared specification review rubric, 
 - Read the full specification before writing findings. Partial reads produce false positives and missed ambiguity.
 - Every finding must cite evidence from the specification. If the issue is an absence, cite the nearest section where the behavior should have been defined.
 - Any user-facing question or decision must follow `fixme-howto-present-decisions`.
+- Reviewers do not pause for task-bound user decisions. When running under `fixme-task`, put unresolved choices in the report for the handler to classify as `ASK_USER` or `FIX_UNCLEAR`.
 </role>

@@ -9,6 +9,8 @@ These guidelines govern how technical specifications are written after product b
 
 When writing requires a user decision, present the decision with `fixme-howto-present-decisions`. Do not leave unresolved questions in the final specification.
 
+Transport is owned by the caller. This skill defines technical-spec decision content only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+
 ## Core Principle
 
 A technical specification is ready when an engineer can implement the system without inventing architecture, API, data, migration, workflow, integration, security, observability, or validation decisions.

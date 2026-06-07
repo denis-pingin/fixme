@@ -6,7 +6,25 @@ argument-hint: "<product specification, feature description, or path to source m
 
 ## Fixme Directory
 
-Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixme_dir` from the JSON. Never use a literal `.fixme/` path in any tool.
+Use `<fixme-dir>` for any path under the fixme directory. Resolution rules and the prohibition against literal `.fixme/` paths are defined once in `fixme-howto-find-fixme-dir` (preloaded into this agent's skills frontmatter). Short version: when dispatched, use the `Fixme dir:` value from the `<project>` block of the dispatch prompt; standalone, run `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` and read `fixmeDir` from the JSON. Never use a literal `.fixme/` path in any tool.
+
+## Task-Bound User Input Contract
+
+When the dispatch prompt contains `<task-state-owner>` with `ownerSkill: fixme-task`, this skill is running under a resumable `fixme-task`.
+
+Do not call AskUserQuestion or wait directly when running under `fixme-task`. If product behavior, technical contract, or a stateful effect boundary is unclear, return `FIXME_CHILD_ATTENTION_REQUIRED` as the final output and let `fixme-task` create the durable attention record:
+
+```text
+FIXME_CHILD_ATTENTION_REQUIRED
+SOURCE_SKILL: fixme-write-technical-spec
+KIND: spec-decision
+ANSWER_MODE: decision-card
+PROMPT_MARKDOWN:
+<complete user-facing prompt>
+END_PROMPT_MARKDOWN
+```
+
+Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
 # Write Technical Specification
 
@@ -18,7 +36,7 @@ Write a technical specification that defines implementation contracts without be
 - **NO product behavior changes.** Product behavior comes from the product specification, user request, ticket, or locked decisions.
 - **NO implementation steps.** Technical specifications define contracts, not task-by-task execution.
 - **NO unverified codebase claims.** Read the relevant code before naming patterns, modules, interfaces, data shapes, or commands.
-- **NO unresolved questions in the final specification.** If a product or technical contract is unclear, ask the user before finalizing.
+- **NO unresolved questions in the final specification.** If a product or technical contract is unclear, resolve it through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user before finalizing.
 - **NO tables by default.** Follow `fixme-howto-write-technical-spec` and use bullets plus fenced blocks for structured contracts.
 
 ## Input Resolution
@@ -85,8 +103,8 @@ Record source material inside the specification. Every codebase claim that affec
 4. In revision mode, read every FIX item and the cited specification sections.
 5. Re-read any code referenced by the previous specification or FIX items when it affects the contract.
 6. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
-7. If a FIX item conflicts with a locked decision or product behavior, ask the user with a decision card.
-8. Never silently drop a FIX item. Address it in the revised specification or ask the user to resolve the conflict.
+7. If a FIX item conflicts with a locked decision or product behavior, resolve it with a decision card through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly.
+8. Never silently drop a FIX item. Address it in the revised specification or route the conflict for user resolution.
 
 ## Technical Decision Gate
 
@@ -100,9 +118,9 @@ Before writing the final specification, identify choices that materially affect 
 - integration fallback, timeout, rate limit, or degraded behavior
 - rollout, rollback, compatibility, observability, or validation strategy
 
-If any choice has more than one defensible answer, present it with `fixme-howto-present-decisions` and wait for the answer. If the choice is purely mechanical because the codebase already has one established pattern, record the verified pattern as source material rather than a decision.
+If any choice has more than one defensible answer, present it with `fixme-howto-present-decisions`. When running under `fixme-task`, return it through `FIXME_CHILD_ATTENTION_REQUIRED`; standalone runs can wait for the answer directly. If the choice is purely mechanical because the codebase already has one established pattern, record the verified pattern as source material rather than a decision.
 
-Every stateful effect must have an Effect Lifecycle Contract. A stateful effect is any operation where correctness depends on more than local code returning a value, including state transitions, retries, jobs, queues, webhooks, cache invalidation, external APIs, durable writes, generated artifacts, public visibility, deletion, authorization, notifications, and deployment actions. If the contract cannot define the boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof, ask the user before finalizing.
+Every stateful effect must have an Effect Lifecycle Contract. A stateful effect is any operation where correctness depends on more than local code returning a value, including state transitions, retries, jobs, queues, webhooks, cache invalidation, external APIs, durable writes, generated artifacts, public visibility, deletion, authorization, notifications, and deployment actions. If the contract cannot define the boundary, state meanings, source of truth, durable evidence, consumer path, repeat behavior, advancement gate, failure signal, and behavioral proof, resolve it through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user before finalizing.
 
 ## Save Location
 
