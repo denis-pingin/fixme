@@ -35,7 +35,7 @@ Before classifying anything, read all of these:
 - The review context packet, if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
 - The full specification, not just cited sections
 - Directly referenced specification/context documents needed to verify a finding
-- The decision log at `<fixme-dir>/decisions.md` if it exists
+- The merged decision context. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain it by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly if it exists
 
 Do not use branch names, commit messages, old tickets, or surrounding implementation as authority for private specification scope. Read implementation only if the specification explicitly cites it as source material for the behavior being reviewed.
 
@@ -168,7 +168,7 @@ For each finding:
 1. Read the cited specification text and the surrounding section.
 2. If the finding is about an absence, read the nearest section where the behavior should have been defined.
 3. Check whether examples, acceptance criteria, or referenced context already resolve the ambiguity.
-4. Check the decision log for prior locked decisions.
+4. Check the merged decision context for prior locked decisions (task-bound: `task decision list --state <task-state-path> --format markdown`, read the `markdown` field; standalone: `<fixme-dir>/decisions.md`).
 5. If the finding proposes multiple paths, independently evaluate each path before choosing `FIX` or `FIX_UNCLEAR`.
 6. If fixing the finding would require changing product scope, classify `ASK_USER` or `FIX_UNCLEAR`, not `FIX`.
 

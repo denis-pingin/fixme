@@ -35,7 +35,7 @@ Before classifying anything, read all of these:
 - Every file the findings reference (full file, not just the cited lines)
 - The test files the findings reference (full file)
 - Neighboring files when the finding is about conventions or patterns and the code map's cited sources are missing, stale, or insufficient
-- The decision log at `<fixme-dir>/decisions.md` (if it exists) and the plan's Locked Decisions section. These are settled user choices.
+- The merged decision context and the plan's Locked Decisions section. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain the decision context by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly if it exists. These are settled user choices.
 
 If the packet/code map and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 

@@ -5537,6 +5537,22 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own child task decisions');
 });
 
+function assertTaskBoundDecisionReader(skillDir, guardrailPhrase) {
+  const skillPath = path.resolve(__dirname, '..', '..', skillDir, 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('task decision list --state <task-state-path> --format markdown'), `${skillDir} should name task decision list --format markdown on its task-bound read path`);
+  assert(skill.includes('`markdown` field'), `${skillDir} should instruct reading the markdown field`);
+  assert(skill.includes(guardrailPhrase), `${skillDir} should preserve its do-not-write guardrail`);
+}
+
+test('task-bound plan/review/handler readers consume decisions via task decision list', () => {
+  assertTaskBoundDecisionReader('fixme-write-plan', 'Do not write `<fixme-dir>/decisions.md`');
+  assertTaskBoundDecisionReader('fixme-review-plan', 'do not write `<fixme-dir>/decisions.md`');
+  assertTaskBoundDecisionReader('fixme-handle-plan-review', 'do not write `<fixme-dir>/decisions.md`');
+  assertTaskBoundDecisionReader('fixme-handle-code-review', 'do not write `<fixme-dir>/decisions.md`');
+  assertTaskBoundDecisionReader('fixme-handle-spec-review', 'do not write `<fixme-dir>/decisions.md`');
+});
+
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

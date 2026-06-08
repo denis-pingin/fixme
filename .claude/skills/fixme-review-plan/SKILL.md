@@ -341,7 +341,7 @@ A stateful effect is any operation where correctness depends on more than local 
 **Question:** Does the plan respect locked decisions and exclude deferred scope?
 
 **Process:**
-1. Read the plan's Locked Decisions section and the decision log at `<fixme-dir>/decisions.md` (if it exists)
+1. Read the plan's Locked Decisions section and the decision log. Under a task-bound review (a `<task-state-owner>` block is present), obtain the decision log by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (if it exists)
 2. For each `[confirmed]` decision: verify the plan implements it as stated. Do not flag findings that merely disagree with confirmed decisions.
 3. For each `[assumed]` decision: check whether a realistic alternative exists that would materially change the plan. If yes, flag it (severity: MAJOR) - the plan writer should have surfaced this during the Design Decision Checkpoint.
 4. Check whether the plan includes work that was explicitly deferred or marked out of scope in previous iterations

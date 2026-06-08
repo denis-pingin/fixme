@@ -82,7 +82,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Review context packet**: compact current-run decisions, fixes since last review, verification summaries, and source references
 - **Code map path**: task code map from the prior plan, if available
 - **FIX items**: classified findings from the plan review handler (markdown)
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist on first iteration)
+- **Decision log path**: under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain locked decisions by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist on first iteration)
 
 ### Code Revision Mode
 
@@ -94,7 +94,7 @@ Required inputs (provided by orchestrator as arguments):
 - **Code map path**: task code map from the executed plan, if available
 - **FIX items**: classified findings from the code review handler (markdown)
 - **Execution results**: summary from the executor's completion report (markdown)
-- **Decision log path**: `<fixme-dir>/decisions.md`
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly
 
 ### Rewrite Mode
 
@@ -104,7 +104,7 @@ Inputs:
 - **Original task**: the unchanged task description (may be implicit - "improve this plan")
 - **Previous plan path**: the plan to improve
 - **Code map path**: task code map referenced by the previous plan, if available
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist)
 
 Key rules for rewrite mode:
 - **Locked decisions from the prior plan are constraints, not suggestions.** They were settled by the user or a prior iteration. To change one, flag it during the Input Audit - never silently override.
@@ -242,7 +242,7 @@ These are exactly the conditions under which silent overrides happen. The gate e
 1. Read the previous plan's `## Context` section for Stable Context (architecture, patterns, conventions, dependency versions, API shapes).
 2. Read the prior task code map if provided or referenced by the previous plan/review context packet. Use it to target re-reads; it is orientation, not authority.
 3. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, verification summaries, and source references. It is orientation, not authority.
-4. Read locked decisions from the previous plan's Context section AND from the decision log at `<fixme-dir>/decisions.md` (if it exists). Locked decisions are settled - never re-ask.
+4. Read locked decisions from the previous plan's Context section AND from the decision log. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain them by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (if it exists). Locked decisions are settled - never re-ask.
 5. Read the FIX items. For each FIX item:
    - Re-read the specific files it references (targeted, not full codebase)
    - If it contradicts a Stable Context or code map item, re-verify that item against the codebase

@@ -28,7 +28,7 @@ Resolve inputs in this order:
 
 Read the plan, findings, task code map if provided or referenced, and spec/context document (if referenced) before proceeding. If a review context packet is provided, read it for current-run user decisions, all fixes since last review, and source references. The code map and packet are orientation, not authority.
 
-If a decision log exists at `<fixme-dir>/decisions.md`, read it. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
+Read the merged decision context. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain it by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly if it exists. Also read the plan's Locked Decisions section in its Context. These are settled user choices from prior ASK_USER and FIX_UNCLEAR questions.
 
 If the packet/code map and an artifact disagree, trust the artifact after verifying it directly. If the packet mentions a user decision that is not in the decision log or current plan, treat that as context to verify, not as a locked decision.
 
