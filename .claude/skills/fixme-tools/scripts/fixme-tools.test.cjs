@@ -5519,24 +5519,22 @@ test('fixme-task skill: converts child attention requests into owned durable att
 test('fixme-pr-comments skill: brokers nested fixme-task attention without owning decisions', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('If nested `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect nested task attention directives');
-  assert(skill.includes('run attention show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through fixme-tools');
-  assert(skill.includes('run attention answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should record user answers through fixme-tools');
-  assert(skill.includes('Use the `resumeRef` returned by `run attention show`'), 'PR comments should resume from the attention record resumeRef');
-  assert(skill.includes('Skill("fixme-task", "--nested --resume <resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
+  assert(skill.includes('If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect child task attention directives');
+  assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through the lifecycle broker');
+  assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should record user answers through the lifecycle broker');
+  assert(skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments should resume from the attention record resumeRef');
+  assert(skill.includes('Skill("fixme-task", "--resume <resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
   assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the Codex inline resume invocation');
-  assert(!skill.includes('if the runtime requires a fresh invocation'), 'PR comments should not make attention resume optional');
-  assert(!skill.includes('same routed fix items plus `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should not re-pass routed fix item text during attention resume');
+  assert(!skill.includes('--nested'), 'PR comments should no longer reference --nested');
   assert(skill.includes('reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>`'), 'PR comments should reuse the same task run status when resuming');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'PR comments should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a decision answer, call `run attention answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should scope decision answers at the answer-write step');
+  assert(skill.includes('If the user response is a decision answer, call `lifecycle attention broker answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should scope decision answers at the answer-write step');
   assert(skill.includes('If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.'), 'PR comments should scope clarification requests at the answer-write step');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'PR comments should broker clarification requests without answering them');
-  assert(skill.includes('If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again'), 'PR comments should resume already answered attention instead of re-prompting');
-  assert(skill.includes('Resume nested `fixme-task` immediately with `--nested --resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should preserve nested mode when resuming already answered attention');
-  assert(!skill.includes('Resume nested `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should not drop nested mode on already answered attention resumes');
+  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again'), 'PR comments should resume already answered attention instead of re-prompting');
+  assert(skill.includes('Resume the child `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should resume already answered attention');
   assert(skill.includes('If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'PR comments should broker clarification follow-up attention prompts');
-  assert(skill.includes('Do not write `<fixme-dir>/decisions.md`; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own nested task decisions');
+  assert(skill.includes('Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own child task decisions');
 });
 
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
@@ -5582,18 +5580,18 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
 test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('Liveness and attention brokering are the only allowed `<fixme-dir>` carve-outs'), 'PR comments should permit only liveness and attention carve-outs');
+  assert(skill.includes('Parent run state (via `lifecycle parent *`), liveness, and attention brokering are the runtime-state carve-outs'), 'PR comments should permit parent-state, liveness, and attention carve-outs');
   assert(!skill.includes('except for liveness commands'), 'PR comments should not keep stale liveness-only carve-out wording');
   assert(!skill.includes('except for the liveness carve-out'), 'PR comments should not keep stale liveness-only carve-out prose');
   assert(!skill.includes('except for liveness carve-out'), 'PR comments should not keep stale liveness-only hard-constraint prose');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
-  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should create liveness status before nested fixme-task');
-  assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the nested fixme-task status id');
-  assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'nested fixme-task args should include statusId');
-  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'parent wait loop should read nested fixme-task liveness');
+  assert(skill.includes('lifecycle parent create --fixme-dir <fixme-dir>'), 'PR comments should persist parent run state');
+  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should dispatch fixme-task via the lifecycle helper');
+  assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
+  assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');
+  assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'child fixme-task args should include statusId');
+  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'parent wait loop should read child fixme-task liveness');
   assert(skill.includes('If `currentCommand` is `attention:<attention-id>`, follow the attention broker path before reporting coarse progress'), 'parent wait loop should broker attention instead of just reporting it');
-  assert(skill.includes('`Step 9.1` ... `Step 9.8`'), 'PR comments should describe nested fixme-task as eight substeps');
-  assert(!skill.includes('`Step 9.1` ... `Step 9.9`'), 'PR comments should not imply nested fixme-task has a run-summary substep');
 });
 
 test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {
