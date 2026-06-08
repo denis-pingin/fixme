@@ -7010,6 +7010,174 @@ function lifecycleDispatchComplete(flags) {
   return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: next.state, statusPath });
 }
 
+// ============================================================================
+// Subcommands: lifecycle attention
+// ============================================================================
+
+const LIFECYCLE_ATTENTION_OPEN_FIELDS = new Set(['statusId', 'taskStatePath', 'checkpointData', 'attention']);
+const LIFECYCLE_BROKER_ANSWER_FIELDS = new Set(['answer', 'answeredBy', 'answerKind']);
+
+function lifecycleAttentionOpen(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'attention open', LIFECYCLE_ATTENTION_OPEN_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(data.statusId)) {
+    lifecycleError('missingRequiredField', 'statusId is required');
+  }
+  if (!isNonEmptyString(data.taskStatePath)) {
+    lifecycleError('missingRequiredField', 'taskStatePath is required');
+  }
+  if (!isPlainObject(data.attention)) {
+    lifecycleError('missingRequiredField', 'attention is required');
+  }
+  if (!isPlainObject(data.checkpointData)) {
+    lifecycleError('missingRequiredField', 'checkpointData is required');
+  }
+
+  const statePath = path.resolve(String(data.taskStatePath));
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Task state file not found: ${statePath}`);
+  }
+
+  // Resolve the attention id (carried in attention.attentionId or generated).
+  let attentionId;
+  try {
+    attentionId = isNonEmptyString(data.attention.attentionId)
+      ? validateAttentionId(data.attention.attentionId)
+      : generateUsageId('attn');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+
+  const attentionPath = runAttentionPath(fixmeDir, data.statusId, attentionId);
+
+  // FIX 4 idempotency pre-check: an existing record for statusId+attentionId.
+  if (fs.existsSync(attentionPath)) {
+    const existing = readJsonFileStrict(attentionPath);
+    const existingCheckpoint = existing.metadata && existing.metadata.openCheckpointData;
+    const samePrompt = existing.promptMarkdown === data.attention.promptMarkdown;
+    const sameTaskState = existing.taskStatePath === statePath;
+    const sameCheckpoint = jsonEqual(existingCheckpoint || null, data.checkpointData || null);
+    if (samePrompt && sameTaskState && sameCheckpoint) {
+      return lifecycleOk({
+        attentionId,
+        statusId: data.statusId,
+        taskStatePath: statePath,
+        attentionPath,
+        directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}`,
+      });
+    }
+    lifecycleError('conflictingDuplicate', `attention ${attentionId} already open with different prompt/state/checkpoint`);
+  }
+
+  // Snapshot, checkpoint-first, then create attention.
+  const snapshot = readJsonFileStrict(statePath);
+  let checkpointed;
+  try {
+    checkpointed = mergeTaskState(snapshot, data.checkpointData);
+    assertCamelCaseJsonKeys(checkpointed, 'task state');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  writeJsonAtomic(statePath, checkpointed);
+
+  const attentionData = {
+    ...data.attention,
+    attentionId,
+    taskStatePath: statePath,
+    metadata: { ...(isPlainObject(data.attention.metadata) ? data.attention.metadata : {}), openCheckpointData: data.checkpointData },
+  };
+
+  try {
+    runAttentionSetCore({
+      'fixme-dir': fixmeDir,
+      'status-id': data.statusId,
+      data: JSON.stringify(attentionData),
+    });
+  } catch (setError) {
+    // Restore the pre-open snapshot.
+    try {
+      writeJsonAtomic(statePath, snapshot);
+    } catch (restoreError) {
+      lifecycleError('ioFailure', `Attention creation failed and task-state restore failed: ${restoreError.message}`, { repaired: false, taskStatePath: statePath, attentionId });
+    }
+    lifecycleError('attentionBlocked', setError.message, { repaired: true, failedCommand: 'run attention set', attentionId });
+  }
+
+  return lifecycleOk({
+    attentionId,
+    statusId: data.statusId,
+    taskStatePath: statePath,
+    attentionPath,
+    directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}`,
+  });
+}
+
+function lifecycleAttentionBrokerShow(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  try {
+    const record = runAttentionShowCore({
+      'fixme-dir': fixmeDir,
+      'status-id': flags['status-id'],
+      'attention-id': flags['attention-id'],
+    });
+    return lifecycleOk(record);
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      lifecycleError('stateNotFound', e.message);
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+}
+
+function lifecycleAttentionBrokerAnswer(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'attention broker answer', LIFECYCLE_BROKER_ANSWER_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+
+  // Idempotency: if already answered, compare durable answer inputs.
+  let existingRecord = null;
+  try {
+    existingRecord = runAttentionShowCore({
+      'fixme-dir': fixmeDir,
+      'status-id': flags['status-id'],
+      'attention-id': flags['attention-id'],
+    });
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      lifecycleError('stateNotFound', e.message);
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+  if (existingRecord.status === 'answered') {
+    const prior = existingRecord.answer || {};
+    if (prior.answer === data.answer && prior.answeredBy === data.answeredBy && prior.answerKind === data.answerKind) {
+      return lifecycleOk(existingRecord);
+    }
+    lifecycleError('conflictingDuplicate', `attention ${flags['attention-id']} already answered with different answer`);
+  }
+
+  try {
+    const answered = runAttentionAnswerCore({
+      'fixme-dir': fixmeDir,
+      'status-id': flags['status-id'],
+      'attention-id': flags['attention-id'],
+      data: JSON.stringify(data),
+    });
+    return lifecycleOk(answered);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+}
+
 function emptyTokenUsage() {
   const usage = {};
   for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
@@ -7610,6 +7778,22 @@ function main() {
                 return lifecycleDispatchComplete(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle dispatch action: '${args[0] || ''}'`);
+            }
+          case 'attention':
+            switch (args[0]) {
+              case 'open':
+                return lifecycleAttentionOpen(flags);
+              case 'broker':
+                switch (args[1]) {
+                  case 'show':
+                    return lifecycleAttentionBrokerShow(flags);
+                  case 'answer':
+                    return lifecycleAttentionBrokerAnswer(flags);
+                  default:
+                    return lifecycleError('unsupportedCommand', `Unknown lifecycle attention broker action: '${args[1] || ''}'`);
+                }
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle attention action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);

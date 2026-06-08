@@ -2785,6 +2785,104 @@ test('dispatch complete finalizes child status and rejects conflicting completio
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting completion, got ${JSON.stringify(conflict.data)}`);
 });
 
+console.log('\n=== lifecycle attention tests ===\n');
+
+function initTaskWithRunStatus(slug) {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  const sessionDir = path.join(fixmeDir, 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  return { projectRoot, fixmeDir, statePath: initialized.data.statePath, statusId: started.data.statusId };
+}
+
+function attentionOpenData(statusId, statePath, overrides = {}) {
+  return JSON.stringify({
+    statusId,
+    taskStatePath: statePath,
+    checkpointData: { status: 'waitingForUser', pendingDecision: { kind: 'plan-decision' } },
+    attention: {
+      ownerSkill: 'fixme-task',
+      sourceSkill: 'fixme-handle-code-review',
+      kind: 'plan-decision',
+      resumeRef: 'FIXME-1',
+      taskStatePath: statePath,
+      answerMode: 'decision-card',
+      promptMarkdown: '## Decision\n\nPick.',
+      ...overrides,
+    },
+  });
+}
+
+test('attention open checkpoints first then creates attention', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-open');
+  const r = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath)}'`);
+  assert(r.ok, `attention open should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(typeof r.data.attentionId === 'string', 'attentionId present');
+  assert(fs.existsSync(r.data.attentionPath), 'attention file exists');
+  assert(typeof r.data.directive === 'string' && r.data.directive.includes('FIXME_ATTENTION_REQUIRED'), `directive present, got ${r.data.directive}`);
+  const state = readJson(statePath);
+  assert(state.status === 'waitingForUser', `task checkpointed, got ${state.status}`);
+});
+
+test('attention open restores task state when attention creation fails', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-fail');
+  // Make the run status terminal so runAttentionSetCore rejects.
+  run(`run ping --fixme-dir "${fixmeDir}" --status-id ${statusId} --state failed --checkpoint done --current-command null`);
+  const before = readJson(statePath).status;
+  const r = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath)}'`);
+  assert(!r.ok, 'attention open should fail');
+  assert(r.data.error.code === 'attentionBlocked', `code should be attentionBlocked, got ${JSON.stringify(r.data)}`);
+  assert(r.data.repaired === true, 'repaired true');
+  const after = readJson(statePath).status;
+  assert(after === before, `task state restored, before=${before} after=${after}`);
+});
+
+test('attention open idempotent for same open request returns existing directive', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-idem');
+  const data = attentionOpenData(statusId, statePath, { attentionId: 'attn_fixed1' });
+  const first = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(first.ok, `first open should succeed, got: ${JSON.stringify(first.data)}`);
+  const mtimeBefore = fs.statSync(first.data.attentionPath).mtimeMs;
+  const second = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(second.ok, `replay should succeed, got: ${JSON.stringify(second.data)}`);
+  assert(second.data.attentionId === 'attn_fixed1', 'same attentionId');
+  const mtimeAfter = fs.statSync(first.data.attentionPath).mtimeMs;
+  assert(mtimeBefore === mtimeAfter, 'attention file not rewritten on replay');
+});
+
+test('attention open conflicting prompt returns conflictingDuplicate', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-conflict');
+  const data = attentionOpenData(statusId, statePath, { attentionId: 'attn_fixed2' });
+  const first = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(first.ok, `first open should succeed, got: ${JSON.stringify(first.data)}`);
+  const conflictData = attentionOpenData(statusId, statePath, { attentionId: 'attn_fixed2', promptMarkdown: '## Different\n\nPick.' });
+  const conflict = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
+  assert(!conflict.ok, 'conflicting prompt should fail');
+  assert(conflict.data.error.code === 'conflictingDuplicate', `code should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('attention broker show and answer record answer without interpreting', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_brk1' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const show = run(`lifecycle attention broker show --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk1`);
+  assert(show.ok && show.data.attentionId === 'attn_brk1', `broker show returns record, got ${JSON.stringify(show.data)}`);
+  const answerData = JSON.stringify({ answer: 'go with option A', answeredBy: 'user', answerKind: 'decision' });
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk1 --data '${answerData}'`);
+  assert(answer.ok, `broker answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  assert(answer.data.status === 'answered', `status answered, got ${answer.data.status}`);
+  // task state must not be cleared or interpreted by the broker.
+  const state = readJson(statePath);
+  assert(state.status === 'waitingForUser', `task state unchanged by broker, got ${state.status}`);
+  const conflictData = JSON.stringify({ answer: 'different', answeredBy: 'user', answerKind: 'decision' });
+  const conflict = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk1 --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting answer, got ${JSON.stringify(conflict.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
