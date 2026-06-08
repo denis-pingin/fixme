@@ -7241,6 +7241,378 @@ function lifecycleWaitEnd(flags) {
   return lifecycleOk(next);
 }
 
+// ============================================================================
+// Subcommands: lifecycle parent
+// ============================================================================
+
+const PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
+
+const PR_PARENT_STATUSES = new Set(['running', 'waitingForUser', 'waitingForChild', 'completed', 'failed']);
+const PR_TERMINAL_STATUSES = new Set(['completed', 'failed']);
+
+const PR_PARENT_CURSORS = new Set([
+  'fetchReviewItems', 'analyzeReviewItems', 'consultUser', 'presentAnalysis', 'confirmExecution',
+  'dispatchFixmeTask', 'awaitFixmeTask', 'brokerChildAttention', 'consumeTaskEvent', 'verify',
+  'commit', 'push', 'replyComments', 'resolveThreads', 'summarize',
+]);
+
+const PARENT_LEDGER_SLOTS = new Set([
+  'reviewItems', 'analysis', 'routedGroups', 'childResultSummaryPaths', 'verificationResults',
+  'commitResult', 'pushResult', 'replyExecutionTable', 'unresolvedAccounting',
+]);
+
+const PARENT_FAILURE_REASONS = new Set([
+  'userAborted', 'fetchFailed', 'analysisFailed', 'taskDispatchFailed', 'childFailed',
+  'verificationFailed', 'commitFailed', 'pushFailed', 'replyFailed', 'resolveFailed',
+  'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'unknown',
+]);
+
+const PARENT_CREATE_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'status', 'cursor', 'payload']);
+const PARENT_CHECKPOINT_FIELDS = new Set(['idempotencyKey', 'expectedRevision', 'status', 'cursor', 'payload', 'ledger', 'failure']);
+const PR_LOOKUP_REF_FIELDS = new Set(['host', 'owner', 'repo', 'number', 'headOwner', 'headRepo', 'headRef']);
+const PR_NORMALIZED_FLAG_FIELDS = new Set(['pause', 'skipCommit', 'skipPush', 'skipResolve', 'skipResponse']);
+
+function parentStatePath(fixmeDir, parentRunId) {
+  return path.join(fixmeDir, 'parents', parentRunId, 'state.json');
+}
+
+function parentIndexPath(fixmeDir, lookupKeyHash) {
+  return path.join(fixmeDir, 'parents', 'index', `${lookupKeyHash}.json`);
+}
+
+function isValidBranchName(name) {
+  // Reject full refs, whitespace, and clearly invalid branch names.
+  if (typeof name !== 'string' || name.trim() !== name || name === '') return false;
+  if (name.startsWith('refs/')) return false;
+  if (/[\s~^:?*[\\]/.test(name)) return false;
+  if (name.startsWith('/') || name.endsWith('/') || name.endsWith('.lock') || name.includes('..')) return false;
+  return true;
+}
+
+function normalizePrLookupInput(lookupInput) {
+  if (!isPlainObject(lookupInput) || !isPlainObject(lookupInput.pullRequestRef)) {
+    lifecycleError('invalidInput', 'lookupInput.pullRequestRef is required');
+  }
+  const ref = lookupInput.pullRequestRef;
+  try {
+    assertKnownJsonFields(ref, 'pullRequestRef', PR_LOOKUP_REF_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  const lowerFields = ['host', 'owner', 'repo'];
+  const normalizedRef = {};
+  for (const field of lowerFields) {
+    if (!isNonEmptyString(ref[field]) || ref[field].trim() !== ref[field]) {
+      lifecycleError('invalidInput', `pullRequestRef.${field} must be a non-empty string without surrounding whitespace`);
+    }
+    normalizedRef[field] = ref[field].toLowerCase();
+  }
+  if (!Number.isInteger(ref.number) || ref.number <= 0) {
+    lifecycleError('invalidInput', 'pullRequestRef.number must be a positive integer');
+  }
+  normalizedRef.number = ref.number;
+  for (const field of ['headOwner', 'headRepo']) {
+    if (ref[field] !== undefined) {
+      if (!isNonEmptyString(ref[field]) || ref[field].trim() !== ref[field]) {
+        lifecycleError('invalidInput', `pullRequestRef.${field} must be a non-empty string without surrounding whitespace`);
+      }
+      normalizedRef[field] = ref[field].toLowerCase();
+    }
+  }
+  if (ref.headRef !== undefined) {
+    if (!isValidBranchName(ref.headRef)) {
+      lifecycleError('invalidInput', 'pullRequestRef.headRef must be a non-empty branch name, not a full ref');
+    }
+    normalizedRef.headRef = ref.headRef;
+  }
+
+  let normalizedFlags = {};
+  if (lookupInput.normalizedFlags !== undefined) {
+    if (!isPlainObject(lookupInput.normalizedFlags)) {
+      lifecycleError('invalidInput', 'lookupInput.normalizedFlags must be an object');
+    }
+    try {
+      assertKnownJsonFields(lookupInput.normalizedFlags, 'normalizedFlags', PR_NORMALIZED_FLAG_FIELDS);
+    } catch (e) {
+      lifecycleError('unknownField', e.message);
+    }
+    for (const field of PR_NORMALIZED_FLAG_FIELDS) {
+      const value = lookupInput.normalizedFlags[field];
+      if (value !== undefined && typeof value !== 'boolean') {
+        lifecycleError('invalidInput', `normalizedFlags.${field} must be a boolean`);
+      }
+      normalizedFlags[field] = value === true;
+    }
+    if (normalizedFlags.skipCommit) {
+      normalizedFlags.skipPush = true;
+    }
+  } else {
+    for (const field of PR_NORMALIZED_FLAG_FIELDS) normalizedFlags[field] = false;
+  }
+
+  return { pullRequestRef: normalizedRef, normalizedFlags };
+}
+
+function parentNaturalKeyFor(parentSkill, normalizedLookupInput) {
+  const ref = normalizedLookupInput.pullRequestRef;
+  return stableHash({
+    parentSkill,
+    prIdentity: { host: ref.host, owner: ref.owner, repo: ref.repo, number: ref.number },
+    normalizedFlags: normalizedLookupInput.normalizedFlags,
+  });
+}
+
+function parentBroadKeyFor(parentSkill, normalizedLookupInput) {
+  const ref = normalizedLookupInput.pullRequestRef;
+  return stableHash({
+    parentSkill,
+    prIdentity: { host: ref.host, owner: ref.owner, repo: ref.repo, number: ref.number },
+  });
+}
+
+function parentCreateDigest(parentSkill, normalizedLookupInput) {
+  return stableHash({ parentSkill, normalizedLookupInput });
+}
+
+function appendParentIndexEntry(fixmeDir, lookupKeyHash, parentRunId) {
+  const indexPath = parentIndexPath(fixmeDir, lookupKeyHash);
+  let entries = [];
+  if (fs.existsSync(indexPath)) {
+    entries = readJsonFileStrict(indexPath).parentRunIds || [];
+  }
+  if (!entries.includes(parentRunId)) {
+    entries.push(parentRunId);
+  }
+  writeJsonAtomic(indexPath, { schemaVersion: 1, lookupKeyHash, parentRunIds: entries });
+}
+
+function readParentIndexEntries(fixmeDir, lookupKeyHash) {
+  const indexPath = parentIndexPath(fixmeDir, lookupKeyHash);
+  if (!fs.existsSync(indexPath)) return [];
+  return readJsonFileStrict(indexPath).parentRunIds || [];
+}
+
+function findIdempotencyParentRun(fixmeDir, parentSkill, idempotencyKey) {
+  const idemHash = stableHash({ parentSkill, idempotencyKey });
+  const entries = readParentIndexEntries(fixmeDir, `idem-${idemHash}`);
+  return entries.length ? entries[0] : null;
+}
+
+function validatePrCursorPayload(cursor, payload) {
+  if (!PR_PARENT_CURSORS.has(cursor)) {
+    lifecycleError('invalidInput', `Unsupported cursor: ${cursor}`);
+  }
+  if (!isPlainObject(payload)) {
+    lifecycleError('invalidInput', 'payload must be a JSON object');
+  }
+}
+
+function lifecycleParentCreate(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'parent create', PARENT_CREATE_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['parentSkill', 'idempotencyKey', 'status', 'cursor']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (!PARENT_SKILLS.has(data.parentSkill)) {
+    lifecycleError('invalidInput', `Unsupported parentSkill: ${data.parentSkill}`);
+  }
+  if (!PR_PARENT_STATUSES.has(data.status)) {
+    lifecycleError('invalidInput', `Unsupported status: ${data.status}`);
+  }
+  validatePrCursorPayload(data.cursor, data.payload);
+
+  const normalizedLookupInput = normalizePrLookupInput(data.lookupInput);
+  const parentNaturalKey = parentNaturalKeyFor(data.parentSkill, normalizedLookupInput);
+  const broadKey = parentBroadKeyFor(data.parentSkill, normalizedLookupInput);
+  const createInputDigest = parentCreateDigest(data.parentSkill, normalizedLookupInput);
+
+  // Idempotency by idempotencyKey.
+  const existingByIdem = findIdempotencyParentRun(fixmeDir, data.parentSkill, data.idempotencyKey);
+  if (existingByIdem) {
+    const existing = readJsonFileStrict(parentStatePath(fixmeDir, existingByIdem));
+    return lifecycleOk(existing);
+  }
+
+  // Natural-key dedup: return an existing nonterminal run with the same create digest.
+  const naturalEntries = readParentIndexEntries(fixmeDir, `nat-${parentNaturalKey}`);
+  for (const runId of naturalEntries) {
+    const candidate = readJsonFileStrict(parentStatePath(fixmeDir, runId));
+    if (PR_TERMINAL_STATUSES.has(candidate.status)) continue;
+    if (candidate.createInputDigest === createInputDigest) {
+      // Map this idempotency key to the existing run too.
+      const idemHash = stableHash({ parentSkill: data.parentSkill, idempotencyKey: data.idempotencyKey });
+      appendParentIndexEntry(fixmeDir, `idem-${idemHash}`, candidate.parentRunId);
+      return lifecycleOk(candidate);
+    }
+    lifecycleError('conflictingDuplicate', `A nonterminal parent run with the same natural key has different create inputs`);
+  }
+
+  const parentRunId = generateUsageId('parent');
+  const now = new Date().toISOString();
+  const lookupKeys = [`nat-${parentNaturalKey}`, `broad-${broadKey}`];
+  const state = {
+    schemaVersion: 1,
+    parentRunId,
+    parentSkill: data.parentSkill,
+    normalizedLookupInput,
+    parentNaturalKey,
+    lookupKeys,
+    createInputDigest,
+    status: data.status,
+    cursor: data.cursor,
+    revision: 0,
+    payload: data.payload,
+    ledger: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+  assertCamelCaseJsonKeys(state, 'parent state');
+  writeJsonAtomic(parentStatePath(fixmeDir, parentRunId), state);
+  appendParentIndexEntry(fixmeDir, `nat-${parentNaturalKey}`, parentRunId);
+  appendParentIndexEntry(fixmeDir, `broad-${broadKey}`, parentRunId);
+  const idemHash = stableHash({ parentSkill: data.parentSkill, idempotencyKey: data.idempotencyKey });
+  appendParentIndexEntry(fixmeDir, `idem-${idemHash}`, parentRunId);
+
+  return lifecycleOk(state);
+}
+
+function lifecycleParentCheckpoint(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const parentRunId = flags['parent-run-id'];
+  if (!isNonEmptyString(parentRunId)) {
+    lifecycleError('invalidInput', '--parent-run-id is required');
+  }
+  const statePath = parentStatePath(fixmeDir, parentRunId);
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Parent run not found: ${parentRunId}`);
+  }
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'parent checkpoint', PARENT_CHECKPOINT_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['idempotencyKey', 'status', 'cursor']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (!Number.isInteger(data.expectedRevision)) {
+    lifecycleError('missingRequiredField', 'expectedRevision is required and must be an integer');
+  }
+  if (!PR_PARENT_STATUSES.has(data.status)) {
+    lifecycleError('invalidInput', `Unsupported status: ${data.status}`);
+  }
+  validatePrCursorPayload(data.cursor, data.payload);
+  if (!isPlainObject(data.ledger)) {
+    lifecycleError('invalidInput', 'ledger must be a JSON object');
+  }
+  for (const slot of Object.keys(data.ledger)) {
+    if (!PARENT_LEDGER_SLOTS.has(slot)) {
+      lifecycleError('invalidInput', `Unsupported ledger slot: ${slot}`);
+    }
+  }
+  if (data.status === 'failed') {
+    if (!isPlainObject(data.failure) || !isNonEmptyString(data.failure.message) || !PARENT_FAILURE_REASONS.has(data.failure.reason)) {
+      lifecycleError('invalidInput', 'failure with valid reason and non-empty message is required when status is failed');
+    }
+  } else if (data.failure !== undefined) {
+    lifecycleError('invalidInput', 'failure is only allowed when status is failed');
+  }
+
+  const current = readJsonFileStrict(statePath);
+
+  // Idempotent replay by idempotencyKey.
+  if (current.lastCheckpointKey === data.idempotencyKey) {
+    return lifecycleOk(current);
+  }
+  if (data.expectedRevision !== current.revision) {
+    lifecycleError('staleState', `expectedRevision ${data.expectedRevision} does not match current revision ${current.revision}`);
+  }
+
+  // Reject clearing a populated ledger slot.
+  for (const slot of Object.keys(current.ledger || {})) {
+    const wasPopulated = current.ledger[slot] !== null && current.ledger[slot] !== undefined;
+    const nowMissing = !Object.prototype.hasOwnProperty.call(data.ledger, slot) ||
+      data.ledger[slot] === null || data.ledger[slot] === undefined;
+    if (wasPopulated && nowMissing) {
+      lifecycleError('invalidInput', `Cannot clear populated ledger slot: ${slot}`);
+    }
+  }
+
+  const next = {
+    schemaVersion: current.schemaVersion,
+    parentRunId: current.parentRunId,
+    parentSkill: current.parentSkill,
+    normalizedLookupInput: current.normalizedLookupInput,
+    parentNaturalKey: current.parentNaturalKey,
+    lookupKeys: current.lookupKeys,
+    createInputDigest: current.createInputDigest,
+    status: data.status,
+    cursor: data.cursor,
+    revision: current.revision + 1,
+    payload: data.payload,
+    ledger: data.ledger,
+    createdAt: current.createdAt,
+    updatedAt: new Date().toISOString(),
+    lastCheckpointKey: data.idempotencyKey,
+  };
+  if (data.failure !== undefined) {
+    next.failure = data.failure;
+  }
+  assertCamelCaseJsonKeys(next, 'parent state');
+  writeJsonAtomic(statePath, next);
+  return lifecycleOk(next);
+}
+
+function lifecycleParentResolve(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  if (isNonEmptyString(flags['parent-run-id'])) {
+    const statePath = parentStatePath(fixmeDir, flags['parent-run-id']);
+    if (!fs.existsSync(statePath)) {
+      lifecycleError('stateNotFound', `Parent run not found: ${flags['parent-run-id']}`);
+    }
+    return lifecycleOk(readJsonFileStrict(statePath));
+  }
+
+  const data = resolveLifecycleData(flags);
+  if (!isNonEmptyString(data.parentSkill) || !isPlainObject(data.lookupInput)) {
+    lifecycleError('invalidInput', 'parentSkill and lookupInput are required to resolve');
+  }
+  const normalizedLookupInput = normalizePrLookupInput(data.lookupInput);
+  const hasFlags = isPlainObject(data.lookupInput.normalizedFlags);
+  const lookupKeyHash = hasFlags
+    ? `nat-${parentNaturalKeyFor(data.parentSkill, normalizedLookupInput)}`
+    : `broad-${parentBroadKeyFor(data.parentSkill, normalizedLookupInput)}`;
+
+  const entries = readParentIndexEntries(fixmeDir, lookupKeyHash);
+  const nonterminal = [];
+  for (const runId of entries) {
+    const statePath = parentStatePath(fixmeDir, runId);
+    if (!fs.existsSync(statePath)) continue;
+    const candidate = readJsonFileStrict(statePath);
+    if (!PR_TERMINAL_STATUSES.has(candidate.status)) {
+      nonterminal.push(candidate);
+    }
+  }
+  if (nonterminal.length === 0) {
+    lifecycleError('stateNotFound', 'No nonterminal parent run matches the lookup');
+  }
+  if (nonterminal.length > 1) {
+    lifecycleError('conflictingDuplicate', 'Multiple nonterminal parent runs match the lookup', {
+      parentRunIds: nonterminal.map(r => r.parentRunId),
+    });
+  }
+  return lifecycleOk(nonterminal[0]);
+}
+
 function emptyTokenUsage() {
   const usage = {};
   for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
@@ -7866,6 +8238,17 @@ function main() {
                 return lifecycleWaitEnd(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle wait action: '${args[0] || ''}'`);
+            }
+          case 'parent':
+            switch (args[0]) {
+              case 'create':
+                return lifecycleParentCreate(flags);
+              case 'checkpoint':
+                return lifecycleParentCheckpoint(flags);
+              case 'resolve':
+                return lifecycleParentResolve(flags);
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle parent action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);

@@ -2934,6 +2934,123 @@ test('wait end after cleared returns current status idempotently', () => {
   assert(again.data.currentCommand === null, 'currentCommand stays null');
 });
 
+console.log('\n=== lifecycle parent tests ===\n');
+
+function prLookupInput(overrides = {}) {
+  return {
+    pullRequestRef: {
+      host: 'GitHub.com', owner: 'Acme', repo: 'App', number: 42,
+      headOwner: 'Acme', headRepo: 'App', headRef: 'feature/x',
+      ...(overrides.pullRequestRef || {}),
+    },
+    normalizedFlags: {
+      pause: false, skipCommit: false, skipPush: false, skipResolve: false, skipResponse: false,
+      ...(overrides.normalizedFlags || {}),
+    },
+  };
+}
+
+function parentCreateData(overrides = {}) {
+  return JSON.stringify({
+    parentSkill: 'fixme-pr-comments',
+    idempotencyKey: overrides.idempotencyKey || 'p1',
+    lookupInput: overrides.lookupInput || prLookupInput(),
+    status: 'running',
+    cursor: 'fetchReviewItems',
+    payload: { flags: {}, pullRequestRef: prLookupInput().pullRequestRef },
+    ...(overrides.extra || {}),
+  });
+}
+
+test('parent create computes normalized lookup keys and empty ledger', () => {
+  const fixmeDir = makeFixmeDir();
+  const r = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  assert(r.ok, `parent create should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(typeof r.data.parentRunId === 'string', 'parentRunId present');
+  assert(r.data.revision === 0, `revision 0, got ${r.data.revision}`);
+  assert(r.data.normalizedLookupInput.pullRequestRef.host === 'github.com', 'host lowercased');
+  assert(r.data.normalizedLookupInput.pullRequestRef.owner === 'acme', 'owner lowercased');
+  assert(typeof r.data.parentNaturalKey === 'string' && Array.isArray(r.data.lookupKeys), 'keys present');
+  assert(JSON.stringify(r.data.ledger) === '{}', 'empty ledger');
+  assert(fs.existsSync(path.join(fixmeDir, 'parents', r.data.parentRunId, 'state.json')), 'state file exists');
+  assert(fs.readdirSync(path.join(fixmeDir, 'parents', 'index')).length >= 1, 'index files exist');
+});
+
+test('parent create idempotent and conflict semantics', () => {
+  const fixmeDir = makeFixmeDir();
+  const first = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const same = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  assert(same.ok && same.data.parentRunId === first.data.parentRunId, 'same idempotencyKey returns same run');
+  // Same natural key, different idempotencyKey, identical create digest -> existing nonterminal.
+  const sameNaturalKey = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ idempotencyKey: 'p2' })}'`);
+  assert(sameNaturalKey.ok && sameNaturalKey.data.parentRunId === first.data.parentRunId, 'same natural key returns existing nonterminal run');
+});
+
+test('parent create skipCommit canonicalizes skipPush', () => {
+  const fixmeDir = makeFixmeDir();
+  const r = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ lookupInput: prLookupInput({ normalizedFlags: { skipCommit: true } }) })}'`);
+  assert(r.ok, `should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.normalizedLookupInput.normalizedFlags.skipPush === true, 'skipPush canonicalized to true');
+});
+
+test('parent create rejects malformed inputs', () => {
+  const fixmeDir = makeFixmeDir();
+  const badRef = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ lookupInput: prLookupInput({ pullRequestRef: { headRef: 'refs/heads/x' } }) })}'`);
+  assert(!badRef.ok && badRef.data.error.code === 'invalidInput', `full ref rejected, got ${JSON.stringify(badRef.data)}`);
+  const badCursor = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '{"parentSkill":"fixme-pr-comments","idempotencyKey":"pc","lookupInput":${JSON.stringify(prLookupInput())},"status":"running","cursor":"bogusCursor","payload":{}}'`);
+  assert(!badCursor.ok && badCursor.data.error.code === 'invalidInput', `bad cursor rejected, got ${JSON.stringify(badCursor.data)}`);
+  const badSkill = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '{"parentSkill":"fixme-bogus","idempotencyKey":"ps","lookupInput":${JSON.stringify(prLookupInput())},"status":"running","cursor":"fetchReviewItems","payload":{}}'`);
+  assert(!badSkill.ok && badSkill.data.error.code === 'invalidInput', `bad parentSkill rejected, got ${JSON.stringify(badSkill.data)}`);
+});
+
+test('parent checkpoint advances revision and rejects stale', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const checkpointData = JSON.stringify({
+    idempotencyKey: 'c1', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems',
+    payload: { flags: {}, reviewItems: [{ id: 'r1' }] }, ledger: { reviewItems: [{ id: 'r1' }] },
+  });
+  const cp = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${checkpointData}'`);
+  assert(cp.ok, `checkpoint should succeed, got: ${JSON.stringify(cp.data)}`);
+  assert(cp.data.revision === 1, `revision 1, got ${cp.data.revision}`);
+  assert(cp.data.normalizedLookupInput.pullRequestRef.host === 'github.com', 'immutable fields preserved');
+  const stale = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'c2', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
+  assert(!stale.ok && stale.data.error.code === 'staleState', `stale expectedRevision, got ${JSON.stringify(stale.data)}`);
+});
+
+test('parent checkpoint rejects clearing populated ledger slot', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'c1', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [{ id: 'r1' }] }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
+  const clear = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'c2', expectedRevision: 1, status: 'running', cursor: 'presentAnalysis', payload: { flags: {}, reviewItems: [{ id: 'r1' }], analysis: {}, routedGroups: {} }, ledger: {} })}'`);
+  assert(!clear.ok && clear.data.error.code === 'invalidInput', `clearing populated ledger slot rejected, got ${JSON.stringify(clear.data)}`);
+});
+
+test('parent checkpoint requires failure when status failed', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const noFailure = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'cf', expectedRevision: 0, status: 'failed', cursor: 'summarize', payload: {}, ledger: { unresolvedAccounting: { fetchComplete: true } } })}'`);
+  assert(!noFailure.ok && noFailure.data.error.code === 'invalidInput', `failed status requires failure, got ${JSON.stringify(noFailure.data)}`);
+  const withFailure = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'cf2', expectedRevision: 0, status: 'failed', cursor: 'summarize', payload: {}, ledger: { unresolvedAccounting: { fetchComplete: true } }, failure: { reason: 'fetchFailed', message: 'boom' } })}'`);
+  assert(withFailure.ok, `failed with failure should succeed, got: ${JSON.stringify(withFailure.data)}`);
+});
+
+test('parent resolve by id and lookup', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const byId = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId}`);
+  assert(byId.ok && byId.data.parentRunId === created.data.parentRunId, 'resolve by id');
+  const exactData = JSON.stringify({ parentSkill: 'fixme-pr-comments', lookupInput: prLookupInput() });
+  const exact = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --data '${exactData}'`);
+  assert(exact.ok && exact.data.parentRunId === created.data.parentRunId, 'resolve by exact natural key');
+  const broadData = JSON.stringify({ parentSkill: 'fixme-pr-comments', lookupInput: { pullRequestRef: prLookupInput().pullRequestRef } });
+  const broad = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --data '${broadData}'`);
+  assert(broad.ok && broad.data.parentRunId === created.data.parentRunId, 'resolve by broad PR identity');
+  const missingData = JSON.stringify({ parentSkill: 'fixme-pr-comments', lookupInput: prLookupInput({ pullRequestRef: { number: 999 } }) });
+  const missing = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --data '${missingData}'`);
+  assert(!missing.ok && missing.data.error.code === 'stateNotFound', `missing resolve, got ${JSON.stringify(missing.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
