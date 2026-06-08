@@ -376,6 +376,23 @@ function cleanup() {
   }
 }
 
+const REPO_CONFIG_PATH = path.join(__dirname, '..', '..', '..', '..', '.fixme', 'config.json');
+test('config test command points at the real fixme-tools test file', () => {
+  if (!fs.existsSync(REPO_CONFIG_PATH)) {
+    // Running from an installed copy (~/.claude/skills/fixme-tools/scripts):
+    // the four-`..` repo-root path resolves to ~/.claude/.fixme/config.json, which does not exist.
+    // The source-tree assertion below is the real check; skip cleanly when not in the source tree.
+    console.log(`  (skipped: repo config not found at ${REPO_CONFIG_PATH}; running from an installed copy)`);
+    return;
+  }
+  const config = JSON.parse(fs.readFileSync(REPO_CONFIG_PATH, 'utf8'));
+  assert(config.project && config.project.test, 'config.project.test must exist');
+  assert(
+    config.project.test.command === 'node .claude/skills/fixme-tools/scripts/fixme-tools.test.cjs',
+    `project.test.command must point at the real suite, got ${config.project.test.command}`
+  );
+});
+
 // ============================================================================
 // Test Suite: ticket create (new layout)
 // ============================================================================
