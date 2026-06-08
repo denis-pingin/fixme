@@ -62,7 +62,7 @@ Required inputs:
 - **Previous product specification path**: the specification being revised
 - **Review context packet**: compact current-run decisions, fixes since last review, and source references
 - **FIX items**: classified findings from `fixme-handle-spec-review`
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist)
 
 ### Rewrite Mode
 
@@ -72,7 +72,7 @@ Inputs:
 
 - **Original request**: unchanged product request or feature description, if available
 - **Previous product specification path**: the specification to improve
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist)
 
 ## Before Writing
 
@@ -96,7 +96,7 @@ Use code only to understand observable behavior. Do not transfer code structure 
 
 1. Read the full previous product specification.
 2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
-3. Read the decision log if it exists.
+3. Read the decision log. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain locked decisions by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly if it exists.
 4. In revision mode, read every FIX item and the cited specification sections.
 5. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.
 6. If a FIX item conflicts with a locked decision, resolve it with a decision card through the Task-Bound User Input Contract when running under `fixme-task`; standalone runs can ask the user directly.

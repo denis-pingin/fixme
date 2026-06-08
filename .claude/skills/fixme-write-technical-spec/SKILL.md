@@ -63,7 +63,7 @@ Required inputs:
 - **Previous technical specification path**: the specification being revised
 - **Review context packet**: compact current-run decisions, fixes since last review, and source references
 - **FIX items**: classified findings from `fixme-handle-spec-review`
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist)
 
 ### Rewrite Mode
 
@@ -73,7 +73,7 @@ Inputs:
 
 - **Original request**: unchanged source behavior or product specification, if available
 - **Previous technical specification path**: the specification to improve
-- **Decision log path**: `<fixme-dir>/decisions.md` (may not exist)
+- **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist)
 
 ## Before Writing
 
@@ -99,7 +99,7 @@ Record source material inside the specification. Every codebase claim that affec
 
 1. Read the full previous technical specification.
 2. Read the review context packet if provided. Use it for current-run user decisions, all fixes since last review, and source references. It is orientation, not authority.
-3. Read the decision log if it exists.
+3. Read the decision log. Under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain locked decisions by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly if it exists.
 4. In revision mode, read every FIX item and the cited specification sections.
 5. Re-read any code referenced by the previous specification or FIX items when it affects the contract.
 6. Carry forward all confirmed and assumed decisions unless the user explicitly changes them.

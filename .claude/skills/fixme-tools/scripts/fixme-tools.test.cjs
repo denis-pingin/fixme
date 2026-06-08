@@ -5553,6 +5553,11 @@ test('task-bound plan/review/handler readers consume decisions via task decision
   assertTaskBoundDecisionReader('fixme-handle-spec-review', 'do not write `<fixme-dir>/decisions.md`');
 });
 
+test('task-bound spec-writer readers consume decisions via task decision list', () => {
+  assertTaskBoundDecisionReader('fixme-write-product-spec', 'Do not write `<fixme-dir>/decisions.md`');
+  assertTaskBoundDecisionReader('fixme-write-technical-spec', 'Do not write `<fixme-dir>/decisions.md`');
+});
+
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
