@@ -7836,7 +7836,9 @@ function lifecycleTaskEventConsume(flags) {
     if (!requested) {
       lifecycleError('stateNotFound', `Task event not found: ${flags['event-id']}`);
     }
-    if (requested.taskRunId !== activeChild.taskRunId || requested.taskStatePath !== activeChild.taskStatePath) {
+    if (requested.taskRunId !== activeChild.taskRunId ||
+        requested.taskStatePath !== activeChild.taskStatePath ||
+        (isNonEmptyString(activeChild.terminalResultId) && requested.terminalResultId !== activeChild.terminalResultId)) {
       lifecycleError('staleState', 'Requested event does not belong to the active child');
     }
     selected = requested;

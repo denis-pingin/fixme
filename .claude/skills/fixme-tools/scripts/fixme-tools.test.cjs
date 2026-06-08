@@ -3217,6 +3217,137 @@ test('task-event consume with no pending event returns noPendingEvent', () => {
   assert(!consume.ok && consume.data.error.code === 'noPendingEvent', `no event -> noPendingEvent, got ${JSON.stringify(consume.data)}`);
 });
 
+// Build a durable task-event file directly on disk. Fixture construction only:
+// the production `record` path enforces that an event's terminalResultId matches
+// the real task result, so edge-case events (extra child, mismatched
+// terminalResultId) must be staged on disk before driving the consume CLI.
+function writeTaskEventFile(fixmeDir, parentRunId, event) {
+  const dir = path.join(fixmeDir, 'task-events', parentRunId);
+  fs.mkdirSync(dir, { recursive: true });
+  const record = {
+    schemaVersion: 1,
+    parentRunId,
+    createdAt: new Date().toISOString(),
+    consumedAt: null,
+    consumedBy: null,
+    ...event,
+  };
+  fs.writeFileSync(path.join(dir, `${record.eventId}.json`), JSON.stringify(record, null, 2));
+  return record;
+}
+
+function parentState(fixmeDir, parentRunId) {
+  return readJson(path.join(fixmeDir, 'parents', parentRunId, 'state.json'));
+}
+
+function writeParentState(fixmeDir, parentRunId, state) {
+  fs.writeFileSync(path.join(fixmeDir, 'parents', parentRunId, 'state.json'), JSON.stringify(state, null, 2));
+}
+
+// Critical Invariant 2 proof: a crash between the parent checkpoint and the
+// event-file consumed marker must recover. The parent already recorded the
+// event while the event file's consumedAt is still null; the retry must return
+// the parent-recorded event and complete the missing consumed marker.
+test('task-event consume retry after partial write returns parent-recorded event', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-partial');
+  const recordData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+  assert(recorded.ok, `record should succeed, got: ${JSON.stringify(recorded.data)}`);
+  const eventId = recorded.data.event.eventId;
+
+  // Consume once to record the event into parent state, then simulate a partial
+  // write: reset the event file's consumed marker back to null.
+  const first = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(first.ok && first.data.event.eventId === eventId, `first consume records event, got ${JSON.stringify(first.data)}`);
+  const eventFilePath = path.join(fixmeDir, 'task-events', parentRunId, `${eventId}.json`);
+  const eventRecord = readJson(eventFilePath);
+  eventRecord.consumedAt = null;
+  eventRecord.consumedBy = null;
+  fs.writeFileSync(eventFilePath, JSON.stringify(eventRecord, null, 2));
+  assert(readJson(eventFilePath).consumedAt === null, 'partial write left consumedAt null');
+  assert(parentState(fixmeDir, parentRunId).payload.consumedTaskEvent.eventId === eventId, 'parent still has recorded event');
+
+  const retry = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(retry.ok && retry.data.event.eventId === eventId, `retry returns parent-recorded event, got ${JSON.stringify(retry.data)}`);
+  assert(readJson(eventFilePath).consumedAt, 'retry re-sets the missing consumed marker');
+});
+
+test('task-event consume by explicit event-id consumes the matching event', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-explicit');
+  const recordData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+  const eventId = recorded.data.event.eventId;
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --event-id ${eventId}`);
+  assert(consume.ok, `explicit consume should succeed, got: ${JSON.stringify(consume.data)}`);
+  assert(consume.data.event.eventId === eventId, 'explicit consume returns the named event');
+  assert(consume.data.event.consumedAt, 'explicit consume marks event consumed');
+  assert(parentState(fixmeDir, parentRunId).payload.consumedTaskEvent.eventId === eventId, 'parent recorded the explicit event');
+});
+
+test('task-event consume by explicit event-id for a different child returns staleState', () => {
+  const { statePath, fixmeDir, parentRunId } = setupTaskEventScenario('te-explicit-stale');
+  // Stage an event belonging to a different child (different taskRunId/state).
+  const otherEvent = writeTaskEventFile(fixmeDir, parentRunId, {
+    eventId: 'taskEvent_other',
+    taskRunId: 'taskRun_other',
+    taskStatePath: path.join(path.dirname(statePath), 'other.state.json'),
+    resultSummaryPath: path.join(path.dirname(statePath), 'other.result.json'),
+    terminalResultId: 'terminalResult_other',
+    status: 'completed',
+  });
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --event-id ${otherEvent.eventId}`);
+  assert(!consume.ok && consume.data.error.code === 'staleState', `different child -> staleState, got ${JSON.stringify(consume.data)}`);
+});
+
+test('task-event consume by explicit event-id with terminalResultId mismatch returns staleState', () => {
+  const { statePath, fixmeDir, parentRunId } = setupTaskEventScenario('te-explicit-trid');
+  // Pin a terminalResultId on the active child, then stage an event that matches
+  // the child's taskRunId/state but carries a different terminalResultId.
+  const state = parentState(fixmeDir, parentRunId);
+  state.payload.activeChild.terminalResultId = 'terminalResult_expected';
+  writeParentState(fixmeDir, parentRunId, state);
+  const mismatch = writeTaskEventFile(fixmeDir, parentRunId, {
+    eventId: 'taskEvent_trid',
+    taskRunId: 'taskRun_x',
+    taskStatePath: statePath,
+    resultSummaryPath: path.join(path.dirname(statePath), 'x.result.json'),
+    terminalResultId: 'terminalResult_different',
+    status: 'completed',
+  });
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --event-id ${mismatch.eventId}`);
+  assert(!consume.ok && consume.data.error.code === 'staleState', `terminalResultId mismatch -> staleState, got ${JSON.stringify(consume.data)}`);
+});
+
+test('task-event consume with no active child returns stateNotFound', () => {
+  const { fixmeDir, parentRunId } = setupTaskEventScenario('te-no-child');
+  const state = parentState(fixmeDir, parentRunId);
+  delete state.payload.activeChild;
+  writeParentState(fixmeDir, parentRunId, state);
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(!consume.ok && consume.data.error.code === 'stateNotFound', `no active child -> stateNotFound, got ${JSON.stringify(consume.data)}`);
+});
+
+test('task-event consume with multiple matching unacknowledged events returns conflictingDuplicate', () => {
+  const { statePath, fixmeDir, parentRunId } = setupTaskEventScenario('te-dup');
+  // Stage two unacknowledged events that both match the active child.
+  const common = {
+    taskRunId: 'taskRun_x',
+    taskStatePath: statePath,
+    resultSummaryPath: path.join(path.dirname(statePath), 'dup.result.json'),
+    status: 'completed',
+  };
+  writeTaskEventFile(fixmeDir, parentRunId, { ...common, eventId: 'taskEvent_dup1', terminalResultId: 'terminalResult_dup1' });
+  writeTaskEventFile(fixmeDir, parentRunId, { ...common, eventId: 'taskEvent_dup2', terminalResultId: 'terminalResult_dup2' });
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(!consume.ok && consume.data.error.code === 'conflictingDuplicate', `multiple matches -> conflictingDuplicate, got ${JSON.stringify(consume.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
