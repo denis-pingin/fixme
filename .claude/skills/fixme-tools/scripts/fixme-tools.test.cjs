@@ -3091,6 +3091,92 @@ test('terminalResultId is stable across retry', () => {
   assert(second.ok && second.data.terminalResultId === first.data.terminalResultId, `terminalResultId stable, got ${first.data.terminalResultId} vs ${second.data.terminalResultId}`);
 });
 
+console.log('\n=== lifecycle task-event tests ===\n');
+
+function setupTaskEventScenario(slug) {
+  const { statePath, projectRoot, fixmeDir } = initTaskWithRunStatus(slug);
+  // Write a terminal result for the task.
+  const resultData = JSON.stringify({ status: 'completed', summaryMarkdown: 'done', changedFiles: [], artifactPaths: [] });
+  const result = runInDir(`task result write --state "${statePath}" --data '${resultData}'`, projectRoot);
+  assert(result.ok, `task result write should succeed, got: ${JSON.stringify(result.data)}`);
+  // Create a parent run with activeChild pointing at this task.
+  const taskRunId = 'taskRun_x';
+  const parentData = JSON.stringify({
+    parentSkill: 'fixme-pr-comments', idempotencyKey: `pe-${slug}`,
+    lookupInput: prLookupInput(), status: 'waitingForChild', cursor: 'awaitFixmeTask',
+    payload: {
+      fixBatches: [{}], activeBatchIndex: 0,
+      activeChild: { statusId: 'run_x', taskRunId, taskStatePath: statePath, resumeRef: 'FIXME-1' },
+    },
+  });
+  const parent = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentData}'`);
+  assert(parent.ok, `parent create should succeed, got: ${JSON.stringify(parent.data)}`);
+  return { statePath, projectRoot, fixmeDir, parentRunId: parent.data.parentRunId, terminalResultId: result.data.terminalResultId, resultSummaryPath: result.data.resultSummaryPath, taskRunId };
+}
+
+test('task-event record rejects when result summary missing', () => {
+  const { statePath, fixmeDir, parentRunId } = setupTaskEventScenario('te-missing');
+  const data = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath: path.join(path.dirname(statePath), 'nonexistent.result.json'),
+    terminalResultId: 'terminalResult_missing', status: 'completed',
+  });
+  const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(!r.ok && r.data.error.code === 'stateNotFound', `missing result -> stateNotFound, got ${JSON.stringify(r.data)}`);
+});
+
+test('task-event record rejects when terminalResultId mismatch', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath } = setupTaskEventScenario('te-mismatch');
+  const data = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId: 'terminalResult_wrong', status: 'completed',
+  });
+  const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(!r.ok && r.data.error.code === 'conflictingDuplicate', `mismatch -> conflictingDuplicate, got ${JSON.stringify(r.data)}`);
+});
+
+test('task-event record succeeds and is idempotent', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-ok');
+  const data = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(r.ok, `record should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.event && r.data.event.eventId, 'event returned');
+  const replay = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(replay.ok && replay.data.event.eventId === r.data.event.eventId, 'idempotent record');
+  const conflictData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'failed',
+  });
+  const conflict = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting status, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('task-event consume records into parent state and is idempotent', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-consume');
+  const recordData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(consume.ok, `consume should succeed, got: ${JSON.stringify(consume.data)}`);
+  assert(consume.data.event && consume.data.event.consumedAt, 'event consumed');
+  // Parent state recorded the event.
+  const parent = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId}`);
+  assert(parent.data.payload.consumedTaskEvent && parent.data.payload.consumedTaskEvent.eventId === consume.data.event.eventId, 'parent recorded the event');
+  const retry = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(retry.ok && retry.data.event.eventId === consume.data.event.eventId, 'idempotent re-consume returns recorded event');
+});
+
+test('task-event consume with no pending event returns noPendingEvent', () => {
+  const { fixmeDir, parentRunId } = setupTaskEventScenario('te-none');
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(!consume.ok && consume.data.error.code === 'noPendingEvent', `no event -> noPendingEvent, got ${JSON.stringify(consume.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================

@@ -7701,6 +7701,207 @@ function lifecycleParentResolve(flags) {
   return lifecycleOk(nonterminal[0]);
 }
 
+// ============================================================================
+// Subcommands: lifecycle task-event
+// ============================================================================
+
+const TASK_EVENT_RECORD_FIELDS = new Set(['parentRunId', 'taskRunId', 'taskStatePath', 'resultSummaryPath', 'terminalResultId', 'status']);
+
+function taskEventDirectory(fixmeDir, parentRunId) {
+  return path.join(fixmeDir, 'task-events', parentRunId);
+}
+
+function taskEventPath(fixmeDir, parentRunId, eventId) {
+  return path.join(taskEventDirectory(fixmeDir, parentRunId), `${eventId}.json`);
+}
+
+function listTaskEvents(fixmeDir, parentRunId) {
+  const dir = taskEventDirectory(fixmeDir, parentRunId);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(name => name.endsWith('.json'))
+    .map(name => readJsonFileStrict(path.join(dir, name)));
+}
+
+function lifecycleTaskEventRecord(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'task-event record', TASK_EVENT_RECORD_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['parentRunId', 'taskRunId', 'taskStatePath', 'resultSummaryPath', 'terminalResultId', 'status']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (data.status !== 'completed' && data.status !== 'failed') {
+    lifecycleError('invalidInput', 'status must be one of: completed, failed');
+  }
+
+  // The result summary must exist and match the terminalResultId.
+  if (!fs.existsSync(data.resultSummaryPath)) {
+    lifecycleError('stateNotFound', `Result summary not found: ${data.resultSummaryPath}`);
+  }
+  const summary = readJsonFileStrict(data.resultSummaryPath);
+  if (summary.terminalResultId !== data.terminalResultId) {
+    lifecycleError('conflictingDuplicate', 'Result summary terminalResultId does not match');
+  }
+  // Terminal task state must also match.
+  if (!fs.existsSync(data.taskStatePath)) {
+    lifecycleError('stateNotFound', `Task state not found: ${data.taskStatePath}`);
+  }
+  const taskState = readJsonFileStrict(data.taskStatePath);
+  if (!taskState.terminalResult || taskState.terminalResult.terminalResultId !== data.terminalResultId) {
+    lifecycleError('conflictingDuplicate', 'Task state terminalResultId does not match');
+  }
+
+  // Idempotency by parentRunId + terminalResultId.
+  const existing = listTaskEvents(fixmeDir, data.parentRunId)
+    .find(e => e.terminalResultId === data.terminalResultId);
+  if (existing) {
+    const durableMatch = existing.status === data.status &&
+      existing.resultSummaryPath === data.resultSummaryPath &&
+      existing.taskStatePath === data.taskStatePath &&
+      existing.taskRunId === data.taskRunId;
+    if (durableMatch) {
+      return lifecycleOk({ event: existing });
+    }
+    lifecycleError('conflictingDuplicate', 'A task event for this terminalResultId already exists with different data');
+  }
+
+  const eventId = generateUsageId('taskEvent');
+  const event = {
+    schemaVersion: 1,
+    eventId,
+    parentRunId: data.parentRunId,
+    taskRunId: data.taskRunId,
+    taskStatePath: data.taskStatePath,
+    resultSummaryPath: data.resultSummaryPath,
+    status: data.status,
+    terminalResultId: data.terminalResultId,
+    createdAt: new Date().toISOString(),
+    consumedAt: null,
+    consumedBy: null,
+  };
+  writeJsonAtomic(taskEventPath(fixmeDir, data.parentRunId, eventId), event);
+  return lifecycleOk({ event });
+}
+
+function lifecycleTaskEventConsume(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const parentRunId = flags['parent-run-id'];
+  if (!isNonEmptyString(parentRunId)) {
+    lifecycleError('invalidInput', '--parent-run-id is required');
+  }
+  const statePath = parentStatePath(fixmeDir, parentRunId);
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Parent run not found: ${parentRunId}`);
+  }
+  const parent = readJsonFileStrict(statePath);
+  const activeChild = parent.payload && parent.payload.activeChild;
+  if (!isPlainObject(activeChild) || !isNonEmptyString(activeChild.taskRunId)) {
+    lifecycleError('stateNotFound', 'Parent run has no active child');
+  }
+
+  const events = listTaskEvents(fixmeDir, parentRunId);
+
+  // If parent already recorded a consumed event, return it idempotently and
+  // ensure the consumed marker on the event file is set.
+  const recorded = parent.payload.consumedTaskEvent;
+  if (isPlainObject(recorded) && isNonEmptyString(recorded.eventId)) {
+    const eventPath = taskEventPath(fixmeDir, parentRunId, recorded.eventId);
+    if (fs.existsSync(eventPath)) {
+      const eventRecord = readJsonFileStrict(eventPath);
+      if (!eventRecord.consumedAt) {
+        eventRecord.consumedAt = new Date().toISOString();
+        eventRecord.consumedBy = parentRunId;
+        writeJsonAtomic(eventPath, eventRecord);
+      }
+      return lifecycleOk({ event: eventRecord });
+    }
+  }
+
+  // Select the matching unacknowledged event.
+  const matches = events.filter(e =>
+    !e.consumedAt &&
+    e.taskRunId === activeChild.taskRunId &&
+    e.taskStatePath === activeChild.taskStatePath &&
+    (!isNonEmptyString(activeChild.terminalResultId) || e.terminalResultId === activeChild.terminalResultId));
+
+  let selected = null;
+  if (Object.prototype.hasOwnProperty.call(flags, 'event-id') && flags['event-id'] !== true) {
+    const requested = events.find(e => e.eventId === flags['event-id']);
+    if (!requested) {
+      lifecycleError('stateNotFound', `Task event not found: ${flags['event-id']}`);
+    }
+    if (requested.taskRunId !== activeChild.taskRunId || requested.taskStatePath !== activeChild.taskStatePath) {
+      lifecycleError('staleState', 'Requested event does not belong to the active child');
+    }
+    selected = requested;
+  } else {
+    if (matches.length === 0) {
+      lifecycleError('noPendingEvent', 'No unacknowledged task event for the active child');
+    }
+    if (matches.length > 1) {
+      lifecycleError('conflictingDuplicate', 'Multiple unacknowledged task events match the active child');
+    }
+    selected = matches[0];
+  }
+
+  // Record the event into parent state FIRST (crash-safe), then mark consumed.
+  const nextPayload = { ...parent.payload, consumedTaskEvent: { eventId: selected.eventId, terminalResultId: selected.terminalResultId, resultSummaryPath: selected.resultSummaryPath, status: selected.status } };
+  const checkpointFlags = {
+    'fixme-dir': fixmeDir,
+    'parent-run-id': parentRunId,
+    data: JSON.stringify({
+      idempotencyKey: `consume-${selected.eventId}`,
+      expectedRevision: parent.revision,
+      status: parent.status,
+      cursor: parent.cursor,
+      payload: nextPayload,
+      ledger: parent.ledger || {},
+    }),
+  };
+  lifecycleParentCheckpointInternal(checkpointFlags);
+
+  const eventPath = taskEventPath(fixmeDir, parentRunId, selected.eventId);
+  const eventRecord = readJsonFileStrict(eventPath);
+  eventRecord.consumedAt = new Date().toISOString();
+  eventRecord.consumedBy = parentRunId;
+  writeJsonAtomic(eventPath, eventRecord);
+
+  return lifecycleOk({ event: eventRecord });
+}
+
+// Internal parent checkpoint that returns the state object instead of exiting.
+function lifecycleParentCheckpointInternal(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const parentRunId = flags['parent-run-id'];
+  const statePath = parentStatePath(fixmeDir, parentRunId);
+  const data = JSON.parse(flags.data);
+  const current = readJsonFileStrict(statePath);
+  if (current.lastCheckpointKey === data.idempotencyKey) {
+    return current;
+  }
+  if (data.expectedRevision !== current.revision) {
+    lifecycleError('staleState', `expectedRevision ${data.expectedRevision} does not match current revision ${current.revision}`);
+  }
+  const next = {
+    ...current,
+    status: data.status,
+    cursor: data.cursor,
+    revision: current.revision + 1,
+    payload: data.payload,
+    ledger: data.ledger,
+    updatedAt: new Date().toISOString(),
+    lastCheckpointKey: data.idempotencyKey,
+  };
+  writeJsonAtomic(statePath, next);
+  return next;
+}
+
 function emptyTokenUsage() {
   const usage = {};
   for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
@@ -8344,6 +8545,15 @@ function main() {
                 return lifecycleParentResolve(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle parent action: '${args[0] || ''}'`);
+            }
+          case 'task-event':
+            switch (args[0]) {
+              case 'record':
+                return lifecycleTaskEventRecord(flags);
+              case 'consume':
+                return lifecycleTaskEventConsume(flags);
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle task-event action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);
