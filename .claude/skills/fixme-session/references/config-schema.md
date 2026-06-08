@@ -150,9 +150,9 @@ Resolution priority for workflow phases is phase, workflow, global, then built-i
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `ticketBackend` | string | No | `fixme-tickets-md` or `fixme-tickets-linear`. |
-| `linear.teamId` | string | Backend-dependent | Linear team identifier. |
-| `linear.teamName` | string | Backend-dependent | Linear team name. |
+| `ticketBackend` | string | No | `fixme-tickets-md`. |
+| `linear.teamId` | string | No | Linear team identifier used by `/fixme-ticket`. |
+| `linear.teamName` | string | No | Linear team name used by `/fixme-ticket`. |
 | `linear.defaultLabels` | string[] | No | Optional labels applied to new Linear tickets. |
 | `linear.defaultProject` | string or null | No | Optional default Linear project. |
 | `linear.defaultPriority.value` | number | No | Default non-zero issue priority sent by `/fixme-ticket` when no priority signal is detected. |

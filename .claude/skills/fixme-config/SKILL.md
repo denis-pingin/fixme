@@ -20,21 +20,13 @@ Interactive configuration of fixme settings: model profile, workflow selection, 
 
 ## Prerequisites
 
-**Linear MCP is needed by `/fixme-ticket` (standalone Linear ticket creation) and by the Linear ticket backend.** `fixme-config` always runs the Linear discovery round so that `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are available to `/fixme-ticket` regardless of which `ticketBackend` is selected. Ticket backend and `/fixme-ticket` are independent: the backend controls how the pipeline tracks tickets, while `/fixme-ticket` always creates Linear issues.
+**Linear MCP is needed by `/fixme-ticket` (standalone Linear ticket creation).** `fixme-config` always runs the Linear discovery round so that `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are available to `/fixme-ticket`. The ticket backend (`fixme-tickets-md`) and `/fixme-ticket` are independent: the backend controls how the pipeline tracks tickets, while `/fixme-ticket` always creates Linear issues.
 
-If Linear MCP is unavailable when Step 6 runs, branch on backend:
-
-- **Backend is `fixme-tickets-linear`:** stop the skill immediately and report:
-
-  > "Linear MCP is not available. I need it to configure the Linear backend. Please enable it and tell me to continue."
-
-  Do NOT fall back to manual entry, do NOT skip the Linear round, do NOT write partial Linear settings.
-
-- **Backend is `fixme-tickets-md`:** print a warning and skip ONLY the Linear round, then continue with the rest of the skill:
+If Linear MCP is unavailable when Step 6 runs, print a warning and skip ONLY the Linear round, then continue with the rest of the skill:
 
   > "Linear MCP is not available. Skipping Linear ticket configuration. `/fixme-ticket` will not work until you enable Linear MCP and re-run `/fixme-config`."
 
-  Do not stop the skill. Do not write or clear `linear.teamId`, `linear.teamName`, or `linear.defaultPriority` (leave any existing values untouched). Continue to Step 8.
+Do not stop the skill. Do not write or clear `linear.teamId`, `linear.teamName`, or `linear.defaultPriority` (leave any existing values untouched). Continue to Step 8.
 
 ## Process
 
@@ -106,8 +98,7 @@ AskUserQuestion([
     header: "Backend",
     multiSelect: false,
     options: [
-      { label: "Markdown (Recommended)", description: "Local markdown files in <fixme-dir>/sessions/" },
-      { label: "Linear", description: "Linear issue tracker (requires Linear MCP)" }
+      { label: "Markdown (Recommended)", description: "Local markdown files in <fixme-dir>/sessions/" }
     ]
   },
   {
@@ -125,7 +116,7 @@ AskUserQuestion([
 
 Map answers:
 - Model: "Quality" -> `"quality"`, "Balanced" -> `"balanced"`, "Budget" -> `"budget"`, "Inherit" -> `"inherit"`
-- Backend: "Markdown" -> `"fixme-tickets-md"`, "Linear" -> `"fixme-tickets-linear"`
+- Backend: "Markdown" -> `"fixme-tickets-md"`
 - Workflow: selected label -> `selectedWorkflow`
 
 Workflow option rules:
@@ -402,9 +393,9 @@ Hot Module Replacement uses Yes/No:
 
 ### Step 6: Linear discovery round
 
-**Always run this round, regardless of `ticketBackend`.** `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are read by `/fixme-ticket` (standalone Linear ticket creation). Team values are also read by the Linear ticket backend. They are independent of which backend is selected.
+**Always run this round.** `linear.teamId`, `linear.teamName`, and `linear.defaultPriority` are read by `/fixme-ticket` (standalone Linear ticket creation). They are independent of the ticket backend.
 
-If Linear MCP is unavailable when this step starts, follow the backend-conditional skip rules in **Prerequisites**: stop the skill when backend is `fixme-tickets-linear`, or warn and skip only this round when backend is `fixme-tickets-md`.
+If Linear MCP is unavailable when this step starts, follow the skip rule in **Prerequisites**: warn and skip only this round, then continue.
 
 This round configures `linear.teamId`, `linear.teamName`, and `linear.defaultPriority`. Labels and project defaults are NOT written by fixme-config - users who want them can hand-edit config.json, and fixme-ticket handles per-ticket label/project selection at creation time.
 
@@ -615,7 +606,7 @@ Before writing, validate the config:
 5. **Workflow skills** should reference known fixme skill names (warn on unknown, don't block)
 6. **Review config** `maxCycles` must be a positive integer if present
 7. **Workflow outer loop** `workflows.<workflow>.outerMaxCycles` must be a positive integer if present
-8. **Ticket backend** must be one of: `fixme-tickets-md`, `fixme-tickets-linear`
+8. **Ticket backend** must be `fixme-tickets-md`
 9. **Review level** values must be one of `strict`, `standard`, `lenient`, `fast-track`, or `critical`
 10. **Linear fields** (only if Step 6 resolved a team in this run, i.e. Linear MCP was available):
    - `linear.teamId` must be a non-empty string
@@ -623,7 +614,7 @@ Before writing, validate the config:
    - `linear.defaultPriority.value` must be a positive integer from the exposed assignable priority list
    - `linear.defaultPriority.label` must be a non-empty string
 
-   When backend is `fixme-tickets-linear`, Step 6 is required to have resolved a team (the skill stops earlier when MCP is unavailable). When backend is `fixme-tickets-md` and Linear MCP was unavailable, Step 6 is skipped and these fields are not validated.
+   When Linear MCP was unavailable, Step 6 is skipped and these fields are not validated.
 
 If validation fails, display errors and re-prompt for the specific invalid settings.
 
@@ -716,7 +707,7 @@ Display:
 | Model Profile        | {quality/balanced/budget/inherit} |
 | Configured Workflow  | {selectedWorkflow}       |
 | Outer Max Cycles     | {workflows[selectedWorkflow].outerMaxCycles} |
-| Ticket Backend       | {fixme-tickets-md/linear}|
+| Ticket Backend       | {fixme-tickets-md}       |
 | Framework            | {value}                  |
 | Dev Server URL       | {value}                  |
 | Dev Server Command   | {value}                  |

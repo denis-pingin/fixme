@@ -196,7 +196,7 @@ const VALID_REVIEW_LEVELS = new Set(REVIEW_LEVELS);
 const VALID_MODEL_PROFILES = new Set(['quality', 'balanced', 'budget', 'inherit']);
 const VALID_MODEL_VALUES = new Set(['opus', 'sonnet', 'haiku', 'inherit']);
 const VALID_RUNTIME_VALUES = new Set(['claude', 'codex']);
-const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md', 'fixme-tickets-linear']);
+const VALID_TICKET_BACKENDS = new Set(['fixme-tickets-md']);
 const FIXME_CODEX_MARKER = '# Fixme Agent Configuration - managed by fixme installer';
 const FIXME_CODEX_CLOSE_MARKER = '# /Fixme Agent Configuration';
 const GSD_CODEX_MARKER_PREFIX = '# GSD Agent Configuration';
@@ -1844,7 +1844,7 @@ function validateConfigSetValue(parts, value) {
 
   if (top === 'ticketBackend') {
     if (typeof value !== 'string' || !VALID_TICKET_BACKENDS.has(value)) {
-      throw new Error("ticketBackend must be one of: fixme-tickets-md, fixme-tickets-linear");
+      throw new Error("ticketBackend must be one of: fixme-tickets-md");
     }
   }
 

@@ -3258,6 +3258,20 @@ test('config set and workflow configure validate final review level fields', () 
   assert(!result.ok, 'obsolete scope key should be unsupported');
 });
 
+test('config set ticketBackend rejects fixme-tickets-linear with a clear error', () => {
+  const workspace = createTmpDir();
+  const result = runInDir(`config set ticketBackend '"fixme-tickets-linear"'`, workspace);
+  assert(!result.ok, 'config set fixme-tickets-linear should fail');
+  assert(
+    result.data && typeof result.data.error === 'string' &&
+      result.data.error.includes('fixme-tickets-md') &&
+      !result.data.error.includes('fixme-tickets-linear'),
+    `error must name only fixme-tickets-md, got ${JSON.stringify(result.data)}`
+  );
+  const ok = runInDir(`config set ticketBackend '"fixme-tickets-md"'`, workspace);
+  assert(ok.ok, `fixme-tickets-md must still be accepted, got ${JSON.stringify(ok.data)}`);
+});
+
 test('config set accepts subRepos and rejects obsolete sub_repos', () => {
   const tmp = createTmpDir();
 

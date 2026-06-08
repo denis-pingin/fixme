@@ -1,6 +1,6 @@
 ---
 name: fixme-tickets
-description: "Abstract ticket interface. Routes operations to the configured backend (fixme-tickets-md, fixme-tickets-linear, etc). Reads ticketBackend from <fixme-dir>/config.json."
+description: "Abstract ticket interface. Routes operations to the configured backend (fixme-tickets-md). Reads ticketBackend from <fixme-dir>/config.json."
 disable-model-invocation: true
 ---
 
@@ -17,7 +17,7 @@ Routes ticket and session operations to the configured backend. The backend is d
 ## Backend Resolution
 
 1. Read `<fixme-dir>/config.json` (using `fixmeDir` resolved above)
-2. Extract `ticketBackend` field (e.g., `"fixme-tickets-md"`, `"fixme-tickets-linear"`)
+2. Extract `ticketBackend` field (currently only `"fixme-tickets-md"` is supported)
 3. If missing or file doesn't exist, use `fixme-tickets-md`
 4. Dispatch the operation to `~/.claude/skills/{ticketBackend}/SKILL.md`
 
