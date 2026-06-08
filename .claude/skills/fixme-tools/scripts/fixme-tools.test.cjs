@@ -5416,7 +5416,7 @@ test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', (
   assert(skill.includes('pipelineRunId'), 'fixme-task should name the shared pipelineRunId state');
   assert(skill.includes('pipelineRunId: <pipelineRunId>'), 'child prompts should include camelCase pipelineRunId');
   assert(skill.includes('parentInvocationId: <usageInvocationId>'), 'child prompts should include camelCase parentInvocationId');
-  assert(skill.includes('Nested `fixme-task` receives a `pipelineRunId`'), 'nested pipeline ID reuse should be explicit');
+  assert(skill.includes('Parent-driven `fixme-task` receives a `pipelineRunId`'), 'parent-driven pipeline ID reuse should be explicit');
   assert(skill.includes('ownerSkill: fixme-task'), 'task-state owner prompt should use camelCase ownerSkill');
   assert(skill.includes('resumeRef: <FIXME-N|task-path|state-path|ticket-path>'), 'task-state owner prompt should use camelCase resumeRef');
   assert(skill.includes('taskStatePath: <task-state-path>'), 'task-state owner prompt should use camelCase taskStatePath');
@@ -5430,10 +5430,11 @@ test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', (
 test('fixme-task skill: creates liveness status for every dispatched agent', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent <agent-name>'), 'fixme-task should create liveness status before each Agent dispatch');
+  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'fixme-task should prepare dispatch (and child liveness) before each Agent dispatch');
   assert(skill.includes('<liveness>'), 'child prompts should include liveness block');
-  assert(skill.includes('statusId: <statusId from run start>'), 'child prompts should include statusId');
-  assert(skill.includes('Do not dispatch the agent if `run start` fails.'), 'fixme-task should fail closed when liveness setup fails');
+  assert(skill.includes('statusId: <statusId from lifecycle dispatch prepare>'), 'child prompts should include statusId');
+  assert(skill.includes('Do not dispatch the agent if `lifecycle dispatch prepare` fails'), 'fixme-task should fail closed when dispatch prepare fails');
+  assert(skill.includes('lifecycle dispatch complete --fixme-dir <fixme-dir>'), 'fixme-task should finalize child liveness after dispatch returns');
 });
 
 test('fixme-task skill: refreshes its own liveness while waiting on dispatched agents', () => {
@@ -5452,7 +5453,7 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('state `waitingForUser` with `pendingDecision.attentionId`'), 'fixme-task should checkpoint waiting state with attention id');
   assert(skill.includes('pendingDecision.attentionStatusId'), 'fixme-task should store the run status id that owns the attention record');
   assert(skill.includes('Generate the attention id before checkpointing task state'), 'fixme-task should allocate the attention id before writing resumable state');
-  assert(skill.includes('Checkpoint task state before calling `run attention set`'), 'fixme-task should make resume metadata durable before exposing the prompt');
+  assert(skill.includes('which checkpoints task state before creating the attention record (checkpoint-first)'), 'fixme-task should make resume metadata durable before exposing the prompt');
   assert(skill.includes('absolute `taskStatePath`'), 'fixme-task should pass an absolute task state path to attention records');
   assert(skill.includes('"taskStatePath":"<absolute-task-state-path>"'), 'fixme-task attention example should use an absolute task state path placeholder');
   assert(!skill.includes('store the Agent Escalation block with `run attention set`, checkpoint'), 'agent escalation instructions should not expose attention before checkpointing');
@@ -5462,22 +5463,23 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly.'), 'answer-attention resumes should not present pendingDecision directly');
   assert(skill.includes('Consume `--answer-attention` before any normal liveness ping, Agent dispatch, or status reset so the runtime does not reject the liveness update while the active `currentCommand: attention:<attention-id>` marker is still pending'), 'answer resume should clear pending attention before normal liveness resumes');
   assert(skill.includes('run attention clear'), 'answer resume should clear durable attention after consuming it');
-  assert(skill.includes('write `<fixme-dir>/decisions.md` for every answered attention decision that constrains task behavior'), 'answer resume should persist task-constraining child decisions');
+  assert(skill.includes('persist the decision with `task decision append --state <task-state-path> --data \'<decision-record-json>\'` for every answered attention decision that constrains task behavior'), 'answer resume should persist task-constraining child decisions');
   assert(skill.includes('re-dispatch the same child step with the answered input'), 'answer resume should feed child attention answers back to the child step');
-  assert(skill.includes('Only `fixme-task` writes the decision log after an attention answer'), 'fixme-task should preserve decision ownership');
+  assert(skill.includes('Only `fixme-task` persists the decision through `task decision append` after an attention answer'), 'fixme-task should preserve decision ownership');
   assert(skill.includes('Use `answer.answerKind` to distinguish `decision` from `clarificationRequest`'), 'answer resume should use explicit answer kind');
   assert(skill.includes('If the answered attention record contains `answerKind: "clarificationRequest"`, treat it as Discussion Mode input.'), 'answer resume should support clarification turns without treating them as decisions');
   assert(skill.includes('clear the consumed attention before creating the replacement attention'), 'clarification replacement attention should avoid overlapping pending attention');
-  assert(skill.includes('For a clarification turn, build the replacement prompt, generate a new attention id, checkpoint `waitingForUser`, store the replacement prompt with `run attention set`, and return'), 'clarification turns should re-prompt through checkpoint-first durable attention');
+  assert(skill.includes('For a clarification turn, build the replacement prompt and open the replacement attention with another `lifecycle attention open`, and return'), 'clarification turns should re-prompt through checkpoint-first durable attention');
   assert(skill.includes('If `answer.answerKind` is `decision` but only some decision points are resolved, keep the parsed partial answers in `pendingDecision.partialAnswers`'), 'partial attention decisions should be preserved before re-prompting unresolved points');
-  assert(skill.includes('For partial decision answers, build the replacement prompt for only the unresolved decision points, generate a new attention id, checkpoint `waitingForUser`, store that prompt with `run attention set`, and return'), 'partial attention decisions should re-prompt through checkpoint-first durable attention');
+  assert(skill.includes('For partial decision answers, build the replacement prompt for only the unresolved decision points and open the replacement attention with another `lifecycle attention open`, and return'), 'partial attention decisions should re-prompt through checkpoint-first durable attention');
   assert(!skill.includes('Then create a new durable attention prompt with the clarification answer plus the still-unresolved decision points, checkpoint'), 'clarification turns should not create replacement attention before checkpointing');
   assert(!skill.includes('clear the consumed attention before creating a replacement prompt for only the unresolved decision points, checkpoint'), 'partial decisions should not create replacement attention before checkpointing');
   assert(skill.includes('resume an existing task continuation, never save a new task'), 'resume mode should forbid duplicate saved-task creation');
   assert(skill.includes('Attention Resume Examples'), 'fixme-task should include concrete attention resume examples');
   assert(skill.includes('Attention examples use the same checkpoint-first order'), 'fixme-task examples should explicitly preserve checkpoint-first ordering');
   assert(!skill.includes('Then it checkpoints `pendingDecision.attentionId` and returns:'), 'fixme-task examples should not checkpoint after exposing attention');
-  assert(skill.includes('Skill("fixme-task", "--nested --resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should document the Claude inline resume shape');
+  assert(skill.includes('Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should document the Claude inline resume shape');
+  assert(!skill.includes('--nested'), 'fixme-task should no longer reference --nested');
   assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'fixme-task should document the Codex installed-skill resume shape');
   assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'fixme-task should document the Claude background agent resume shape');
   assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'fixme-task should document the Codex background agent resume shape');
@@ -5489,15 +5491,15 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
 test('fixme-task skill: native ASK_USER pauses use durable attention when not user-facing', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('If `fixme-task` is running in a non-user-facing context (`--nested`, a background session task, or any parent-provided `<liveness>` status id), do not wait on normal text output.'), 'nested/background native ASK_USER should not wait on hidden output');
-  assert(skill.includes('Use the checkpoint-first attention path below to store the complete Review Classification block with `run attention set`'), 'native ASK_USER should store the full review block through checkpoint-first attention');
+  assert(skill.includes('If `fixme-task` is running in a non-user-facing context (a parent-provided `parentContinuation` (transport `inline-skill` or `background`) or any parent-provided `<liveness>` status id), do not wait on normal text output.'), 'parent-driven/background native ASK_USER should not wait on hidden output');
+  assert(skill.includes('Use the `lifecycle attention open` path below to store the complete Review Classification block'), 'native ASK_USER should store the full review block through checkpoint-first attention');
   assert(skill.includes('Direct user-facing runs may print the block and wait normally'), 'direct fixme-task should still allow normal user-facing prompts');
   assert(skill.includes('If attention mode is required but no current fixme-task liveness status id is available, stop with `FIXME_ATTENTION_BLOCKED`'), 'attention mode should fail closed without a task liveness id');
-  assert(skill.includes('After a successful `run attention set`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
+  assert(skill.includes('After a successful `lifecycle attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
   assert(skill.includes('In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching'), 'answer-attention should feed native ASK_USER batching');
-  assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the checkpoint-first attention path'), 'agent escalation should use checkpoint-first durable attention when nested');
-  assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the checkpoint-first attention path'), 'loop guard escalation should use checkpoint-first durable attention when nested');
-  assert(skill.includes('A loop guard escalation in nested mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary'), 'nested loop guard should not output a hidden run summary');
+  assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'agent escalation should use checkpoint-first durable attention when parent-driven');
+  assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'loop guard escalation should use checkpoint-first durable attention when parent-driven');
+  assert(skill.includes('A loop guard escalation in parent-driven mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary'), 'parent-driven loop guard should not output a hidden run summary');
   assert(skill.includes('or after a loop guard triggers in direct standalone mode'), 'top-level run-summary rule should not imply nested loop guards emit summaries');
   assert(skill.includes('If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`'), 'missing parent liveness fallback should not hide later prompt failures');
   assert(!skill.includes('Every review handler classification must be printed to the main conversation'), 'review visibility should not assume nested output reaches the main conversation');
@@ -5510,8 +5512,8 @@ test('fixme-task skill: converts child attention requests into owned durable att
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('FIXME_CHILD_ATTENTION_REQUIRED'), 'fixme-task should define child attention request directives');
-  assert(skill.includes('convert the child request into `run attention set`'), 'fixme-task should create durable attention for child requests');
-  assert(skill.includes('Child skills never write `<fixme-dir>/decisions.md`'), 'child skills should not own decision persistence');
+  assert(skill.includes('convert the child request into `lifecycle attention open`'), 'fixme-task should create durable attention for child requests');
+  assert(skill.includes('Child skills never persist task-owned decisions'), 'child skills should not own decision persistence');
 });
 
 test('fixme-pr-comments skill: brokers nested fixme-task attention without owning decisions', () => {
@@ -5840,7 +5842,7 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
   assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
-  assert(skill.includes('No-ticket mode, including nested parent dispatches, must still create or reuse a saved task state before the first phase dispatch.'), 'no-ticket nested dispatches should still have durable task state');
+  assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse a saved task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
   assert(skill.includes('This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the saved task boundary');
   assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
