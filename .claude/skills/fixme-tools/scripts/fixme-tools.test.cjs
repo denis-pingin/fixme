@@ -2609,6 +2609,116 @@ test('usage start to finish round trip schema unchanged after core extraction', 
   assert(Object.prototype.hasOwnProperty.call(finish.data, 'reportLineSuppressed'), 'reportLineSuppressed present');
 });
 
+console.log('\n=== lifecycle invocation tests ===\n');
+
+function countDirEntries(dir) {
+  if (!fs.existsSync(dir)) return 0;
+  return fs.readdirSync(dir).length;
+}
+
+test('invocation start wraps usage and returns invocationId', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'k1' });
+  const r = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  assert(r.ok, `invocation start should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.ok === true, 'envelope ok');
+  assert(/^usage_/.test(r.data.invocationId), 'invocationId returned');
+  assert(typeof r.data.usageFinishCommand === 'string', 'usageFinishCommand present');
+  assert(!Object.prototype.hasOwnProperty.call(r.data, 'statusId'), 'no statusId without createRunStatusForAgent');
+  assert(countDirEntries(path.join(w.fixmeDir, 'runs')) === 0, 'no run-status created');
+});
+
+test('invocation start with createRunStatusForAgent returns a self-owned status', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'k2', createRunStatusForAgent: 'fixme-task' });
+  const r = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  assert(r.ok, `should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(typeof r.data.statusId === 'string' && typeof r.data.statusPath === 'string', 'statusId/statusPath present');
+  assert(fs.existsSync(r.data.statusPath), 'run status file exists');
+  const status = readJson(r.data.statusPath);
+  assert(status.agent === 'fixme-task', `agent should be fixme-task, got ${status.agent}`);
+});
+
+test('invocation start retry with same idempotencyKey returns existing invocation and status', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'k3', createRunStatusForAgent: 'fixme-task' });
+  const first = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  assert(first.ok, `first should succeed, got: ${JSON.stringify(first.data)}`);
+  const second = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  assert(second.ok, `retry should succeed, got: ${JSON.stringify(second.data)}`);
+  assert(second.data.invocationId === first.data.invocationId, 'same invocationId');
+  assert(second.data.statusId === first.data.statusId, 'same statusId');
+  assert(countDirEntries(path.join(w.fixmeDir, 'runs')) === 1, 'only one run-status directory');
+  assert(countDirEntries(path.join(w.fixmeDir, 'usage', 'pending')) === 1, 'only one pending usage file');
+
+  const conflictData = JSON.stringify({ skill: 'fixme-pr-comments', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'k3' });
+  const conflict = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${conflictData}'`, w.projectRoot, w.env);
+  assert(!conflict.ok, 'conflicting durable inputs should fail');
+  assert(conflict.data.error.code === 'conflictingDuplicate', `code should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('invocation finish returns usage finish fields', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'kf1' });
+  const start = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  const finish = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome complete`, w.projectRoot, w.env);
+  assert(finish.ok, `finish should succeed, got: ${JSON.stringify(finish.data)}`);
+  assert(finish.data.ok === true, 'envelope ok');
+  assert(finish.data.outcome === 'complete', `outcome complete, got ${finish.data.outcome}`);
+  assert(Object.prototype.hasOwnProperty.call(finish.data, 'reportLine'), 'reportLine present');
+  assert(typeof finish.data.projectEventPath === 'string', 'projectEventPath present');
+});
+
+test('invocation finish replay after pending deleted returns finalized usage event', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'kf2' });
+  const start = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  const first = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome complete`, w.projectRoot, w.env);
+  assert(first.ok, `first finish should succeed, got: ${JSON.stringify(first.data)}`);
+  const replay = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome complete`, w.projectRoot, w.env);
+  assert(replay.ok, `replay should succeed, got: ${JSON.stringify(replay.data)}`);
+  assert(replay.data.error === undefined, 'should not be stateNotFound');
+  assert(replay.data.outcome === 'complete' && replay.data.eventId === first.data.eventId, `replay matches first, got ${JSON.stringify(replay.data)}`);
+});
+
+test('invocation finish conflicting outcome returns conflictingDuplicate', () => {
+  const w = createUsageWorkspace();
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'kf3' });
+  const start = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome complete`, w.projectRoot, w.env);
+  const conflict = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome failed --reason runtime_error`, w.projectRoot, w.env);
+  assert(!conflict.ok, 'different outcome should fail');
+  assert(conflict.data.error.code === 'conflictingDuplicate', `code should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('invocation finish unknown invocation returns stateNotFound', () => {
+  const w = createUsageWorkspace();
+  const r = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id usage_20260101_000000_deadbeef --outcome complete`, w.projectRoot, w.env);
+  assert(!r.ok, 'unknown invocation should fail');
+  assert(r.data.error.code === 'stateNotFound', `code should be stateNotFound, got ${JSON.stringify(r.data)}`);
+});
+
+test('invocation finish returns null reportLine when suppressed', () => {
+  const w = createUsageWorkspace();
+  fs.writeFileSync(path.join(w.fixmeDir, 'config.json'), JSON.stringify({ usage: { printAfterFinish: false } }) + '\n');
+  const data = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'kf4' });
+  const start = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, w.env);
+  const finish = runInDirWithEnv(`lifecycle invocation finish --fixme-dir "${w.fixmeDir}" --invocation-id ${start.data.invocationId} --outcome complete`, w.projectRoot, w.env);
+  assert(finish.ok, `finish should succeed, got: ${JSON.stringify(finish.data)}`);
+  assert(finish.data.reportLine === null, `reportLine should be null when suppressed, got ${JSON.stringify(finish.data.reportLine)}`);
+  assert(finish.data.reportLineSuppressed === true, 'reportLineSuppressed true');
+});
+
+test('invocation start validates required and unknown fields', () => {
+  const w = createUsageWorkspace();
+  const unknown = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '{"skill":"fixme-task","idempotencyKey":"u1","bogus":"x"}'`, w.projectRoot, w.env);
+  assert(!unknown.ok && unknown.data.error.code === 'unknownField', `unknown field, got ${JSON.stringify(unknown.data)}`);
+  const noKey = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '{"skill":"fixme-task"}'`, w.projectRoot, w.env);
+  assert(!noKey.ok && noKey.data.error.code === 'missingRequiredField', `missing idempotencyKey, got ${JSON.stringify(noKey.data)}`);
+  const noSkill = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '{"idempotencyKey":"u2"}'`, w.projectRoot, w.env);
+  assert(!noSkill.ok && noSkill.data.error.code === 'missingRequiredField', `missing skill, got ${JSON.stringify(noSkill.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================

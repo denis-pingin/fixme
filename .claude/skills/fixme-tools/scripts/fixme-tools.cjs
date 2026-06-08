@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 // ============================================================================
 // Model Profile Table
@@ -6376,6 +6377,10 @@ function eventsEqual(a, b) {
   return canonicalJson(a) === canonicalJson(b);
 }
 
+function stableHash(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+
 function readUsageRowsForInvocation(eventPath, invocationId) {
   if (!fs.existsSync(eventPath)) return [];
   const text = fs.readFileSync(eventPath, 'utf8');
@@ -6639,6 +6644,191 @@ function usageFinish(flags, fixmeRoot) {
     return usageCliError(core.code, core.message, core.extra || {});
   }
   return usageCliResult(core.result);
+}
+
+// ============================================================================
+// Subcommands: lifecycle invocation
+// ============================================================================
+
+const LIFECYCLE_INVOCATION_START_FIELDS = new Set([
+  'skill', 'runtime', 'role', 'idempotencyKey', 'pipelineRunId',
+  'parentInvocationId', 'taskStatePath', 'createRunStatusForAgent',
+]);
+
+function usageIdempotencyPath(fixmeDir, keyHash) {
+  return path.join(fixmeDir, 'usage', 'idempotency', `${keyHash}.json`);
+}
+
+function resolveLifecycleData(flags) {
+  let data;
+  try {
+    data = parseTaskData(flags.data);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  try {
+    assertCamelCaseJsonKeys(data, 'lifecycle data');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  return data;
+}
+
+function lifecycleInvocationStart(flags, fixmeRoot) {
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'invocation start', LIFECYCLE_INVOCATION_START_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(data.idempotencyKey)) {
+    lifecycleError('missingRequiredField', 'idempotencyKey is required');
+  }
+  if (!isNonEmptyString(data.skill)) {
+    lifecycleError('missingRequiredField', 'skill is required');
+  }
+
+  let fixmeDir;
+  try {
+    fixmeDir = resolveUsageFixmeDir(flags, fixmeRoot);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+
+  const durableInputs = {
+    skill: data.skill,
+    runtime: data.runtime || null,
+    role: data.role || null,
+    pipelineRunId: data.pipelineRunId || null,
+    parentInvocationId: data.parentInvocationId || null,
+    taskStatePath: data.taskStatePath || null,
+    createRunStatusForAgent: data.createRunStatusForAgent || null,
+  };
+  const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
+  const recordPath = usageIdempotencyPath(fixmeDir, keyHash);
+
+  if (fs.existsSync(recordPath)) {
+    const existing = readJsonFileStrict(recordPath);
+    if (!jsonEqual(existing.durableInputs, durableInputs)) {
+      lifecycleError('conflictingDuplicate', `invocation idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
+    }
+    const out = {
+      invocationId: existing.invocationId,
+      pipelineRunId: existing.pipelineRunId,
+      fixmeDir,
+      usageFinishCommand: existing.usageFinishCommand,
+    };
+    if (existing.statusId) {
+      out.statusId = existing.statusId;
+      out.statusPath = existing.statusPath;
+    }
+    return lifecycleOk(out);
+  }
+
+  const usageFlags = {
+    skill: data.skill,
+    runtime: data.runtime || 'auto',
+    role: data.role,
+    'fixme-dir': fixmeDir,
+    'pipeline-run-id': data.pipelineRunId,
+    'parent-invocation-id': data.parentInvocationId,
+  };
+  const startCore = usageStartCore(usageFlags, fixmeRoot);
+  if (!startCore.ok) {
+    lifecycleError('invalidInput', startCore.message);
+  }
+  const startResult = startCore.result;
+
+  let statusId = null;
+  let statusPath = null;
+  if (data.createRunStatusForAgent) {
+    const runResult = runStartCore({ 'fixme-dir': fixmeDir, agent: data.createRunStatusForAgent });
+    statusId = runResult.statusId;
+    statusPath = runResult.statusPath;
+  }
+
+  const record = {
+    schemaVersion: 1,
+    idempotencyKey: data.idempotencyKey,
+    invocationId: startResult.invocationId,
+    statusId,
+    statusPath,
+    usageFinishCommand: startResult.finishCommand,
+    pipelineRunId: startResult.pipelineRunId,
+    durableInputs,
+    createdAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(recordPath, record);
+
+  const out = {
+    invocationId: startResult.invocationId,
+    pipelineRunId: startResult.pipelineRunId,
+    fixmeDir,
+    usageFinishCommand: startResult.finishCommand,
+  };
+  if (statusId) {
+    out.statusId = statusId;
+    out.statusPath = statusPath;
+  }
+  return lifecycleOk(out);
+}
+
+function lifecycleInvocationFinish(flags, fixmeRoot) {
+  if (!isNonEmptyString(flags['invocation-id'])) {
+    lifecycleError('invalidInput', '--invocation-id is required');
+  }
+  let fixmeDir;
+  try {
+    fixmeDir = resolveUsageFixmeDir(flags, fixmeRoot);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+
+  const core = usageFinishCore(flags, fixmeRoot);
+  if (core.ok) {
+    return lifecycleOk(core.result);
+  }
+
+  if (core.code === 'PENDING_USAGE_NOT_FOUND') {
+    const rows = readUsageRowsForInvocation(usageProjectEventPath(fixmeDir), flags['invocation-id']);
+    if (rows.length === 0) {
+      lifecycleError('stateNotFound', `No pending usage and no finalized usage row for invocation: ${flags['invocation-id']}`);
+    }
+    if (rows.length > 1) {
+      lifecycleError('conflictingDuplicate', `Multiple finalized usage rows for invocation: ${flags['invocation-id']}`);
+    }
+    const row = rows[0];
+    const outcomeResult = validateOutcomeAndReason(flags.outcome, flags.reason);
+    if (!outcomeResult.ok) {
+      lifecycleError('invalidInput', outcomeResult.message);
+    }
+    const requestedReason = outcomeResult.outcomeReason !== undefined ? outcomeResult.outcomeReason : null;
+    const rowReason = row.outcomeReason !== undefined ? row.outcomeReason : null;
+    if (row.outcome !== outcomeResult.outcome || rowReason !== requestedReason) {
+      lifecycleError('conflictingDuplicate', `Finalized usage outcome differs for invocation: ${flags['invocation-id']}`);
+    }
+    const suppressed = !usagePrintAfterFinishForFixmeDir(fixmeDir);
+    return lifecycleOk({
+      eventId: row.eventId,
+      invocationId: row.invocationId,
+      status: row.status,
+      outcome: row.outcome,
+      outcomeReason: rowReason,
+      projectEventPath: usageProjectEventPath(fixmeDir),
+      globalEventPath: usageGlobalEventPath(),
+      reportLine: suppressed ? null : buildCompactUsageReportLine(row, usageProjectEventPath(fixmeDir)),
+      reportLineSuppressed: suppressed,
+      warnings: row.warnings || [],
+    });
+  }
+
+  if (core.code === 'DESTINATION_EVENT_CONFLICT') {
+    lifecycleError('conflictingDuplicate', core.message);
+  }
+  if (core.code === 'INVALID_OUTCOME' || core.code === 'INVALID_REASON' || core.code === 'MISSING_OUTCOME') {
+    lifecycleError('invalidInput', core.message);
+  }
+  lifecycleError('invalidInput', core.message);
 }
 
 function emptyTokenUsage() {
@@ -7224,6 +7414,15 @@ function main() {
 
       case 'lifecycle':
         switch (subcommand) {
+          case 'invocation':
+            switch (args[0]) {
+              case 'start':
+                return lifecycleInvocationStart(flags, getFixmeRoot());
+              case 'finish':
+                return lifecycleInvocationFinish(flags, getFixmeRoot());
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle invocation action: '${args[0] || ''}'`);
+            }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);
         }
