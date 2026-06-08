@@ -2439,6 +2439,112 @@ test('task checkpoint accepts terminalResult and decisions array', () => {
   assert(badTr.data.error.includes('terminalResult.status must be one of'), `error should mention status, got ${badTr.data.error}`);
 });
 
+function completeDecision(id, overrides = {}) {
+  return JSON.stringify({
+    id,
+    attentionId: `attn_${id}`,
+    sourceSkill: 'fixme-handle-code-review',
+    prompt: `prompt ${id}`,
+    answer: `answer ${id}`,
+    interpretation: `interpretation ${id}`,
+    status: 'active',
+    supersedesDecisionIds: [],
+    supersededByDecisionId: null,
+    createdAt: '2026-06-08T00:00:00.000Z',
+    ...overrides,
+  });
+}
+
+console.log('\n=== task decision append/list tests ===\n');
+
+test('task decision append writes structured decision and returns merged context', () => {
+  const { projectRoot, statePath } = initTaskState('decision-basic');
+  const result = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1')}'`, projectRoot);
+  assert(result.ok, `append should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.ok === true, 'envelope ok:true');
+  assert(result.data.decision && result.data.decision.id === 'decision_1', 'decision returned');
+  assert(Array.isArray(result.data.taskDecisions) && result.data.taskDecisions.some(d => d.id === 'decision_1'), 'active list contains it');
+  assert(typeof result.data.projectDecisionMarkdown === 'string', 'projectDecisionMarkdown present');
+  assert(typeof result.data.mergedMarkdown === 'string', 'mergedMarkdown present');
+  const state = readJson(statePath);
+  assert(state.decisions.length === 1 && state.decisions[0].id === 'decision_1', 'persisted into task state');
+});
+
+test('task decision append supersession marks prior decision superseded', () => {
+  const { projectRoot, statePath } = initTaskState('decision-supersede');
+  runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1')}'`, projectRoot);
+  const second = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_2', { supersedesDecisionIds: ['decision_1'] })}'`, projectRoot);
+  assert(second.ok, `second append should succeed, got: ${JSON.stringify(second.data)}`);
+  const state = readJson(statePath);
+  const first = state.decisions.find(d => d.id === 'decision_1');
+  assert(first.status === 'superseded', `first should be superseded, got ${first.status}`);
+  assert(first.supersededByDecisionId === 'decision_2', `supersededByDecisionId should be decision_2, got ${first.supersededByDecisionId}`);
+
+  const listDefault = runInDir(`task decision list --state "${statePath}"`, projectRoot);
+  assert(listDefault.data.taskDecisions.every(d => d.id !== 'decision_1'), 'default list excludes superseded');
+  const listAll = runInDir(`task decision list --state "${statePath}" --include-superseded`, projectRoot);
+  assert(listAll.data.taskDecisions.some(d => d.id === 'decision_1'), 'include-superseded includes it');
+});
+
+test('task decision append rejects status superseded on append', () => {
+  const { projectRoot, statePath } = initTaskState('decision-status');
+  const result = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1', { status: 'superseded' })}'`, projectRoot);
+  assert(!result.ok, 'status superseded on append should fail');
+  assert(result.data.error.code === 'invalidInput', `code should be invalidInput, got ${JSON.stringify(result.data)}`);
+});
+
+test('task decision append idempotent and conflict by id', () => {
+  const { projectRoot, statePath } = initTaskState('decision-idem');
+  runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1')}'`, projectRoot);
+  const replay = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1')}'`, projectRoot);
+  assert(replay.ok, `identical replay should be ok, got: ${JSON.stringify(replay.data)}`);
+  const conflict = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1', { answer: 'different' })}'`, projectRoot);
+  assert(!conflict.ok, 'conflicting data should fail');
+  assert(conflict.data.error.code === 'conflictingDuplicate', `code should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('task decision append rejects unknown task-owned supersede reference', () => {
+  const { projectRoot, statePath } = initTaskState('decision-badref');
+  const result = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_2', { supersedesDecisionIds: ['decision_missing'] })}'`, projectRoot);
+  assert(!result.ok, 'missing task-owned ref should fail');
+  assert(['invalidInput', 'stateNotFound'].includes(result.data.error.code), `code should be invalidInput/stateNotFound, got ${JSON.stringify(result.data)}`);
+});
+
+test('task decision append validates project decision reference', () => {
+  const { projectRoot, statePath } = initTaskState('decision-projref');
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.writeFileSync(path.join(fixmeDir, 'decisions.md'), '# Decision Log\n\n### Decision 11\n- something\n');
+  const bad = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1', { supersedesProjectDecisionRefs: ['Decision 99'] })}'`, projectRoot);
+  assert(!bad.ok, 'unknown project ref should fail');
+  assert(bad.data.error.code === 'invalidInput', `code should be invalidInput, got ${JSON.stringify(bad.data)}`);
+  const ok = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_2', { supersedesProjectDecisionRefs: ['Decision 11'] })}'`, projectRoot);
+  assert(ok.ok, `known project ref should succeed, got: ${JSON.stringify(ok.data)}`);
+  assert(ok.data.mergedMarkdown.includes('Decision 11'), 'merged markdown renders supersession');
+});
+
+test('task decision append rejects unknown and missing fields', () => {
+  const { projectRoot, statePath } = initTaskState('decision-fields');
+  const unknown = runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1', { bogus: 'x' })}'`, projectRoot);
+  assert(!unknown.ok, 'unknown field should fail');
+  assert(unknown.data.error.code === 'unknownField', `code should be unknownField, got ${JSON.stringify(unknown.data)}`);
+  const missing = runInDir(`task decision append --state "${statePath}" --data '{"id":"decision_1","status":"active","supersedesDecisionIds":[],"supersededByDecisionId":null}'`, projectRoot);
+  assert(!missing.ok, 'missing required field should fail');
+  assert(missing.data.error.code === 'missingRequiredField', `code should be missingRequiredField, got ${JSON.stringify(missing.data)}`);
+});
+
+test('task decision list markdown format and task-owned-only', () => {
+  const { projectRoot, statePath } = initTaskState('decision-list');
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.writeFileSync(path.join(fixmeDir, 'decisions.md'), '# Decision Log\n\n### Decision 1\n- project decision\n');
+  runInDir(`task decision append --state "${statePath}" --data '${completeDecision('decision_1')}'`, projectRoot);
+  const md = runInDir(`task decision list --state "${statePath}" --format markdown`, projectRoot);
+  assert(md.ok && typeof md.data.markdown === 'string', 'markdown field present');
+  assert(md.data.markdown === md.data.mergedMarkdown, 'markdown equals mergedMarkdown');
+  assert(md.data.markdown.includes('project decision'), 'merged includes project markdown');
+  const owned = runInDir(`task decision list --state "${statePath}" --task-owned-only`, projectRoot);
+  assert(owned.ok && owned.data.taskDecisions.length === 1, 'task-owned-only returns task decisions');
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================

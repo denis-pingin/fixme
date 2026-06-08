@@ -3719,6 +3719,236 @@ function taskCheckpoint(flags) {
 }
 
 // ============================================================================
+// Subcommands: task decision
+// ============================================================================
+
+const DECISION_RECORD_FIELDS = new Set([
+  'id',
+  'attentionId',
+  'sourceSkill',
+  'prompt',
+  'answer',
+  'interpretation',
+  'status',
+  'supersedesDecisionIds',
+  'supersedesProjectDecisionRefs',
+  'supersededByDecisionId',
+  'createdAt',
+]);
+
+const DECISION_REQUIRED_STRING_FIELDS = ['id', 'attentionId', 'sourceSkill', 'prompt', 'answer', 'interpretation', 'createdAt'];
+
+function resolveTaskStatePathForDecision(flags) {
+  const statePath = flags.state && flags.state !== true ? path.resolve(String(flags.state)) : null;
+  if (!statePath) {
+    lifecycleError('invalidInput', '--state is required');
+  }
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Task state file not found: ${statePath}`);
+  }
+  return statePath;
+}
+
+function resolveFixmeDirForTaskState(flags, state) {
+  if (Object.prototype.hasOwnProperty.call(flags, 'fixme-dir')) {
+    const raw = flags['fixme-dir'];
+    if (raw === true || raw === '') {
+      lifecycleError('invalidInput', '--fixme-dir requires a path value');
+    }
+    return path.resolve(String(raw));
+  }
+  if (state && isNonEmptyString(state.projectRoot)) {
+    return path.join(state.projectRoot, '.fixme');
+  }
+  lifecycleError('invalidInput', 'Cannot resolve fixme directory: task state lacks projectRoot and no --fixme-dir supplied');
+}
+
+function readProjectDecisionMarkdown(fixmeDir) {
+  const decisionsPath = path.join(fixmeDir, 'decisions.md');
+  if (!fs.existsSync(decisionsPath)) {
+    return '';
+  }
+  return fs.readFileSync(decisionsPath, 'utf8');
+}
+
+function projectDecisionRefExists(projectMarkdown, ref) {
+  // Project decisions use `### Decision N` headings. A ref like "Decision 11"
+  // matches the heading `### Decision 11`.
+  const pattern = new RegExp(`^###\\s+${ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+  return pattern.test(projectMarkdown);
+}
+
+function renderTaskDecisionMarkdown(decisions) {
+  if (!decisions.length) {
+    return '';
+  }
+  const lines = ['## Task-Owned Decisions', ''];
+  for (const d of decisions) {
+    lines.push(`### ${d.id}`);
+    lines.push(`- **Prompt**: ${d.prompt}`);
+    lines.push(`- **Answer**: ${d.answer}`);
+    lines.push(`- **Interpretation**: ${d.interpretation}`);
+    if (Array.isArray(d.supersedesDecisionIds) && d.supersedesDecisionIds.length) {
+      lines.push(`- **Supersedes**: ${d.supersedesDecisionIds.join(', ')}`);
+    }
+    if (Array.isArray(d.supersedesProjectDecisionRefs) && d.supersedesProjectDecisionRefs.length) {
+      lines.push(`- **Supersedes project decisions**: ${d.supersedesProjectDecisionRefs.join(', ')}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trim();
+}
+
+function buildMergedDecisionMarkdown(projectMarkdown, activeDecisions) {
+  const taskMarkdown = renderTaskDecisionMarkdown(activeDecisions);
+  const parts = [];
+  if (projectMarkdown.trim()) {
+    parts.push(projectMarkdown.trim());
+  }
+  if (taskMarkdown) {
+    parts.push(taskMarkdown);
+  }
+  return parts.join('\n\n');
+}
+
+function buildDecisionContext(state, fixmeDir, { includeSuperseded = false } = {}) {
+  const all = Array.isArray(state.decisions) ? state.decisions : [];
+  const taskDecisions = includeSuperseded ? all : all.filter(d => d.status === 'active');
+  const activeDecisions = all.filter(d => d.status === 'active');
+  const projectDecisionMarkdown = readProjectDecisionMarkdown(fixmeDir);
+  const taskDecisionMarkdown = renderTaskDecisionMarkdown(activeDecisions);
+  const mergedMarkdown = buildMergedDecisionMarkdown(projectDecisionMarkdown, activeDecisions);
+  return { taskDecisions, taskDecisionMarkdown, projectDecisionMarkdown, mergedMarkdown };
+}
+
+function taskDecisionAppend(flags) {
+  const statePath = resolveTaskStatePathForDecision(flags);
+  let record;
+  try {
+    record = parseTaskData(flags.data);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  try {
+    assertCamelCaseJsonKeys(record, 'task decision');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  try {
+    assertKnownJsonFields(record, 'task decision', DECISION_RECORD_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+
+  for (const field of DECISION_REQUIRED_STRING_FIELDS) {
+    if (!isNonEmptyString(record[field])) {
+      lifecycleError('missingRequiredField', `task decision field '${field}' must be a non-empty string`);
+    }
+  }
+  if (!Array.isArray(record.supersedesDecisionIds)) {
+    lifecycleError('missingRequiredField', "task decision field 'supersedesDecisionIds' must be an array");
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'supersedesProjectDecisionRefs') && !Array.isArray(record.supersedesProjectDecisionRefs)) {
+    lifecycleError('invalidInput', "task decision field 'supersedesProjectDecisionRefs' must be an array");
+  }
+  if (record.status !== 'active') {
+    lifecycleError('invalidInput', "task decision 'status' must be 'active' on append");
+  }
+  if (record.supersededByDecisionId !== null && record.supersededByDecisionId !== undefined) {
+    lifecycleError('invalidInput', "task decision 'supersededByDecisionId' must be null on append");
+  }
+
+  const state = readJsonFileStrict(statePath);
+  const fixmeDir = resolveFixmeDirForTaskState(flags, state);
+  const decisions = Array.isArray(state.decisions) ? state.decisions.map(cloneJson) : [];
+
+  // Idempotency by id.
+  const existing = decisions.find(d => d.id === record.id);
+  if (existing) {
+    const incoming = normalizeDecisionForCompare(record);
+    if (jsonEqual(normalizeDecisionForCompare(existing), incoming)) {
+      return lifecycleOk({ decision: existing, ...buildDecisionContext(state, fixmeDir) });
+    }
+    lifecycleError('conflictingDuplicate', `task decision '${record.id}' already exists with different data`);
+  }
+
+  // Validate task-owned supersede references.
+  for (const refId of record.supersedesDecisionIds) {
+    const target = decisions.find(d => d.id === refId);
+    if (!target) {
+      lifecycleError('invalidInput', `supersedesDecisionIds references unknown task-owned decision '${refId}'`);
+    }
+    if (target.status !== 'active') {
+      lifecycleError('invalidInput', `supersedesDecisionIds references already-superseded task-owned decision '${refId}'`);
+    }
+  }
+
+  // Validate project decision references.
+  const projectMarkdown = readProjectDecisionMarkdown(fixmeDir);
+  const projectRefs = Array.isArray(record.supersedesProjectDecisionRefs) ? record.supersedesProjectDecisionRefs : [];
+  for (const ref of projectRefs) {
+    if (!isNonEmptyString(ref) || !projectDecisionRefExists(projectMarkdown, ref)) {
+      lifecycleError('invalidInput', `supersedesProjectDecisionRefs references unknown project decision '${ref}'`);
+    }
+  }
+
+  // Apply supersession atomically.
+  for (const refId of record.supersedesDecisionIds) {
+    const target = decisions.find(d => d.id === refId);
+    target.status = 'superseded';
+    target.supersededByDecisionId = record.id;
+  }
+  const newRecord = cloneJson(record);
+  if (!Array.isArray(newRecord.supersedesProjectDecisionRefs)) {
+    newRecord.supersedesProjectDecisionRefs = [];
+  }
+  newRecord.supersededByDecisionId = null;
+  decisions.push(newRecord);
+
+  const nextState = { ...state, decisions, updatedAt: new Date().toISOString() };
+  assertCamelCaseJsonKeys(nextState, 'task state');
+  writeJsonAtomic(statePath, nextState);
+
+  return lifecycleOk({ decision: newRecord, ...buildDecisionContext(nextState, fixmeDir) });
+}
+
+function normalizeDecisionForCompare(record) {
+  const copy = cloneJson(record);
+  // Status and supersededByDecisionId are mutated by later supersession, so compare durable inputs only.
+  delete copy.status;
+  delete copy.supersededByDecisionId;
+  if (!Array.isArray(copy.supersedesProjectDecisionRefs)) {
+    copy.supersedesProjectDecisionRefs = [];
+  }
+  return copy;
+}
+
+function taskDecisionList(flags) {
+  const statePath = resolveTaskStatePathForDecision(flags);
+  const state = readJsonFileStrict(statePath);
+  const fixmeDir = resolveFixmeDirForTaskState(flags, state);
+  const includeSuperseded = Object.prototype.hasOwnProperty.call(flags, 'include-superseded');
+  const context = buildDecisionContext(state, fixmeDir, { includeSuperseded });
+
+  if (Object.prototype.hasOwnProperty.call(flags, 'task-owned-only')) {
+    const all = Array.isArray(state.decisions) ? state.decisions : [];
+    const taskDecisions = includeSuperseded ? all : all.filter(d => d.status === 'active');
+    return lifecycleOk({ taskDecisions, taskDecisionMarkdown: context.taskDecisionMarkdown });
+  }
+
+  const result = {
+    taskDecisions: context.taskDecisions,
+    taskDecisionMarkdown: context.taskDecisionMarkdown,
+    projectDecisionMarkdown: context.projectDecisionMarkdown,
+    mergedMarkdown: context.mergedMarkdown,
+  };
+  if (flags.format === 'markdown') {
+    result.markdown = context.mergedMarkdown;
+  }
+  return lifecycleOk(result);
+}
+
+// ============================================================================
 // Subcommands: session
 // ============================================================================
 
@@ -6853,6 +7083,23 @@ function error(message) {
   process.exit(1);
 }
 
+const LIFECYCLE_ERROR_CODES = Object.freeze(new Set([
+  'invalidInput', 'unknownField', 'missingRequiredField', 'stateNotFound',
+  'staleState', 'conflictingDuplicate', 'activeAttention', 'attentionBlocked',
+  'unsupportedCommand', 'ioFailure', 'noPendingEvent',
+]));
+
+function lifecycleOk(data) {
+  return output({ ok: true, ...data });
+}
+
+function lifecycleError(code, message, extra = {}) {
+  if (!LIFECYCLE_ERROR_CODES.has(code)) {
+    throw new Error(`Internal: unknown lifecycle error code ${code}`);
+  }
+  throw new CliJsonError({ ok: false, error: { code, message }, ...extra });
+}
+
 function errorPayload(payload) {
   process.stdout.write(JSON.stringify(payload) + '\n');
   process.exit(1);
@@ -6918,8 +7165,17 @@ function main() {
             return taskResolve(args[0], getFixmeRoot());
           case 'attach-artifact':
             return taskAttachArtifact(flags, getFixmeRoot());
+          case 'decision':
+            switch (args[0]) {
+              case 'append':
+                return taskDecisionAppend(flags);
+              case 'list':
+                return taskDecisionList(flags);
+              default:
+                return error(`Unknown task decision subcommand: '${args[0] || ''}'. Valid: append, list`);
+            }
           default:
-            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact`);
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact, decision`);
         }
 
       case 'pipeline':
