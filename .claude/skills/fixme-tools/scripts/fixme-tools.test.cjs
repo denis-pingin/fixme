@@ -2554,6 +2554,46 @@ test('lifecycle unknown subcommand returns unsupportedCommand envelope', () => {
   assert(r.data.error && r.data.error.code === 'unsupportedCommand', `code should be unsupportedCommand, got ${JSON.stringify(r.data)}`);
 });
 
+test('every lifecycle/task-decision helper named in any installed skill exists in the CLI', () => {
+  const SUPPORTED_HELPERS = new Set([
+    'lifecycle invocation start', 'lifecycle invocation finish',
+    'lifecycle dispatch prepare', 'lifecycle dispatch complete',
+    'lifecycle attention open', 'lifecycle attention broker show', 'lifecycle attention broker answer',
+    'lifecycle wait begin', 'lifecycle wait end',
+    'lifecycle parent create', 'lifecycle parent checkpoint', 'lifecycle parent resolve',
+    'lifecycle task-event record', 'lifecycle task-event consume',
+    'task decision append', 'task decision list',
+    'task result write',
+  ]);
+  const skillsRoot = path.resolve(__dirname, '..', '..');
+  const skillDirs = fs.readdirSync(skillsRoot).filter(name => name.startsWith('fixme-'));
+  // Match `fixme-tools.cjs <namespace> <verb> [<action>]` for lifecycle/task decision/task result.
+  const pattern = /fixme-tools\.cjs\s+(lifecycle|task)\s+([a-z-]+)(?:\s+([a-z-]+))?(?:\s+([a-z-]+))?/g;
+  for (const dir of skillDirs) {
+    const skillPath = path.join(skillsRoot, dir, 'SKILL.md');
+    if (!fs.existsSync(skillPath)) continue;
+    const text = fs.readFileSync(skillPath, 'utf8');
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const namespace = match[1];
+      if (namespace === 'task' && !['decision', 'result'].includes(match[2])) {
+        // Other task subcommands (save/init/checkpoint/resolve/attach-artifact) are not gated here.
+        continue;
+      }
+      // Build the candidate helper token, trying the longest match first.
+      const parts = [namespace, match[2], match[3], match[4]].filter(Boolean);
+      let recognized = false;
+      for (let len = parts.length; len >= 2; len--) {
+        const candidate = parts.slice(0, len).join(' ');
+        if (SUPPORTED_HELPERS.has(candidate)) { recognized = true; break; }
+      }
+      if (namespace === 'lifecycle' || (namespace === 'task' && ['decision', 'result'].includes(match[2]))) {
+        assert(recognized, `Skill ${dir} names unsupported helper: '${parts.join(' ')}'`);
+      }
+    }
+  }
+});
+
 test('run start CLI stdout schema unchanged after core extraction', () => {
   const base = createTmpDir();
   const fixmeDir = path.join(base, '.fixme');
