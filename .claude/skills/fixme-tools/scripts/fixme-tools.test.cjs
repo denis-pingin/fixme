@@ -3051,6 +3051,46 @@ test('parent resolve by id and lookup', () => {
   assert(!missing.ok && missing.data.error.code === 'stateNotFound', `missing resolve, got ${JSON.stringify(missing.data)}`);
 });
 
+console.log('\n=== task result write tests ===\n');
+
+test('task terminal result writes result summary co-located with task state', () => {
+  const { statePath, projectRoot } = initTaskState('result-completed');
+  const data = JSON.stringify({ status: 'completed', summaryMarkdown: 'all done', changedFiles: [], artifactPaths: [] });
+  const r = runInDir(`task result write --state "${statePath}" --data '${data}'`, projectRoot);
+  assert(r.ok, `task result write should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(typeof r.data.terminalResultId === 'string', 'terminalResultId present');
+  assert(r.data.resultSummaryPath.endsWith('.result.json'), `resultSummaryPath ends with .result.json, got ${r.data.resultSummaryPath}`);
+  assert(fs.existsSync(r.data.resultSummaryPath), 'result file exists');
+  const summary = readJson(r.data.resultSummaryPath);
+  assert(summary.schemaVersion === 1, 'schemaVersion 1');
+  assert(summary.terminalResultId === r.data.terminalResultId, 'terminalResultId matches');
+  assert(summary.status === 'completed', 'status completed');
+  assert(summary.failure === null, 'completed has null failure');
+  assert(typeof summary.createdAt === 'string', 'createdAt present');
+  const state = readJson(statePath);
+  assert(state.terminalResult.terminalResultId === r.data.terminalResultId, 'task state stamped');
+});
+
+test('terminal result failed requires valid failure reason', () => {
+  const { statePath, projectRoot } = initTaskState('result-failed');
+  const noFailure = runInDir(`task result write --state "${statePath}" --data '{"status":"failed","summaryMarkdown":"x"}'`, projectRoot);
+  assert(!noFailure.ok && noFailure.data.error.code === 'invalidInput', `failed without failure rejected, got ${JSON.stringify(noFailure.data)}`);
+  const badReason = runInDir(`task result write --state "${statePath}" --data '{"status":"failed","summaryMarkdown":"x","failure":{"reason":"nope","message":"m"}}'`, projectRoot);
+  assert(!badReason.ok && badReason.data.error.code === 'invalidInput', `invalid reason rejected, got ${JSON.stringify(badReason.data)}`);
+  const ok = runInDir(`task result write --state "${statePath}" --data '{"status":"failed","summaryMarkdown":"x","failure":{"reason":"workflowBlocked","message":"blocked"}}'`, projectRoot);
+  assert(ok.ok, `valid failure should succeed, got: ${JSON.stringify(ok.data)}`);
+  const summary = readJson(ok.data.resultSummaryPath);
+  assert(summary.failure.reason === 'workflowBlocked', 'failure recorded');
+});
+
+test('terminalResultId is stable across retry', () => {
+  const { statePath, projectRoot } = initTaskState('result-stable');
+  const data = JSON.stringify({ status: 'completed', summaryMarkdown: 'done', changedFiles: [], artifactPaths: [] });
+  const first = runInDir(`task result write --state "${statePath}" --data '${data}'`, projectRoot);
+  const second = runInDir(`task result write --state "${statePath}" --data '${data}'`, projectRoot);
+  assert(second.ok && second.data.terminalResultId === first.data.terminalResultId, `terminalResultId stable, got ${first.data.terminalResultId} vs ${second.data.terminalResultId}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================

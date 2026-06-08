@@ -3950,6 +3950,94 @@ function taskDecisionList(flags) {
 }
 
 // ============================================================================
+// Subcommands: task result
+// ============================================================================
+
+const TASK_RESULT_FAILURE_REASONS = new Set([
+  'userAborted', 'verificationFailed', 'usageTrackingFailed', 'runtimeError', 'dispatchFailed',
+  'timeout', 'invalidUsageRequest', 'attentionBlocked', 'workflowBlocked', 'childFailed',
+  'toolUnavailable', 'unknown',
+]);
+
+const TASK_RESULT_FIELDS = new Set(['status', 'summaryMarkdown', 'changedFiles', 'artifactPaths', 'failure']);
+
+function taskResultSummaryPath(taskStatePath) {
+  if (taskStatePath.endsWith('task-state.json')) {
+    return taskStatePath.replace(/task-state\.json$/, 'task-state.result.json');
+  }
+  if (taskStatePath.endsWith('.state.json')) {
+    return taskStatePath.replace(/\.state\.json$/, '.result.json');
+  }
+  if (taskStatePath.endsWith('.json')) {
+    return taskStatePath.replace(/\.json$/, '.result.json');
+  }
+  return `${taskStatePath}.result.json`;
+}
+
+function taskResultWrite(flags) {
+  const statePath = resolveTaskStatePathForDecision(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'task result', TASK_RESULT_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (data.status !== 'completed' && data.status !== 'failed') {
+    lifecycleError('invalidInput', 'status must be one of: completed, failed');
+  }
+  let failure = null;
+  if (data.status === 'failed') {
+    if (!isPlainObject(data.failure) || !TASK_RESULT_FAILURE_REASONS.has(data.failure.reason) || !isNonEmptyString(data.failure.message)) {
+      lifecycleError('invalidInput', 'failed result requires failure with a valid reason and non-empty message');
+    }
+    failure = { reason: data.failure.reason, message: data.failure.message };
+    if (data.failure.details !== undefined) {
+      if (!isPlainObject(data.failure.details)) {
+        lifecycleError('invalidInput', 'failure.details must be a JSON object');
+      }
+      try {
+        assertCamelCaseJsonKeys(data.failure.details, 'failure.details');
+      } catch (e) {
+        lifecycleError('invalidInput', e.message);
+      }
+      failure.details = data.failure.details;
+    }
+  } else if (data.failure !== undefined && data.failure !== null) {
+    lifecycleError('invalidInput', 'completed result must not include failure');
+  }
+
+  const state = readJsonFileStrict(statePath);
+  const existingTerminalResultId = state.terminalResult && state.terminalResult.terminalResultId;
+  const terminalResultId = isNonEmptyString(existingTerminalResultId)
+    ? existingTerminalResultId
+    : generateUsageId('terminalResult');
+
+  const summaryPath = taskResultSummaryPath(statePath);
+  const summary = {
+    schemaVersion: 1,
+    terminalResultId,
+    taskStatePath: statePath,
+    status: data.status,
+    summaryMarkdown: isNonEmptyString(data.summaryMarkdown) ? data.summaryMarkdown : '',
+    changedFiles: Array.isArray(data.changedFiles) ? data.changedFiles : [],
+    artifactPaths: Array.isArray(data.artifactPaths) ? data.artifactPaths : [],
+    failure,
+    createdAt: new Date().toISOString(),
+  };
+  assertCamelCaseJsonKeys(summary, 'task result summary');
+  writeJsonAtomic(summaryPath, summary);
+
+  const nextState = mergeTaskState(state, {
+    status: data.status,
+    terminalResult: { terminalResultId, status: data.status },
+  });
+  assertCamelCaseJsonKeys(nextState, 'task state');
+  writeJsonAtomic(statePath, nextState);
+
+  return lifecycleOk({ terminalResultId, resultSummaryPath: summaryPath, status: data.status });
+}
+
+// ============================================================================
 // Subcommands: session
 // ============================================================================
 
@@ -8190,8 +8278,15 @@ function main() {
               default:
                 return error(`Unknown task decision subcommand: '${args[0] || ''}'. Valid: append, list`);
             }
+          case 'result':
+            switch (args[0]) {
+              case 'write':
+                return taskResultWrite(flags);
+              default:
+                return error(`Unknown task result subcommand: '${args[0] || ''}'. Valid: write`);
+            }
           default:
-            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact, decision`);
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact, decision, result`);
         }
 
       case 'lifecycle':
