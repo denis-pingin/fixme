@@ -6831,6 +6831,185 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
   lifecycleError('invalidInput', core.message);
 }
 
+// ============================================================================
+// Subcommands: lifecycle dispatch
+// ============================================================================
+
+const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
+  'idempotencyKey', 'agentName', 'transport', 'parentStatusId', 'parentInvocationId',
+  'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs',
+]);
+
+const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status']);
+
+const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
+
+function dispatchIdempotencyPath(fixmeDir, keyHash) {
+  return path.join(fixmeDir, 'dispatch', 'idempotency', `${keyHash}.json`);
+}
+
+function resolveLifecycleFixmeDir(flags) {
+  if (!Object.prototype.hasOwnProperty.call(flags, 'fixme-dir')) {
+    lifecycleError('invalidInput', '--fixme-dir is required');
+  }
+  const raw = flags['fixme-dir'];
+  if (raw === true || raw === '') {
+    lifecycleError('invalidInput', '--fixme-dir requires a path value');
+  }
+  return path.resolve(String(raw));
+}
+
+function buildDispatchBannerMarkdown(agentName, runtimeSettings) {
+  return [
+    `## Dispatch: ${agentName}`,
+    `- Runtime: ${runtimeSettings.runtime}`,
+    `- Model: ${runtimeSettings.model}`,
+    `- Reasoning effort: ${runtimeSettings.reasoning_effort}`,
+    `- Profile: ${runtimeSettings.profile}`,
+    `- Config source: ${runtimeSettings.source}`,
+  ].join('\n');
+}
+
+function lifecycleDispatchPrepare(flags, fixmeRoot) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch prepare', LIFECYCLE_DISPATCH_PREPARE_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['idempotencyKey', 'agentName', 'transport']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (!isPlainObject(data.promptInputs)) {
+    lifecycleError('missingRequiredField', 'promptInputs is required');
+  }
+  if (!DISPATCH_TRANSPORTS.has(data.transport)) {
+    lifecycleError('invalidInput', `transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
+  }
+  if (!KNOWN_FIXME_AGENTS.has(data.agentName)) {
+    lifecycleError('invalidInput', `Unknown agent: ${data.agentName}`);
+  }
+
+  const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
+  const recordPath = dispatchIdempotencyPath(fixmeDir, keyHash);
+  if (fs.existsSync(recordPath)) {
+    const existing = readJsonFileStrict(recordPath);
+    return lifecycleOk(existing.output);
+  }
+
+  const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), {});
+  const child = runStartCore({ 'fixme-dir': fixmeDir, agent: data.agentName });
+  const dispatchId = generateUsageId('dispatch');
+
+  // Parent heartbeat: only ping when the parent is not on an attention marker.
+  if (isNonEmptyString(data.parentStatusId)) {
+    const parentPath = runStatusPath(fixmeDir, data.parentStatusId);
+    if (fs.existsSync(parentPath)) {
+      const parentStatus = readRunStatusFile(parentPath, data.parentStatusId);
+      if (!isRunAttentionCommand(parentStatus.currentCommand)) {
+        writeRunStatus(parentPath, {
+          schemaVersion: 1,
+          statusId: data.parentStatusId,
+          agent: validateRunAgent(parentStatus.agent),
+          state: 'running',
+          checkpoint: 'working',
+          currentCommand: `dispatching ${data.agentName}`,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  const usageContext = {
+    pipelineRunId: data.pipelineRunId || null,
+    parentInvocationId: data.parentInvocationId || null,
+  };
+  const promptBlocks = {
+    project: { projectRoot: path.dirname(fixmeDir), fixmeDir },
+    usageContext,
+    taskStateOwner: (isNonEmptyString(data.taskStatePath) && isPlainObject(data.parentContinuation))
+      ? { ownerSkill: 'fixme-task', taskStatePath: data.taskStatePath }
+      : null,
+    parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
+    promptInputs: data.promptInputs,
+  };
+
+  const out = {
+    dispatchId,
+    fixmeDir,
+    agentName: data.agentName,
+    transport: data.transport,
+    statusId: child.statusId,
+    statusPath: child.statusPath,
+    runtimeSettings,
+    bannerMarkdown: buildDispatchBannerMarkdown(data.agentName, runtimeSettings),
+    usageContext,
+    promptBlocks,
+  };
+
+  writeJsonAtomic(recordPath, {
+    schemaVersion: 1,
+    dispatchId,
+    idempotencyKey: data.idempotencyKey,
+    statusId: child.statusId,
+    output: out,
+    createdAt: new Date().toISOString(),
+  });
+
+  return lifecycleOk(out);
+}
+
+function lifecycleDispatchComplete(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch complete', LIFECYCLE_DISPATCH_COMPLETE_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['dispatchId', 'statusId', 'status']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (data.status !== 'completed' && data.status !== 'failed') {
+    lifecycleError('invalidInput', 'status must be one of: completed, failed');
+  }
+
+  const statusPath = runStatusPath(fixmeDir, data.statusId);
+  if (!fs.existsSync(statusPath)) {
+    lifecycleError('stateNotFound', `Child run status not found: ${data.statusId}`);
+  }
+  const previous = readRunStatusFile(statusPath, data.statusId);
+
+  // Never overwrite an active attention marker.
+  if (isRunAttentionCommand(previous.currentCommand)) {
+    lifecycleError('activeAttention', `Child run has pending attention: ${previous.currentCommand}`);
+  }
+
+  const isTerminal = previous.state === 'completed' || previous.state === 'failed';
+  if (isTerminal) {
+    if (previous.state === data.status) {
+      return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: previous.state, statusPath });
+    }
+    lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot mark ${data.status}`);
+  }
+
+  const next = writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId: data.statusId,
+    agent: validateRunAgent(previous.agent),
+    state: data.status,
+    checkpoint: 'done',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
+  return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: next.state, statusPath });
+}
+
 function emptyTokenUsage() {
   const usage = {};
   for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
@@ -7422,6 +7601,15 @@ function main() {
                 return lifecycleInvocationFinish(flags, getFixmeRoot());
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle invocation action: '${args[0] || ''}'`);
+            }
+          case 'dispatch':
+            switch (args[0]) {
+              case 'prepare':
+                return lifecycleDispatchPrepare(flags, getFixmeRoot());
+              case 'complete':
+                return lifecycleDispatchComplete(flags);
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle dispatch action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);

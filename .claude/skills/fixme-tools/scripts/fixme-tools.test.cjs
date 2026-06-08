@@ -2719,6 +2719,72 @@ test('invocation start validates required and unknown fields', () => {
   assert(!noSkill.ok && noSkill.data.error.code === 'missingRequiredField', `missing skill, got ${JSON.stringify(noSkill.data)}`);
 });
 
+console.log('\n=== lifecycle dispatch tests ===\n');
+
+function makeFixmeDir() {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  return fixmeDir;
+}
+
+test('dispatch prepare returns runtime settings banner status and prompt blocks', () => {
+  const fixmeDir = makeFixmeDir();
+  const data = JSON.stringify({ idempotencyKey: 'd1', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: { goal: 'x' } });
+  const r = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(r.ok, `dispatch prepare should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(typeof r.data.dispatchId === 'string', 'dispatchId present');
+  assert(typeof r.data.statusId === 'string' && fs.existsSync(r.data.statusPath), 'statusId/statusPath present');
+  assert(readJson(r.data.statusPath).agent === 'fixme-write-plan', 'child agent set');
+  assert(r.data.runtimeSettings && r.data.runtimeSettings.runtime && r.data.runtimeSettings.model && r.data.runtimeSettings.profile, 'runtimeSettings present');
+  assert(typeof r.data.bannerMarkdown === 'string' && r.data.bannerMarkdown.length > 0, 'bannerMarkdown present');
+  assert(r.data.usageContext && Object.prototype.hasOwnProperty.call(r.data.usageContext, 'pipelineRunId'), 'usageContext present');
+  assert(r.data.promptBlocks && typeof r.data.promptBlocks === 'object', 'promptBlocks present');
+});
+
+test('dispatch prepare retry with same idempotencyKey returns existing', () => {
+  const fixmeDir = makeFixmeDir();
+  const data = JSON.stringify({ idempotencyKey: 'd2', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: {} });
+  const first = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  const second = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(second.ok, `retry should succeed, got: ${JSON.stringify(second.data)}`);
+  assert(second.data.dispatchId === first.data.dispatchId, 'same dispatchId');
+  assert(second.data.statusId === first.data.statusId, 'same statusId');
+  assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 1, 'only one child run-status');
+});
+
+test('dispatch prepare preserves active attention guard', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
+    resumeRef: 'FIXME-1', taskStatePath: path.join(fixmeDir, 'tasks', 't.state.json'),
+    promptMarkdown: '## D', answerMode: 'freeform',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId} --data '${attentionData}'`);
+  const attentionCommand = `attention:${set.data.attentionId}`;
+  const data = JSON.stringify({ idempotencyKey: 'd3', agentName: 'fixme-task', transport: 'agent', parentStatusId: parent.data.statusId, promptInputs: {} });
+  run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  const parentStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(parentStatus.data.currentCommand === attentionCommand, `parent attention marker preserved, got ${parentStatus.data.currentCommand}`);
+});
+
+test('dispatch complete finalizes child status and rejects conflicting completion', () => {
+  const fixmeDir = makeFixmeDir();
+  const data = JSON.stringify({ idempotencyKey: 'd4', agentName: 'fixme-task', transport: 'agent', promptInputs: {} });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  const completeData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'completed' });
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(complete.ok, `dispatch complete should succeed, got: ${JSON.stringify(complete.data)}`);
+  const childStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${prep.data.statusId}`);
+  assert(childStatus.data.state === 'completed', `child should be completed, got ${childStatus.data.state}`);
+  const replay = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(replay.ok, 'idempotent complete should succeed');
+  const conflictData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'failed' });
+  const conflict = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting completion, got ${JSON.stringify(conflict.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
