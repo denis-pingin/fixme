@@ -2907,6 +2907,9 @@ function defaultTaskState({ projectRoot, pipeline, pipelineResolution, fixmeRoot
       outerCycles: 0,
     },
     pendingDecision: null,
+    parentContinuation: null,
+    decisions: [],
+    terminalResult: null,
     updatedAt: now,
   };
 }
@@ -3523,6 +3526,24 @@ const TASK_CHECKPOINT_FIELDS = new Set([
   'handoff',
   'loops',
   'pendingDecision',
+  'parentContinuation',
+  'decisions',
+  'terminalResult',
+]);
+
+const PARENT_CONTINUATION_FIELDS = new Set([
+  'parentSkill',
+  'parentRunId',
+  'transport',
+  'resumeStep',
+  'parentStatusId',
+]);
+
+const PARENT_CONTINUATION_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
+
+const TERMINAL_RESULT_FIELDS = new Set([
+  'terminalResultId',
+  'status',
 ]);
 
 const TASK_CHECKPOINT_FORBIDDEN_FIELDS = new Set([
@@ -3632,6 +3653,41 @@ function assertTaskCheckpointShape(patch) {
 
   if (Object.prototype.hasOwnProperty.call(patch, 'pendingDecision')) {
     assertCheckpointNullableObject(patch.pendingDecision, 'pendingDecision');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'parentContinuation')) {
+    assertCheckpointNullableObject(patch.parentContinuation, 'parentContinuation');
+    if (patch.parentContinuation !== null) {
+      assertKnownJsonFields(patch.parentContinuation, 'parentContinuation', PARENT_CONTINUATION_FIELDS);
+      for (const field of ['parentSkill', 'parentRunId', 'transport', 'resumeStep', 'parentStatusId']) {
+        assertCheckpointString(patch.parentContinuation[field], `parentContinuation.${field}`);
+      }
+      if (!PARENT_CONTINUATION_TRANSPORTS.has(patch.parentContinuation.transport)) {
+        throw new Error('parentContinuation.transport must be one of: agent, inline-skill, background, direct');
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'terminalResult')) {
+    assertCheckpointNullableObject(patch.terminalResult, 'terminalResult');
+    if (patch.terminalResult !== null) {
+      assertKnownJsonFields(patch.terminalResult, 'terminalResult', TERMINAL_RESULT_FIELDS);
+      assertCheckpointString(patch.terminalResult.terminalResultId, 'terminalResult.terminalResultId');
+      if (patch.terminalResult.status !== 'completed' && patch.terminalResult.status !== 'failed') {
+        throw new Error('terminalResult.status must be one of: completed, failed');
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'decisions')) {
+    if (!Array.isArray(patch.decisions)) {
+      throw new Error('decisions must be an array');
+    }
+    patch.decisions.forEach((entry, index) => {
+      if (!isPlainObject(entry)) {
+        throw new Error(`decisions.${index} must be a JSON object`);
+      }
+    });
   }
 }
 

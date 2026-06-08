@@ -2377,6 +2377,68 @@ test('task checkpoint: merges allowed camelCase state fields and rejects invalid
   assert(invalidPendingDecision.data.error.includes('pendingDecision must be null or a JSON object'), `pendingDecision error should mention null or object, got ${invalidPendingDecision.data.error}`);
 });
 
+function initTaskState(slug) {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
+  return { projectRoot, statePath: initialized.data.statePath };
+}
+
+test('task state initializes parentContinuation/decisions/terminalResult', () => {
+  const { statePath } = initTaskState('schema-init');
+  const state = readJson(statePath);
+  assert(state.parentContinuation === null, `parentContinuation should default null, got ${JSON.stringify(state.parentContinuation)}`);
+  assert(Array.isArray(state.decisions) && state.decisions.length === 0, `decisions should default [], got ${JSON.stringify(state.decisions)}`);
+  assert(state.terminalResult === null, `terminalResult should default null, got ${JSON.stringify(state.terminalResult)}`);
+});
+
+test('task checkpoint accepts well-formed parentContinuation', () => {
+  const { projectRoot, statePath } = initTaskState('schema-pc-ok');
+  const data = JSON.stringify({
+    parentContinuation: {
+      parentSkill: 'fixme-pr-comments',
+      parentRunId: 'parent_x',
+      transport: 'inline-skill',
+      resumeStep: 'verify',
+      parentStatusId: 'run_x',
+    },
+  });
+  const result = runInDir(`task checkpoint --state "${statePath}" --data '${data}'`, projectRoot);
+  assert(result.ok, `checkpoint should accept parentContinuation, got: ${JSON.stringify(result.data)}`);
+  const state = readJson(statePath);
+  assert(state.parentContinuation.parentSkill === 'fixme-pr-comments', 'parentContinuation persisted');
+  assert(state.parentContinuation.transport === 'inline-skill', 'transport persisted');
+});
+
+test('task checkpoint rejects malformed parentContinuation', () => {
+  const { projectRoot, statePath } = initTaskState('schema-pc-bad');
+  const emptySkill = runInDir(`task checkpoint --state "${statePath}" --data '{"parentContinuation":{"parentSkill":""}}'`, projectRoot);
+  assert(!emptySkill.ok, 'empty parentSkill should fail');
+  assert(emptySkill.data.error.includes('must be'), `error should mention must be, got ${emptySkill.data.error}`);
+
+  const unknownField = runInDir(`task checkpoint --state "${statePath}" --data '{"parentContinuation":{"parentSkill":"fixme-task","parentRunId":"p","transport":"agent","resumeStep":"s","parentStatusId":"r","bogus":"x"}}'`, projectRoot);
+  assert(!unknownField.ok, 'unknown parentContinuation field should fail');
+  assert(unknownField.data.error.includes('Unsupported parentContinuation field'), `error should mention unsupported, got ${unknownField.data.error}`);
+
+  const badTransport = runInDir(`task checkpoint --state "${statePath}" --data '{"parentContinuation":{"parentSkill":"fixme-task","parentRunId":"p","transport":"rocket","resumeStep":"s","parentStatusId":"r"}}'`, projectRoot);
+  assert(!badTransport.ok, 'invalid transport should fail');
+  assert(badTransport.data.error.includes('transport must be one of'), `error should mention transport, got ${badTransport.data.error}`);
+});
+
+test('task checkpoint accepts terminalResult and decisions array', () => {
+  const { projectRoot, statePath } = initTaskState('schema-tr');
+  const tr = runInDir(`task checkpoint --state "${statePath}" --data '{"terminalResult":{"terminalResultId":"terminalResult_x","status":"completed"}}'`, projectRoot);
+  assert(tr.ok, `terminalResult checkpoint should succeed, got: ${JSON.stringify(tr.data)}`);
+  const decisions = runInDir(`task checkpoint --state "${statePath}" --data '{"decisions":[]}'`, projectRoot);
+  assert(decisions.ok, `decisions array checkpoint should succeed, got: ${JSON.stringify(decisions.data)}`);
+  const badTr = runInDir(`task checkpoint --state "${statePath}" --data '{"terminalResult":{"terminalResultId":"t","status":"weird"}}'`, projectRoot);
+  assert(!badTr.ok, 'invalid terminalResult.status should fail');
+  assert(badTr.data.error.includes('terminalResult.status must be one of'), `error should mention status, got ${badTr.data.error}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
