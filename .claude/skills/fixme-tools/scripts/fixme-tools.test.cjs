@@ -5558,6 +5558,49 @@ test('task-bound spec-writer readers consume decisions via task decision list', 
   assertTaskBoundDecisionReader('fixme-write-technical-spec', 'Do not write `<fixme-dir>/decisions.md`');
 });
 
+test('every task-bound reader names task decision list and the markdown field on its task-bound path', () => {
+  const readers = [
+    'fixme-write-plan', 'fixme-review-plan', 'fixme-handle-plan-review',
+    'fixme-handle-code-review', 'fixme-handle-spec-review',
+    'fixme-write-product-spec', 'fixme-write-technical-spec',
+  ];
+  for (const dir of readers) {
+    const skill = fs.readFileSync(path.resolve(__dirname, '..', '..', dir, 'SKILL.md'), 'utf8');
+    // The task-bound decision-read path must name the structured API and the markdown field,
+    // and must gate the standalone direct-read on the task-state-owner contract.
+    assert(skill.includes('task decision list --state <task-state-path> --format markdown'),
+      `${dir} must name the structured task decision list call on its task-bound read path`);
+    assert(/task decision list[\s\S]{0,400}?`markdown` field|`markdown` field[\s\S]{0,400}?task decision list/.test(skill),
+      `${dir} must instruct reading the markdown field alongside the structured call`);
+  }
+});
+
+test('lifecycle durable create/checkpoint helpers honor the retry contract', () => {
+  // invocation start: identical replay returns existing; conflicting -> conflictingDuplicate
+  const w = createUsageWorkspace();
+  const startData = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'sweep1' });
+  const s1 = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${startData}'`, w.projectRoot, w.env);
+  const s2 = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${startData}'`, w.projectRoot, w.env);
+  assert(s1.ok && s2.ok && s1.data.invocationId === s2.data.invocationId, 'invocation start identical replay returns existing');
+  const sConflict = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${JSON.stringify({ skill: 'fixme-pr-comments', idempotencyKey: 'sweep1' })}'`, w.projectRoot, w.env);
+  assert(!sConflict.ok && sConflict.data.error.code === 'conflictingDuplicate', 'invocation start conflict -> conflictingDuplicate');
+
+  // dispatch prepare: identical replay returns existing dispatchId
+  const fixmeDir = makeFixmeDir();
+  const dData = JSON.stringify({ idempotencyKey: 'sweepd', agentName: 'fixme-task', transport: 'agent', promptInputs: {} });
+  const d1 = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${dData}'`);
+  const d2 = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${dData}'`);
+  assert(d1.ok && d2.ok && d1.data.dispatchId === d2.data.dispatchId, 'dispatch prepare identical replay returns existing');
+
+  // parent create + checkpoint: stale expectedRevision -> staleState
+  const pFixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${pFixmeDir}" --data '${parentCreateData()}'`);
+  const cp1 = run(`lifecycle parent checkpoint --fixme-dir "${pFixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'sc1', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [{ id: 'r1' }] }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
+  assert(cp1.ok && cp1.data.revision === 1, 'parent checkpoint advances revision');
+  const stale = run(`lifecycle parent checkpoint --fixme-dir "${pFixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'sc2', expectedRevision: 0, status: 'running', cursor: 'presentAnalysis', payload: { flags: {}, reviewItems: [{ id: 'r1' }], analysis: {}, routedGroups: {} }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
+  assert(!stale.ok && stale.data.error.code === 'staleState', 'parent checkpoint stale -> staleState');
+});
+
 test('fixme-session skill: tracks background fixme-task liveness status id', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
