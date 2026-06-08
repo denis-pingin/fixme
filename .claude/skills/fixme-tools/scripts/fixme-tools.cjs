@@ -7178,6 +7178,69 @@ function lifecycleAttentionBrokerAnswer(flags) {
   }
 }
 
+// ============================================================================
+// Subcommands: lifecycle wait
+// ============================================================================
+
+function readLifecycleRunStatusForWait(fixmeDir, statusId) {
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    lifecycleError('stateNotFound', `Run status not found: ${statusId}`);
+  }
+  return { statusPath, status: readRunStatusFile(statusPath, statusId) };
+}
+
+function lifecycleWaitBegin(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const label = flags.label;
+  if (!isNonEmptyString(label) || label === true) {
+    lifecycleError('invalidInput', '--label is required');
+  }
+  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
+  if (isRunAttentionCommand(status.currentCommand)) {
+    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
+  }
+  if (status.currentCommand !== null && status.currentCommand !== label) {
+    lifecycleError('staleState', `Run already waiting on a different command: ${status.currentCommand}`);
+  }
+  const next = writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(status.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: String(label),
+    updatedAt: new Date().toISOString(),
+  });
+  return lifecycleOk(next);
+}
+
+function lifecycleWaitEnd(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
+  if (isRunAttentionCommand(status.currentCommand)) {
+    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
+  }
+  const next = writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(status.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
+  return lifecycleOk(next);
+}
+
 function emptyTokenUsage() {
   const usage = {};
   for (const key of USAGE_TOKEN_BUCKETS) usage[key] = 0;
@@ -7794,6 +7857,15 @@ function main() {
                 }
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle attention action: '${args[0] || ''}'`);
+            }
+          case 'wait':
+            switch (args[0]) {
+              case 'begin':
+                return lifecycleWaitBegin(flags);
+              case 'end':
+                return lifecycleWaitEnd(flags);
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle wait action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);

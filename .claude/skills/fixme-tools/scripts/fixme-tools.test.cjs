@@ -2883,6 +2883,57 @@ test('attention broker show and answer record answer without interpreting', () =
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting answer, got ${JSON.stringify(conflict.data)}`);
 });
 
+console.log('\n=== lifecycle wait tests ===\n');
+
+test('wait begin sets working command marker and wait end clears it', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "yarn test"`);
+  assert(begin.ok, `wait begin should succeed, got: ${JSON.stringify(begin.data)}`);
+  const afterBegin = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(afterBegin.data.state === 'running' && afterBegin.data.checkpoint === 'working', 'running/working');
+  assert(afterBegin.data.currentCommand === 'yarn test', `command set, got ${afterBegin.data.currentCommand}`);
+  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(end.ok, `wait end should succeed, got: ${JSON.stringify(end.data)}`);
+  const afterEnd = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(afterEnd.data.currentCommand === null, `command cleared, got ${afterEnd.data.currentCommand}`);
+});
+
+test('wait begin same label updates and different label rejects', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
+  const same = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
+  assert(same.ok, `same label should update, got: ${JSON.stringify(same.data)}`);
+  const diff = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-b"`);
+  assert(!diff.ok && diff.data.error.code === 'staleState', `different label should be staleState, got ${JSON.stringify(diff.data)}`);
+});
+
+test('wait begin and end reject while attention marker active', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
+    resumeRef: 'FIXME-1', taskStatePath: path.join(fixmeDir, 'tasks', 't.state.json'),
+    promptMarkdown: '## D', answerMode: 'freeform',
+  });
+  run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
+  assert(!begin.ok && begin.data.error.code === 'activeAttention', `begin should be activeAttention, got ${JSON.stringify(begin.data)}`);
+  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(!end.ok && end.data.error.code === 'activeAttention', `end should be activeAttention, got ${JSON.stringify(end.data)}`);
+});
+
+test('wait end after cleared returns current status idempotently', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
+  run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  const again = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(again.ok, `repeated wait end should be idempotent, got: ${JSON.stringify(again.data)}`);
+  assert(again.data.currentCommand === null, 'currentCommand stays null');
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
