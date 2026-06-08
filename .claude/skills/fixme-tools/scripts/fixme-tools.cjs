@@ -7178,6 +7178,12 @@ function main() {
             return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact, decision`);
         }
 
+      case 'lifecycle':
+        switch (subcommand) {
+          default:
+            return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);
+        }
+
       case 'pipeline':
         switch (subcommand) {
           case 'resolve':
@@ -7322,7 +7328,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, task, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {

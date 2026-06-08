@@ -2545,6 +2545,15 @@ test('task decision list markdown format and task-owned-only', () => {
   assert(owned.ok && owned.data.taskDecisions.length === 1, 'task-owned-only returns task decisions');
 });
 
+console.log('\n=== lifecycle envelope tests ===\n');
+
+test('lifecycle unknown subcommand returns unsupportedCommand envelope', () => {
+  const r = run(`lifecycle bogus`);
+  assert(!r.ok, 'unknown lifecycle subcommand should exit nonzero');
+  assert(r.data && r.data.ok === false, 'should emit ok:false envelope');
+  assert(r.data.error && r.data.error.code === 'unsupportedCommand', `code should be unsupportedCommand, got ${JSON.stringify(r.data)}`);
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
