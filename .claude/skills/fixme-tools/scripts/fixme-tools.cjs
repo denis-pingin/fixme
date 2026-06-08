@@ -5317,12 +5317,12 @@ function writeRunStatus(statusPath, status) {
   return { ...status, statusPath };
 }
 
-function runStart(flags) {
+function runStartCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const agent = validateRunAgent(flags.agent);
   const statusId = generateUsageId('run');
   const statusPath = runStatusPath(fixmeDir, statusId);
-  return output(writeRunStatus(statusPath, {
+  return writeRunStatus(statusPath, {
     schemaVersion: 1,
     statusId,
     agent,
@@ -5330,7 +5330,11 @@ function runStart(flags) {
     checkpoint: 'dispatched',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  }));
+  });
+}
+
+function runStart(flags) {
+  return output(runStartCore(flags));
 }
 
 function runPing(flags) {
@@ -5484,7 +5488,7 @@ function attentionOutput(record, fixmeDir, statusId) {
   };
 }
 
-function runAttentionSet(flags) {
+function runAttentionSetCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const statusId = validateRequiredRunId(flags['status-id']);
   const { statusPath, status } = readRunStatusForAttention(fixmeDir, statusId);
@@ -5516,7 +5520,11 @@ function runAttentionSet(flags) {
     throw error;
   }
 
-  return output(attentionOutput(record, fixmeDir, statusId));
+  return attentionOutput(record, fixmeDir, statusId);
+}
+
+function runAttentionSet(flags) {
+  return output(runAttentionSetCore(flags));
 }
 
 function readAttentionRecord(fixmeDir, statusId, rawAttentionId) {
@@ -5531,15 +5539,19 @@ function readAttentionRecord(fixmeDir, statusId, rawAttentionId) {
   return { attentionId, attentionPath, record: normalizeRunAttentionRecord(record, attentionId), runStatus: status };
 }
 
-function runAttentionShow(flags) {
+function runAttentionShowCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const statusId = validateRequiredRunId(flags['status-id']);
   const { attentionId, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
   requireRunWaitingOnAttention(runStatus, attentionId);
-  return output(attentionOutput(record, fixmeDir, statusId));
+  return attentionOutput(record, fixmeDir, statusId);
 }
 
-function runAttentionAnswer(flags) {
+function runAttentionShow(flags) {
+  return output(runAttentionShowCore(flags));
+}
+
+function runAttentionAnswerCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const statusId = validateRequiredRunId(flags['status-id']);
   const { attentionId, attentionPath, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
@@ -5576,7 +5588,11 @@ function runAttentionAnswer(flags) {
     answeredAt: new Date().toISOString(),
   };
   writeJsonAtomic(attentionPath, next);
-  return output(attentionOutput(next, fixmeDir, statusId));
+  return attentionOutput(next, fixmeDir, statusId);
+}
+
+function runAttentionAnswer(flags) {
+  return output(runAttentionAnswerCore(flags));
 }
 
 function runAttentionClear(flags) {
@@ -6228,35 +6244,35 @@ function resolveUsageFixmeDir(flags, fixmeRoot) {
   return path.join(fixmeRoot, '.fixme');
 }
 
-function usageStart(flags, fixmeRoot) {
+function usageStartCore(flags, fixmeRoot) {
   if (Object.prototype.hasOwnProperty.call(flags, 'task')) {
-    return usageCliError('UNSUPPORTED_USAGE_TASK', '--task is reserved for a future usage schema and is not supported in v1');
+    return { ok: false, code: 'UNSUPPORTED_USAGE_TASK', message: '--task is reserved for a future usage schema and is not supported in v1' };
   }
   if (!flags.skill) {
-    return usageCliError('MISSING_USAGE_SKILL', '--skill is required for usage start');
+    return { ok: false, code: 'MISSING_USAGE_SKILL', message: '--skill is required for usage start' };
   }
 
   const role = flags.role || 'skill';
   if (!USAGE_ROLES.includes(role)) {
-    return usageCliError('UNSUPPORTED_USAGE_ROLE', `Unsupported usage role: ${role}`);
+    return { ok: false, code: 'UNSUPPORTED_USAGE_ROLE', message: `Unsupported usage role: ${role}` };
   }
 
   let runtime;
   try {
     runtime = resolveUsageRuntime(flags.runtime || 'auto', process.argv[1]);
   } catch (e) {
-    return usageCliError(e.code || 'USAGE_RUNTIME_ERROR', e.message);
+    return { ok: false, code: e.code || 'USAGE_RUNTIME_ERROR', message: e.message };
   }
 
   let fixmeDir;
   try {
     fixmeDir = resolveUsageFixmeDir(flags, fixmeRoot);
   } catch (e) {
-    return usageCliError(e.code || 'INVALID_USAGE_PATH', e.message);
+    return { ok: false, code: e.code || 'INVALID_USAGE_PATH', message: e.message };
   }
   const projectRoot = flags['project-root'] ? path.resolve(String(flags['project-root'])) : path.dirname(fixmeDir);
   if (!path.isAbsolute(fixmeDir) || !path.isAbsolute(projectRoot)) {
-    return usageCliError('INVALID_USAGE_PATH', '--fixme-dir and --project-root must resolve to absolute paths');
+    return { ok: false, code: 'INVALID_USAGE_PATH', message: '--fixme-dir and --project-root must resolve to absolute paths' };
   }
 
   let pipelineRunId;
@@ -6265,7 +6281,7 @@ function usageStart(flags, fixmeRoot) {
     pipelineRunId = validateUsageId(flags['pipeline-run-id'], 'pipelineRunId');
     parentInvocationId = validateUsageId(flags['parent-invocation-id'], 'parentInvocationId');
   } catch (e) {
-    return usageCliError(e.code || 'INVALID_USAGE_ID', e.message);
+    return { ok: false, code: e.code || 'INVALID_USAGE_ID', message: e.message };
   }
 
   const invocationId = generateUsageId('usage');
@@ -6296,14 +6312,28 @@ function usageStart(flags, fixmeRoot) {
 
   writeJsonAtomic(pendingPath, pending);
 
-  return output({
-    invocationId,
-    pipelineRunId,
-    pendingPath,
-    runtime,
-    startedAt,
-    finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete --fixme-dir "${fixmeDir}"`,
-  });
+  return {
+    ok: true,
+    result: {
+      invocationId,
+      pipelineRunId,
+      parentInvocationId,
+      fixmeDir,
+      pendingPath,
+      runtime,
+      startedAt,
+      finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete --fixme-dir "${fixmeDir}"`,
+    },
+  };
+}
+
+function usageStart(flags, fixmeRoot) {
+  const core = usageStartCore(flags, fixmeRoot);
+  if (!core.ok) {
+    return usageCliError(core.code, core.message, core.extra || {});
+  }
+  const { invocationId, pipelineRunId, pendingPath, runtime, startedAt, finishCommand } = core.result;
+  return output({ invocationId, pipelineRunId, pendingPath, runtime, startedAt, finishCommand });
 }
 
 function validateOutcomeAndReason(outcome, rawReason) {
@@ -6509,28 +6539,28 @@ function usagePrintAfterFinishForFixmeDir(fixmeDir) {
   }
 }
 
-function usageFinish(flags, fixmeRoot) {
+function usageFinishCore(flags, fixmeRoot) {
   if (!flags['invocation-id']) {
-    return usageCliError('MISSING_INVOCATION_ID', '--invocation-id is required for usage finish');
+    return { ok: false, code: 'MISSING_INVOCATION_ID', message: '--invocation-id is required for usage finish' };
   }
   if (!flags.outcome) {
-    return usageCliError('MISSING_OUTCOME', '--outcome is required for usage finish');
+    return { ok: false, code: 'MISSING_OUTCOME', message: '--outcome is required for usage finish' };
   }
 
   let pendingPath;
   try {
     pendingPath = findPendingPath(flags['invocation-id'], resolveUsageFixmeDir(flags, fixmeRoot));
   } catch (e) {
-    return usageCliError(e.code || 'INVALID_USAGE_REQUEST', e.message);
+    return { ok: false, code: e.code || 'INVALID_USAGE_REQUEST', message: e.message };
   }
   if (!fs.existsSync(pendingPath)) {
-    return usageCliError('PENDING_USAGE_NOT_FOUND', `Pending usage invocation not found: ${flags['invocation-id']}`);
+    return { ok: false, code: 'PENDING_USAGE_NOT_FOUND', message: `Pending usage invocation not found: ${flags['invocation-id']}` };
   }
 
   const pending = readJsonFileStrict(pendingPath);
   const outcomeResult = validateOutcomeAndReason(flags.outcome, flags.reason);
   if (!outcomeResult.ok) {
-    return usageCliError(outcomeResult.code, outcomeResult.message);
+    return { ok: false, code: outcomeResult.code, message: outcomeResult.message };
   }
 
   let finalizedEvent = pending.finalizedEvent;
@@ -6550,11 +6580,11 @@ function usageFinish(flags, fixmeRoot) {
     projectState = destinationState(projectEventPath, finalizedEvent);
     globalState = destinationState(globalEventPath, finalizedEvent);
   } catch (e) {
-    return usageCliError('DESTINATION_READ_FAILED', e.message);
+    return { ok: false, code: 'DESTINATION_READ_FAILED', message: e.message };
   }
 
   if (projectState === 'conflict' || globalState === 'conflict') {
-    return usageCliError('DESTINATION_EVENT_CONFLICT', 'A usage destination already contains a different event for this invocation');
+    return { ok: false, code: 'DESTINATION_EVENT_CONFLICT', message: 'A usage destination already contains a different event for this invocation' };
   }
 
   try {
@@ -6564,7 +6594,7 @@ function usageFinish(flags, fixmeRoot) {
     pending.appendState.projectWritten = true;
     writeJsonAtomic(pendingPath, pending);
   } catch (e) {
-    return usageCliError(USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, `Failed to append project usage event: ${e.message}`);
+    return { ok: false, code: USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, message: `Failed to append project usage event: ${e.message}` };
   }
 
   try {
@@ -6574,27 +6604,41 @@ function usageFinish(flags, fixmeRoot) {
     pending.appendState.globalWritten = true;
     writeJsonAtomic(pendingPath, pending);
   } catch (e) {
-    return usageCliError(USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, `Failed to append global usage event: ${e.message}`, {
-      warnings: [{ code: USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, message: 'Project usage was written, but global usage is incomplete.' }],
-    });
+    return {
+      ok: false,
+      code: USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED,
+      message: `Failed to append global usage event: ${e.message}`,
+      extra: { warnings: [{ code: USAGE_WARNING_CODES.DESTINATION_APPEND_FAILED, message: 'Project usage was written, but global usage is incomplete.' }] },
+    };
   }
 
   fs.rmSync(pendingPath, { force: true });
 
   const suppressed = flags.quiet === true || flags.quiet === '' || !usagePrintAfterFinishForFixmeDir(pending.fixmeDir);
   const reportLine = suppressed ? null : buildCompactUsageReportLine(finalizedEvent, projectEventPath);
-  return usageCliResult({
-    eventId: finalizedEvent.eventId,
-    invocationId: finalizedEvent.invocationId,
-    status: finalizedEvent.status,
-    outcome: finalizedEvent.outcome,
-    outcomeReason: finalizedEvent.outcomeReason,
-    projectEventPath,
-    globalEventPath,
-    reportLine,
-    reportLineSuppressed: suppressed,
-    warnings: finalizedEvent.warnings,
-  });
+  return {
+    ok: true,
+    result: {
+      eventId: finalizedEvent.eventId,
+      invocationId: finalizedEvent.invocationId,
+      status: finalizedEvent.status,
+      outcome: finalizedEvent.outcome,
+      outcomeReason: finalizedEvent.outcomeReason,
+      projectEventPath,
+      globalEventPath,
+      reportLine,
+      reportLineSuppressed: suppressed,
+      warnings: finalizedEvent.warnings,
+    },
+  };
+}
+
+function usageFinish(flags, fixmeRoot) {
+  const core = usageFinishCore(flags, fixmeRoot);
+  if (!core.ok) {
+    return usageCliError(core.code, core.message, core.extra || {});
+  }
+  return usageCliResult(core.result);
 }
 
 function emptyTokenUsage() {

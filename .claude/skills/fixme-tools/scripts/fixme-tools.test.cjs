@@ -2554,6 +2554,61 @@ test('lifecycle unknown subcommand returns unsupportedCommand envelope', () => {
   assert(r.data.error && r.data.error.code === 'unsupportedCommand', `code should be unsupportedCommand, got ${JSON.stringify(r.data)}`);
 });
 
+test('run start CLI stdout schema unchanged after core extraction', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const r = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(r.ok, `run start should succeed, got: ${JSON.stringify(r.data)}`);
+  const keys = Object.keys(r.data).sort();
+  assert(JSON.stringify(keys) === JSON.stringify(['agent', 'checkpoint', 'currentCommand', 'schemaVersion', 'state', 'statusId', 'statusPath', 'updatedAt']),
+    `run start keys unchanged, got ${JSON.stringify(keys)}`);
+  assert(r.data.schemaVersion === 1, 'schemaVersion 1');
+  assert(r.data.agent === 'fixme-task', 'agent fixme-task');
+  assert(r.data.state === 'running', 'state running');
+  assert(r.data.checkpoint === 'dispatched', 'checkpoint dispatched');
+  assert(r.data.currentCommand === null, 'currentCommand null');
+});
+
+test('run attention set CLI stdout schema unchanged after core extraction', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-handle-code-review',
+    kind: 'reviewDecision',
+    resumeRef: 'FIXME-13',
+    taskStatePath: path.join(fixmeDir, 'tasks', 'demo.state.json'),
+    promptMarkdown: '## Decision\n\nPick.',
+    answerMode: 'freeform',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  assert(set.ok, `run attention set should succeed, got: ${JSON.stringify(set.data)}`);
+  assert(set.data.status === 'waiting', `status should be waiting, got ${set.data.status}`);
+  assert(set.data.answer === null, `answer should be null, got ${JSON.stringify(set.data.answer)}`);
+  assert(set.data.statusId === started.data.statusId, 'statusId echoed');
+  assert(typeof set.data.attentionPath === 'string', 'attentionPath present');
+});
+
+test('usage start to finish round trip schema unchanged after core extraction', () => {
+  const workspace = createUsageWorkspace();
+  const start = runInDirWithEnv(`usage start --skill fixme-task --runtime claude --role orchestrator --fixme-dir "${workspace.fixmeDir}"`, workspace.projectRoot, workspace.env);
+  assert(start.ok, `usage start should succeed, got: ${JSON.stringify(start.data)}`);
+  assert(/^usage_/.test(start.data.invocationId), 'invocationId generated');
+  assert(typeof start.data.finishCommand === 'string' && start.data.finishCommand.includes('usage finish'), 'finishCommand present');
+  const startKeys = Object.keys(start.data).sort();
+  assert(JSON.stringify(startKeys) === JSON.stringify(['finishCommand', 'invocationId', 'pendingPath', 'pipelineRunId', 'runtime', 'startedAt']),
+    `usage start keys unchanged, got ${JSON.stringify(startKeys)}`);
+  const finish = runInDirWithEnv(`usage finish --invocation-id ${start.data.invocationId} --outcome complete --fixme-dir "${workspace.fixmeDir}"`, workspace.projectRoot, workspace.env);
+  assert(finish.ok, `usage finish should succeed, got: ${JSON.stringify(finish.data)}`);
+  assert(finish.data.invocationId === start.data.invocationId, 'invocationId matches');
+  assert(finish.data.outcome === 'complete', `outcome complete, got ${finish.data.outcome}`);
+  assert(Object.prototype.hasOwnProperty.call(finish.data, 'reportLine'), 'reportLine present');
+  assert(Object.prototype.hasOwnProperty.call(finish.data, 'reportLineSuppressed'), 'reportLineSuppressed present');
+});
+
 // ============================================================================
 // Test Suite: final workflow state transitions
 // ============================================================================
