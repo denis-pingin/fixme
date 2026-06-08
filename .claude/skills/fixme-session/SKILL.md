@@ -181,16 +181,18 @@ Environment is now ready. Investigation agents assume the browser is open and au
 
 **State transition ownership:** fixme-task owns all phase transitions during pipeline execution. fixme-session owns terminal transitions (`done`, `failed`, `skipped`) and crash cleanup. See `state-machine.md` for the full ownership table.
 
+**Long-command liveness:** when the session runs a long command directly (for example dev-server startup or a project build/test it owns), bracket it with `lifecycle wait begin --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --label "<command>"` before and `lifecycle wait end --fixme-dir <fixme-dir> --status-id <activeRunStatusId>` after, so liveness reflects the wait. Neither helper overwrites or clears an active `attention:<attention-id>` marker.
+
 **Attention ownership:** fixme-task owns all task-state decisions, including decisions requested by child skills. fixme-session is only the user-facing broker for a background task. If `run status` reports `currentCommand` in the form `attention:<attention-id>`, do not read task state or decision logs. Render and answer the prompt only through:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention show --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'
 ```
 
-Print the returned `promptMarkdown` exactly, then wait for the user's answer. If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `run attention answer`. If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command. Use the `resumeRef` returned by `run attention show` and resume the background `fixme-task` with `--resume <resumeRef> --answer-attention <attention-id>`. In Claude, resume by dispatching `Agent(subagent_type="fixme-task", ...)` with those arguments in the prompt. In Codex, resume with `spawn_agent(agent_type="fixme-task", message=...)` and those same arguments after resolving runtime settings. When resuming, reuse the same `<liveness>` `statusId: <activeRunStatusId>` so `fixme-task` can clear the original attention status. The status id is context, not a command-line flag. Do not write `<fixme-dir>/decisions.md`; the background `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
+Print the returned `promptMarkdown` exactly, then wait for the user's answer. If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`. If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command. Use the `resumeRef` returned by `lifecycle attention broker show` and resume the background `fixme-task` with `--resume <resumeRef> --answer-attention <attention-id>`. In Claude, resume by dispatching `Agent(subagent_type="fixme-task", ...)` with those arguments in the prompt. In Codex, resume with `spawn_agent(agent_type="fixme-task", message=...)` and those same arguments after resolving runtime settings. When resuming, reuse the same `<liveness>` `statusId: <activeRunStatusId>` so `fixme-task` can clear the original attention status. The status id is context, not a command-line flag. Do not persist any task-owned decision; the background `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
 
-If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again. Resume the background `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>` and the same `<liveness>` `statusId: <activeRunStatusId>` so an interrupted broker does not duplicate a user decision.
+If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again. Resume the background `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>` and the same `<liveness>` `statusId: <activeRunStatusId>` so an interrupted broker does not duplicate a user decision.
 
 If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"` and resume the background `fixme-task` exactly the same way. Do not answer the clarification in this session skill. If the resumed background `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way.
 
@@ -261,7 +263,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
        </project>
 
        <liveness>
-       statusId: <statusId from run start>
+       statusId: <statusId from lifecycle dispatch prepare>
        </liveness>
    )
    ```
@@ -285,17 +287,13 @@ This is the core execution cycle. Repeat until the user stops the session or the
 
    **Resolve runtime settings and print visibility banner before dispatch:**
 
-   ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model fixme-task
-   ```
-
-   **Create liveness status before dispatch:**
+   **Prepare the background dispatch (resolves runtime settings, creates the child liveness status, and builds the banner in one call):**
 
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","transport":"background","promptInputs":{...}}'
    ```
 
-   Store the returned `statusId` in session.md frontmatter as `activeRunStatusId`. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
+   Store the returned `statusId` in session.md frontmatter as `activeRunStatusId`, and use the returned `runtimeSettings`/`bannerMarkdown`. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
 
    Print a one-line banner to the user:
 
@@ -332,7 +330,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
        </project>
 
        <liveness>
-       statusId: <statusId from run start>
+       statusId: <statusId from lifecycle dispatch prepare>
        </liveness>
    )
    ```

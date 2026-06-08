@@ -5541,8 +5541,8 @@ test('fixme-session skill: tracks background fixme-task liveness status id', () 
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('activeRunStatusId'), 'fixme-session should track activeRunStatusId');
-  assert(skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'fixme-session should create liveness status before background fixme-task');
-  assert(skill.includes('statusId: <statusId from run start>'), 'background prompt should include statusId');
+  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'fixme-session should prepare the background dispatch via the lifecycle helper');
+  assert(skill.includes('"transport":"background"'), 'fixme-session should dispatch fixme-task with background transport');
   assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'status flow should read liveness status');
 });
 
@@ -5562,19 +5562,19 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('If `run status` reports `currentCommand` in the form `attention:<attention-id>`'), 'session should detect background task attention');
-  assert(skill.includes('run attention show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through fixme-tools');
-  assert(skill.includes('run attention answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should record user answers through fixme-tools');
-  assert(skill.includes('Use the `resumeRef` returned by `run attention show`'), 'session should resume from the attention record resumeRef');
+  assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through the lifecycle broker');
+  assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should record user answers through the lifecycle broker');
+  assert(skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session should resume from the attention record resumeRef');
   assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'session should document Claude background task resume');
   assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'session should document Codex background task resume');
   assert(skill.includes('reuse the same `<liveness>` `statusId: <activeRunStatusId>`'), 'session should reuse the same background run status when resuming');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'session should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `run attention answer`.'), 'session should scope decision answers at the answer-write step');
+  assert(skill.includes('If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`.'), 'session should scope decision answers at the answer-write step');
   assert(skill.includes('If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command.'), 'session should scope clarification requests at the answer-write step');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'session should broker clarification requests without answering them');
-  assert(skill.includes('If `run attention show` returns `status: "answered"`, do not print the prompt or call `run attention answer` again'), 'session should resume already answered attention instead of re-prompting');
+  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again'), 'session should resume already answered attention instead of re-prompting');
   assert(skill.includes('If the resumed background `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'session should broker clarification follow-up attention prompts');
-  assert(skill.includes('Do not write `<fixme-dir>/decisions.md`; the background `fixme-task` resumes and writes decisions itself.'), 'session should not own background task decisions');
+  assert(skill.includes('Do not persist any task-owned decision; the background `fixme-task` resumes and writes decisions itself.'), 'session should not own background task decisions');
 });
 
 test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () => {
