@@ -179,7 +179,7 @@ If ANY prior plan or decision log exists, extract every locked decision. For eac
 
 If (1) or (2): add to questions list. State the conflict, why it matters, and present resolution options.
 
-If (3): **this is the most dangerous case.** Your judgment may be correct, but confidence without user confirmation is exactly the failure mode this gate prevents. Add it to the questions list with your reasoning and recommendation. Let the user decide.
+If (3): **this is the most dangerous case.** Your judgment may be correct, but confidence without user confirmation is exactly the failure mode this gate prevents. Add it to the questions list with your reasoning and recommendation. Let the user decide. This protection governs genuine decisions and is not weakened by the Decision Eligibility Gate: the gate only removes non-decisions (items where one outcome survives the hard constraints, or the survivors are behavior-identical or strictly dominated). A locked decision you would change on your own judgment is a genuine decision and always goes to the user; never silently override it.
 
 If no prior plan or decision log exists: this step produces no questions. Proceed.
 
@@ -192,6 +192,8 @@ Scan the task description and all inputs for:
 - **Scope boundaries not defined**: what's in scope, what's explicitly out?
 - **Contradictions between inputs**: task says X, prior plan says Y, FIX item says Z
 - **Multiple valid interpretations**: anything that could reasonably be read two different ways
+
+Before adding any contradiction or interpretation to the question list, apply the Decision Eligibility Gate from `fixme-howto-present-decisions`. A contradiction or interpretation becomes a user question only when all three gate conditions hold: more than one outcome survives the hard constraints (the task description, locked decisions, project rules, and shipped-and-tested behavior); the survivors differ observably; and the best survivor cannot be chosen from rules and evidence. If only one outcome survives, or the survivors are behavior-identical or strictly dominated, resolve it directly in the plan rather than asking. This does not weaken the locked-decision protection in Step 3: a decision you would change on your own judgment is a genuine decision and still goes to the user.
 
 ### Step 5: Question Resolution Loop
 
@@ -233,7 +235,7 @@ Collect all questions from steps 2-4 into a single numbered list. Every question
 - Asking would slow things down
 - You already explored the codebase and "know" the right answer
 
-These are exactly the conditions under which silent overrides happen. The gate exists for when you are most confident, not least.
+These are exactly the conditions under which silent overrides happen. The gate exists for when you are most confident, not least. This anti-skip protection is about genuine decisions that survive the Decision Eligibility Gate: it forbids skipping the user on a real decision. It does not require manufacturing a question for a determined non-decision - if the Decision Eligibility Gate proves only one eligible outcome survives, or the survivors are behavior-identical or strictly dominated, resolve it directly rather than escalating.
 
 ## Before Writing
 
@@ -294,12 +296,12 @@ Do not re-ask questions already resolved by the Input Audit. Do not re-open lock
 
 During exploration, you formed opinions about how to build this. Some of those opinions are mechanical (following an obvious existing pattern with no realistic alternative). Others are genuine design choices where multiple approaches exist and the user's preference matters.
 
-For each design decision collected above, apply this test:
+For each design decision collected above, apply the Decision Eligibility Gate from `fixme-howto-present-decisions`, expressed here as this test:
 
-> Does a realistic alternative exist that would materially change the plan's structure, component boundaries, data flow, or user-facing behavior?
+> Does more than one outcome survive the hard constraints (condition 1), do the survivors differ observably in the plan's structure, component boundaries, data flow, or user-facing behavior (condition 2 - materiality), and is the best survivor unchoosable from rules and evidence (condition 3 - indeterminacy)?
 
-- **Yes**: the decision MUST be presented to the user. Add it to the question list below.
-- **No** (truly mechanical - only one reasonable approach given the codebase): document it in the code map as an observation and add a compact Stable Context note only if the executor needs it. Example: "The existing hooks all use `withAuthRetry` wrapping `Effect.runPromise`" is an observation. "We'll create a new `agentsFetchPaginated` helper instead of modifying the shared one" is a design decision.
+- **All three hold**: the decision MUST be presented to the user. Add it to the question list below.
+- **Any condition fails** (one eligible outcome after constraints, behavior-identical or strictly-dominated survivors, or evidence selects the best): this is not a decision. Resolve it directly, document it in the code map as an observation, and add a compact Stable Context note only if the executor needs it. Example: "The existing hooks all use `withAuthRetry` wrapping `Effect.runPromise`" is an observation. "We'll create a new `agentsFetchPaginated` helper instead of modifying the shared one" is a design decision only if a realistic, materially different, evidence-unresolvable alternative exists.
 
 Collect all questions and present them to the user using the same format as the Input Audit's Question Resolution Loop (Step 5). Process answers identically: explicit answers become `[confirmed]`, accepted recommendations become `[assumed]`. The `[assumed]` tag is valid here because the user was asked.
 
