@@ -137,7 +137,7 @@ Review assessment:
 
 `Competing valid behaviors` must name the concrete alternatives an implementer could reasonably choose. For a pure gap, state the missing behavior and why the surrounding specification makes it required.
 
-`Required decision` must describe the product, API, data, workflow, migration, or testability decision needed to remove ambiguity. For `NOTE`, state why no decision is required in this specification.
+`Required decision` is populated only when the finding passes the Decision Eligibility Gate from `fixme-howto-present-decisions` (more than one material outcome survives the hard constraints and the choice is indeterminate from evidence). When it applies, it must describe the product, API, data, workflow, migration, or testability decision needed to remove ambiguity. When the finding is determined by a hard constraint (for example a sync rule reconciling the specification to shipped-and-tested reality), it has a determined fix rather than a `Required decision`; state the determined fix in `Recommended specification text`. For `NOTE`, state why no decision is required in this specification.
 
 `Recommended specification text` must be concrete enough to paste into the specification or adapt directly.
 
@@ -153,7 +153,7 @@ Return the review in this order:
 2. `Surface inventory`: concise list of behavioral surfaces reviewed.
 3. `Findings`: one block per finding using the required finding format.
 4. `Verdict`: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the verdict rules.
-5. `Decisions`: only unresolved questions required to complete the review, formatted as decision cards from `fixme-howto-present-decisions`.
+5. `Decisions`: only unresolved questions that pass the Decision Eligibility Gate from `fixme-howto-present-decisions` (material and indeterminate after the hard constraints) and are required to complete the review, formatted as decision cards from `fixme-howto-present-decisions`. Settled divergences with a determined fix are findings, not decisions.
 
 If there are no findings, state that the specification passes and list the surfaces and acceptance criteria verified.
 

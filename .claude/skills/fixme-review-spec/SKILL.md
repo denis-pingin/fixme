@@ -135,5 +135,5 @@ If there are no findings, say the specification passes and list the surfaces and
 - Never write "clarify" without naming the competing valid behaviors.
 - Never batch unrelated ambiguities into one finding.
 - Never request implementation details unless they affect observable behavior, data safety, migration safety, workflow semantics, or testability.
-- Never emit a free-form `Questions` section. If the user must decide something, emit a numbered decision card (`D1`, `D2`, etc.) using `fixme-howto-present-decisions`.
+- Never emit a free-form `Questions` section. A finding may appear in the `Decisions` output only if it passes the Decision Eligibility Gate from `fixme-howto-present-decisions` (more than one outcome survives the hard constraints, the survivors are material, and the choice is indeterminate from evidence). A settled divergence - for example a specification paragraph a sync rule requires to match shipped-and-tested reality - is a finding with a determined fix, not a decision. When a genuine decision survives the gate, emit a numbered decision card (`D1`, `D2`, etc.) using `fixme-howto-present-decisions`.
 - Every `BLOCK` must map to a missing or conflicting decision required for implementation.
