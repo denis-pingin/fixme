@@ -7,6 +7,7 @@ skills:
   - fixme-howto-code-comments
   - fixme-howto-code-map
   - fixme-howto-find-fixme-dir
+  - fixme-howto-present-decisions
 permissionMode: acceptEdits
 effort: xhigh
 ---
