@@ -2825,6 +2825,55 @@ test('dispatch complete finalizes child status and rejects conflicting completio
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting completion, got ${JSON.stringify(conflict.data)}`);
 });
 
+test('dispatch prepare replay with different durable inputs returns conflictingDuplicate', () => {
+  const fixmeDir = makeFixmeDir();
+  const first = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: 'd5', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: {} })}'`);
+  assert(first.ok, `first prepare should succeed, got: ${JSON.stringify(first.data)}`);
+  // Same idempotencyKey, different agentName -> conflictingDuplicate. The replay
+  // must not silently hand back the original agent's dispatch.
+  const conflict = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: 'd5', agentName: 'fixme-execute-plan', transport: 'agent', promptInputs: {} })}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting durable inputs, got ${JSON.stringify(conflict.data)}`);
+  assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 1, 'no extra child run-status created on conflict');
+});
+
+test('dispatch complete with parentStatusId clears the parent wait marker', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const prepData = JSON.stringify({ idempotencyKey: 'd6', agentName: 'fixme-write-plan', transport: 'agent', parentStatusId: parent.data.statusId, promptInputs: {} });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepData}'`);
+  assert(prep.ok, `prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const waiting = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(waiting.data.currentCommand === 'dispatching fixme-write-plan', `parent marker set by prepare, got ${waiting.data.currentCommand}`);
+  const completeData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'completed', parentStatusId: parent.data.statusId });
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(complete.ok, `complete should succeed, got: ${JSON.stringify(complete.data)}`);
+  const cleared = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(cleared.data.currentCommand === null, `parent wait marker cleared, got ${cleared.data.currentCommand}`);
+  assert(cleared.data.state === 'running' && cleared.data.checkpoint === 'working', `parent reset to working, got ${cleared.data.state}/${cleared.data.checkpoint}`);
+});
+
+test('dispatch complete leaves an active parent attention marker untouched', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  // Put the parent on an attention marker.
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
+    resumeRef: 'FIXME-1', taskStatePath: path.join(fixmeDir, 'tasks', 't.state.json'),
+    promptMarkdown: '## D', answerMode: 'freeform',
+  });
+  const set = run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId} --data '${attentionData}'`);
+  const attentionCommand = `attention:${set.data.attentionId}`;
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: 'd7', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: {} })}'`);
+  assert(prep.ok, `prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const completeData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'completed', parentStatusId: parent.data.statusId });
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(complete.ok, `complete should still finalize child, got: ${JSON.stringify(complete.data)}`);
+  const childStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${prep.data.statusId}`);
+  assert(childStatus.data.state === 'completed', `child finalized, got ${childStatus.data.state}`);
+  const parentStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(parentStatus.data.currentCommand === attentionCommand, `parent attention marker preserved, got ${parentStatus.data.currentCommand}`);
+});
+
 console.log('\n=== lifecycle attention tests ===\n');
 
 function initTaskWithRunStatus(slug) {
@@ -2921,6 +2970,34 @@ test('attention broker show and answer record answer without interpreting', () =
   const conflictData = JSON.stringify({ answer: 'different', answeredBy: 'user', answerKind: 'decision' });
   const conflict = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk1 --data '${conflictData}'`);
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting answer, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('attention broker show does not expose task-owned decision state', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-leak');
+  // The open carries checkpointData with a pendingDecision; it is persisted on
+  // the durable record under metadata.openCheckpointData for the open-replay
+  // compare, but the broker (parent-facing) must not surface it.
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_leak1' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const show = run(`lifecycle attention broker show --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_leak1`);
+  assert(show.ok, `broker show should succeed, got: ${JSON.stringify(show.data)}`);
+  assert(show.data.attentionId === 'attn_leak1', `broker show returns display fields, got ${JSON.stringify(show.data)}`);
+  assert(typeof show.data.promptMarkdown === 'string' && show.data.answerMode === 'decision-card', 'display fields present');
+  const serialized = JSON.stringify(show.data);
+  assert(!serialized.includes('openCheckpointData'), `broker show must not expose openCheckpointData, got ${serialized}`);
+  assert(!serialized.includes('pendingDecision'), `broker show must not expose pendingDecision, got ${serialized}`);
+  assert(show.data.metadata === undefined, `broker show must not return raw metadata, got ${JSON.stringify(show.data.metadata)}`);
+  // The durable record still carries openCheckpointData so a repeat idempotent
+  // open compares cleanly.
+  const reopen = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_leak1' })}'`);
+  assert(reopen.ok && reopen.data.attentionId === 'attn_leak1', `idempotent reopen should succeed, got ${JSON.stringify(reopen.data)}`);
+  // broker answer still works (reads the durable record directly, not the projection).
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_leak1 --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok && answer.data.status === 'answered', `broker answer should succeed, got ${JSON.stringify(answer.data)}`);
+  // After answering, broker show exposes the answer but still no decision state.
+  const showAnswered = run(`lifecycle attention broker show --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_leak1`);
+  assert(showAnswered.ok && showAnswered.data.answer && showAnswered.data.answer.answer === 'A', `answered broker show exposes answer, got ${JSON.stringify(showAnswered.data)}`);
+  assert(!JSON.stringify(showAnswered.data).includes('openCheckpointData'), 'answered broker show still hides openCheckpointData');
 });
 
 console.log('\n=== lifecycle wait tests ===\n');
@@ -3056,6 +3133,27 @@ test('parent checkpoint advances revision and rejects stale', () => {
   assert(cp.data.normalizedLookupInput.pullRequestRef.host === 'github.com', 'immutable fields preserved');
   const stale = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'c2', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
   assert(!stale.ok && stale.data.error.code === 'staleState', `stale expectedRevision, got ${JSON.stringify(stale.data)}`);
+});
+
+test('parent checkpoint same-key replay is idempotent for identical inputs and conflicts on different inputs', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const checkpointData = JSON.stringify({
+    idempotencyKey: 'ck1', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems',
+    payload: { flags: {}, reviewItems: [{ id: 'r1' }] }, ledger: { reviewItems: [{ id: 'r1' }] },
+  });
+  const first = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${checkpointData}'`);
+  assert(first.ok && first.data.revision === 1, `first checkpoint should advance to revision 1, got ${JSON.stringify(first.data)}`);
+  // Identical replay under the same key is a no-op returning the current state.
+  const identical = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${checkpointData}'`);
+  assert(identical.ok && identical.data.revision === 1, `identical replay returns current state, got ${JSON.stringify(identical.data)}`);
+  // Same idempotencyKey, different durable inputs (cursor/payload) -> conflict.
+  const conflictData = JSON.stringify({
+    idempotencyKey: 'ck1', expectedRevision: 0, status: 'running', cursor: 'presentAnalysis',
+    payload: { flags: {}, reviewItems: [{ id: 'r1' }], analysis: {}, routedGroups: {} }, ledger: { reviewItems: [{ id: 'r1' }] },
+  });
+  const conflict = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `same key conflicting inputs -> conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
 });
 
 test('parent checkpoint rejects clearing populated ledger slot', () => {
@@ -3273,6 +3371,53 @@ test('task-event consume retry after partial write returns parent-recorded event
   const retry = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
   assert(retry.ok && retry.data.event.eventId === eventId, `retry returns parent-recorded event, got ${JSON.stringify(retry.data)}`);
   assert(readJson(eventFilePath).consumedAt, 'retry re-sets the missing consumed marker');
+});
+
+test('task-event consume scopes the recovery branch to the active child across batches', () => {
+  const { statePath, fixmeDir, parentRunId } = setupTaskEventScenario('te-cross-batch');
+  // Simulate batch 1 already consumed: parent.payload.consumedTaskEvent points at
+  // a prior-batch event whose file still exists. Then advance activeChild to a
+  // batch-2 child and stage a fresh batch-2 event.
+  const batch1Event = writeTaskEventFile(fixmeDir, parentRunId, {
+    eventId: 'taskEvent_batch1',
+    taskRunId: 'taskRun_x',
+    taskStatePath: statePath,
+    resultSummaryPath: path.join(path.dirname(statePath), 'batch1.result.json'),
+    terminalResultId: 'terminalResult_batch1',
+    status: 'completed',
+  });
+  // Mark the batch-1 event already consumed so it is not eligible for fresh
+  // selection (the bug being guarded is the recovery branch returning it anyway).
+  batch1Event.consumedAt = new Date().toISOString();
+  batch1Event.consumedBy = parentRunId;
+  fs.writeFileSync(path.join(fixmeDir, 'task-events', parentRunId, `${batch1Event.eventId}.json`), JSON.stringify(batch1Event, null, 2));
+
+  const batch2StatePath = path.join(path.dirname(statePath), 'batch2.state.json');
+  const batch2Event = writeTaskEventFile(fixmeDir, parentRunId, {
+    eventId: 'taskEvent_batch2',
+    taskRunId: 'taskRun_batch2',
+    taskStatePath: batch2StatePath,
+    resultSummaryPath: path.join(path.dirname(statePath), 'batch2.result.json'),
+    terminalResultId: 'terminalResult_batch2',
+    status: 'completed',
+  });
+
+  const state = parentState(fixmeDir, parentRunId);
+  // Parent still records the batch-1 consumed event from the prior batch.
+  state.payload.consumedTaskEvent = {
+    eventId: batch1Event.eventId,
+    terminalResultId: batch1Event.terminalResultId,
+    resultSummaryPath: batch1Event.resultSummaryPath,
+    status: batch1Event.status,
+  };
+  // activeChild has advanced to batch 2.
+  state.payload.activeChild = { statusId: 'run_b2', taskRunId: 'taskRun_batch2', taskStatePath: batch2StatePath, resumeRef: 'FIXME-1' };
+  writeParentState(fixmeDir, parentRunId, state);
+
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(consume.ok, `consume should succeed, got: ${JSON.stringify(consume.data)}`);
+  assert(consume.data.event.eventId === batch2Event.eventId, `consume returns the batch-2 event, not the stale batch-1 event, got ${JSON.stringify(consume.data.event.eventId)}`);
+  assert(parentState(fixmeDir, parentRunId).payload.consumedTaskEvent.eventId === batch2Event.eventId, 'parent now records the batch-2 event');
 });
 
 test('task-event consume by explicit event-id consumes the matching event', () => {

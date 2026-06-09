@@ -145,7 +145,7 @@ Input: required `idempotencyKey`, `agentName`, `transport`, optional `parentStat
 fixme-tools lifecycle dispatch complete --fixme-dir <fixmeDir> --data '<json>'
 ```
 
-Natural key: `dispatchId`. Input: `dispatchId`, `statusId`, `status` (`completed` or `failed`), optional `currentCommand`, optional `failure`. Output: `dispatchId`, `statusId`, `status`, and the final liveness status path. The helper finalizes the child run status and clears parent wait markers without overwriting active attention. Repeating the same completion returns the existing finalized dispatch. A different completion status or failure payload returns `conflictingDuplicate`.
+Natural key: `dispatchId`. Input: `dispatchId`, `statusId`, `status` (`completed` or `failed`), optional `parentStatusId`, optional `currentCommand`, optional `failure`. Output: `dispatchId`, `statusId`, `status`, and the final liveness status path. The helper finalizes the child run status and, when `parentStatusId` is provided, clears the parent wait marker without overwriting active attention. Repeating the same completion returns the existing finalized dispatch. A different completion status or failure payload returns `conflictingDuplicate`.
 
 `lifecycle attention open`:
 

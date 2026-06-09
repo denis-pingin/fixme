@@ -6928,7 +6928,7 @@ const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs',
 ]);
 
-const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status']);
+const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
@@ -6981,10 +6981,22 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     lifecycleError('invalidInput', `Unknown agent: ${data.agentName}`);
   }
 
+  const durableInputs = {
+    agentName: data.agentName,
+    transport: data.transport,
+    parentInvocationId: data.parentInvocationId || null,
+    pipelineRunId: data.pipelineRunId || null,
+    taskStatePath: data.taskStatePath || null,
+    parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
+    promptInputs: data.promptInputs,
+  };
   const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
   const recordPath = dispatchIdempotencyPath(fixmeDir, keyHash);
   if (fs.existsSync(recordPath)) {
     const existing = readJsonFileStrict(recordPath);
+    if (!jsonEqual(existing.durableInputs, durableInputs)) {
+      lifecycleError('conflictingDuplicate', `dispatch idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
+    }
     return lifecycleOk(existing.output);
   }
 
@@ -7043,6 +7055,7 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     dispatchId,
     idempotencyKey: data.idempotencyKey,
     statusId: child.statusId,
+    durableInputs,
     output: out,
     createdAt: new Date().toISOString(),
   });
@@ -7081,6 +7094,7 @@ function lifecycleDispatchComplete(flags) {
   const isTerminal = previous.state === 'completed' || previous.state === 'failed';
   if (isTerminal) {
     if (previous.state === data.status) {
+      clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
       return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: previous.state, statusPath });
     }
     lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot mark ${data.status}`);
@@ -7095,7 +7109,28 @@ function lifecycleDispatchComplete(flags) {
     currentCommand: null,
     updatedAt: new Date().toISOString(),
   });
+  clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
   return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: next.state, statusPath });
+}
+
+// Reset a parent's "dispatching <agent>" wait marker back to a working idle
+// state after a child finalizes. Never overwrites an active attention marker:
+// attention records own the parent's waiting status until they are answered.
+function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
+  if (!isNonEmptyString(parentStatusId)) return;
+  const parentPath = runStatusPath(fixmeDir, parentStatusId);
+  if (!fs.existsSync(parentPath)) return;
+  const parentStatus = readRunStatusFile(parentPath, parentStatusId);
+  if (isRunAttentionCommand(parentStatus.currentCommand)) return;
+  writeRunStatus(parentPath, {
+    schemaVersion: 1,
+    statusId: parentStatusId,
+    agent: validateRunAgent(parentStatus.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 // ============================================================================
@@ -7213,7 +7248,24 @@ function lifecycleAttentionBrokerShow(flags) {
       'status-id': flags['status-id'],
       'attention-id': flags['attention-id'],
     });
-    return lifecycleOk(record);
+    // Whitelist projection: the broker is the parent-facing surface and must not
+    // expose task-owned decision state. metadata.openCheckpointData carries the
+    // task's pendingDecision and is consumed only internally by the attention-open
+    // replay compare, never via broker show. Return display fields only.
+    const projection = {
+      attentionId: record.attentionId,
+      statusId: record.statusId,
+      status: record.status,
+      promptMarkdown: record.promptMarkdown,
+      answerMode: record.answerMode,
+      sourceSkill: record.sourceSkill,
+      kind: record.kind,
+      createdAt: record.createdAt,
+    };
+    if (record.status === 'answered' && record.answer !== undefined) {
+      projection.answer = record.answer;
+    }
+    return lifecycleOk(projection);
   } catch (e) {
     if (/not found/i.test(e.message)) {
       lifecycleError('stateNotFound', e.message);
@@ -7571,9 +7623,12 @@ function lifecycleParentCreate(flags) {
   return lifecycleOk(state);
 }
 
-function lifecycleParentCheckpoint(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const parentRunId = flags['parent-run-id'];
+// Full parent-checkpoint validation and write. Returns the next state object
+// (or the current state on an identical idempotent replay) instead of exiting,
+// so both the public CLI command and the internal task-event consume path share
+// one implementation: the ledger-regression guard, the camelCase assertion, and
+// the same-key conflict detection all apply on every path.
+function parentCheckpointCore(fixmeDir, parentRunId, data) {
   if (!isNonEmptyString(parentRunId)) {
     lifecycleError('invalidInput', '--parent-run-id is required');
   }
@@ -7581,7 +7636,6 @@ function lifecycleParentCheckpoint(flags) {
   if (!fs.existsSync(statePath)) {
     lifecycleError('stateNotFound', `Parent run not found: ${parentRunId}`);
   }
-  const data = resolveLifecycleData(flags);
   try {
     assertKnownJsonFields(data, 'parent checkpoint', PARENT_CHECKPOINT_FIELDS);
   } catch (e) {
@@ -7617,9 +7671,24 @@ function lifecycleParentCheckpoint(flags) {
 
   const current = readJsonFileStrict(statePath);
 
-  // Idempotent replay by idempotencyKey.
+  // Digest of the durable inputs this checkpoint applies. On a same-key replay
+  // we compare against the digest recorded when the key was first applied so an
+  // identical replay is a no-op while a same-key call with different durable
+  // inputs is rejected as a conflict.
+  const appliedDigest = stableHash({
+    status: data.status,
+    cursor: data.cursor,
+    payload: data.payload,
+    ledger: data.ledger,
+  });
+
+  // Idempotent replay by idempotencyKey: identical inputs return current state,
+  // conflicting inputs under the same key are a conflictingDuplicate.
   if (current.lastCheckpointKey === data.idempotencyKey) {
-    return lifecycleOk(current);
+    if (current.lastCheckpointDigest !== undefined && current.lastCheckpointDigest !== appliedDigest) {
+      lifecycleError('conflictingDuplicate', `parent checkpoint idempotencyKey '${data.idempotencyKey}' already applied with different inputs`);
+    }
+    return current;
   }
   if (data.expectedRevision !== current.revision) {
     lifecycleError('staleState', `expectedRevision ${data.expectedRevision} does not match current revision ${current.revision}`);
@@ -7651,13 +7720,20 @@ function lifecycleParentCheckpoint(flags) {
     createdAt: current.createdAt,
     updatedAt: new Date().toISOString(),
     lastCheckpointKey: data.idempotencyKey,
+    lastCheckpointDigest: appliedDigest,
   };
   if (data.failure !== undefined) {
     next.failure = data.failure;
   }
   assertCamelCaseJsonKeys(next, 'parent state');
   writeJsonAtomic(statePath, next);
-  return lifecycleOk(next);
+  return next;
+}
+
+function lifecycleParentCheckpoint(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  return lifecycleOk(parentCheckpointCore(fixmeDir, flags['parent-run-id'], data));
 }
 
 function lifecycleParentResolve(flags) {
@@ -7807,19 +7883,29 @@ function lifecycleTaskEventConsume(flags) {
 
   const events = listTaskEvents(fixmeDir, parentRunId);
 
-  // If parent already recorded a consumed event, return it idempotently and
-  // ensure the consumed marker on the event file is set.
+  // If parent already recorded a consumed event for THIS active child, return it
+  // idempotently and ensure the consumed marker on the event file is set. The
+  // recorded event must belong to the current active child: across multi-batch
+  // runs the activeChild advances, so a recorded event from a prior batch must
+  // not be returned for a later batch. When it does not match, fall through to
+  // fresh selection scoped to the active child.
   const recorded = parent.payload.consumedTaskEvent;
   if (isPlainObject(recorded) && isNonEmptyString(recorded.eventId)) {
     const eventPath = taskEventPath(fixmeDir, parentRunId, recorded.eventId);
     if (fs.existsSync(eventPath)) {
       const eventRecord = readJsonFileStrict(eventPath);
-      if (!eventRecord.consumedAt) {
-        eventRecord.consumedAt = new Date().toISOString();
-        eventRecord.consumedBy = parentRunId;
-        writeJsonAtomic(eventPath, eventRecord);
+      const belongsToActiveChild =
+        eventRecord.taskRunId === activeChild.taskRunId &&
+        eventRecord.taskStatePath === activeChild.taskStatePath &&
+        (!isNonEmptyString(activeChild.terminalResultId) || eventRecord.terminalResultId === activeChild.terminalResultId);
+      if (belongsToActiveChild) {
+        if (!eventRecord.consumedAt) {
+          eventRecord.consumedAt = new Date().toISOString();
+          eventRecord.consumedBy = parentRunId;
+          writeJsonAtomic(eventPath, eventRecord);
+        }
+        return lifecycleOk({ event: eventRecord });
       }
-      return lifecycleOk({ event: eventRecord });
     }
   }
 
@@ -7853,20 +7939,17 @@ function lifecycleTaskEventConsume(flags) {
   }
 
   // Record the event into parent state FIRST (crash-safe), then mark consumed.
+  // Use the shared checkpoint core so the ledger-regression guard and camelCase
+  // assertion run on the consume path too.
   const nextPayload = { ...parent.payload, consumedTaskEvent: { eventId: selected.eventId, terminalResultId: selected.terminalResultId, resultSummaryPath: selected.resultSummaryPath, status: selected.status } };
-  const checkpointFlags = {
-    'fixme-dir': fixmeDir,
-    'parent-run-id': parentRunId,
-    data: JSON.stringify({
-      idempotencyKey: `consume-${selected.eventId}`,
-      expectedRevision: parent.revision,
-      status: parent.status,
-      cursor: parent.cursor,
-      payload: nextPayload,
-      ledger: parent.ledger || {},
-    }),
-  };
-  lifecycleParentCheckpointInternal(checkpointFlags);
+  parentCheckpointCore(fixmeDir, parentRunId, {
+    idempotencyKey: `consume-${selected.eventId}`,
+    expectedRevision: parent.revision,
+    status: parent.status,
+    cursor: parent.cursor,
+    payload: nextPayload,
+    ledger: parent.ledger || {},
+  });
 
   const eventPath = taskEventPath(fixmeDir, parentRunId, selected.eventId);
   const eventRecord = readJsonFileStrict(eventPath);
@@ -7875,33 +7958,6 @@ function lifecycleTaskEventConsume(flags) {
   writeJsonAtomic(eventPath, eventRecord);
 
   return lifecycleOk({ event: eventRecord });
-}
-
-// Internal parent checkpoint that returns the state object instead of exiting.
-function lifecycleParentCheckpointInternal(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const parentRunId = flags['parent-run-id'];
-  const statePath = parentStatePath(fixmeDir, parentRunId);
-  const data = JSON.parse(flags.data);
-  const current = readJsonFileStrict(statePath);
-  if (current.lastCheckpointKey === data.idempotencyKey) {
-    return current;
-  }
-  if (data.expectedRevision !== current.revision) {
-    lifecycleError('staleState', `expectedRevision ${data.expectedRevision} does not match current revision ${current.revision}`);
-  }
-  const next = {
-    ...current,
-    status: data.status,
-    cursor: data.cursor,
-    revision: current.revision + 1,
-    payload: data.payload,
-    ledger: data.ledger,
-    updatedAt: new Date().toISOString(),
-    lastCheckpointKey: data.idempotencyKey,
-  };
-  writeJsonAtomic(statePath, next);
-  return next;
 }
 
 function emptyTokenUsage() {
