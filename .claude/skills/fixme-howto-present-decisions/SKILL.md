@@ -5,13 +5,38 @@ description: Shared decision presentation guidelines for the fixme pipeline. Def
 
 # Decision Presentation Guidelines
 
-These guidelines govern how `ASK_USER` and `FIX_UNCLEAR` items are presented to users for decision-making. Every skill that produces or presents user-facing decision prompts MUST follow this format.
+These guidelines own two responsibilities: (1) whether an item is a genuine user decision at all, defined by the Decision Eligibility Gate below, and (2) how a genuine decision is presented once it qualifies. Every skill that classifies, produces, or presents user-facing decision prompts MUST apply the Decision Eligibility Gate before emitting a card and MUST follow this presentation format for cards that pass the gate.
 
-Transport is owned by the caller. This skill defines decision-card content and format only. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
+Transport is owned by the caller. This skill defines both decision eligibility (the Decision Eligibility Gate) and decision-card content and format. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
 
 These guidelines do not define the persisted format for final product specifications, technical specifications, implementation plans, review reports, or other saved artifacts unless that artifact's owning skill explicitly opts into decision cards. Saved artifacts should record resolved decisions in their own document format.
 
 The output is a decision card: a compact, self-contained block optimized for fast re-entry after context switching. It must guide the user from the high-level situation to the concrete tradeoff before asking them to choose.
+
+## Decision Eligibility Gate
+
+Apply this gate at classification time, before deciding to emit any decision card. An unnecessary escalation is not free: it forces the user into a cold context reload and trains the user to rubber-stamp cards, which destroys the signal value of genuine decisions. Treat an unnecessary escalation as a defect of equal weight to a silently chosen wrong fix. Asking is not free; choose escalation only when this gate proves a real decision exists.
+
+An item is a genuine user decision only if ALL THREE conditions hold:
+
+1. **Plurality after constraints.** More than one outcome survives the hard constraints. Hard constraints are the project rules (including artifact-sync and lockstep rules), locked decisions, specification and contract text, shipped-and-tested behavior, correctness, and safety. For authoring surfaces with no shipped behavior yet, the hard constraints are the request, the product specification, the source material, and the locked decisions. If exactly one outcome survives, the item is determined: classify it as a fix or follow-up (or reject), not a decision.
+
+2. **Materiality.** The surviving outcomes differ in observable behavior, persisted data, cost, risk, scope, or reversibility. Outcomes that are behavior-identical, contract-identical, or strictly dominated by another survivor are not material: pick the best one and classify it as a fix.
+
+3. **Indeterminacy.** The best survivor cannot be chosen from rules and evidence alone; it requires product intent, priority, taste, ownership, or risk tolerance. If the available evidence can choose the winner, classify it as a fix with that choice. A consumer may define a named transparency escalation that survives this condition even when evidence picks a winner - see the fixme-handle-plan-review [assumed]-decision rule; this gate does not override such named exceptions.
+
+Only when all three conditions hold does the item escalate as a decision: use `ASK_USER` when validity or scope is indeterminate, or `FIX_UNCLEAR` when the approach is indeterminate among material survivors.
+
+**Fail-safe direction:** when the surviving outcomes are not material (behavior-identical or strictly dominated), classify the item as a fix even under uncertainty - there is nothing to decide. Uncertainty justifies escalation only when the outcomes are both material AND indeterminate.
+
+**Reconciliation instance:** a project rule that mandates two artifacts stay in sync (for example a same-change spec/code lockstep rule) is a hard constraint. When a doc, spec, or comment diverges from shipped-and-tested reality, reconciling the stale artifact to reality is a determined fix, not a decision - UNLESS the divergence implies the shipped behavior itself is wrong, in which case "which side is correct" is material and indeterminate and escalates as `ASK_USER`.
+
+Before using `ASK_USER` or `FIX_UNCLEAR`, identify the real user task:
+
+- If the agent can safely determine the next action from facts and workflow rules, proceed and present a compact status block if useful.
+- If only one path is eligible after hard constraints are applied (condition 1 fails), present that path directly. Do not manufacture alternatives.
+- If the workflow is blocked because a fact is unknown, present a compact evidence gate with `Cause`, `Evidence`, `Blocked by`, and `Next`. Do not add option cards unless the user must choose between genuinely different safe actions.
+- If every "con" is just an expected mechanism of the recommended action, such as "force-push rewrites the branch ref" during a rebase, the option shape is wrong. State the mechanism under `Safety` or `Impact`, not as a downside.
 
 ## Core Principle
 
@@ -32,14 +57,7 @@ Pick the format by the user's cognitive task, not blindly by the handler label.
 
 ### Eligibility Before Cards
 
-Do not emit a decision card just because the workflow paused.
-
-Before using `ASK_USER` or `FIX_UNCLEAR`, identify the real user task:
-
-- If the agent can safely determine the next action from facts and workflow rules, proceed and present a compact status block if useful.
-- If only one path is eligible after hard constraints are applied, present that path directly. Do not manufacture alternatives.
-- If the workflow is blocked because a fact is unknown, present a compact evidence gate with `Cause`, `Evidence`, `Blocked by`, and `Next`. Do not add option cards unless the user must choose between genuinely different safe actions.
-- If every "con" is just an expected mechanism of the recommended action, such as "force-push rewrites the branch ref" during a rebase, the option shape is wrong. State the mechanism under `Safety` or `Impact`, not as a downside.
+Do not emit a decision card just because the workflow paused. Apply the `## Decision Eligibility Gate` above first: an item qualifies as a decision only when all three conditions (plurality after constraints, materiality, indeterminacy) hold. If the gate fails, classify the item as a fix or follow-up and present a compact status or evidence block instead of option cards.
 
 ### ASK_USER
 
@@ -275,7 +293,7 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 - **Options are optional** for `ASK_USER`. Include them only when there are genuinely different directions.
 - **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
 - **Cross-reference between options.** When Option B's main advantage is that it avoids Option A's biggest downside, say so explicitly. Do not make the reader connect the dots.
-- **Dropping the fix is a default option to consider, not an afterthought.** Before listing fix-shape options, ask whether keeping current behavior is viable. For MINOR or INFO severity findings, "accept current behavior" must appear as an option unless there is a specific named reason it cannot. Frame it with the same 6 sub-fields as the fix options so the user can compare it on equal footing.
+- **Dropping the fix is a default option to consider, not an afterthought - but only when it is a material survivor of the Decision Eligibility Gate.** Before listing fix-shape options, ask whether keeping current behavior is viable AND survives the hard constraints. For MINOR or INFO severity findings whose "accept current behavior" outcome is eligible (it violates no project rule, locked decision, or shipped-and-tested contract) and materially differs from the fix outcomes, "accept current behavior" must appear as an option, framed with the same 6 sub-fields so the user can compare it on equal footing. Do not add "accept current behavior" as a strictly-dominated filler option when a hard constraint already rules it out.
 
 ## Recommendation Rules
 
