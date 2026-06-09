@@ -76,6 +76,8 @@ Routing rule:
 - If the decisive fact is unavailable or depends on product intent -> `ASK_USER`.
 - If the claim is true but nonblocking -> classify as follow-up per severity and review level.
 
+Before assigning `ASK_USER` or `FIX_UNCLEAR` to any finding, apply the Decision Eligibility Gate from `fixme-howto-present-decisions`. A finding escalates only when all three gate conditions hold (plurality after constraints, materiality, indeterminacy). If only one outcome survives the hard constraints - including the same-change spec/code lockstep rule and other artifact-sync rules - classify the finding as `FIX` (the reconciliation instance: edit the stale specification to match shipped-and-tested reality), or as follow-up per severity, not as a decision.
+
 Do not classify as `FIX` from local shape alone, such as "payload has X but key omits X", "field name looks duplicated", "branch looks reachable", or "test seems missing." Local shape is a lead, not proof.
 
 For key, ID, dedupe, cache, queue, lock, retry, or refresh findings, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.
@@ -170,7 +172,7 @@ For each finding:
 3. Check whether examples, acceptance criteria, or referenced context already resolve the ambiguity.
 4. Check the merged decision context for prior locked decisions (task-bound: `task decision list --state <task-state-path> --format markdown`, read the `markdown` field; standalone: `<fixme-dir>/decisions.md`).
 5. If the finding proposes multiple paths, independently evaluate each path before choosing `FIX` or `FIX_UNCLEAR`.
-6. If fixing the finding would require changing product scope, classify `ASK_USER` or `FIX_UNCLEAR`, not `FIX`.
+6. If fixing the finding would require changing product scope, apply the Decision Eligibility Gate from `fixme-howto-present-decisions` before escalating. A specification change that is determined by a hard constraint - for example a same-change spec/code lockstep rule reconciling the specification to shipped-and-tested reality - is `FIX` even though it touches the specification. Classify `ASK_USER` or `FIX_UNCLEAR` only when the gate's three conditions hold, such as when the divergence implies the shipped behavior itself may be wrong and "which side is correct" is material and indeterminate.
 
 ## Output Format
 
@@ -259,7 +261,7 @@ If the configured phase has no execute skill capable of revising the specificati
 - Do not accept the reviewer's stated premise as truth. Verify the premise first, then classify the finding.
 - Every `FIX` must include concrete specification text or exact specification-edit instructions.
 - Every `FIX_UNCLEAR` or `ASK_USER` must include a full decision card from `fixme-howto-present-decisions`.
-- If the user must decide whether the issue is real, classify `ASK_USER`.
+- If, after applying the Decision Eligibility Gate from `fixme-howto-present-decisions`, the user must decide whether the issue is real (validity is material and indeterminate), classify `ASK_USER`.
 - If the issue is real but the behavior or wording is a choice, classify `FIX_UNCLEAR`.
-- If unsure between `FIX` and `REJECT_*`, classify `ASK_USER` unless the specification evidence resolves it.
+- If unsure between `FIX` and `REJECT_*` after applying the Decision Eligibility Gate from `fixme-howto-present-decisions`, classify `ASK_USER` only when the choice is material and indeterminate; if the specification evidence or a hard constraint resolves it, classify accordingly.
 - Never skip the routing directive.
