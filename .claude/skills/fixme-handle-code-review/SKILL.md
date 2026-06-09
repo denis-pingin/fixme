@@ -74,6 +74,8 @@ Routing rule:
 - If the decisive fact is unavailable or depends on product intent -> `ASK_USER`.
 - If the claim is true but nonblocking -> classify as follow-up per severity and review level.
 
+Before assigning `ASK_USER` or `FIX_UNCLEAR` to any finding, apply the Decision Eligibility Gate from `fixme-howto-present-decisions`. A finding escalates only when all three gate conditions hold (plurality after constraints, materiality, indeterminacy). If only one outcome survives the hard constraints, or the surviving outcomes are behavior-identical or strictly dominated, classify the finding as `FIX` even under uncertainty, not as a decision. This precondition does not weaken Multi-Option Discipline: once the gate proves a genuine decision exists, Multi-Option Discipline governs how the options are evaluated and presented.
+
 Do not classify as `FIX` from local shape alone, such as "payload has X but key omits X", "field name looks duplicated", "branch looks reachable", or "test seems missing." Local shape is a lead, not proof.
 
 For key, ID, dedupe, cache, queue, lock, retry, or refresh findings, the decisive fact is usually the downstream side effect keyed by that value, not the payload shape.
@@ -225,7 +227,7 @@ When a finding's Suggestion presents 2+ plausible fix approaches (including "dro
 
 4. **"Drop the fix" or "just add a comment" is not a free answer.** These resolutions require either proving the original concern was invalid (→ REJECT_FALSE_POSITIVE with evidence) OR proving every alternative is strictly worse than leaving the code alone (→ REJECT_WONT_FIX with a per-option evaluation). Collapsing a multi-option finding into "drop it" because one option was labeled "simpler" is the exact failure mode this section exists to prevent.
 
-5. **Default to FIX_UNCLEAR when uncertain.** If you have evaluated every option and cannot confidently name a winner, that is FIX_UNCLEAR. The handler's job is to protect the user's ability to choose the best option, not to save them the decision by picking the path of least resistance.
+5. **Default to FIX_UNCLEAR when uncertain and the outcomes are material.** "Uncertain" here means material and indeterminate after the Decision Eligibility Gate from `fixme-howto-present-decisions`: you have evaluated every option, the surviving options differ observably, and you cannot confidently name a winner from rules and evidence. If the surviving options are behavior-identical or strictly dominated, the gate fails and you classify `FIX`, not `FIX_UNCLEAR`. When a genuine decision survives, the handler's job is to protect the user's ability to choose the best option, not to save them the decision by picking the path of least resistance.
 
 ## Output Format
 
@@ -282,10 +284,10 @@ Operational requirements:
 - A finding that's technically correct but would make the code worse is REJECT_WONT_FIX. Explain the tradeoff.
 - A finding that contradicts the plan's explicit approach is REJECT_WONT_FIX unless the plan's approach is demonstrably broken in practice (not just "could be better").
 - If two findings would be resolved by the same change, group them.
-- When in doubt between FIX and REJECT, classify ASK_USER. If the issue is clearly valid but the approach is ambiguous, classify FIX_UNCLEAR. A wrong FIX wastes implementation time and can introduce bugs. A wrong REJECT hides a real issue. ASK_USER or FIX_UNCLEAR costs only a question.
+- When in doubt between FIX and REJECT after applying the Decision Eligibility Gate from `fixme-howto-present-decisions` (the validity choice is material and indeterminate), classify ASK_USER. If the issue is clearly valid but the approach is genuinely ambiguous among material survivors, classify FIX_UNCLEAR. A wrong FIX wastes implementation time and can introduce bugs. A wrong REJECT hides a real issue. An unnecessary escalation is also a defect: it costs a cold context reload and erodes the signal of genuine decisions, so do not escalate an item the gate proves is determined.
 - The REJECT rationale summary is mandatory. If you can't articulate why findings were rejected, you didn't analyze them carefully enough.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
-- Multi-option findings default to FIX_UNCLEAR. Collapsing multiple alternatives into a single "simpler" FIX approach - or into REJECT_WONT_FIX or "add a comment" - requires an independent evaluation that names concrete tradeoffs, not editorial labels. See Multi-Option Discipline and Pre-Classification Gate 8.
+- Multi-option findings that pass the Decision Eligibility Gate (material and indeterminate survivors) default to FIX_UNCLEAR. Collapsing multiple alternatives into a single "simpler" FIX approach - or into REJECT_WONT_FIX or "add a comment" - requires an independent evaluation that names concrete tradeoffs, not editorial labels. When the surviving options are behavior-identical or strictly dominated, the gate fails and the correct classification is FIX, not FIX_UNCLEAR. See the Decision Eligibility Gate in `fixme-howto-present-decisions`, Multi-Option Discipline, and Pre-Classification Gate 8.
 
 ## Routing Directive
 
