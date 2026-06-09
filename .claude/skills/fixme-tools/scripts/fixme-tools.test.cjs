@@ -2782,6 +2782,41 @@ test('dispatch prepare returns runtime settings banner status and prompt blocks'
   assert(r.data.promptBlocks && typeof r.data.promptBlocks === 'object', 'promptBlocks present');
 });
 
+test('dispatch prepare honors explicit Codex runtime in durable payload', () => {
+  const fixmeDir = makeFixmeDir();
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({ models: { profile: 'balanced' } }) + '\n');
+  const data = JSON.stringify({ idempotencyKey: 'd1-codex', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'codex', promptInputs: {} });
+  const r = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(r.ok, `dispatch prepare should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.runtimeSettings.runtime === 'codex', `runtime should be codex, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.model === null, `Codex model should be null, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.reasoning_effort === 'xhigh', `planner reasoning should be xhigh, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.bannerMarkdown.includes('- Runtime: codex'), `banner should show codex runtime, got ${r.data.bannerMarkdown}`);
+
+  const conflictData = JSON.stringify({ idempotencyKey: 'd1-codex', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'claude', promptInputs: {} });
+  const conflict = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `runtime mismatch should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch prepare auto-detects Codex runtime from installed tool path', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({ models: { profile: 'balanced' } }) + '\n');
+
+  const homeDir = createTmpDir();
+  const codexTool = path.join(homeDir, '.codex', 'skills', 'fixme-tools', 'scripts', 'fixme-tools.cjs');
+  fs.mkdirSync(path.dirname(codexTool), { recursive: true });
+  fs.copyFileSync(TOOLS_PATH, codexTool);
+
+  const data = JSON.stringify({ idempotencyKey: 'd1-codex-auto', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: {} });
+  const r = runToolPath(codexTool, `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`, { cwd: projectRoot, env: { HOME: homeDir } });
+  assert(r.ok, `dispatch prepare should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.runtimeSettings.runtime === 'codex', `installed Codex tool should auto-detect codex runtime, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.model === null, `installed Codex tool should omit model, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.reasoning_effort === 'xhigh', `installed Codex tool should set planner reasoning, got ${JSON.stringify(r.data.runtimeSettings)}`);
+});
+
 test('dispatch prepare retry with same idempotencyKey returns existing', () => {
   const fixmeDir = makeFixmeDir();
   const data = JSON.stringify({ idempotencyKey: 'd2', agentName: 'fixme-write-plan', transport: 'agent', promptInputs: {} });
@@ -5424,6 +5459,7 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
     [
       'Dispatch with Agent(subagent_type="fixme-write-plan", prompt="write plan").',
       'Then call Skill("fixme-review-plan", args="review").',
+      'Prepare with node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --data \'{"runtime":"claude","agentName":"fixme-task"}\'.',
       'Read $HOME/.claude/skills/fixme-task/SKILL.md and ~/.claude/rules/spec-review-rules.md.',
     ].join('\n')
   );
@@ -5449,6 +5485,8 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('<codex_skill_adapter>'), 'installed skill should include Codex adapter');
   assert(installedTask.includes('spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")'), 'adapter should map Agent dispatch to spawn_agent with reasoning effort');
   assert(installedTask.includes('resolve-model X --runtime codex'), 'adapter should resolve Codex runtime profile settings');
+  assert(installedTask.includes('include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload'), 'adapter should force Codex runtime into lifecycle dispatch prepare payloads');
+  assert(installedTask.includes('"runtime":"codex","agentName":"fixme-task"'), 'Codex installed skill bodies should rewrite lifecycle runtime payloads to codex');
   assert(installedTask.includes('Skill("name", args)'), 'adapter should map Skill invocation');
   assert(installedTask.includes('take precedence over lower source instructions'), 'adapter should declare precedence over Claude-native source rules');
   assert(installedTask.includes('In Codex Plan mode'), 'adapter should limit request_user_input to Plan mode');

@@ -290,7 +290,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    **Prepare the background dispatch (resolves runtime settings, creates the child liveness status, and builds the banner in one call):**
 
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","transport":"background","promptInputs":{...}}'
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","runtime":"claude","transport":"background","promptInputs":{...}}'
    ```
 
    Store the returned `statusId` in session.md frontmatter as `activeRunStatusId`, and use the returned `runtimeSettings`/`bannerMarkdown`. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.

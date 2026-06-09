@@ -1166,12 +1166,12 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 Step 1 - Prepare the dispatch (resolves runtime settings, creates the child liveness status, updates the parent heartbeat, and builds the banner + prompt blocks in one call):
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"<agent-name>","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","taskStatePath":"<task-state-path>","promptInputs":{...}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"<agent-name>","runtime":"claude","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","taskStatePath":"<task-state-path>","promptInputs":{...}}'
 ```
 
 Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, usageContext, promptBlocks}`. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
-Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...`.
+Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
 
 After the dispatched agent returns, finalize the child liveness status:
 

@@ -875,7 +875,7 @@ Before invoking `Skill("fixme-task", ...)`, prepare the dispatch and persist the
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","transport":"inline-skill","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","parentContinuation":{"parentSkill":"fixme-pr-comments","parentRunId":"<parentRunId>","transport":"inline-skill","resumeStep":"verify","parentStatusId":"<parentStatusId>"},"promptInputs":{"routedFixGroups":[...]}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","runtime":"claude","transport":"inline-skill","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","parentContinuation":{"parentSkill":"fixme-pr-comments","parentRunId":"<parentRunId>","transport":"inline-skill","resumeStep":"verify","parentStatusId":"<parentStatusId>"},"promptInputs":{"routedFixGroups":[...]}}'
 ```
 
 Use the `fixmeDir` field returned by `root` as `<fixme-dir>`. Store the returned `statusId` as `fixmeTaskStatusId`. Persist `activeChild.{statusId,taskRunId,taskStatePath,resumeRef}` via `lifecycle parent checkpoint` before advancing to `awaitFixmeTask`. If `lifecycle dispatch prepare` fails, do not dispatch `fixme-task`; print the JSON error, fire `task_failed`, and stop.

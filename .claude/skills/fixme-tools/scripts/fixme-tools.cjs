@@ -398,6 +398,26 @@ function resolveRuntime(rawRuntime) {
   return VALID_RUNTIME_VALUES.has(rawRuntime) ? rawRuntime : DEFAULT_RUNTIME;
 }
 
+function realpathOrResolve(filePath) {
+  try {
+    return fs.realpathSync.native(filePath);
+  } catch (_) {
+    return path.resolve(filePath || '');
+  }
+}
+
+function inferInstalledRuntimeFromPath(scriptPath) {
+  const resolvedScript = realpathOrResolve(scriptPath);
+  const homes = [...new Set([os.homedir(), process.env.HOME].filter(Boolean).map(home => realpathOrResolve(home)))];
+  for (const home of homes) {
+    const codexRoot = path.join(home, '.codex', 'skills') + path.sep;
+    const claudeRoot = path.join(home, '.claude', 'skills') + path.sep;
+    if (resolvedScript.startsWith(codexRoot)) return 'codex';
+    if (resolvedScript.startsWith(claudeRoot)) return 'claude';
+  }
+  return null;
+}
+
 function isKnownProfile(profile) {
   return profile === 'inherit' || Object.prototype.hasOwnProperty.call(MODEL_PROFILES, profile);
 }
@@ -4394,7 +4414,8 @@ function codexPathContent(content) {
   return content
     .replace(/\$HOME\/\.claude\//g, '$HOME/.codex/')
     .replace(/~\/\.claude\//g, '~/.codex/')
-    .replace(/\.claude\//g, '.codex/');
+    .replace(/\.claude\//g, '.codex/')
+    .replace(/"runtime"\s*:\s*"claude"/g, '"runtime":"codex"');
 }
 
 function stripCodexSkillAdapter(content) {
@@ -4442,6 +4463,7 @@ function getCodexSkillAdapterHeader(skillName) {
     '- Before dispatching a Fixme agent, resolve its Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model X --runtime codex`.',
     '- When Fixme source instructions say `Agent(subagent_type="X", prompt="Y")`, use Codex `spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")` when the resolver returns a `reasoning_effort` value.',
     '- Omit `reasoning_effort` only when the resolver returns `null`. Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails.',
+    '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
     '',
     '## User Questions',
@@ -4639,6 +4661,7 @@ function codexDeveloperInstructions(agentContent) {
   lines.push('<codex_runtime>');
   lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, resolve Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex`, then use Codex `spawn_agent(agent_type=..., reasoning_effort=..., message=...)` with the same agent name and task prompt.');
   lines.push('- Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails. Omit `reasoning_effort` only when the resolver returns `null`.');
+  lines.push('- When calling `lifecycle dispatch prepare`, include `"runtime":"codex"` in the JSON payload so lifecycle runtime settings match Codex dispatch.');
   lines.push('- When Fixme source instructions say `Skill("name", ...)` and no Skill tool exists, load `$HOME/.codex/skills/name/SKILL.md` and run that skill workflow in the current agent.');
   lines.push('- Do not convert a required Fixme dispatch into direct implementation work.');
   lines.push('</codex_runtime>');
@@ -6285,12 +6308,8 @@ function resolveUsageRuntime(rawRuntime, scriptPath) {
   }
   if (runtime === 'claude' || runtime === 'codex') return runtime;
 
-  const resolvedScript = path.resolve(scriptPath || '');
-  const home = os.homedir();
-  const codexRoot = path.join(home, '.codex', 'skills') + path.sep;
-  const claudeRoot = path.join(home, '.claude', 'skills') + path.sep;
-  if (resolvedScript.startsWith(codexRoot)) return 'codex';
-  if (resolvedScript.startsWith(claudeRoot)) return 'claude';
+  const inferred = inferInstalledRuntimeFromPath(scriptPath);
+  if (inferred) return inferred;
 
   const err = new Error('usage runtime auto cannot be resolved from this script path; pass --runtime claude or --runtime codex');
   err.code = 'AUTO_RUNTIME_UNRESOLVED';
@@ -6925,7 +6944,7 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
 
 const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'idempotencyKey', 'agentName', 'transport', 'parentStatusId', 'parentInvocationId',
-  'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs',
+  'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs', 'runtime',
 ]);
 
 const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId']);
@@ -6958,6 +6977,19 @@ function buildDispatchBannerMarkdown(agentName, runtimeSettings) {
   ].join('\n');
 }
 
+function resolveLifecycleDispatchRuntime(data, flags) {
+  const rawRuntime = isNonEmptyString(data.runtime)
+    ? data.runtime
+    : (isNonEmptyString(flags.runtime) ? flags.runtime : null);
+  if (rawRuntime) {
+    if (!VALID_RUNTIME_VALUES.has(rawRuntime)) {
+      lifecycleError('invalidInput', `Unsupported dispatch runtime: ${rawRuntime}`);
+    }
+    return rawRuntime;
+  }
+  return inferInstalledRuntimeFromPath(__filename) || DEFAULT_RUNTIME;
+}
+
 function lifecycleDispatchPrepare(flags, fixmeRoot) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
@@ -6980,9 +7012,11 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
   if (!KNOWN_FIXME_AGENTS.has(data.agentName)) {
     lifecycleError('invalidInput', `Unknown agent: ${data.agentName}`);
   }
+  const runtime = resolveLifecycleDispatchRuntime(data, flags);
 
   const durableInputs = {
     agentName: data.agentName,
+    runtime,
     transport: data.transport,
     parentInvocationId: data.parentInvocationId || null,
     pipelineRunId: data.pipelineRunId || null,
@@ -7000,7 +7034,7 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     return lifecycleOk(existing.output);
   }
 
-  const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), {});
+  const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), { runtime });
   const child = runStartCore({ 'fixme-dir': fixmeDir, agent: data.agentName });
   const dispatchId = generateUsageId('dispatch');
 
