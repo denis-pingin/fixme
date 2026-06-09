@@ -374,6 +374,8 @@ Before routing any PR comment to `CURRENT_PR_FIX`, answer these three questions:
 3. **Did we verify that fact?**
    Cite the source checked and the observed fact.
 
+Decision Eligibility Gate (inlined here because this skill has no `fixme-howto-present-decisions` preload at Step 3; keep in sync with the canonical gate in `fixme-howto-present-decisions`). Before routing any item to `ASK_USER` or `FIX_UNCLEAR`/`DECISION`, an item is a genuine user decision only if ALL THREE hold: (1) Plurality after constraints - more than one outcome survives the hard constraints (project rules including artifact-sync/lockstep rules, locked decisions, spec/contract text, shipped-and-tested behavior, correctness, safety); if exactly one survives, the item is determined -> `CURRENT_PR_FIX` (or `REJECT_*`/`FOLLOWUP_ONLY`). (2) Materiality - the survivors differ in observable behavior, persisted data, cost, risk, scope, or reversibility; behavior-identical or strictly-dominated survivors are not material -> pick the best -> `CURRENT_PR_FIX`. (3) Indeterminacy - the best survivor cannot be chosen from rules and evidence alone; if evidence can choose -> `CURRENT_PR_FIX` with that choice. Fail-safe: when outcomes are not material, route to `CURRENT_PR_FIX` even under uncertainty. Reconciliation instance: reconciling a stale doc/comment to shipped-and-tested reality under a sync rule is a determined fix, not a decision, unless the divergence implies the shipped behavior is wrong (then `ASK_USER`). An unnecessary escalation is not free: it forces a cold context reload and erodes the signal of genuine decisions, so escalate only when all three conditions hold.
+
 Routing rule:
 
 - If the decisive fact proves the claim true -> `CURRENT_PR_FIX`.
@@ -509,14 +511,9 @@ apply:
 - The reviewer's suggestion conflicts with existing patterns and either direction is defensible
 - Scope is unclear - the fix could be minimal or could warrant a broader refactor
 
-When in doubt, classify as `FIX_UNCLEAR`. It is far better to ask an unnecessary question
-than to silently pick the wrong approach.
+When in doubt after applying the Decision Eligibility Gate above - the surviving approaches are material and you cannot pick a winner from rules and evidence - classify as `FIX_UNCLEAR`. If the surviving approaches are behavior-identical or strictly dominated, the gate fails and the correct verdict is `FIX`, not `FIX_UNCLEAR`. An unnecessary escalation is a defect of equal weight to silently picking the wrong approach.
 
-**Distinguishing FIX_UNCLEAR vs ASK_USER**: Use `FIX_UNCLEAR` when the issue is clearly valid
-(it IS a bug or a real problem) but you need guidance on which fix approach to take. Use
-`ASK_USER` when you cannot determine whether the comment even identifies a real issue - perhaps
-the code behavior is intentional, or the context is insufficient to judge. When in doubt about
-validity, use `ASK_USER`. When in doubt about approach (but not validity), use `FIX_UNCLEAR`.
+**Distinguishing FIX_UNCLEAR vs ASK_USER**: After the Decision Eligibility Gate proves a genuine decision exists, use `FIX_UNCLEAR` when the issue is clearly valid (it IS a bug or a real problem) but the approach among material survivors is indeterminate. Use `ASK_USER` when validity or scope is the material, indeterminate part - you cannot determine whether the comment even identifies a real issue, perhaps the code behavior is intentional, or the context is insufficient to judge. When validity is the material, indeterminate question, use `ASK_USER`. When validity is settled but the approach among material survivors is indeterminate, use `FIX_UNCLEAR`.
 
 #### Present categorization to the user
 
