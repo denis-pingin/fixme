@@ -403,11 +403,7 @@ This round configures `linear.teamId`, `linear.teamName`, and `linear.defaultPri
 
 Call `mcp__claude_ai_Linear__list_teams` with no filters.
 
-**If the call fails** with "tool not found", a connection error, or any error indicating Linear MCP is not available, STOP the skill immediately and report:
-
-> "Linear MCP is not available. I need it to configure the Linear backend. Please enable it and tell me to continue."
-
-Do NOT proceed. Do NOT write any Linear fields. Do NOT save the config.
+**If the call fails** with "tool not found", a connection error, or any error indicating Linear MCP is not available, follow the skip rule in **Prerequisites**: warn, skip only this Linear round, preserve existing Linear fields, and continue to Step 8.
 
 **If the call succeeds**, parse the response into an array of `{ id, name, key }` objects. Preserve the order returned by the API as the canonical discovered list.
 

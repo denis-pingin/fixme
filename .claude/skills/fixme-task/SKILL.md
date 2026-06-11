@@ -748,12 +748,25 @@ Durable state shape:
     ],
     "outerCycles": 0
   },
+  "parentContinuation": null,
+  "decisions": [],
+  "terminalResult": null,
   "pendingDecision": null,
   "updatedAt": "2026-06-02T12:00:00.000Z"
 }
 ```
 
-Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, and `pendingDecision`.
+Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `decisions`, and `terminalResult`.
+
+Task-owned decisions are normally written with `task decision append`; terminal task results are normally written with `task result write`. Direct checkpoint writes to `decisions` and `terminalResult` are for durable state restoration and runtime helper coordination, and checkpoint validation supports the complete durable state shape.
+
+Persist review loop counters only under `loops.phaseReviewCycles`; never send a top-level `phaseReviewCycles` field to `task checkpoint`. Example:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '{"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}}'
+```
+
+If `task checkpoint` rejects a top-level `phaseReviewCycles` field, retry with the nested `loops.phaseReviewCycles` payload above. Do not report that the helper lacks support for `phaseReviewCycles`.
 
 Resume mode:
 
@@ -898,7 +911,16 @@ Backward transitions (review retry) require `--reason`. Forward transitions do n
 
 ### When no `--ticket` is provided:
 
-No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse a saved task state before the first phase dispatch. Execute the pipeline identically but skip all ticket transition dispatches. If the run did not start from terminal save mode or `--resume`, first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes. Parent-driven dispatches persist `parentContinuation` into task state before child work. No-ticket task state is mandatory so another session can resume without chat history.
+No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse durable task state before the first phase dispatch. Execute the pipeline identically but skip all ticket transition dispatches.
+
+- **Parent-driven with `activeChild`:** materialize or reuse the reserved child task state before any child work:
+  ```bash
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <activeChild.taskStatePath> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root> --parent-continuation '<parentContinuation-json>'
+  ```
+  Store the returned `statePath` as `taskStatePath`. It must equal `activeChild.taskStatePath`; if it does not, stop. Use `activeChild.resumeRef` for later `--answer-attention` resumes. Parent-driven dispatches persist `parentContinuation` into task state through this init command before child work. Do not call `task save` for this parent-driven reserved-state path.
+- **Direct no-ticket without `--resume`:** first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
+
+No-ticket task state is mandatory so another session can resume without chat history.
 
 ## Dispatch Gate (NON-NEGOTIABLE)
 
@@ -1125,7 +1147,7 @@ Step 1 - Prepare the dispatch (resolves runtime settings, creates the child live
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"<agent-name>","runtime":"claude","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","taskStatePath":"<task-state-path>","promptInputs":{...}}'
 ```
 
-Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, usageContext, promptBlocks}`. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
 

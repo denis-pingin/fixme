@@ -2589,6 +2589,23 @@ test('task decision list markdown format and task-owned-only', () => {
   assert(owned.ok && owned.data.taskDecisions.length === 1, 'task-owned-only returns task decisions');
 });
 
+test('task decision list without fixme-dir reads parent project decisions for subproject task state', () => {
+  const workspaceRoot = createTmpDir();
+  const fixmeDir = path.join(workspaceRoot, '.fixme');
+  const subprojectRoot = path.join(workspaceRoot, 'packages', 'app');
+  fs.mkdirSync(path.join(fixmeDir, 'sessions', 'test-session'), { recursive: true });
+  fs.mkdirSync(subprojectRoot, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'decisions.md'), '# Decision Log\n\n### Decision 41\n- parent project decision\n');
+  const ticketPath = createTicketFolder(path.join(fixmeDir, 'sessions', 'test-session'), '0001', 'decision-subproject', 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${subprojectRoot}"`, subprojectRoot);
+  assert(initialized.ok, `task init in subproject should succeed, got: ${JSON.stringify(initialized.data)}`);
+
+  const listed = runInDir(`task decision list --state "${initialized.data.statePath}" --format markdown`, subprojectRoot);
+  assert(listed.ok, `task decision list should succeed, got: ${JSON.stringify(listed.data)}`);
+  assert(listed.data.projectDecisionMarkdown.includes('parent project decision'), `project markdown should come from parent fixme dir, got ${JSON.stringify(listed.data)}`);
+  assert(listed.data.markdown.includes('Decision 41'), `merged markdown should include parent decision, got ${listed.data.markdown}`);
+});
+
 console.log('\n=== lifecycle envelope tests ===\n');
 
 test('lifecycle unknown subcommand returns unsupportedCommand envelope', () => {
@@ -2872,6 +2889,179 @@ test('dispatch prepare retry with same idempotencyKey returns existing', () => {
   assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 1, 'only one child run-status');
 });
 
+test('dispatch prepare for parent-driven fixme-task returns activeChild checkpoint handle', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    extra: {
+      cursor: 'dispatchFixmeTask',
+      payload: {
+        fixBatches: [[{ id: 'comment-1' }]],
+        activeBatchIndex: 0,
+        parentContinuation: {
+          parentSkill: 'fixme-pr-comments',
+          parentRunId: 'parent_pending',
+          transport: 'inline-skill',
+          resumeStep: 'verify',
+          parentStatusId: 'run_parent',
+        },
+      },
+    },
+  })}'`);
+  assert(parent.ok, `parent create should succeed, got: ${JSON.stringify(parent.data)}`);
+  const parentContinuation = {
+    parentSkill: 'fixme-pr-comments',
+    parentRunId: parent.data.parentRunId,
+    transport: 'inline-skill',
+    resumeStep: 'verify',
+    parentStatusId: 'run_parent',
+  };
+  const prepData = JSON.stringify({
+    idempotencyKey: 'd-active-child',
+    agentName: 'fixme-task',
+    transport: 'inline-skill',
+    parentContinuation,
+    promptInputs: { routedFixGroups: [{ id: 'comment-1' }] },
+  });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepData}'`);
+  assert(prep.ok, `dispatch prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const activeChild = prep.data.activeChild;
+  assert(activeChild && typeof activeChild === 'object', `activeChild returned, got ${JSON.stringify(prep.data)}`);
+  assert(activeChild.statusId === prep.data.statusId, 'activeChild.statusId matches child status');
+  assert(typeof activeChild.taskRunId === 'string' && activeChild.taskRunId.startsWith('taskRun_'), `taskRunId generated, got ${activeChild.taskRunId}`);
+  assert(path.isAbsolute(activeChild.taskStatePath), `taskStatePath absolute, got ${activeChild.taskStatePath}`);
+  assert(activeChild.taskStatePath.endsWith('.state.json'), `taskStatePath reserves task state, got ${activeChild.taskStatePath}`);
+  assert(activeChild.resumeRef === activeChild.taskStatePath, `resumeRef uses reserved state path, got ${activeChild.resumeRef}`);
+  assert(JSON.stringify(prep.data.promptBlocks.activeChild) === JSON.stringify(activeChild), 'promptBlocks includes exact activeChild handle');
+  assert(prep.data.promptBlocks.liveness && prep.data.promptBlocks.liveness.statusId === prep.data.statusId, `promptBlocks.liveness should expose child statusId, got ${JSON.stringify(prep.data.promptBlocks.liveness)}`);
+  assert(JSON.stringify(prep.data.promptBlocks.taskInput) === JSON.stringify({ routedFixGroups: [{ id: 'comment-1' }] }), `promptBlocks.taskInput should preserve routed promptInputs, got ${JSON.stringify(prep.data.promptBlocks.taskInput)}`);
+
+  const checkpoint = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${parent.data.parentRunId} --data '${JSON.stringify({
+    idempotencyKey: 'await-active-child',
+    expectedRevision: 0,
+    status: 'waitingForChild',
+    cursor: 'awaitFixmeTask',
+    payload: {
+      fixBatches: [[{ id: 'comment-1' }]],
+      activeBatchIndex: 0,
+      activeChild,
+    },
+    ledger: {},
+  })}'`);
+  assert(checkpoint.ok, `parent should checkpoint awaitFixmeTask using returned activeChild, got ${JSON.stringify(checkpoint.data)}`);
+  assert(JSON.stringify(checkpoint.data.payload.activeChild) === JSON.stringify(activeChild), 'parent persisted exact activeChild handle');
+});
+
+test('parent-driven fixme-task materializes and completes from activeChild state handle', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const parentContinuationTemplate = {
+    parentSkill: 'fixme-pr-comments',
+    parentRunId: 'parent_pending',
+    transport: 'inline-skill',
+    resumeStep: 'verify',
+    parentStatusId: 'run_parent',
+  };
+  const parent = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    extra: {
+      cursor: 'dispatchFixmeTask',
+      payload: {
+        fixBatches: [[{ id: 'comment-1' }]],
+        activeBatchIndex: 0,
+        parentContinuation: parentContinuationTemplate,
+      },
+    },
+  })}'`);
+  assert(parent.ok, `parent create should succeed, got: ${JSON.stringify(parent.data)}`);
+  const parentContinuation = {
+    parentSkill: 'fixme-pr-comments',
+    parentRunId: parent.data.parentRunId,
+    transport: 'inline-skill',
+    resumeStep: 'verify',
+    parentStatusId: 'run_parent',
+  };
+  const prepareData = JSON.stringify({
+    idempotencyKey: 'd-active-child-materialize',
+    agentName: 'fixme-task',
+    transport: 'inline-skill',
+    parentContinuation,
+    promptInputs: { routedFixGroups: [{ id: 'comment-1' }] },
+  });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepareData}'`);
+  assert(prep.ok, `dispatch prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const activeChild = prep.data.activeChild;
+  assert(activeChild && activeChild.resumeRef === activeChild.taskStatePath, `activeChild should be resumable by reserved state path, got ${JSON.stringify(activeChild)}`);
+
+  const checkpoint = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${parent.data.parentRunId} --data '${JSON.stringify({
+    idempotencyKey: 'await-active-child-materialize',
+    expectedRevision: 0,
+    status: 'waitingForChild',
+    cursor: 'awaitFixmeTask',
+    payload: {
+      fixBatches: [[{ id: 'comment-1' }]],
+      activeBatchIndex: 0,
+      activeChild,
+    },
+    ledger: {},
+  })}'`);
+  assert(checkpoint.ok, `parent should persist activeChild before child work, got ${JSON.stringify(checkpoint.data)}`);
+
+  const init = runInDir(
+    `task init --state "${activeChild.taskStatePath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}" --parent-continuation '${JSON.stringify(parentContinuation)}'`,
+    projectRoot
+  );
+  assert(init.ok, `reserved activeChild.taskStatePath should initialize child task state, got ${JSON.stringify(init.data)}`);
+  assert(init.data.statePath === activeChild.taskStatePath, `init should use activeChild.taskStatePath, got ${JSON.stringify(init.data)}`);
+  assert(init.data.taskPath === null && init.data.ticketPath === null, `reserved state init should not invent task/ticket paths, got ${JSON.stringify(init.data)}`);
+  const childState = readJson(activeChild.taskStatePath);
+  assert(JSON.stringify(childState.parentContinuation) === JSON.stringify(parentContinuation), 'parentContinuation is persisted before child work');
+
+  const resolved = runInDir(`task resolve "${activeChild.resumeRef}"`, projectRoot);
+  assert(resolved.ok, `activeChild.resumeRef should resolve, got ${JSON.stringify(resolved.data)}`);
+  assert(resolved.data.statePath === activeChild.taskStatePath, `resumeRef should resolve to same task state path, got ${JSON.stringify(resolved.data)}`);
+
+  const resultData = JSON.stringify({ status: 'completed', summaryMarkdown: 'child done', changedFiles: [], artifactPaths: [] });
+  const result = runInDir(`task result write --state "${activeChild.taskStatePath}" --data '${resultData}'`, projectRoot);
+  assert(result.ok, `task result should write against activeChild.taskStatePath, got ${JSON.stringify(result.data)}`);
+  activeChild.terminalResultId = result.data.terminalResultId;
+
+  const recordData = JSON.stringify({
+    parentRunId: parent.data.parentRunId,
+    taskRunId: activeChild.taskRunId,
+    taskStatePath: activeChild.taskStatePath,
+    resultSummaryPath: result.data.resultSummaryPath,
+    terminalResultId: result.data.terminalResultId,
+    status: 'completed',
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+  assert(recorded.ok, `terminal event should record with exact activeChild handle, got ${JSON.stringify(recorded.data)}`);
+  assert(recorded.data.event.taskRunId === activeChild.taskRunId, 'event uses activeChild.taskRunId');
+  assert(recorded.data.event.taskStatePath === activeChild.taskStatePath, 'event uses activeChild.taskStatePath');
+
+  const parentStateBeforeConsume = parentState(fixmeDir, parent.data.parentRunId);
+  parentStateBeforeConsume.payload.activeChild = activeChild;
+  writeParentState(fixmeDir, parent.data.parentRunId, parentStateBeforeConsume);
+
+  const consumed = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parent.data.parentRunId} --next`);
+  assert(consumed.ok, `--next should consume the active child event, got ${JSON.stringify(consumed.data)}`);
+  assert(consumed.data.event.taskRunId === activeChild.taskRunId, 'consume returns exact activeChild.taskRunId event');
+  assert(consumed.data.event.taskStatePath === activeChild.taskStatePath, 'consume returns exact activeChild.taskStatePath event');
+});
+
+test('reserved task-state init rejects paths outside Fixme tasks and saved-task conflicts', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const outside = path.join(projectRoot, 'outside.state.json');
+  const outsideResult = runInDir(`task init --state "${outside}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(!outsideResult.ok, `reserved state outside tasks should fail, got ${JSON.stringify(outsideResult.data)}`);
+
+  const taskPath = path.join(fixmeDir, 'tasks', 'taskRun_conflict.md');
+  fs.mkdirSync(path.dirname(taskPath), { recursive: true });
+  fs.writeFileSync(taskPath, '---\nlabel: FIXME-1\n---\n\n# Conflict\n');
+  const conflictStatePath = taskPath.replace(/\.md$/, '.state.json');
+  const conflict = runInDir(`task init --state "${conflictStatePath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(!conflict.ok, `reserved state colliding with saved task markdown should fail, got ${JSON.stringify(conflict.data)}`);
+});
+
 test('dispatch prepare preserves active attention guard', () => {
   const fixmeDir = makeFixmeDir();
   const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
@@ -2902,6 +3092,87 @@ test('dispatch complete finalizes child status and rejects conflicting completio
   const conflictData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'failed' });
   const conflict = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting completion, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch complete resolves prepared dispatch by dispatchId and validates statusId', () => {
+  const fixmeDir = makeFixmeDir();
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: 'd4-keyed', agentName: 'fixme-task', transport: 'agent', promptInputs: {} })}'`);
+  assert(prep.ok, `prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const stray = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(stray.ok, `stray run should succeed, got: ${JSON.stringify(stray.data)}`);
+
+  const bogus = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ dispatchId: 'dispatch_missing', statusId: prep.data.statusId, status: 'completed' })}'`);
+  assert(!bogus.ok && bogus.data.error.code === 'stateNotFound', `bogus dispatchId should be rejected, got ${JSON.stringify(bogus.data)}`);
+
+  const mismatch = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: stray.data.statusId, status: 'completed' })}'`);
+  assert(!mismatch.ok && mismatch.data.error.code === 'invalidInput', `mismatched statusId should be rejected, got ${JSON.stringify(mismatch.data)}`);
+  const strayStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${stray.data.statusId}`);
+  assert(strayStatus.data.state === 'running', `mismatched complete must not finalize stray status, got ${strayStatus.data.state}`);
+});
+
+test('dispatch complete persists failure payload and rejects conflicting replay', () => {
+  const fixmeDir = makeFixmeDir();
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: 'd4-failed', agentName: 'fixme-task', transport: 'agent', promptInputs: {} })}'`);
+  assert(prep.ok, `prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+  const failure = { reason: 'childFailed', message: 'child failed', details: { taskStatePath: '/tmp/task.state.json' } };
+  const completeData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'failed', currentCommand: 'node test.js', failure });
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(complete.ok, `failed complete should succeed, got: ${JSON.stringify(complete.data)}`);
+  assert(complete.data.failure && complete.data.failure.message === 'child failed', `failure should be returned, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.currentCommand === 'node test.js', `currentCommand should be returned, got ${JSON.stringify(complete.data)}`);
+  const childStatus = readJson(prep.data.statusPath);
+  assert(childStatus.state === 'failed', `child should be failed, got ${childStatus.state}`);
+  assert(childStatus.currentCommand === 'node test.js', `child currentCommand should persist, got ${childStatus.currentCommand}`);
+  assert(childStatus.failure && childStatus.failure.message === 'child failed', `child failure should persist, got ${JSON.stringify(childStatus)}`);
+
+  const replay = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(replay.ok, `identical failed replay should succeed, got ${JSON.stringify(replay.data)}`);
+  const conflictData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, status: 'failed', currentCommand: 'node test.js', failure: { ...failure, message: 'different failure' } });
+  const conflict = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `different failure replay should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch complete partial-write recovery rejects conflicting terminal replay', () => {
+  function completeThenRemoveCompletionRecord(label, completePatch = {}) {
+    const fixmeDir = makeFixmeDir();
+    const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ idempotencyKey: `d4-partial-${label}`, agentName: 'fixme-task', transport: 'agent', promptInputs: {} })}'`);
+    assert(prep.ok, `prepare should succeed, got: ${JSON.stringify(prep.data)}`);
+    const failure = { reason: 'childFailed', message: 'original failure' };
+    const completeData = {
+      dispatchId: prep.data.dispatchId,
+      statusId: prep.data.statusId,
+      status: 'failed',
+      currentCommand: 'original command',
+      failure,
+      ...completePatch,
+    };
+    const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify(completeData)}'`);
+    assert(complete.ok, `failed complete should succeed, got: ${JSON.stringify(complete.data)}`);
+    const idempotencyDir = path.join(fixmeDir, 'dispatch', 'idempotency');
+    const recordPath = path.join(idempotencyDir, fs.readdirSync(idempotencyDir)[0]);
+    const record = readJson(recordPath);
+    delete record.completion;
+    fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    return { fixmeDir, prep, failure, completeData };
+  }
+
+  const failureCase = completeThenRemoveCompletionRecord('failure');
+  const failureConflict = run(`lifecycle dispatch complete --fixme-dir "${failureCase.fixmeDir}" --data '${JSON.stringify({
+    ...failureCase.completeData,
+    failure: { ...failureCase.failure, message: 'different failure' },
+  })}'`);
+  assert(!failureConflict.ok && failureConflict.data.error.code === 'conflictingDuplicate', `different failure should conflict after partial write, got ${JSON.stringify(failureConflict.data)}`);
+
+  const commandCase = completeThenRemoveCompletionRecord('command');
+  const commandConflict = run(`lifecycle dispatch complete --fixme-dir "${commandCase.fixmeDir}" --data '${JSON.stringify({
+    ...commandCase.completeData,
+    currentCommand: 'different command',
+  })}'`);
+  assert(!commandConflict.ok && commandConflict.data.error.code === 'conflictingDuplicate', `different currentCommand should conflict after partial write, got ${JSON.stringify(commandConflict.data)}`);
+
+  const identicalCase = completeThenRemoveCompletionRecord('identical');
+  const identicalReplay = run(`lifecycle dispatch complete --fixme-dir "${identicalCase.fixmeDir}" --data '${JSON.stringify(identicalCase.completeData)}'`);
+  assert(identicalReplay.ok, `identical replay should recover missing completion record, got ${JSON.stringify(identicalReplay.data)}`);
 });
 
 test('dispatch prepare replay with different durable inputs returns conflictingDuplicate', () => {
@@ -3079,6 +3350,37 @@ test('attention broker show does not expose task-owned decision state', () => {
   assert(!JSON.stringify(showAnswered.data).includes('openCheckpointData'), 'answered broker show still hides openCheckpointData');
 });
 
+test('attention broker answer first response does not expose task-owned decision state', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-answer-leak');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_answer_leak1' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const show = run(`lifecycle attention broker show --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_answer_leak1`);
+  assert(show.ok, `broker show should succeed, got: ${JSON.stringify(show.data)}`);
+  const answerPayload = { answer: 'A', answeredBy: 'user', answerKind: 'decision' };
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_answer_leak1 --data '${JSON.stringify(answerPayload)}'`);
+  assert(answer.ok, `broker answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  const expected = { ...show.data, status: 'answered', answer: answerPayload };
+  assert(JSON.stringify(answer.data) === JSON.stringify({ ok: true, ...expected }), `broker answer should match show projection plus answer, got ${JSON.stringify(answer.data)}`);
+  for (const forbidden of ['metadata', 'openCheckpointData', 'pendingDecision', 'resumeRef', 'taskStatePath']) {
+    assert(!JSON.stringify(answer.data).includes(forbidden), `broker answer must not expose ${forbidden}, got ${JSON.stringify(answer.data)}`);
+  }
+});
+
+test('attention broker answer replay does not expose task-owned decision state', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-answer-replay-leak');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_answer_leak2' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const answerPayload = { answer: 'A', answeredBy: 'user', answerKind: 'decision' };
+  const first = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_answer_leak2 --data '${JSON.stringify(answerPayload)}'`);
+  assert(first.ok, `first broker answer should succeed, got: ${JSON.stringify(first.data)}`);
+  const replay = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_answer_leak2 --data '${JSON.stringify(answerPayload)}'`);
+  assert(replay.ok, `broker answer replay should succeed, got: ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(replay.data) === JSON.stringify(first.data), `broker answer replay should match first projection, got ${JSON.stringify(replay.data)} vs ${JSON.stringify(first.data)}`);
+  for (const forbidden of ['metadata', 'openCheckpointData', 'pendingDecision', 'resumeRef', 'taskStatePath']) {
+    assert(!JSON.stringify(replay.data).includes(forbidden), `broker answer replay must not expose ${forbidden}, got ${JSON.stringify(replay.data)}`);
+  }
+});
+
 console.log('\n=== lifecycle wait tests ===\n');
 
 test('wait begin sets working command marker and wait end clears it', () => {
@@ -3180,6 +3482,34 @@ test('parent create idempotent and conflict semantics', () => {
   // Same natural key, different idempotencyKey, identical create digest -> existing nonterminal.
   const sameNaturalKey = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ idempotencyKey: 'p2' })}'`);
   assert(sameNaturalKey.ok && sameNaturalKey.data.parentRunId === first.data.parentRunId, 'same natural key returns existing nonterminal run');
+  const equivalentNaturalKey = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ idempotencyKey: 'p3', lookupInput: prLookupInput({ pullRequestRef: { host: 'github.com', owner: 'acme', repo: 'app', headOwner: 'ACME', headRepo: 'APP' } }) })}'`);
+  assert(equivalentNaturalKey.ok && equivalentNaturalKey.data.parentRunId === first.data.parentRunId, 'normalized-equivalent natural key returns existing nonterminal run');
+});
+
+test('parent create rejects same idempotency key with changed durable create inputs', () => {
+  const fixmeDir = makeFixmeDir();
+  run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  for (const changed of [
+    { label: 'status', extra: { status: 'waitingForChild' } },
+    { label: 'cursor', extra: { cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] } } },
+    { label: 'payload', extra: { payload: { flags: { pause: true }, pullRequestRef: prLookupInput().pullRequestRef } } },
+  ]) {
+    const conflict = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ extra: changed.extra })}'`);
+    assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `${changed.label} change with same idempotency key -> conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+  }
+});
+
+test('parent create rejects natural-key duplicate with changed durable create inputs', () => {
+  const fixmeDir = makeFixmeDir();
+  run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  for (const changed of [
+    { label: 'status', extra: { status: 'waitingForChild' } },
+    { label: 'cursor', extra: { cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] } } },
+    { label: 'payload', extra: { payload: { flags: { pause: true }, pullRequestRef: prLookupInput().pullRequestRef } } },
+  ]) {
+    const conflict = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({ idempotencyKey: `natural-${changed.label}`, extra: changed.extra })}'`);
+    assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `${changed.label} change with same natural key -> conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+  }
 });
 
 test('parent create skipCommit canonicalizes skipPush', () => {
@@ -3199,6 +3529,28 @@ test('parent create rejects malformed inputs', () => {
   assert(!badSkill.ok && badSkill.data.error.code === 'invalidInput', `bad parentSkill rejected, got ${JSON.stringify(badSkill.data)}`);
 });
 
+test('parent create rejects missing required fields for high-risk cursor payloads', () => {
+  const fixmeDir = makeFixmeDir();
+  const cases = [
+    { cursor: 'awaitFixmeTask', payload: { fixBatches: [], activeBatchIndex: 0, activeChild: { statusId: 'run_1', taskRunId: 'task_1', taskStatePath: '/tmp/t.state.json' } }, missing: 'activeChild.resumeRef' },
+    { cursor: 'brokerChildAttention', payload: { fixBatches: [], activeBatchIndex: 0, activeChild: { statusId: 'run_1', attentionId: 'attn_1' } }, missing: 'activeChild.resumeRef' },
+    { cursor: 'consumeTaskEvent', payload: { fixBatches: [], activeBatchIndex: 0, activeChild: { taskRunId: 'task_1' }, taskEvent: { eventId: 'evt_1' } }, missing: 'taskEvent.resultSummaryPath' },
+    { cursor: 'verify', payload: { childResultSummaryPaths: [], routedGroups: {} }, missing: 'flags' },
+    { cursor: 'commit', payload: { verificationResults: {}, changedFiles: [], expectedHeadSha: 'abc123', flags: {} }, missing: 'changedFilesDigest' },
+    { cursor: 'summarize', payload: { unexpectedCarryForward: true }, missing: 'no payload fields', errorCode: 'invalidInput' },
+  ];
+
+  for (const item of cases) {
+    const data = parentCreateData({
+      idempotencyKey: `missing-${item.cursor}`,
+      extra: { cursor: item.cursor, payload: item.payload },
+    });
+    const result = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${data}'`);
+    const expectedCode = item.errorCode || 'missingRequiredField';
+    assert(!result.ok && result.data.error.code === expectedCode, `${item.cursor} missing ${item.missing} should fail, got ${JSON.stringify(result.data)}`);
+  }
+});
+
 test('parent checkpoint advances revision and rejects stale', () => {
   const fixmeDir = makeFixmeDir();
   const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
@@ -3212,6 +3564,18 @@ test('parent checkpoint advances revision and rejects stale', () => {
   assert(cp.data.normalizedLookupInput.pullRequestRef.host === 'github.com', 'immutable fields preserved');
   const stale = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'c2', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] }, ledger: { reviewItems: [{ id: 'r1' }] } })}'`);
   assert(!stale.ok && stale.data.error.code === 'staleState', `stale expectedRevision, got ${JSON.stringify(stale.data)}`);
+});
+
+test('parent checkpoint rejects invalid cursor transitions and nested missing fields', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const invalidTransition = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'bad-transition', expectedRevision: 0, status: 'running', cursor: 'verify', payload: { childResultSummaryPaths: [], routedGroups: {}, flags: {} }, ledger: {} })}'`);
+  assert(!invalidTransition.ok && invalidTransition.data.error.code === 'invalidInput', `fetchReviewItems -> verify should be rejected, got ${JSON.stringify(invalidTransition.data)}`);
+
+  const analyzed = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'to-analyze', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: { flags: {}, reviewItems: [] }, ledger: { reviewItems: [] } })}'`);
+  assert(analyzed.ok, `valid analyze checkpoint should succeed, got ${JSON.stringify(analyzed.data)}`);
+  const missingNested = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${JSON.stringify({ idempotencyKey: 'missing-nested', expectedRevision: 1, status: 'running', cursor: 'presentAnalysis', payload: { flags: {}, reviewItems: [], analysis: {} }, ledger: { reviewItems: [], analysis: {} } })}'`);
+  assert(!missingNested.ok && missingNested.data.error.code === 'missingRequiredField', `presentAnalysis missing routedGroups should fail, got ${JSON.stringify(missingNested.data)}`);
 });
 
 test('parent checkpoint same-key replay is idempotent for identical inputs and conflicts on different inputs', () => {
@@ -3233,6 +3597,27 @@ test('parent checkpoint same-key replay is idempotent for identical inputs and c
   });
   const conflict = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${conflictData}'`);
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `same key conflicting inputs -> conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('parent checkpoint same-key replay compares failure details', () => {
+  const fixmeDir = makeFixmeDir();
+  const created = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData()}'`);
+  const failedData = JSON.stringify({
+    idempotencyKey: 'ck-failure', expectedRevision: 0, status: 'failed', cursor: 'summarize',
+    payload: {}, ledger: { unresolvedAccounting: { fetchComplete: true } },
+    failure: { reason: 'fetchFailed', message: 'network unavailable' },
+  });
+  const first = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${failedData}'`);
+  assert(first.ok && first.data.failure.reason === 'fetchFailed', `failed checkpoint should succeed, got ${JSON.stringify(first.data)}`);
+  const identical = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${failedData}'`);
+  assert(identical.ok && identical.data.revision === first.data.revision, `identical failure replay should be idempotent, got ${JSON.stringify(identical.data)}`);
+  const conflictData = JSON.stringify({
+    idempotencyKey: 'ck-failure', expectedRevision: 0, status: 'failed', cursor: 'summarize',
+    payload: {}, ledger: { unresolvedAccounting: { fetchComplete: true } },
+    failure: { reason: 'fetchFailed', message: 'different failure' },
+  });
+  const conflict = run(`lifecycle parent checkpoint --fixme-dir "${fixmeDir}" --parent-run-id ${created.data.parentRunId} --data '${conflictData}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `changed failure under same key should conflict, got ${JSON.stringify(conflict.data)}`);
 });
 
 test('parent checkpoint rejects clearing populated ledger slot', () => {
@@ -3308,6 +3693,56 @@ test('terminalResultId is stable across retry', () => {
   assert(second.ok && second.data.terminalResultId === first.data.terminalResultId, `terminalResultId stable, got ${first.data.terminalResultId} vs ${second.data.terminalResultId}`);
 });
 
+test('terminal result replay accepts identical payload and rejects conflicting durable fields', () => {
+  const { statePath, projectRoot } = initTaskState('result-conflicts');
+  const base = { status: 'completed', summaryMarkdown: 'done', changedFiles: ['a.js'], artifactPaths: ['report.md'] };
+  const first = runInDir(`task result write --state "${statePath}" --data '${JSON.stringify(base)}'`, projectRoot);
+  assert(first.ok, `first result write should succeed, got ${JSON.stringify(first.data)}`);
+  const replay = runInDir(`task result write --state "${statePath}" --data '${JSON.stringify(base)}'`, projectRoot);
+  assert(replay.ok && replay.data.terminalResultId === first.data.terminalResultId, `same payload replay should succeed, got ${JSON.stringify(replay.data)}`);
+
+  for (const item of [
+    { label: 'status', payload: { status: 'failed', summaryMarkdown: 'done', changedFiles: ['a.js'], artifactPaths: ['report.md'], failure: { reason: 'workflowBlocked', message: 'blocked' } } },
+    { label: 'summaryMarkdown', payload: { ...base, summaryMarkdown: 'different' } },
+    { label: 'failure', payload: { status: 'failed', summaryMarkdown: 'done', changedFiles: ['a.js'], artifactPaths: ['report.md'], failure: { reason: 'workflowBlocked', message: 'blocked' } } },
+    { label: 'changedFiles', payload: { ...base, changedFiles: ['b.js'] } },
+    { label: 'artifactPaths', payload: { ...base, artifactPaths: ['other.md'] } },
+  ]) {
+    const conflict = runInDir(`task result write --state "${statePath}" --data '${JSON.stringify(item.payload)}'`, projectRoot);
+    assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `${item.label} conflict should reject, got ${JSON.stringify(conflict.data)}`);
+  }
+});
+
+test('terminal result retry recovers existing summary when task state lacks terminalResult', () => {
+  const { statePath, projectRoot } = initTaskState('result-partial-write');
+  const summaryPath = statePath.endsWith('task-state.json')
+    ? statePath.replace(/task-state\.json$/, 'task-state.result.json')
+    : statePath.replace(/\.state\.json$/, '.result.json');
+  const existingSummary = {
+    schemaVersion: 1,
+    terminalResultId: 'terminalResult_partial',
+    taskStatePath: statePath,
+    status: 'completed',
+    summaryMarkdown: 'done after partial write',
+    failure: null,
+    changedFiles: ['a.js'],
+    artifactPaths: ['report.md'],
+    createdAt: '2026-06-11T00:00:00.000Z',
+  };
+  fs.writeFileSync(summaryPath, JSON.stringify(existingSummary, null, 2));
+
+  const matching = { status: 'completed', summaryMarkdown: 'done after partial write', changedFiles: ['a.js'], artifactPaths: ['report.md'] };
+  const retry = runInDir(`task result write --state "${statePath}" --data '${JSON.stringify(matching)}'`, projectRoot);
+  assert(retry.ok, `matching retry should recover from summary, got ${JSON.stringify(retry.data)}`);
+  assert(retry.data.terminalResultId === 'terminalResult_partial', `retry should reuse summary terminalResultId, got ${retry.data.terminalResultId}`);
+  const state = readJson(statePath);
+  assert(state.terminalResult.terminalResultId === 'terminalResult_partial', `task state should be checkpointed with summary id, got ${JSON.stringify(state.terminalResult)}`);
+
+  const conflict = runInDir(`task result write --state "${statePath}" --data '${JSON.stringify({ ...matching, summaryMarkdown: 'different' })}'`, projectRoot);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting retry should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(readJson(summaryPath).terminalResultId === 'terminalResult_partial', 'summary terminalResultId stays stable after conflict');
+});
+
 console.log('\n=== lifecycle task-event tests ===\n');
 
 function setupTaskEventScenario(slug) {
@@ -3350,6 +3785,28 @@ test('task-event record rejects when terminalResultId mismatch', () => {
   });
   const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
   assert(!r.ok && r.data.error.code === 'conflictingDuplicate', `mismatch -> conflictingDuplicate, got ${JSON.stringify(r.data)}`);
+});
+
+test('task-event record rejects first write when result summary status mismatches event status', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-summary-status-mismatch');
+  const data = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'failed',
+  });
+  const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(!r.ok && r.data.error.code === 'conflictingDuplicate', `summary status mismatch -> conflictingDuplicate, got ${JSON.stringify(r.data)}`);
+});
+
+test('task-event record rejects first write when task terminal result status mismatches event status', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-state-status-mismatch');
+  const summary = readJson(resultSummaryPath);
+  fs.writeFileSync(resultSummaryPath, JSON.stringify({ ...summary, status: 'failed' }, null, 2));
+  const data = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'failed',
+  });
+  const r = run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(!r.ok && r.data.error.code === 'conflictingDuplicate', `task terminal result status mismatch -> conflictingDuplicate, got ${JSON.stringify(r.data)}`);
 });
 
 test('task-event record succeeds and is idempotent', () => {
@@ -5835,6 +6292,13 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
 });
 
+test('fixme-task skill: checkpoints review loop counters under loops', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  assert(skill.includes('Persist review loop counters only under `loops.phaseReviewCycles`; never send a top-level `phaseReviewCycles` field to `task checkpoint`.'), 'fixme-task should forbid top-level phaseReviewCycles checkpoints');
+  assert(skill.includes('{"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}}'), 'fixme-task should show the supported phaseReviewCycles checkpoint shape');
+});
+
 test('fixme workflow manifests use runtime-neutral live task-list tooling', () => {
   const howtoPath = path.resolve(__dirname, '..', '..', 'fixme-howto-workflow-manifest', 'SKILL.md');
   assert(fs.existsSync(howtoPath), 'shared workflow manifest howto should exist');
@@ -5945,8 +6409,9 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect child task attention directives');
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through the lifecycle broker');
   assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should record user answers through the lifecycle broker');
-  assert(skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments should resume from the attention record resumeRef');
-  assert(skill.includes('Skill("fixme-task", "--resume <resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
+  assert(skill.includes('Use `activeChild.resumeRef` from parent state'), 'PR comments should resume from parent-owned activeChild.resumeRef');
+  assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments must not expect broker show to return resumeRef');
+  assert(skill.includes('Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
   assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the Codex inline resume invocation');
   assert(!skill.includes('--nested'), 'PR comments should no longer reference --nested');
   assert(skill.includes('reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>`'), 'PR comments should reuse the same task run status when resuming');
@@ -5955,9 +6420,39 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.'), 'PR comments should scope clarification requests at the answer-write step');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'PR comments should broker clarification requests without answering them');
   assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again'), 'PR comments should resume already answered attention instead of re-prompting');
-  assert(skill.includes('Resume the child `fixme-task` immediately with `--resume <resumeRef> --answer-attention <attention-id>`'), 'PR comments should resume already answered attention');
+  assert(skill.includes('Resume the child `fixme-task` immediately with `--resume <activeChild.resumeRef> --answer-attention <attention-id>`'), 'PR comments should resume already answered attention');
   assert(skill.includes('If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'PR comments should broker clarification follow-up attention prompts');
   assert(skill.includes('Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own child task decisions');
+});
+
+test('fixme-pr-comments skill: dispatches fixme-task with returned prompt blocks', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const dispatchSection = skill.slice(
+    skill.indexOf('#### Invoke fixme-task (inline-skill transport, parent-driven)'),
+    skill.indexOf('When waiting or reporting status while the child pipeline is active')
+  );
+  assert(dispatchSection.includes('promptBlocks.taskStateOwner'), 'dispatch should include returned promptBlocks.taskStateOwner');
+  assert(dispatchSection.includes('promptBlocks.parentContinuation'), 'dispatch should include returned promptBlocks.parentContinuation');
+  assert(dispatchSection.includes('promptBlocks.activeChild'), 'dispatch should include returned promptBlocks.activeChild');
+  assert(dispatchSection.includes('usageContext'), 'dispatch should include returned usageContext');
+  assert(dispatchSection.includes('Render the child prompt from the returned `promptBlocks`'), 'dispatch should render returned promptBlocks instead of rebuilding prompt text');
+  assert(dispatchSection.includes('Do not reconstruct these blocks manually from project, liveness, or fix-item fields'), 'dispatch should forbid manual reconstruction of returned prompt blocks');
+  assert(dispatchSection.includes('Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`'), 'dispatch should persist the exact returned activeChild before awaitFixmeTask');
+  assert(!dispatchSection.includes('<liveness>\n      statusId: <fixmeTaskStatusId>\n      </liveness>'), 'dispatch should not hand-render the child liveness block');
+});
+
+test('fixme-task skill: task-state docs include the durable runtime fields', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const taskStateSection = skill.slice(skill.indexOf('## Task Resume State'), skill.indexOf('Resume mode:'));
+  assert(taskStateSection.includes('"parentContinuation": null'), 'task-state example should include parentContinuation');
+  assert(taskStateSection.includes('"decisions": []'), 'task-state example should include decisions array');
+  assert(taskStateSection.includes('"terminalResult": null'), 'task-state example should include terminalResult');
+  assert(taskStateSection.includes('The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `decisions`, and `terminalResult`.'), 'checkpoint prose should include every durable field accepted by runtime validation');
+  assert(taskStateSection.includes('Task-owned decisions are normally written with `task decision append`'), 'docs should prefer task decision append for task-owned decisions');
+  assert(taskStateSection.includes('terminal task results are normally written with `task result write`'), 'docs should prefer task result write for terminal task results');
+  assert(taskStateSection.includes('checkpoint validation supports the complete durable state shape'), 'docs should clarify checkpoint validation still accepts the complete durable shape');
 });
 
 function assertTaskBoundDecisionReader(skillDir, guardrailPhrase) {
@@ -6051,7 +6546,8 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   assert(skill.includes('If `run status` reports `currentCommand` in the form `attention:<attention-id>`'), 'session should detect background task attention');
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through the lifecycle broker');
   assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should record user answers through the lifecycle broker');
-  assert(skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session should resume from the attention record resumeRef');
+  assert(skill.includes('Use the session-owned `active_task` reference as the resume target'), 'session should resume from its owned active_task reference');
+  assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session must not expect broker show to return resumeRef');
   assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'session should document Claude background task resume');
   assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'session should document Codex background task resume');
   assert(skill.includes('reuse the same `<liveness>` `statusId: <activeRunStatusId>`'), 'session should reuse the same background run status when resuming');
@@ -6327,8 +6823,9 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
   assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
-  assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse a saved task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
-  assert(skill.includes('This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the saved task boundary');
+  assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse durable task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
+  assert(skill.includes('task init --state <activeChild.taskStatePath>'), 'parent-driven no-ticket runs should materialize the reserved activeChild task state');
+  assert(skill.includes('Use `activeChild.resumeRef` for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the activeChild boundary');
   assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
   assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');

@@ -253,6 +253,7 @@ const RUN_STATUS_FIELDS = new Set([
   'state',
   'checkpoint',
   'currentCommand',
+  'failure',
   'updatedAt',
 ]);
 const RUN_ATTENTION_RECORD_FIELDS = new Set([
@@ -3332,6 +3333,62 @@ function taskStatePathForTask(taskPath) {
   return taskPath.replace(/\.md$/, '.state.json');
 }
 
+function normalizePathForContainment(value) {
+  const resolved = path.resolve(value);
+  if (process.platform === 'darwin' && resolved.startsWith('/var/')) {
+    return `/private${resolved}`;
+  }
+  return resolved;
+}
+
+function isPathInsideDirectory(parentDir, childPath) {
+  const relative = path.relative(normalizePathForContainment(parentDir), normalizePathForContainment(childPath));
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveReservedTaskStatePath(rawStatePath, fixmeRoot) {
+  if (!rawStatePath || rawStatePath === true) {
+    throw new Error('--state requires a path value');
+  }
+  const statePath = String(rawStatePath);
+  if (!path.isAbsolute(statePath)) {
+    throw new Error('--state reserved task path must be absolute');
+  }
+  const resolvedStatePath = path.resolve(statePath);
+  const tasksDir = taskDirectory(fixmeRoot);
+  if (!isPathInsideDirectory(tasksDir, resolvedStatePath)) {
+    throw new Error(`--state reserved task path must be under ${tasksDir}`);
+  }
+  if (!resolvedStatePath.endsWith('.state.json')) {
+    throw new Error('--state reserved task path must end with .state.json');
+  }
+  const conflictingTaskPath = resolvedStatePath.replace(/\.state\.json$/, '.md');
+  if (fs.existsSync(conflictingTaskPath)) {
+    throw new Error(`--state reserved task path conflicts with saved task markdown: ${conflictingTaskPath}`);
+  }
+  return resolvedStatePath;
+}
+
+function parseParentContinuationFlag(flags) {
+  if (!Object.prototype.hasOwnProperty.call(flags, 'parent-continuation')) {
+    return undefined;
+  }
+  const raw = flags['parent-continuation'];
+  if (raw === true || raw === '') {
+    throw new Error('--parent-continuation requires a JSON object');
+  }
+  let parentContinuation;
+  try {
+    parentContinuation = JSON.parse(String(raw));
+  } catch (e) {
+    throw new Error(`--parent-continuation must be valid JSON: ${e.message}`);
+  }
+  const patch = { parentContinuation };
+  assertCamelCaseJsonKeys(patch, 'task init parentContinuation');
+  assertTaskCheckpointShape(patch);
+  return parentContinuation;
+}
+
 function taskInit(flags, fixmeRoot) {
   const pipelineResolution = pipelineResolutionForTaskInitFlags(flags, fixmeRoot);
   const pipeline = pipelineResolution.pipeline;
@@ -3346,6 +3403,48 @@ function taskInit(flags, fixmeRoot) {
     fixmeRoot,
     now,
   });
+
+  if (flags.state && flags.state !== true) {
+    const statePath = resolveReservedTaskStatePath(flags.state, fixmeRoot);
+    const parentContinuation = parseParentContinuationFlag(flags);
+    const nextState = parentContinuation === undefined
+      ? state
+      : mergeTaskState(state, { parentContinuation });
+
+    if (fs.existsSync(statePath)) {
+      const existing = readJsonFileStrict(statePath);
+      if (existing.projectRoot !== projectRoot || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+        throw new Error(`Reserved task state conflicts with requested task initialization: ${statePath}`);
+      }
+      if (parentContinuation !== undefined) {
+        if (existing.parentContinuation !== null && !jsonEqual(existing.parentContinuation, parentContinuation)) {
+          throw new Error(`Reserved task state has a different parentContinuation: ${statePath}`);
+        }
+        if (existing.parentContinuation === null) {
+          const updated = mergeTaskState(existing, { parentContinuation });
+          assertCamelCaseJsonKeys(updated, 'task state');
+          writeJsonAtomic(statePath, updated);
+        }
+      }
+      return output({
+        mode: 'reserved-state',
+        taskRef: null,
+        taskPath: null,
+        ticketPath: null,
+        statePath,
+      });
+    }
+
+    assertCamelCaseJsonKeys(nextState, 'task state');
+    writeJsonAtomic(statePath, nextState);
+    return output({
+      mode: 'reserved-state',
+      taskRef: null,
+      taskPath: null,
+      ticketPath: null,
+      statePath,
+    });
+  }
 
   if (flags.ticket && flags.ticket !== true) {
     const ticketPath = resolveTicketPath(String(flags.ticket));
@@ -3471,6 +3570,19 @@ function resolveStandaloneTask(input, fixmeRoot) {
       taskPath = resolvedInput;
       statePath = taskStatePathForTask(resolvedInput);
     }
+  }
+
+  if (statePath && fs.existsSync(statePath) && !fs.existsSync(taskPath)) {
+    if (!isPathInsideDirectory(taskDir, statePath)) {
+      throw new Error(`Reserved task state path must be under ${taskDir}: ${statePath}`);
+    }
+    return {
+      mode: 'reserved-state',
+      taskRef: null,
+      taskPath: null,
+      ticketPath: null,
+      statePath,
+    };
   }
 
   if (!taskPath || !fs.existsSync(taskPath)) {
@@ -3890,13 +4002,31 @@ function resolveTaskStatePathForDecision(flags) {
   return statePath;
 }
 
-function resolveFixmeDirForTaskState(flags, state) {
+function inferFixmeDirFromTaskStatePath(statePath) {
+  let dir = path.dirname(path.resolve(statePath));
+  const root = path.parse(dir).root;
+  while (dir !== root) {
+    if (path.basename(dir) === '.fixme' && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+function resolveFixmeDirForTaskState(flags, state, statePath = null) {
   if (Object.prototype.hasOwnProperty.call(flags, 'fixme-dir')) {
     const raw = flags['fixme-dir'];
     if (raw === true || raw === '') {
       lifecycleError('invalidInput', '--fixme-dir requires a path value');
     }
     return path.resolve(String(raw));
+  }
+  if (statePath) {
+    const inferred = inferFixmeDirFromTaskStatePath(statePath);
+    if (inferred) {
+      return inferred;
+    }
   }
   if (state && isNonEmptyString(state.projectRoot)) {
     return path.join(state.projectRoot, '.fixme');
@@ -4000,7 +4130,7 @@ function taskDecisionAppend(flags) {
   }
 
   const state = readJsonFileStrict(statePath);
-  const fixmeDir = resolveFixmeDirForTaskState(flags, state);
+  const fixmeDir = resolveFixmeDirForTaskState(flags, state, statePath);
   const decisions = Array.isArray(state.decisions) ? state.decisions.map(cloneJson) : [];
 
   // Idempotency by id.
@@ -4067,7 +4197,7 @@ function normalizeDecisionForCompare(record) {
 function taskDecisionList(flags) {
   const statePath = resolveTaskStatePathForDecision(flags);
   const state = readJsonFileStrict(statePath);
-  const fixmeDir = resolveFixmeDirForTaskState(flags, state);
+  const fixmeDir = resolveFixmeDirForTaskState(flags, state, statePath);
   const includeSuperseded = Object.prototype.hasOwnProperty.call(flags, 'include-superseded');
   const context = buildDecisionContext(state, fixmeDir, { includeSuperseded });
 
@@ -4114,6 +4244,16 @@ function taskResultSummaryPath(taskStatePath) {
   return `${taskStatePath}.result.json`;
 }
 
+function normalizeTaskResultDurableFields(summary) {
+  return {
+    status: summary.status,
+    summaryMarkdown: isNonEmptyString(summary.summaryMarkdown) ? summary.summaryMarkdown : '',
+    failure: summary.failure === undefined ? null : summary.failure,
+    changedFiles: Array.isArray(summary.changedFiles) ? summary.changedFiles : [],
+    artifactPaths: Array.isArray(summary.artifactPaths) ? summary.artifactPaths : [],
+  };
+}
+
 function taskResultWrite(flags) {
   const statePath = resolveTaskStatePathForDecision(flags);
   const data = resolveLifecycleData(flags);
@@ -4147,21 +4287,46 @@ function taskResultWrite(flags) {
   }
 
   const state = readJsonFileStrict(statePath);
+  const summaryPath = taskResultSummaryPath(statePath);
+  const incomingDurableFields = normalizeTaskResultDurableFields({
+    status: data.status,
+    summaryMarkdown: data.summaryMarkdown,
+    changedFiles: data.changedFiles,
+    artifactPaths: data.artifactPaths,
+    failure,
+  });
+
   const existingTerminalResultId = state.terminalResult && state.terminalResult.terminalResultId;
+  if (fs.existsSync(summaryPath)) {
+    const existingSummary = readJsonFileStrict(summaryPath);
+    if (!isNonEmptyString(existingSummary.terminalResultId)) {
+      lifecycleError('invalidInput', 'existing result summary missing terminalResultId');
+    }
+    if (isNonEmptyString(existingTerminalResultId) && existingTerminalResultId !== existingSummary.terminalResultId) {
+      lifecycleError('conflictingDuplicate', `task state terminalResultId '${existingTerminalResultId}' conflicts with existing result summary '${existingSummary.terminalResultId}'`);
+    }
+    const existingDurableFields = normalizeTaskResultDurableFields(existingSummary);
+    if (jsonEqual(existingDurableFields, incomingDurableFields)) {
+      const nextState = mergeTaskState(state, {
+        status: existingSummary.status,
+        terminalResult: { terminalResultId: existingSummary.terminalResultId, status: existingSummary.status },
+      });
+      assertCamelCaseJsonKeys(nextState, 'task state');
+      writeJsonAtomic(statePath, nextState);
+      return lifecycleOk({ terminalResultId: existingSummary.terminalResultId, resultSummaryPath: summaryPath, status: existingSummary.status });
+    }
+    lifecycleError('conflictingDuplicate', `terminal result '${existingSummary.terminalResultId}' already exists with different data`);
+  }
+
   const terminalResultId = isNonEmptyString(existingTerminalResultId)
     ? existingTerminalResultId
     : generateUsageId('terminalResult');
 
-  const summaryPath = taskResultSummaryPath(statePath);
   const summary = {
     schemaVersion: 1,
     terminalResultId,
     taskStatePath: statePath,
-    status: data.status,
-    summaryMarkdown: isNonEmptyString(data.summaryMarkdown) ? data.summaryMarkdown : '',
-    changedFiles: Array.isArray(data.changedFiles) ? data.changedFiles : [],
-    artifactPaths: Array.isArray(data.artifactPaths) ? data.artifactPaths : [],
-    failure,
+    ...incomingDurableFields,
     createdAt: new Date().toISOString(),
   };
   assertCamelCaseJsonKeys(summary, 'task result summary');
@@ -5352,10 +5517,17 @@ function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
   if (rawStatus.currentCommand !== null && typeof rawStatus.currentCommand !== 'string') {
     throw new Error('run status currentCommand must be a string or null');
   }
+  let failure;
+  if (rawStatus.failure !== undefined) {
+    if (!isPlainObject(rawStatus.failure) || !isNonEmptyString(rawStatus.failure.message)) {
+      throw new Error('run status failure must be an object with a non-empty message');
+    }
+    failure = cloneJson(rawStatus.failure);
+  }
   if (typeof rawStatus.updatedAt !== 'string' || Number.isNaN(Date.parse(rawStatus.updatedAt))) {
     throw new Error('run status updatedAt must be an ISO timestamp');
   }
-  return {
+  const normalized = {
     schemaVersion: rawStatus.schemaVersion,
     statusId: rawStatus.statusId,
     agent: rawStatus.agent,
@@ -5364,6 +5536,10 @@ function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
     currentCommand: rawStatus.currentCommand,
     updatedAt: rawStatus.updatedAt,
   };
+  if (failure !== undefined) {
+    normalized.failure = failure;
+  }
+  return normalized;
 }
 
 function readRunStatusFile(statusPath, statusId = null) {
@@ -7072,12 +7248,26 @@ const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs', 'runtime',
 ]);
 
-const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId']);
+const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
 function dispatchIdempotencyPath(fixmeDir, keyHash) {
   return path.join(fixmeDir, 'dispatch', 'idempotency', `${keyHash}.json`);
+}
+
+function findDispatchRecordById(fixmeDir, dispatchId) {
+  const dir = path.join(fixmeDir, 'dispatch', 'idempotency');
+  if (!fs.existsSync(dir)) return null;
+  for (const entry of fs.readdirSync(dir)) {
+    if (!entry.endsWith('.json')) continue;
+    const recordPath = path.join(dir, entry);
+    const record = readJsonFileStrict(recordPath);
+    if (record.dispatchId === dispatchId) {
+      return { recordPath, record };
+    }
+  }
+  return null;
 }
 
 function resolveLifecycleFixmeDir(flags) {
@@ -7162,6 +7352,19 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
   const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), { runtime });
   const child = runStartCore({ 'fixme-dir': fixmeDir, agent: data.agentName });
   const dispatchId = generateUsageId('dispatch');
+  let activeChild = null;
+  if (data.agentName === 'fixme-task' && isPlainObject(data.parentContinuation)) {
+    const taskRunId = generateUsageId('taskRun');
+    const taskStatePath = isNonEmptyString(data.taskStatePath)
+      ? path.resolve(String(data.taskStatePath))
+      : path.join(fixmeDir, 'tasks', `${taskRunId}.state.json`);
+    activeChild = {
+      statusId: child.statusId,
+      taskRunId,
+      taskStatePath,
+      resumeRef: taskStatePath,
+    };
+  }
 
   // Parent heartbeat: only ping when the parent is not on an attention marker.
   if (isNonEmptyString(data.parentStatusId)) {
@@ -7189,11 +7392,14 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
   const promptBlocks = {
     project: { projectRoot: path.dirname(fixmeDir), fixmeDir },
     usageContext,
-    taskStateOwner: (isNonEmptyString(data.taskStatePath) && isPlainObject(data.parentContinuation))
-      ? { ownerSkill: 'fixme-task', taskStatePath: data.taskStatePath }
+    taskStateOwner: activeChild
+      ? { ownerSkill: 'fixme-task', taskStatePath: activeChild.taskStatePath }
       : null,
     parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
+    activeChild,
     promptInputs: data.promptInputs,
+    liveness: { statusId: child.statusId, statusPath: child.statusPath },
+    taskInput: data.promptInputs,
   };
 
   const out = {
@@ -7206,6 +7412,7 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     runtimeSettings,
     bannerMarkdown: buildDispatchBannerMarkdown(data.agentName, runtimeSettings),
     usageContext,
+    activeChild,
     promptBlocks,
   };
 
@@ -7238,6 +7445,38 @@ function lifecycleDispatchComplete(flags) {
   if (data.status !== 'completed' && data.status !== 'failed') {
     lifecycleError('invalidInput', 'status must be one of: completed, failed');
   }
+  if (data.currentCommand !== undefined && data.currentCommand !== null && typeof data.currentCommand !== 'string') {
+    lifecycleError('invalidInput', 'currentCommand must be a string or null');
+  }
+  if (data.failure !== undefined) {
+    if (data.status !== 'failed') {
+      lifecycleError('invalidInput', 'failure is only allowed when status is failed');
+    }
+    if (!isPlainObject(data.failure) || !isNonEmptyString(data.failure.message)) {
+      lifecycleError('invalidInput', 'failure must be an object with a non-empty message');
+    }
+  }
+
+  const dispatchRecord = findDispatchRecordById(fixmeDir, data.dispatchId);
+  if (!dispatchRecord) {
+    lifecycleError('stateNotFound', `Prepared dispatch not found: ${data.dispatchId}`);
+  }
+  if (dispatchRecord.record.statusId !== data.statusId) {
+    lifecycleError('invalidInput', `statusId ${data.statusId} does not match prepared dispatch ${data.dispatchId}`);
+  }
+
+  const completionInputs = {
+    status: data.status,
+    currentCommand: data.currentCommand === undefined ? null : data.currentCommand,
+    failure: data.failure === undefined ? null : data.failure,
+  };
+  if (dispatchRecord.record.completion !== undefined) {
+    if (!jsonEqual(dispatchRecord.record.completion.inputs, completionInputs)) {
+      lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
+    }
+    clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
+    return lifecycleOk(dispatchRecord.record.completion.output);
+  }
 
   const statusPath = runStatusPath(fixmeDir, data.statusId);
   if (!fs.existsSync(statusPath)) {
@@ -7253,23 +7492,67 @@ function lifecycleDispatchComplete(flags) {
   const isTerminal = previous.state === 'completed' || previous.state === 'failed';
   if (isTerminal) {
     if (previous.state === data.status) {
+      const persistedCompletionInputs = {
+        status: previous.state,
+        currentCommand: previous.currentCommand === undefined ? null : previous.currentCommand,
+        failure: previous.failure === undefined ? null : previous.failure,
+      };
+      if (!jsonEqual(persistedCompletionInputs, completionInputs)) {
+        lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
+      }
+      const outputData = {
+        dispatchId: data.dispatchId,
+        statusId: data.statusId,
+        status: previous.state,
+        currentCommand: previous.currentCommand,
+        statusPath,
+      };
+      if (previous.failure !== undefined) {
+        outputData.failure = previous.failure;
+      }
+      dispatchRecord.record.completion = {
+        inputs: completionInputs,
+        output: outputData,
+        completedAt: new Date().toISOString(),
+      };
+      writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
       clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
-      return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: previous.state, statusPath });
+      return lifecycleOk(outputData);
     }
     lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot mark ${data.status}`);
   }
 
-  const next = writeRunStatus(statusPath, {
+  const nextStatus = {
     schemaVersion: 1,
     statusId: data.statusId,
     agent: validateRunAgent(previous.agent),
     state: data.status,
     checkpoint: 'done',
-    currentCommand: null,
+    currentCommand: completionInputs.currentCommand,
     updatedAt: new Date().toISOString(),
-  });
+  };
+  if (completionInputs.failure !== null) {
+    nextStatus.failure = completionInputs.failure;
+  }
+  const next = writeRunStatus(statusPath, nextStatus);
   clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
-  return lifecycleOk({ dispatchId: data.dispatchId, statusId: data.statusId, status: next.state, statusPath });
+  const outputData = {
+    dispatchId: data.dispatchId,
+    statusId: data.statusId,
+    status: next.state,
+    currentCommand: next.currentCommand,
+    statusPath,
+  };
+  if (next.failure !== undefined) {
+    outputData.failure = next.failure;
+  }
+  dispatchRecord.record.completion = {
+    inputs: completionInputs,
+    output: outputData,
+    completedAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
+  return lifecycleOk(outputData);
 }
 
 // Reset a parent's "dispatching <agent>" wait marker back to a working idle
@@ -7399,6 +7682,27 @@ function lifecycleAttentionOpen(flags) {
   });
 }
 
+function lifecycleAttentionBrokerProjection(record) {
+  // Whitelist projection: the broker is the parent-facing surface and must not
+  // expose task-owned decision state. metadata.openCheckpointData carries the
+  // task's pendingDecision and is consumed only internally by the attention-open
+  // replay compare, never via broker show or answer.
+  const projection = {
+    attentionId: record.attentionId,
+    statusId: record.statusId,
+    status: record.status,
+    promptMarkdown: record.promptMarkdown,
+    answerMode: record.answerMode,
+    sourceSkill: record.sourceSkill,
+    kind: record.kind,
+    createdAt: record.createdAt,
+  };
+  if (record.status === 'answered' && record.answer !== undefined) {
+    projection.answer = record.answer;
+  }
+  return projection;
+}
+
 function lifecycleAttentionBrokerShow(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   try {
@@ -7407,24 +7711,7 @@ function lifecycleAttentionBrokerShow(flags) {
       'status-id': flags['status-id'],
       'attention-id': flags['attention-id'],
     });
-    // Whitelist projection: the broker is the parent-facing surface and must not
-    // expose task-owned decision state. metadata.openCheckpointData carries the
-    // task's pendingDecision and is consumed only internally by the attention-open
-    // replay compare, never via broker show. Return display fields only.
-    const projection = {
-      attentionId: record.attentionId,
-      statusId: record.statusId,
-      status: record.status,
-      promptMarkdown: record.promptMarkdown,
-      answerMode: record.answerMode,
-      sourceSkill: record.sourceSkill,
-      kind: record.kind,
-      createdAt: record.createdAt,
-    };
-    if (record.status === 'answered' && record.answer !== undefined) {
-      projection.answer = record.answer;
-    }
-    return lifecycleOk(projection);
+    return lifecycleOk(lifecycleAttentionBrokerProjection(record));
   } catch (e) {
     if (/not found/i.test(e.message)) {
       lifecycleError('stateNotFound', e.message);
@@ -7459,7 +7746,7 @@ function lifecycleAttentionBrokerAnswer(flags) {
   if (existingRecord.status === 'answered') {
     const prior = existingRecord.answer || {};
     if (prior.answer === data.answer && prior.answeredBy === data.answeredBy && prior.answerKind === data.answerKind) {
-      return lifecycleOk(existingRecord);
+      return lifecycleOk(lifecycleAttentionBrokerProjection(existingRecord));
     }
     lifecycleError('conflictingDuplicate', `attention ${flags['attention-id']} already answered with different answer`);
   }
@@ -7471,7 +7758,7 @@ function lifecycleAttentionBrokerAnswer(flags) {
       'attention-id': flags['attention-id'],
       data: JSON.stringify(data),
     });
-    return lifecycleOk(answered);
+    return lifecycleOk(lifecycleAttentionBrokerProjection(answered));
   } catch (e) {
     lifecycleError('invalidInput', e.message);
   }
@@ -7554,6 +7841,33 @@ const PR_PARENT_CURSORS = new Set([
   'dispatchFixmeTask', 'awaitFixmeTask', 'brokerChildAttention', 'consumeTaskEvent', 'verify',
   'commit', 'push', 'replyComments', 'resolveThreads', 'summarize',
 ]);
+
+const PR_PARENT_CURSOR_SPECS = Object.freeze({
+  fetchReviewItems: { required: ['flags', 'pullRequestRef'], next: ['analyzeReviewItems', 'summarize'] },
+  analyzeReviewItems: { required: ['flags', 'reviewItems'], next: ['consultUser', 'presentAnalysis'] },
+  consultUser: { required: ['reviewItems', 'analysis', 'pendingConsultation'], next: ['presentAnalysis'] },
+  presentAnalysis: { required: ['reviewItems', 'analysis', 'routedGroups', 'flags'], next: ['confirmExecution', 'dispatchFixmeTask', 'replyComments', 'summarize'] },
+  confirmExecution: { required: ['analysis', 'routedGroups', 'flags', 'pendingConfirmation'], next: ['presentAnalysis', 'dispatchFixmeTask', 'summarize'] },
+  dispatchFixmeTask: { required: ['fixBatches', 'activeBatchIndex', 'parentContinuation'], next: ['awaitFixmeTask'] },
+  awaitFixmeTask: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.taskRunId', 'activeChild.taskStatePath', 'activeChild.resumeRef'],
+    next: ['brokerChildAttention', 'consumeTaskEvent'],
+  },
+  brokerChildAttention: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.attentionId', 'activeChild.resumeRef'],
+    next: ['awaitFixmeTask'],
+  },
+  consumeTaskEvent: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.taskRunId', 'taskEvent.eventId', 'taskEvent.resultSummaryPath'],
+    next: ['dispatchFixmeTask', 'verify', 'summarize'],
+  },
+  verify: { required: ['childResultSummaryPaths', 'routedGroups', 'flags'], next: ['commit', 'replyComments', 'summarize'] },
+  commit: { required: ['verificationResults', 'changedFiles', 'expectedHeadSha', 'changedFilesDigest', 'flags'], next: ['push', 'replyComments', 'summarize'] },
+  push: { required: ['commitSha', 'pushRemote', 'pushRef', 'pushTarget', 'flags'], next: ['replyComments', 'summarize'] },
+  replyComments: { required: ['analysis', 'routedGroups', 'replyExecutionTable', 'flags'], next: ['resolveThreads', 'summarize'] },
+  resolveThreads: { required: ['replyExecutionTable', 'allowedUnresolvedSet', 'flags'], next: ['summarize'] },
+  summarize: { required: [], next: [] },
+});
 
 const PARENT_LEDGER_SLOTS = new Set([
   'reviewItems', 'analysis', 'routedGroups', 'childResultSummaryPaths', 'verificationResults',
@@ -7669,8 +7983,8 @@ function parentBroadKeyFor(parentSkill, normalizedLookupInput) {
   });
 }
 
-function parentCreateDigest(parentSkill, normalizedLookupInput) {
-  return stableHash({ parentSkill, normalizedLookupInput });
+function parentCreateDigest(createInput) {
+  return stableHash(createInput);
 }
 
 function appendParentIndexEntry(fixmeDir, lookupKeyHash, parentRunId) {
@@ -7697,12 +8011,39 @@ function findIdempotencyParentRun(fixmeDir, parentSkill, idempotencyKey) {
   return entries.length ? entries[0] : null;
 }
 
+function hasNestedPayloadField(payload, fieldPath) {
+  let cursor = payload;
+  for (const part of fieldPath.split('.')) {
+    if (!isPlainObject(cursor) && !Array.isArray(cursor)) return false;
+    if (!Object.prototype.hasOwnProperty.call(cursor, part)) return false;
+    cursor = cursor[part];
+  }
+  return cursor !== undefined && cursor !== null;
+}
+
 function validatePrCursorPayload(cursor, payload) {
   if (!PR_PARENT_CURSORS.has(cursor)) {
     lifecycleError('invalidInput', `Unsupported cursor: ${cursor}`);
   }
   if (!isPlainObject(payload)) {
     lifecycleError('invalidInput', 'payload must be a JSON object');
+  }
+  const spec = PR_PARENT_CURSOR_SPECS[cursor];
+  for (const fieldPath of spec.required) {
+    if (!hasNestedPayloadField(payload, fieldPath)) {
+      lifecycleError('missingRequiredField', `payload.${fieldPath} is required for cursor ${cursor}`);
+    }
+  }
+  if (cursor === 'summarize' && Object.keys(payload).length > 0) {
+    lifecycleError('invalidInput', 'summarize payload must be empty; use ledger and failure for summary inputs');
+  }
+}
+
+function validatePrCursorTransition(fromCursor, toCursor) {
+  if (fromCursor === toCursor) return;
+  const spec = PR_PARENT_CURSOR_SPECS[fromCursor];
+  if (!spec || !spec.next.includes(toCursor)) {
+    lifecycleError('invalidInput', `Invalid parent cursor transition: ${fromCursor} -> ${toCursor}`);
   }
 }
 
@@ -7730,12 +8071,22 @@ function lifecycleParentCreate(flags) {
   const normalizedLookupInput = normalizePrLookupInput(data.lookupInput);
   const parentNaturalKey = parentNaturalKeyFor(data.parentSkill, normalizedLookupInput);
   const broadKey = parentBroadKeyFor(data.parentSkill, normalizedLookupInput);
-  const createInputDigest = parentCreateDigest(data.parentSkill, normalizedLookupInput);
+  const durableCreateInput = {
+    parentSkill: data.parentSkill,
+    normalizedLookupInput,
+    status: data.status,
+    cursor: data.cursor,
+    payload: data.payload,
+  };
+  const createInputDigest = parentCreateDigest(durableCreateInput);
 
   // Idempotency by idempotencyKey.
   const existingByIdem = findIdempotencyParentRun(fixmeDir, data.parentSkill, data.idempotencyKey);
   if (existingByIdem) {
     const existing = readJsonFileStrict(parentStatePath(fixmeDir, existingByIdem));
+    if (existing.createInputDigest !== createInputDigest) {
+      lifecycleError('conflictingDuplicate', `parent create idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
+    }
     return lifecycleOk(existing);
   }
 
@@ -7839,6 +8190,7 @@ function parentCheckpointCore(fixmeDir, parentRunId, data) {
     cursor: data.cursor,
     payload: data.payload,
     ledger: data.ledger,
+    failure: data.failure === undefined ? null : data.failure,
   });
 
   // Idempotent replay by idempotencyKey: identical inputs return current state,
@@ -7852,6 +8204,7 @@ function parentCheckpointCore(fixmeDir, parentRunId, data) {
   if (data.expectedRevision !== current.revision) {
     lifecycleError('staleState', `expectedRevision ${data.expectedRevision} does not match current revision ${current.revision}`);
   }
+  validatePrCursorTransition(current.cursor, data.cursor);
 
   // Reject clearing a populated ledger slot.
   for (const slot of Object.keys(current.ledger || {})) {
@@ -7983,6 +8336,9 @@ function lifecycleTaskEventRecord(flags) {
   if (summary.terminalResultId !== data.terminalResultId) {
     lifecycleError('conflictingDuplicate', 'Result summary terminalResultId does not match');
   }
+  if (summary.status !== data.status) {
+    lifecycleError('conflictingDuplicate', 'Result summary status does not match task event status');
+  }
   // Terminal task state must also match.
   if (!fs.existsSync(data.taskStatePath)) {
     lifecycleError('stateNotFound', `Task state not found: ${data.taskStatePath}`);
@@ -7990,6 +8346,9 @@ function lifecycleTaskEventRecord(flags) {
   const taskState = readJsonFileStrict(data.taskStatePath);
   if (!taskState.terminalResult || taskState.terminalResult.terminalResultId !== data.terminalResultId) {
     lifecycleError('conflictingDuplicate', 'Task state terminalResultId does not match');
+  }
+  if (taskState.terminalResult.status !== data.status) {
+    lifecycleError('conflictingDuplicate', 'Task state terminal result status does not match task event status');
   }
 
   // Idempotency by parentRunId + terminalResultId.
