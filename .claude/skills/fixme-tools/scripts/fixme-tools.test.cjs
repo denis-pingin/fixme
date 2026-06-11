@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const os = require('os');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
 const {
@@ -168,6 +169,49 @@ function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-test-'));
   tmpDirs.push(dir);
   return dir;
+}
+
+function withHomeDir(homeDir, fn) {
+  const previousHome = process.env.HOME;
+  process.env.HOME = homeDir;
+  try {
+    return fn();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
+}
+
+function createCodexLinkedWorktreeFixture(config = {}) {
+  const homeDir = fs.realpathSync(createTmpDir());
+  const workspace = fs.realpathSync(createTmpDir());
+  const fixmeDir = path.join(workspace, '.fixme');
+  const primaryRoot = path.join(workspace, 'alpha-2');
+  const gitDir = path.join(primaryRoot, '.git');
+  const worktreeGitDir = path.join(gitDir, 'worktrees', 'codex-alpha-2');
+  const codexRoot = path.join(homeDir, '.codex', 'worktrees', 'c392', 'alpha-2');
+
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({
+    subRepos: ['alpha-2'],
+    ...config,
+  }));
+  fs.mkdirSync(worktreeGitDir, { recursive: true });
+  fs.writeFileSync(path.join(worktreeGitDir, 'commondir'), '../..\n');
+  fs.mkdirSync(codexRoot, { recursive: true });
+  fs.writeFileSync(path.join(codexRoot, '.git'), `gitdir: ${worktreeGitDir}\n`);
+  fs.mkdirSync(path.join(codexRoot, '.fixme'), { recursive: true });
+
+  return {
+    homeDir,
+    workspace,
+    fixmeDir,
+    primaryRoot,
+    codexRoot,
+  };
 }
 
 function createObsoleteSubReposCwd() {
@@ -4909,6 +4953,14 @@ test('findFixmeRoot: prefers local .fixme/ over parent .fixme/', () => {
   assert(result === subRepo, `Should prefer local .fixme/, got ${result}`);
 });
 
+test('findFixmeRoot: Codex-linked worktree uses canonical workspace .fixme over local stale .fixme', () => {
+  const fixture = createCodexLinkedWorktreeFixture();
+  withHomeDir(fixture.homeDir, () => {
+    const result = findFixmeRoot(fixture.codexRoot);
+    assert(result === fixture.workspace, `Should use canonical workspace .fixme, got ${result}`);
+  });
+});
+
 test('findFixmeRoot: falls back to startDir when no .fixme/ found', () => {
   const isolated = createTmpDir();
   const result = findFixmeRoot(isolated);
@@ -4974,6 +5026,16 @@ test('root: resolves to parent when .fixme/ is in parent and sub-dir has .git', 
   assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
   assert(result.data.fixmeRoot === workspace, `fixmeRoot should be workspace, got ${result.data.fixmeRoot}`);
   assert(result.data.fixmeDir === path.join(workspace, '.fixme'), `fixmeDir should be in workspace, got ${result.data.fixmeDir}`);
+});
+
+test('root: Codex-linked worktree reports canonical workspace .fixme over local stale .fixme', () => {
+  const fixture = createCodexLinkedWorktreeFixture();
+  withHomeDir(fixture.homeDir, () => {
+    const result = runInDir('root', fixture.codexRoot);
+    assert(result.ok, `root command should succeed, got: ${JSON.stringify(result.data)}`);
+    assert(result.data.fixmeRoot === fixture.workspace, `fixmeRoot should be canonical workspace, got ${result.data.fixmeRoot}`);
+    assert(result.data.fixmeDir === fixture.fixmeDir, `fixmeDir should be canonical .fixme, got ${result.data.fixmeDir}`);
+  });
 });
 
 test('root: falls back to CWD when no .fixme/ found', () => {
@@ -5047,6 +5109,18 @@ test('multi-root: context load reads from parent .fixme/config.json', () => {
   const result = runInDir('context load', subRepo);
   assert(result.ok, `context load should succeed, got: ${JSON.stringify(result.data)}`);
   assert(result.data.framework === 'next.js', `Should load parent config, got ${result.data.framework}`);
+});
+
+test('multi-root: context load from Codex-linked worktree reads canonical workspace config', () => {
+  const fixture = createCodexLinkedWorktreeFixture({
+    project: { build: 'bun run build', framework: 'Monorepo (Bun workspaces)' },
+  });
+
+  withHomeDir(fixture.homeDir, () => {
+    const result = runInDir('context load', fixture.codexRoot);
+    assert(result.ok, `context load should succeed, got: ${JSON.stringify(result.data)}`);
+    assert(result.data.framework === 'Monorepo (Bun workspaces)', `Should load canonical config, got ${result.data.framework}`);
+  });
 });
 
 // ============================================================================
@@ -5486,6 +5560,8 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")'), 'adapter should map Agent dispatch to spawn_agent with reasoning effort');
   assert(installedTask.includes('resolve-model X --runtime codex'), 'adapter should resolve Codex runtime profile settings');
   assert(installedTask.includes('include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload'), 'adapter should force Codex runtime into lifecycle dispatch prepare payloads');
+  assert(installedTask.includes('When Fixme source instructions require a live manifest task list, use Codex `update_plan`'), 'adapter should map live manifest task lists to Codex update_plan');
+  assert(installedTask.includes('If `update_plan` is unavailable, stop with a manifest-tool blocker instead of tracking the manifest in prose'), 'adapter should fail closed when Codex manifest tooling is unavailable');
   assert(installedTask.includes('"runtime":"codex","agentName":"fixme-task"'), 'Codex installed skill bodies should rewrite lifecycle runtime payloads to codex');
   assert(installedTask.includes('Skill("name", args)'), 'adapter should map Skill invocation');
   assert(installedTask.includes('take precedence over lower source instructions'), 'adapter should declare precedence over Claude-native source rules');
@@ -5757,6 +5833,39 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   assert(skill.includes('Before every Agent dispatch wait, ping the current fixme-task invocation'), 'fixme-task should refresh its inherited liveness before waiting on child agents');
   assert(skill.includes('--current-command "waiting for <agent-name>"'), 'fixme-task should report the child agent it is waiting on');
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
+});
+
+test('fixme workflow manifests use runtime-neutral live task-list tooling', () => {
+  const howtoPath = path.resolve(__dirname, '..', '..', 'fixme-howto-workflow-manifest', 'SKILL.md');
+  assert(fs.existsSync(howtoPath), 'shared workflow manifest howto should exist');
+  const howto = fs.readFileSync(howtoPath, 'utf8');
+  assert(howto.includes('live manifest task list'), 'shared howto should name the live manifest abstraction');
+  assert(howto.includes('TaskCreate'), 'shared howto should document Claude TaskCreate mapping');
+  assert(howto.includes('TaskUpdate'), 'shared howto should document Claude TaskUpdate mapping');
+  assert(howto.includes('TaskList'), 'shared howto should document Claude TaskList mapping');
+  assert(howto.includes('TaskGet'), 'shared howto should document Claude TaskGet mapping');
+  assert(howto.includes('update_plan'), 'shared howto should document Codex update_plan mapping');
+  assert(howto.includes('stop with a manifest-tool blocker'), 'shared howto should fail closed when no manifest tool is available');
+  assert(howto.includes('not durable workflow state'), 'shared howto should distinguish live task lists from durable state');
+
+  const taskSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md'), 'utf8');
+  const prSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md'), 'utf8');
+  const taskAgent = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-task.md'), 'utf8');
+
+  for (const [name, content] of [
+    ['fixme-task skill', taskSkill],
+    ['fixme-pr-comments skill', prSkill],
+    ['fixme-task agent', taskAgent],
+  ]) {
+    assert(content.includes('live manifest task list'), `${name} should use the runtime-neutral manifest contract`);
+    assert(!content.includes('TodoWrite'), `${name} should not depend on TodoWrite`);
+  }
+
+  assert(taskSkill.includes('Parent and child live manifest task lists stay separate'), 'fixme-task should keep parent and child manifests separate');
+  assert(taskSkill.includes('Do not inspect, merge, replace, or advance the parent manifest from `fixme-task`'), 'fixme-task should forbid child mutation of parent manifest');
+  assert(taskSkill.includes('record a durable terminal task event for the parent to consume'), 'fixme-task should hand off parent-driven completion through task events');
+  assert(!taskSkill.includes('latest todo state in conversation history'), 'fixme-task should not read parent todo state from conversation history');
+  assert(!taskSkill.includes('Begin executing the parent\'s next step'), 'fixme-task should not start parent-owned verification after child completion');
 });
 
 test('fixme-task skill: owns durable attention requests and answer resume', () => {

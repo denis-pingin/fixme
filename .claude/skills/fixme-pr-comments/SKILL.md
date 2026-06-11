@@ -89,13 +89,13 @@ Parse arguments from skill invocation. All flags default to OFF (all phases run)
 
 ## Workflow Manifest (NON-NEGOTIABLE)
 
-Before fetching any comments, expand the entire workflow into a flat, numbered manifest using TodoWrite. Every step - including routing decisions and conditional skips - becomes an explicit entry. This eliminates conditional branching ("did I present analysis yet?") and makes skipping the analysis-presentation gate structurally impossible.
+Before fetching any comments, expand the entire workflow into a flat, numbered manifest using the live manifest task list. Every step - including routing decisions and conditional skips - becomes an explicit entry. This eliminates conditional branching ("did I present analysis yet?") and makes skipping the analysis-presentation gate structurally impossible.
 
 ### Building the Manifest
 
-Build the manifest based on the parsed flags. Step 8 (Pre-Execution Confirmation) is the ONLY step whose presence in the manifest is controlled by a flag: it is included if and only if `--pause` is set. When `--pause` is OFF, Step 8 is omitted entirely - it does not appear in the TodoWrite list, and there is no "skip" entry for it.
+Build the manifest based on the parsed flags. Step 8 (Pre-Execution Confirmation) is the ONLY step whose presence in the manifest is controlled by a flag: it is included if and only if `--pause` is set. When `--pause` is OFF, Step 8 is omitted entirely - it does not appear in the live manifest task list, and there is no "skip" entry for it.
 
-This is intentional. Keeping a Step 8 todo around when `--pause` is OFF creates a recency anchor that biases the model toward inserting a "Proceed? (yes / no / modify)" prompt between Step 4 (analysis presentation) and Step 9 (dispatch). The presence-or-absence of the Step 8 todo entry IS the signal: if it is in the list, you pause; if it is not, you do not.
+This is intentional. Keeping a Step 8 manifest around when `--pause` is OFF creates a recency anchor that biases the model toward inserting a "Proceed? (yes / no / modify)" prompt between Step 4 (analysis presentation) and Step 9 (dispatch). The presence-or-absence of the Step 8 manifest entry IS the signal: if it is in the list, you pause; if it is not, you do not.
 
 All other steps are unconditional. Steps 11 and 13 are routing entries that decide whether 12 and 14 execute; Step 8 is different because it represents an in-line user prompt, not a backend action.
 
@@ -119,7 +119,7 @@ Step 14  [resolve]          Build reply execution table, preflight reply bodies,
 Step 15  [done]             Run summary
 ```
 
-Step numbers are stable anchors to the workflow definition, not sequence indices. When Step 8 is omitted, Step 9 is still numbered 9; the todo list simply has no entry between Step 7 and Step 9.
+Step numbers are stable anchors to the workflow definition, not sequence indices. When Step 8 is omitted, Step 9 is still numbered 9; the live manifest task list simply has no entry between Step 7 and Step 9.
 
 ### Routing Rules
 
@@ -133,7 +133,7 @@ Step numbers are stable anchors to the workflow definition, not sequence indices
 
 ### BLOCKING GATE
 
-**Dispatching Step 9 (fixme-task) is forbidden until Step 4 (Present `## PR Comment Analysis`) is marked `completed` in TodoWrite.** Even if `--pause` is not set, the analysis presentation is mandatory - `--pause` only controls whether Step 8 (Ready to Execute confirmation) waits for the user. The analysis report is always shown.
+**Dispatching Step 9 (fixme-task) is forbidden until Step 4 (Present `## PR Comment Analysis`) is marked `completed` in live manifest task list.** Even if `--pause` is not set, the analysis presentation is mandatory - `--pause` only controls whether Step 8 (Ready to Execute confirmation) waits for the user. The analysis report is always shown.
 
 If you find yourself with CURRENT_PR_FIX groups resolved and Step 4 is still `pending` or `in_progress`, you have skipped the gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed.
 
@@ -150,14 +150,14 @@ When `--pause` IS set, the turn that emits the Step 4 presentation may end with 
 
 **Anti-pattern self-check.** Before submitting the turn that contains the Step 4 presentation, scan your draft output for any of these tokens: `?`, `(yes`, `(modify`, `Proceed`, `dispatch?`, `Continue`. If any appear in your final paragraph and `--pause` is OFF, STOP. You are about to violate this gate. The cause is almost always recency-driven pattern matching from a prior session that did use `--pause`. Re-read the parsed flags. Confirm `--pause` is OFF. Replace the closing question with the Step 9 dispatch tool call.
 
-### Creating the Manifest with TodoWrite
+### Creating the Manifest with the live manifest task list
 
-After deriving the manifest, create it via TodoWrite. Step 1 starts `in_progress`; all other steps start `pending`. The TodoWrite list **depends on whether `--pause` was set in the invocation**:
+After deriving the manifest, create it via the live manifest task list. Step 1 starts `in_progress`; all other steps start `pending`. The live manifest task list **depends on whether `--pause` was set in the invocation**:
 
 **When `--pause` IS set (15-step manifest, Step 8 included):**
 
 ```
-TodoWrite([
+TaskCreate([
   { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
   { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
   { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
@@ -179,7 +179,7 @@ TodoWrite([
 **When `--pause` is NOT set (14-step manifest, Step 8 OMITTED entirely):**
 
 ```
-TodoWrite([
+TaskCreate([
   { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
   { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
   { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
@@ -204,7 +204,7 @@ Note that Step 9 keeps its number even when Step 8 is absent - step numbers are 
 Execute steps in order. After each step (whether a Bash command, an analysis, a presentation, a consultation, or a dispatch):
 
 1. Process the output of the step
-2. Mark the current step `completed` via TodoWrite
+2. Mark the current step `completed` via the live manifest task list
 3. Set the next step (per routing rules) to `in_progress`
 4. Execute the next step
 
@@ -863,7 +863,7 @@ Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQU
 
 **PIPELINE GATE (self-check before proceeding):** Your next action MUST be liveness setup followed by a `Skill("fixme-task")` invocation. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The Skill tool is the ONLY implementation tool you use in this step.
 
-**BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in TodoWrite before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
+**BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in live manifest task list before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
 
 #### Invoke fixme-task (inline-skill transport, parent-driven)
 

@@ -1171,14 +1171,24 @@ function buildTransitionsFromPhases(phases) {
  * Find the project root that contains the .fixme/ directory.
  *
  * Resolution order:
- * 1. If startDir has .fixme/ -> return startDir (local takes priority)
- * 2. Walk up ancestors looking for a parent with .fixme/:
+ * 1. If startDir is a Codex-linked git worktree, resolve via the primary checkout
+ *    so shared workspace .fixme/ state wins over stale worktree-local state
+ * 2. If startDir has .fixme/ -> return startDir (local takes priority)
+ * 3. Walk up ancestors looking for a parent with .fixme/:
  *    a. If parent .fixme/config.json has subRepos and startDir matches -> return parent
  *    b. If startDir (or any dir between startDir and parent) has .git -> return parent
- * 3. Never go above $HOME or filesystem root
- * 4. Fallback: return startDir
+ * 4. Never go above $HOME or filesystem root
+ * 5. Fallback: return startDir
  */
 function findFixmeRoot(startDir) {
+  const codexLinkedRoot = findCodexLinkedWorktreeFixmeRoot(startDir);
+  if (codexLinkedRoot) {
+    return codexLinkedRoot;
+  }
+  return findFixmeRootFromFilesystem(startDir);
+}
+
+function findFixmeRootFromFilesystem(startDir) {
   const resolved = path.resolve(startDir);
   const root = path.parse(resolved).root;
   const homedir = os.homedir();
@@ -1239,6 +1249,116 @@ function findFixmeRoot(startDir) {
     dir = parent;
   }
   return startDir;
+}
+
+function findCodexLinkedWorktreeFixmeRoot(startDir) {
+  const resolved = path.resolve(startDir);
+  const codexWorktreesRoot = path.join(os.homedir(), '.codex', 'worktrees');
+  if (!isPathInside(resolved, codexWorktreesRoot)) {
+    return null;
+  }
+
+  const linkedWorktree = findLinkedWorktreePrimaryRoot(resolved);
+  if (!linkedWorktree) {
+    return null;
+  }
+
+  const relativePath = path.relative(linkedWorktree.worktreeRoot, resolved);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  const primaryStartDir = path.join(linkedWorktree.primaryRoot, relativePath);
+  const canonicalRoot = findFixmeRootFromFilesystem(primaryStartDir);
+  return directoryExists(path.join(canonicalRoot, '.fixme')) ? canonicalRoot : null;
+}
+
+function findLinkedWorktreePrimaryRoot(startDir) {
+  const linkedGitFile = findContainingLinkedGitFile(startDir);
+  if (!linkedGitFile) {
+    return null;
+  }
+
+  const gitDir = readGitFileDirectory(linkedGitFile.gitFilePath);
+  if (!gitDir) {
+    return null;
+  }
+
+  const commonGitDir = readCommonGitDirectory(gitDir);
+  if (!commonGitDir || path.basename(commonGitDir) !== '.git') {
+    return null;
+  }
+
+  const primaryRoot = path.dirname(commonGitDir);
+  if (primaryRoot === linkedGitFile.worktreeRoot || !directoryExists(commonGitDir)) {
+    return null;
+  }
+
+  return {
+    worktreeRoot: linkedGitFile.worktreeRoot,
+    primaryRoot,
+  };
+}
+
+function findContainingLinkedGitFile(startDir) {
+  const resolved = path.resolve(startDir);
+  const root = path.parse(resolved).root;
+  let dir = resolved;
+
+  while (dir !== root) {
+    const gitPath = path.join(dir, '.git');
+    if (fileExists(gitPath)) {
+      return { worktreeRoot: dir, gitFilePath: gitPath };
+    }
+    if (directoryExists(gitPath)) {
+      return null;
+    }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return null;
+}
+
+function readGitFileDirectory(gitFilePath) {
+  const contents = fs.readFileSync(gitFilePath, 'utf8').trim();
+  const match = contents.match(/^gitdir:\s*(.+)$/);
+  if (!match) {
+    return null;
+  }
+  return resolveGitMetadataPath(match[1].trim(), path.dirname(gitFilePath));
+}
+
+function readCommonGitDirectory(gitDir) {
+  const commonDirPath = path.join(gitDir, 'commondir');
+  if (!fileExists(commonDirPath)) {
+    return null;
+  }
+
+  const contents = fs.readFileSync(commonDirPath, 'utf8').trim();
+  if (!contents) {
+    return null;
+  }
+  return resolveGitMetadataPath(contents, gitDir);
+}
+
+function resolveGitMetadataPath(value, baseDir) {
+  return path.normalize(path.isAbsolute(value) ? value : path.resolve(baseDir, value));
+}
+
+function isPathInside(childPath, parentPath) {
+  const relativePath = path.relative(parentPath, childPath);
+  return relativePath === '' || Boolean(relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function fileExists(filePath) {
+  return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+}
+
+function directoryExists(dirPath) {
+  return fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory();
 }
 
 function loadPipelineWorkflow(pipelineName, fixmeRoot) {
@@ -4465,6 +4585,11 @@ function getCodexSkillAdapterHeader(skillName) {
     '- Omit `reasoning_effort` only when the resolver returns `null`. Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails.',
     '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
+    '',
+    '## Workflow Manifests',
+    '',
+    '- When Fixme source instructions require a live manifest task list, use Codex `update_plan`.',
+    '- If `update_plan` is unavailable, stop with a manifest-tool blocker instead of tracking the manifest in prose.',
     '',
     '## User Questions',
     '',

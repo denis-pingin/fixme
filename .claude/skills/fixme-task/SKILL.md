@@ -121,7 +121,7 @@ Plain `/fixme-task ...` defaults to `standard`.
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
 2. Extract `--pipeline <name>` if present. Remove it from remaining args.
-3. Determine parent context from the dispatch prompt, not a CLI flag. When the dispatch prompt carries a `<task-state-owner>` / `parentContinuation` block (or the parent supplied `transport=inline-skill` via `lifecycle dispatch prepare`), this run is parent-driven: a parent skill (typically `fixme-pr-comments`) owns its own todo list and the parent's final summary. Otherwise the run is direct. The dispatch manifest is built in parent-driven mode when `parentContinuation` is present in task state - see "Creating the Manifest with TodoWrite" below. `transport` is informational launch metadata, never a `fixme-task` command-line flag.
+3. Determine parent context from the dispatch prompt, not a CLI flag. When the dispatch prompt carries a `<task-state-owner>` / `parentContinuation` block (or the parent supplied `transport=inline-skill` via `lifecycle dispatch prepare`), this run is parent-driven: a parent skill (typically `fixme-pr-comments`) owns its own live manifest task list and the parent's final summary. Otherwise the run is direct. The dispatch manifest is built in parent-driven mode when `parentContinuation` is present in task state - see "Creating the Manifest with the live manifest task list" below. `transport` is informational launch metadata, never a `fixme-task` command-line flag.
 4. Extract `--save` if present (boolean flag). Remove it from remaining args. Also set `saveIntent=true` when the user asks in prose to "save this as a fixme-task", "save this a fixme-task", "save it", or equivalent.
    - Save intent can be terminal or non-terminal depending on the rest of the instruction.
    - Set `continueAfterSave=false` when the prompt only asks to save a task, or when `--save` is present and the remaining text is only the task description.
@@ -681,7 +681,7 @@ Review levels use `strict | standard | lenient | fast-track | critical`. The top
 
 Every non-terminal `fixme-task` run has a low-level task state JSON file. Ticket state remains the high-level session scheduler state; task state is the exact resume cursor for this orchestrator.
 
-Task state JSON uses camelCase JSON keys only. Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`. Those are either derivable from `cursor.phase` and artifact paths or are live TodoWrite UI state.
+Task state JSON uses camelCase JSON keys only. Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`. Those are either derivable from `cursor.phase` and artifact paths or are live manifest task list UI state.
 
 Standalone saved task state path:
 
@@ -759,7 +759,7 @@ Resume mode:
 
 1. Run `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
 2. Read the returned state path.
-3. Rebuild the live TodoWrite manifest from the workflow config and the semantic `cursor`.
+3. Rebuild the live manifest task list manifest from the workflow config and the semantic `cursor`.
 4. If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly. If `status` is `waitingForUser` without `answerAttentionId`, present `pendingDecision` only in a direct user-facing resume; in attention mode, return the existing `FIXME_ATTENTION_REQUIRED: <attention-id>` for the parent broker.
 5. If the cursor points at a dispatch step, re-dispatch that skill with the artifact and handoff data in the state file.
 6. If the saved task brief or state contains `Preparation Artifacts`, include only those explicit artifacts in the next dispatch context. Do not discover brainstorm or research files by recency.
@@ -942,7 +942,7 @@ The orchestrator may ONLY use these tools:
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
-- **TodoWrite** - to create and track the dispatch manifest steps
+- **live manifest task list** - to create and track the dispatch manifest steps
 
 Any other tool use (Read on source code, Grep, Glob, Edit on source code) **during active pipeline execution** is a pipeline violation. If you need information from the codebase mid-dispatch, dispatch an agent to get it.
 
@@ -950,7 +950,7 @@ Any other tool use (Read on source code, Grep, Glob, Edit on source code) **duri
 
 ## Dispatch Manifest (NON-NEGOTIABLE)
 
-Before dispatching ANY agent, expand the full pipeline into a flat, numbered dispatch manifest using TodoWrite. Every step - including review and handler steps - becomes an explicit entry. This eliminates conditional branching ("does this phase have a review?") and makes skipping review phases structurally impossible.
+Before dispatching ANY agent, expand the full pipeline into a flat, numbered dispatch manifest using the live manifest task list. Every step - including review and handler steps - becomes an explicit entry. This eliminates conditional branching ("does this phase have a review?") and makes skipping review phases structurally impossible.
 
 ### Building the Manifest
 
@@ -1024,18 +1024,18 @@ The planner and executor still validate the requested route. If a supposedly imp
 
 When the dispatch input already contains a complete pre-planned recipe (TDD steps, exact file paths, exact code, exact commit message - typical for `fixme-pr-comments` PR fix dispatches), the planner runs in validate-and-persist mode rather than re-design mode. See `fixme-write-plan`'s "Pre-Planned Input" section for the contract.
 
-### Creating the Manifest with TodoWrite
+### Creating the Manifest with the live manifest task list
 
-After building the manifest, create it using TodoWrite. One todo per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry.
+After building the manifest, create it using the live manifest task list. One live manifest task per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry.
 
 The manifest is created in one of two modes depending on whether this run is parent-driven (a `parentContinuation` block is present in task state / the dispatch prompt) as determined in Argument Parsing:
 
-- **Standalone mode** (default): replace the todo list entirely with the standard manifest. Use this for `/fixme-task` invocations and for dispatch from `fixme-session` or any other parent that does not own a wrapping todo list.
-- **Parent-driven mode** (`parentContinuation` is present): preserve the parent's todo list and replace ONLY the parent's `in_progress` dispatch placeholder for this skill with the expanded substeps. Used by `fixme-pr-comments` and any other parent that wraps `fixme-task` (via transport `inline-skill`/`background` with `parentContinuation`) with surrounding workflow steps.
+- **Standalone mode** (default): replace the live manifest task list entirely with the standard manifest. Use this for `/fixme-task` invocations and for dispatch from `fixme-session` or any other parent that does not own a wrapping live manifest task list.
+- **Parent-driven mode** (`parentContinuation` is present): create a child-owned live manifest task list for this `fixme-task` run only. Parent and child live manifest task lists stay separate. Do not inspect, merge, replace, or advance the parent manifest from `fixme-task`; the parent continues by consuming durable task events after the child records them.
 
 **Fresh start (standalone, no prior state):**
 ```
-TodoWrite([
+TaskCreate([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
   { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
   { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
@@ -1050,7 +1050,7 @@ TodoWrite([
 
 **Mid-pipeline entry (standalone, plan exists, entering at plan review):**
 ```
-TodoWrite([
+TaskCreate([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "completed", activeForm: "Dispatching fixme-write-plan" },
   { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "in_progress", activeForm: "Dispatching fixme-review-plan" },
   ...remaining steps as pending...
@@ -1059,82 +1059,38 @@ TodoWrite([
 
 **Parent-driven mode (`parentContinuation` present):**
 
-When parent-driven, the parent skill (e.g. `fixme-pr-comments`) has already created a todo list with a single `in_progress` placeholder dispatching this skill - typically labeled `Step N [dispatch] Dispatch Skill(fixme-task) ...` or similar. The most recent `TodoWrite` tool call in conversation history is the source of truth for the parent's list.
+When parent-driven, the parent skill (e.g. `fixme-pr-comments`) owns its own live manifest task list and final summary. The child `fixme-task` run creates a separate child-owned live manifest task list using the same step shape as standalone mode, except it omits the terminal Run Summary step.
 
-**CRITICAL: Parent-driven mode produces NO Run Summary and has NO terminal `[done]` step.** The parent skill owns the workflow's final summary at its own terminal step (e.g. `fixme-pr-comments`'s `Step 15 [done] Run summary`). fixme-task in parent-driven mode ends at the implement-routing step (own `Step N.8`) - there is no `Step N.9`. After `Step N.8` is marked `completed`, control passes immediately to the parent's next pending step in the same turn. Do NOT print a `## Run Summary` block. Do NOT write a paragraph announcing the handoff. Just continue executing the parent's next step.
+**CRITICAL: Parent-driven mode produces NO Run Summary and has NO terminal `[done]` step.** The parent skill owns the workflow's final summary at its own terminal step (e.g. `fixme-pr-comments`'s `Step 15 [done] Run summary`). fixme-task in parent-driven mode ends at the implement-routing step (own Step 8). After Step 8 is marked `completed`, record a durable terminal task event for the parent to consume. Do NOT print a `## Run Summary` block. Do NOT write a paragraph announcing the handoff. Do NOT start parent-owned verification, commit, or reply steps from inside `fixme-task`.
 
 Construction rules:
 
-1. Locate the parent's `in_progress` placeholder by scanning the latest todo state in conversation history. The placeholder is the single `in_progress` item whose content references dispatching `fixme-task` (text such as `Dispatch Skill(fixme-task)`, `Dispatch fixme-task`, or `dispatch fixme-task`).
-2. Note the parent's step number on that placeholder (e.g. parent's `Step 9`). This becomes the prefix for own substeps - parent's `Step 9` -> own steps `Step 9.1` through `Step 9.8`. If no parent step number is detectable, use `9.` as the prefix (the conventional position).
-3. Build own substeps from the standalone manifest's Steps 1-8 ONLY (omit Step 9 "Run Summary" entirely - parent-driven mode does not have a Run Summary step), with each step content prefixed by the parent step number. Example: `Step 1 [plan] Dispatch fixme-write-plan` becomes `Step 9.1 [plan] Dispatch fixme-write-plan`. The full parent-driven substep list is `Step N.1` ... `Step N.8`.
-4. The first own substep is `in_progress`. All other own substeps are `pending` (or `completed` for mid-pipeline entry, same as standalone mode).
-5. Issue ONE `TodoWrite` call that emits the full merged list: every parent item before the placeholder (status unchanged) + own substeps (replacing the placeholder) + every parent item after the placeholder (status unchanged).
-6. Every subsequent `TodoWrite` call (for status updates as the pipeline progresses) MUST also include the full merged list. Parent items before and after own substeps must be carried through every call with their statuses preserved exactly as they were in the most recent state. Never drop parent items.
-7. **Handoff at Step N.8.** When the implement-routing step (own `Step N.8`) returns CLEAN and the pipeline has nothing more to do internally, you have reached the handoff point. In the SAME TURN as marking `Step N.8 completed`:
-   - In the same TodoWrite call that marks `Step N.8 completed`, also mark the immediately-following parent pending item (e.g. parent's `Step 10 [verify]`) as `in_progress`.
-   - Do NOT output any `## Run Summary` block. Do NOT output any structured ending document. Do NOT write a paragraph that says "returning control to...", "the pipeline is complete", "now handing off", or any equivalent narration. The parent owns the summary at its own terminal step.
-   - Begin executing the parent's next step's instructions immediately. The parent skill's content (e.g. `fixme-pr-comments`) is in conversation history - read what its Step 10 says to do (typically: run build/lint/test verification commands) and start doing it in this turn.
-   - Do NOT end the turn after marking Step N.8 completed. Continue with the parent's Step 10 action (e.g. running `bun run biome:check && bun run typecheck && bun run test`) before stopping.
-8. This skill does NOT mark any parent items completed during its own substeps - that is the parent's responsibility (and the model continues to be the parent at the handoff point, marking each parent step completed as it finishes).
+1. Build child steps from the standalone manifest's Steps 1-8 ONLY. Omit Step 9 "Run Summary" entirely because parent-driven mode has no Run Summary step.
+2. The first child step is `in_progress`. All other child steps are `pending` (or `completed` for mid-pipeline entry, same as standalone mode).
+3. Create only the child live manifest task list. Do not read, copy, or update the parent's manifest.
+4. Every subsequent live manifest task list update includes only child steps.
+5. **Terminal task event at Step 8.** When the implement-routing step returns CLEAN and the child pipeline has nothing more to do internally, mark Step 8 `completed`, then record a durable terminal task event for the parent to consume. Do not output a Run Summary and do not advance the parent manifest.
 
-**Nested mode example** (parent is `fixme-pr-comments` at Step 9, full default pipeline):
-
-Parent list before parent-driven dispatch:
+**Parent-driven child manifest example**:
 ```
-[
-  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "completed", ... },
-  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "completed", ... },
-  { content: "Step 3 [analyze] Analyze every item individually", status: "completed", ... },
-  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "completed", ... },
-  { content: "Step 5 [analyze/route] Route on consultation need", status: "completed", ... },
-  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "completed", ... },
-  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "completed", ... },
-  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "in_progress", ... },
-  { content: "Step 10 [verify] Run build/lint/test", status: "pending", ... },
-  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", ... },
-  { content: "Step 12 [commit] Commit and push", status: "pending", ... },
-  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", ... },
-  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", ... },
-  { content: "Step 15 [done] Run summary", status: "pending", ... }
-]
-```
-
-First merged TodoWrite call from parent-driven fixme-task:
-```
-TodoWrite([
-  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "completed", ... },
-  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "completed", ... },
-  { content: "Step 3 [analyze] Analyze every item individually", status: "completed", ... },
-  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately dispatch Step 9 in same turn", status: "completed", ... },
-  { content: "Step 5 [analyze/route] Route on consultation need", status: "completed", ... },
-  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "completed", ... },
-  { content: "Step 7 [consult/route] Route to dispatch (no --pause confirmation gate)", status: "completed", ... },
-  { content: "Step 9.1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 9.2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 9.3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 9.4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 9.5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 9.6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 9.7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 9.8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
-  { content: "Step 10 [verify] Run build/lint/test", status: "pending", ... },
-  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", ... },
-  { content: "Step 12 [commit] Commit and push", status: "pending", ... },
-  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", ... },
-  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", ... },
-  { content: "Step 15 [done] Run summary", status: "pending", ... }
+TaskCreate([
+  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
+  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" }
 ])
 ```
-
-The parent's `Step 9 [dispatch]` placeholder is gone - it has been replaced by the eight `Step 9.1` ... `Step 9.8` substeps. There is NO `Step 9.9` and NO Run Summary in parent-driven mode - the parent owns the final summary at its own terminal step (`Step 15 [done] Run summary`). Every other parent item is carried through unchanged. When `Step 9.8` is marked `completed` (CLEAN handler result), the same TodoWrite call also marks `Step 10 [verify]` as `in_progress`, and the model immediately starts executing the parent's Step 10 (running build/lint/test) in the same turn. No paragraph announcing the handoff. No Run Summary. Just continue with the parent's next step.
 
 ### Following the Manifest
 
 Execute steps in order. After each dispatch:
 
 1. Process the output (see Step Processing below)
-2. Mark the current step `completed` via TodoWrite
+2. Mark the current step `completed` via the live manifest task list
 3. Set the next step to `in_progress`
 4. Dispatch the next agent - or jump per routing rules
 
@@ -1580,7 +1536,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 2. Output the Run Summary (see format below)
 3. Mark step `completed`. Pipeline is DONE.
 
-In parent-driven mode (`parentContinuation` present) there is no Run Summary step. After the implement-routing step (`Step N.8`) returns CLEAN, in the same TodoWrite call mark `Step N.8 completed` AND mark the parent's next pending item (e.g. `Step 10 [verify]`) as `in_progress`, then immediately begin executing the parent's Step 10 instructions. Do NOT print a `## Run Summary` block. Do NOT narrate the handoff. The parent owns the final summary at its own terminal step.
+In parent-driven mode (`parentContinuation` present) there is no Run Summary step. After the implement-routing step returns CLEAN, mark Step 8 `completed`, then record a durable terminal task event for the parent to consume. Do NOT print a `## Run Summary` block. Do NOT narrate the handoff. The parent owns verification, commit, replies, and the final summary at its own terminal step.
 
 ## Pre-Final Response Gate
 
@@ -1885,7 +1841,7 @@ but {K} remain unresolved.
 
 ## Run Summary
 
-**Standalone mode only.** In parent-driven mode (`parentContinuation` present), do NOT output a Run Summary at any point - the parent skill owns the final summary at its own terminal step. See "Parent-driven mode" under "Creating the Manifest with TodoWrite" above. See also "Parent Continuation And Terminal Events" below.
+**Standalone mode only.** In parent-driven mode (`parentContinuation` present), do NOT output a Run Summary at any point - the parent skill owns the final summary at its own terminal step. See "Parent-driven mode" under "Creating the Manifest with the live manifest task list" above. See also "Parent Continuation And Terminal Events" below.
 
 **ONLY output this after the final phase completes (with clean review or no review), or after a loop guard triggers in a direct standalone run. NEVER mid-pipeline. NEVER in parent-driven mode.**
 
