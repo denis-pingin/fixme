@@ -287,20 +287,22 @@ This is the core execution cycle. Repeat until the user stops the session or the
 6. **Dispatch fixme-task in background:**
    Record `active_task` in session.md frontmatter (set to the ticket path). Use the Edit tool to update the frontmatter.
 
-   **Resolve runtime settings and print visibility banner before dispatch:**
+   **Prepare the background dispatch via the lifecycle helper (saves the child task first, creates parent state, prepares dispatch, and returns a launch block):**
 
-   **Prepare the background dispatch (resolves runtime settings, creates the child liveness status, and builds the banner in one call):**
+   `lifecycle dispatch prepare --fixme-dir <fixme-dir>` is the lower-level primitive; the stable session handoff uses the parent-aware helper below.
 
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","runtime":"claude","transport":"background","promptInputs":{...}}'
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
    ```
 
-   Store the returned `statusId` in session.md frontmatter as `activeRunStatusId`, and use the returned `runtimeSettings`/`bannerMarkdown`. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
+   The payload uses `parentSkill: "fixme-session"` with `sessionTaskRef: { "sessionPath": "<absolute-session-path>", "ticketPath": "<absolute-ticket-path>" }`, `"transport":"background"` on the child, `child.handoff.taskSaveData`, `child.handoff.payload`, and lightweight `child.promptInputs`. Store the returned `launch.statusId` in session.md frontmatter as `activeRunStatusId`, and use `launch.transport`, `launch.runtimeSettings`, `launch.bannerMarkdown`, and `launch.promptBlocks` for the runtime launch. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
+
+   The runtime adapter launches the child from the returned `launch` block. The helper does not invoke the agent itself.
 
    Print a one-line banner to the user:
 
    ```
-   → dispatching fixme-task in background (runtime: {runtime}, model: {model}, reasoning: {reasoning_effort}, profile: {profile}, source: {source})
+   → dispatching fixme-task in background (runtime: {launch.runtimeSettings.runtime}, model: {launch.runtimeSettings.model}, reasoning: {launch.runtimeSettings.reasoningEffort}, profile: {launch.runtimeSettings.profile}, source: {launch.runtimeSettings.source})
    ```
 
    Then dispatch:

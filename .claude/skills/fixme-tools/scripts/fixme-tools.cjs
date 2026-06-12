@@ -2384,18 +2384,13 @@ function configWorkflowConfigure(workflowName, flags, fixmeRoot) {
     throw new Error('Workflow name is required and must contain only letters, numbers, underscores, or hyphens');
   }
   assertWorkflowNameNotRemoved(workflowName);
-  if (!flags.data) {
-    throw new Error('--data is required for config workflow configure');
-  }
-
-  let data;
   try {
-    data = JSON.parse(flags.data);
+    var data = resolveJsonArgument(flags, 'data', { missingMessage: '--data is required for config workflow configure' });
   } catch (e) {
-    throw new Error(`Invalid JSON in --data: ${e.message}`);
-  }
-  if (!isPlainObject(data)) {
-    throw new Error('--data must be a JSON object');
+    if (e.message.startsWith('--data must be valid JSON')) {
+      throw new Error(`Invalid JSON in --data: ${e.message.replace(/^--data must be valid JSON: /, '')}`);
+    }
+    throw e;
   }
 
   if (Object.prototype.hasOwnProperty.call(data, 'pipeline')) {
@@ -3086,6 +3081,73 @@ function parseTaskData(rawData) {
   return data;
 }
 
+let stdinJsonArgumentName = null;
+let stdinJsonCache = null;
+
+function resolveJsonArgument(flags, logicalName, options = {}) {
+  const directFlag = logicalName;
+  const fileFlag = `${logicalName}-file`;
+  const stdinFlag = `${logicalName}-stdin`;
+  const display = `--${logicalName}`;
+  const sources = [];
+  if (Object.prototype.hasOwnProperty.call(flags, directFlag) && flags[directFlag] !== undefined) sources.push('direct');
+  if (Object.prototype.hasOwnProperty.call(flags, fileFlag) && flags[fileFlag] !== undefined) sources.push('file');
+  if (Object.prototype.hasOwnProperty.call(flags, stdinFlag) && flags[stdinFlag] !== undefined) sources.push('stdin');
+
+  if (sources.length === 0) {
+    if (options.required === false) return undefined;
+    throw new Error(options.missingMessage || `${display} is required`);
+  }
+  if (sources.length > 1) {
+    throw new Error(`Only one JSON source is allowed for ${display}`);
+  }
+
+  let raw;
+  if (sources[0] === 'direct') {
+    raw = flags[directFlag];
+    if (raw === true || raw === '') {
+      throw new Error(`${display} requires a JSON object`);
+    }
+  } else if (sources[0] === 'file') {
+    const rawPath = flags[fileFlag];
+    if (rawPath === true || rawPath === '') {
+      throw new Error(`--${fileFlag} requires a path value`);
+    }
+    const filePath = String(rawPath);
+    if (!path.isAbsolute(filePath)) {
+      throw new Error(`--${fileFlag} must be an absolute path`);
+    }
+    raw = fs.readFileSync(filePath, 'utf8');
+  } else {
+    if (flags[stdinFlag] !== true && flags[stdinFlag] !== '') {
+      throw new Error(`--${stdinFlag} does not accept a value`);
+    }
+    if (stdinJsonArgumentName && stdinJsonArgumentName !== logicalName) {
+      throw new Error('Only one JSON argument may use stdin in a single command');
+    }
+    stdinJsonArgumentName = logicalName;
+    if (stdinJsonCache === null) {
+      stdinJsonCache = fs.readFileSync(0, 'utf8');
+    }
+    raw = stdinJsonCache;
+  }
+
+  const previous = raw === undefined ? undefined : flags[directFlag];
+  flags[directFlag] = raw;
+  try {
+    return parseTaskData(raw);
+  } catch (e) {
+    if (sources[0] === 'direct') throw e;
+    throw new Error(e.message.replace(/^--data/, display));
+  } finally {
+    if (previous === undefined) {
+      delete flags[directFlag];
+    } else {
+      flags[directFlag] = previous;
+    }
+  }
+}
+
 function assertCamelCaseJsonKeys(value, label, pathParts = []) {
   if (!value || typeof value !== 'object') return;
   if (Array.isArray(value)) {
@@ -3272,11 +3334,7 @@ function pipelineResolutionForTaskInitFlags(flags, fixmeRoot) {
     throw new Error('task init no longer accepts --pipeline; use --pipeline-resolution');
   }
 
-  if (!Object.prototype.hasOwnProperty.call(flags, 'pipeline-resolution') || flags['pipeline-resolution'] === true) {
-    throw new Error('task init requires --pipeline-resolution');
-  }
-
-  const data = parseTaskData(flags['pipeline-resolution']);
+  const data = resolveJsonArgument(flags, 'pipeline-resolution', { missingMessage: 'task init requires --pipeline-resolution' });
   assertCamelCaseJsonKeys(data, '--pipeline-resolution');
   return validatePipelineResolutionWorkflow(
     normalizeProvidedPipelineResolution(data),
@@ -3286,12 +3344,12 @@ function pipelineResolutionForTaskInitFlags(flags, fixmeRoot) {
 }
 
 function pipelineResolve(flags, fixmeRoot) {
-  const data = parseTaskData(flags.data);
+  const data = resolveJsonArgument(flags, 'data');
   return output(resolvePipelineFromData(data, fixmeRoot));
 }
 
 function taskSave(flags, fixmeRoot) {
-  const data = parseTaskData(flags.data);
+  const data = resolveJsonArgument(flags, 'data');
   assertCamelCaseJsonKeys(data, '--data');
   validateTaskSaveHandoffData(data);
   const pipelineResolution = pipelineResolutionForTaskSaveData(data, fixmeRoot);
@@ -3334,6 +3392,32 @@ function taskSave(flags, fixmeRoot) {
     ticketPath: null,
     statePath,
   });
+}
+
+function saveStandaloneTaskCore(fixmeRoot, data) {
+  assertCamelCaseJsonKeys(data, 'task save data');
+  validateTaskSaveHandoffData(data);
+  const pipelineResolution = pipelineResolutionForTaskSaveData(data, fixmeRoot);
+  const pipeline = pipelineResolution.pipeline;
+  const taskDir = taskDirectory(fixmeRoot);
+  fs.mkdirSync(taskDir, { recursive: true });
+  const number = readNextTaskNumber(taskDir);
+  const taskRef = `FIXME-${number}`;
+  const title = data.title || 'Saved Fixme Task';
+  const slug = sanitizeTaskSlug(data.slug || title);
+  if (!slug) {
+    throw new Error('Task slug is empty after sanitization');
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  const taskPath = path.join(taskDir, `${date}-${taskRef}-${slug}.md`);
+  const statePath = path.join(taskDir, `${date}-${taskRef}-${slug}.state.json`);
+  const now = new Date().toISOString();
+  const taskData = { ...data, pipelineResolution };
+  const state = defaultTaskState({ projectRoot: fixmeRoot, pipeline, pipelineResolution, fixmeRoot, now });
+  writeTaskCounter(taskDir, number + 1);
+  fs.writeFileSync(taskPath, buildTaskMarkdown(taskData, taskRef, slug, date));
+  writeJsonAtomic(statePath, state);
+  return { mode: 'standalone', taskRef, taskPath, ticketPath: null, statePath };
 }
 
 function taskStatePathForTicket(ticketPath) {
@@ -3384,18 +3468,9 @@ function resolveReservedTaskStatePath(rawStatePath, fixmeRoot) {
 }
 
 function parseParentContinuationFlag(flags) {
-  if (!Object.prototype.hasOwnProperty.call(flags, 'parent-continuation')) {
+  const parentContinuation = resolveJsonArgument(flags, 'parent-continuation', { required: false });
+  if (parentContinuation === undefined) {
     return undefined;
-  }
-  const raw = flags['parent-continuation'];
-  if (raw === true || raw === '') {
-    throw new Error('--parent-continuation requires a JSON object');
-  }
-  let parentContinuation;
-  try {
-    parentContinuation = JSON.parse(String(raw));
-  } catch (e) {
-    throw new Error(`--parent-continuation must be valid JSON: ${e.message}`);
   }
   const patch = { parentContinuation };
   assertCamelCaseJsonKeys(patch, 'task init parentContinuation');
@@ -3738,7 +3813,7 @@ function taskAttachArtifact(flags, fixmeRoot) {
   if (!taskRef) {
     throw new Error('task attach-artifact requires --task <FIXME-N|task.md|state.json|ticket.md|ticket-folder>');
   }
-  const data = parseTaskData(flags.data);
+  const data = resolveJsonArgument(flags, 'data');
   assertCamelCaseJsonKeys(data, '--data');
   const resolved = resolveTask(taskRef, fixmeRoot);
   const targetPath = resolved.taskPath || resolved.ticketPath;
@@ -4122,7 +4197,7 @@ function taskCheckpoint(flags) {
     throw new Error(`Task state file not found: ${statePath}`);
   }
 
-  const patch = parseTaskData(flags.data);
+  const patch = resolveJsonArgument(flags, 'data');
   assertCamelCaseJsonKeys(patch, 'task checkpoint data');
   const previous = readJsonFileStrict(statePath);
   const next = mergeTaskState(previous, patch);
@@ -4386,7 +4461,7 @@ function taskDecisionAppend(flags) {
   const statePath = resolveTaskStatePathForDecision(flags);
   let record;
   try {
-    record = parseTaskData(flags.data);
+    record = resolveJsonArgument(flags, 'data');
   } catch (e) {
     lifecycleError('invalidInput', e.message);
   }
@@ -4854,17 +4929,14 @@ function contextDetect(flags) {
 
 function contextSave(flags, fixmeRoot) {
   const projectDir = flags['project-dir'] || fixmeRoot || process.cwd();
-  const dataStr = flags.data || null;
-
-  if (!dataStr) {
-    return error('--data is required for context save (JSON string)');
-  }
-
   let data;
   try {
-    data = JSON.parse(dataStr);
+    data = resolveJsonArgument(flags, 'data', { missingMessage: '--data is required for context save (JSON string)' });
   } catch (e) {
-    return error(`Invalid JSON in --data: ${e.message}`);
+    if (e.message.startsWith('--data must be valid JSON')) {
+      return error(`Invalid JSON in --data: ${e.message.replace(/^--data must be valid JSON: /, '')}`);
+    }
+    return error(e.message);
   }
 
   const { config, configPath } = readConfigForWrite(projectDir);
@@ -6094,7 +6166,7 @@ function normalizeOptionalAttentionDataString(data, key, errorMessage) {
 }
 
 function normalizeAttentionSetData(rawData) {
-  const data = parseTaskData(rawData);
+  const data = isPlainObject(rawData) ? rawData : parseTaskData(rawData);
   assertCamelCaseJsonKeys(data, 'run attention data');
 
   const ownerSkill = normalizeRequiredAttentionDataString(data, 'ownerSkill', 'run attention data requires ownerSkill');
@@ -6187,7 +6259,7 @@ function runAttentionSetCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const statusId = validateRequiredRunId(flags['status-id']);
   const { statusPath, status } = readRunStatusForAttention(fixmeDir, statusId);
-  const record = normalizeAttentionSetData(flags.data);
+  const record = normalizeAttentionSetData(resolveJsonArgument(flags, 'data'));
   const attentionPath = runAttentionPath(fixmeDir, statusId, record.attentionId);
   const attentionCommand = `attention:${record.attentionId}`;
   if (fs.existsSync(attentionPath) && status.currentCommand === attentionCommand) {
@@ -6254,7 +6326,7 @@ function runAttentionAnswerCore(flags) {
   if (record.status === 'answered') {
     throw new Error(`Run attention already answered: ${record.attentionId}`);
   }
-  const answer = parseTaskData(flags.data);
+  const answer = resolveJsonArgument(flags, 'data');
   assertCamelCaseJsonKeys(answer, 'run attention answer data');
   assertKnownJsonFields(answer, 'run attention answer data', RUN_ATTENTION_ANSWER_FIELDS);
   if (!Object.prototype.hasOwnProperty.call(answer, 'answer')) {
@@ -7356,7 +7428,7 @@ function usageIdempotencyPath(fixmeDir, keyHash) {
 function resolveLifecycleData(flags) {
   let data;
   try {
-    data = parseTaskData(flags.data);
+    data = resolveJsonArgument(flags, 'data');
   } catch (e) {
     lifecycleError('invalidInput', e.message);
   }
@@ -7539,8 +7611,126 @@ const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 's
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
+const LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS = new Set(['parent', 'child', 'parentContinuation', 'await', 'recoverStaleParent']);
+const PREPARE_CHILD_PARENT_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'payload']);
+const PREPARE_CHILD_CHILD_FIELDS = new Set(['idempotencyKey', 'agentName', 'runtime', 'transport', 'parentInvocationId', 'pipelineRunId', 'parentStatusId', 'handoff', 'promptInputs']);
+const PREPARE_CHILD_HANDOFF_FIELDS = new Set(['mode', 'taskSaveData', 'payload']);
+const PREPARE_CHILD_AWAIT_FIELDS = new Set(['fixBatches', 'activeBatchIndex', 'ledger']);
+
 function dispatchIdempotencyPath(fixmeDir, keyHash) {
   return path.join(fixmeDir, 'dispatch', 'idempotency', `${keyHash}.json`);
+}
+
+function childHandoffIndexPath(fixmeDir, childIdempotencyKey) {
+  return path.join(fixmeDir, 'tasks', 'child-handoffs', `${stableHash({ childIdempotencyKey })}.json`);
+}
+
+function childHandoffInputDigest(child) {
+  return stableHash({
+    agentName: child.agentName,
+    runtime: child.runtime,
+    transport: child.transport,
+    taskSaveData: child.handoff.taskSaveData,
+    payload: child.handoff.payload,
+    promptInputs: child.promptInputs || {},
+  });
+}
+
+function preflightChildHandoffIndex(fixmeDir, child) {
+  const indexPath = childHandoffIndexPath(fixmeDir, child.idempotencyKey);
+  const durableInputDigest = childHandoffInputDigest(child);
+  if (!fs.existsSync(indexPath)) {
+    return { mode: 'create', indexPath, durableInputDigest };
+  }
+  const index = readJsonFileStrict(indexPath);
+  if (index.durableInputDigest !== durableInputDigest) {
+    lifecycleError('conflictingDuplicate', `child idempotencyKey '${child.idempotencyKey}' already used with different durable handoff input`);
+  }
+  for (const fileField of ['taskPath', 'statePath', 'handoffPayloadPath']) {
+    if (!isNonEmptyString(index[fileField]) || !fs.existsSync(index[fileField])) {
+      lifecycleError('staleState', `Child handoff index is stale; missing ${fileField}`, {
+        childIdempotencyKey: child.idempotencyKey,
+        indexPath,
+        recovery: {
+          safeAutomaticRecovery: false,
+          commands: {
+            prepareChild: 'lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>',
+          },
+        },
+      });
+    }
+  }
+  return { mode: 'reuse', indexPath, durableInputDigest, index };
+}
+
+function attachPreparationArtifactCore(taskPath, statePath, artifactData) {
+  const artifact = normalizePreparationArtifactData(artifactData);
+  const state = readJsonFileStrict(statePath);
+  const previousArtifacts = state.artifacts && Array.isArray(state.artifacts.preparationArtifacts)
+    ? state.artifacts.preparationArtifacts
+    : [];
+  const preparationArtifacts = upsertPreparationArtifact(previousArtifacts, artifact);
+  const nextState = {
+    ...state,
+    artifacts: {
+      ...(isPlainObject(state.artifacts) ? state.artifacts : {}),
+      preparationArtifacts,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  const content = fs.readFileSync(taskPath, 'utf8');
+  const { frontmatter, body, rawFields } = parseFrontmatter(content);
+  const nextBody = replacePreparationArtifactsSection(body, preparationArtifacts);
+  writeJsonAtomic(statePath, nextState);
+  fs.writeFileSync(taskPath, buildContent(frontmatter, nextBody, rawFields));
+  return artifact;
+}
+
+function saveOrReuseChildHandoff(fixmeDir, child, preflight) {
+  if (preflight.mode === 'reuse') {
+    return {
+      taskRef: preflight.index.taskRef,
+      taskPath: preflight.index.taskPath,
+      statePath: preflight.index.statePath,
+      resumeRef: preflight.index.resumeRef,
+      handoffPayloadPath: preflight.index.handoffPayloadPath,
+      source: preflight.index.source,
+    };
+  }
+  const saved = saveStandaloneTaskCore(path.dirname(fixmeDir), child.handoff.taskSaveData);
+  const handoffPayloadPath = saved.taskPath.replace(/\.md$/, '.handoff.json');
+  writeJsonAtomic(handoffPayloadPath, child.handoff.payload);
+  attachPreparationArtifactCore(saved.taskPath, saved.statePath, {
+    artifactType: 'child-handoff-payload',
+    artifactPath: handoffPayloadPath,
+    title: 'Current PR review fix payload',
+    summary: ['Contains routedFixGroups and PR-comment resolution metadata.'],
+    sourceSkill: child.handoff.taskSaveData.source || 'fixme-pr-comments',
+    status: 'current',
+  });
+  const now = new Date().toISOString();
+  const index = {
+    schemaVersion: 1,
+    childIdempotencyKey: child.idempotencyKey,
+    durableInputDigest: preflight.durableInputDigest,
+    taskRef: saved.taskRef,
+    taskPath: saved.taskPath,
+    statePath: saved.statePath,
+    resumeRef: saved.taskPath,
+    handoffPayloadPath,
+    source: child.handoff.taskSaveData.source || 'fixme-pr-comments',
+    createdAt: now,
+    updatedAt: now,
+  };
+  writeJsonAtomic(preflight.indexPath, index);
+  return {
+    taskRef: index.taskRef,
+    taskPath: index.taskPath,
+    statePath: index.statePath,
+    resumeRef: index.resumeRef,
+    handoffPayloadPath: index.handoffPayloadPath,
+    source: index.source,
+  };
 }
 
 function findDispatchRecordById(fixmeDir, dispatchId) {
@@ -7579,13 +7769,13 @@ function formatDispatchBannerModel(runtimeSettings) {
 }
 
 function formatDispatchBannerReasoning(runtimeSettings) {
-  if (runtimeSettings.runtime === 'codex' && runtimeSettings.reasoning_effort === null) {
+  if (runtimeSettings.runtime === 'codex' && runtimeSettings.reasoningEffort === null) {
     return 'inherited (current Codex setting)';
   }
-  if (runtimeSettings.reasoning_effort === null || runtimeSettings.reasoning_effort === undefined) {
+  if (runtimeSettings.reasoningEffort === null || runtimeSettings.reasoningEffort === undefined) {
     return 'inherited';
   }
-  return String(runtimeSettings.reasoning_effort);
+  return String(runtimeSettings.reasoningEffort);
 }
 
 function buildDispatchBannerMarkdown(agentName, runtimeSettings) {
@@ -7735,9 +7925,16 @@ function recordProducerContinuationFromCompletion(preflight) {
   };
 }
 
-function lifecycleDispatchPrepare(flags, fixmeRoot) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const data = resolveLifecycleData(flags);
+function dispatchRuntimeSettingsForOutput(settings) {
+  const outputSettings = { ...settings };
+  outputSettings.reasoningEffort = Object.prototype.hasOwnProperty.call(settings, 'reasoning_effort')
+    ? settings.reasoning_effort
+    : (settings.reasoningEffort === undefined ? null : settings.reasoningEffort);
+  delete outputSettings.reasoning_effort;
+  return outputSettings;
+}
+
+function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   try {
     assertKnownJsonFields(data, 'dispatch prepare', LIFECYCLE_DISPATCH_PREPARE_FIELDS);
   } catch (e) {
@@ -7778,10 +7975,10 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     if (!jsonEqual(existing.durableInputs, durableInputs)) {
       lifecycleError('conflictingDuplicate', `dispatch idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
     }
-    return lifecycleOk(existing.output);
+    return existing.output;
   }
 
-  const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), { runtime });
+  const runtimeSettings = dispatchRuntimeSettingsForOutput(resolveModel(data.agentName, path.dirname(fixmeDir), { runtime }));
   const continuation = selectProducerContinuation({
     agentName: data.agentName,
     runtime,
@@ -7867,7 +8064,13 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     createdAt: new Date().toISOString(),
   });
 
-  return lifecycleOk(out);
+  return out;
+}
+
+function lifecycleDispatchPrepare(flags, fixmeRoot) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  return lifecycleOk(dispatchPrepareCore(fixmeDir, data, flags));
 }
 
 function lifecycleDispatchComplete(flags) {
@@ -8551,18 +8754,21 @@ const PR_PARENT_CURSOR_SPECS = Object.freeze({
 const PARENT_LEDGER_SLOTS = new Set([
   'reviewItems', 'analysis', 'routedGroups', 'childResultSummaryPaths', 'verificationResults',
   'commitResult', 'pushResult', 'replyExecutionTable', 'unresolvedAccounting',
+  'sessionTaskRef', 'fixBatches',
 ]);
 
 const PARENT_FAILURE_REASONS = new Set([
   'userAborted', 'fetchFailed', 'analysisFailed', 'taskDispatchFailed', 'childFailed',
   'verificationFailed', 'commitFailed', 'pushFailed', 'replyFailed', 'resolveFailed',
-  'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'unknown',
+  'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'staleParentMissingActiveChild', 'unknown',
 ]);
 
 const PARENT_CREATE_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'status', 'cursor', 'payload']);
 const PARENT_CHECKPOINT_FIELDS = new Set(['idempotencyKey', 'expectedRevision', 'status', 'cursor', 'payload', 'ledger', 'failure']);
+const PARENT_ABANDON_FIELDS = new Set(['parentRunId', 'idempotencyKey', 'reason', 'message', 'preserveLedger']);
 const PR_LOOKUP_REF_FIELDS = new Set(['host', 'owner', 'repo', 'number', 'headOwner', 'headRepo', 'headRef']);
 const PR_NORMALIZED_FLAG_FIELDS = new Set(['pause', 'skipCommit', 'skipPush', 'skipResolve', 'skipResponse']);
+const SESSION_TASK_REF_FIELDS = new Set(['sessionPath', 'ticketPath']);
 
 function parentStatePath(fixmeDir, parentRunId) {
   return path.join(fixmeDir, 'parents', parentRunId, 'state.json');
@@ -8645,7 +8851,37 @@ function normalizePrLookupInput(lookupInput) {
   return { pullRequestRef: normalizedRef, normalizedFlags };
 }
 
+function normalizeSessionLookupInput(lookupInput) {
+  if (!isPlainObject(lookupInput) || !isPlainObject(lookupInput.sessionTaskRef)) {
+    lifecycleError('invalidInput', 'lookupInput.sessionTaskRef is required');
+  }
+  try {
+    assertKnownJsonFields(lookupInput.sessionTaskRef, 'sessionTaskRef', SESSION_TASK_REF_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  const sessionPath = lookupInput.sessionTaskRef.sessionPath;
+  const ticketPath = lookupInput.sessionTaskRef.ticketPath;
+  if (!isNonEmptyString(sessionPath) || !path.isAbsolute(sessionPath)) {
+    lifecycleError('invalidInput', 'sessionTaskRef.sessionPath must be an absolute path');
+  }
+  if (!isNonEmptyString(ticketPath) || !path.isAbsolute(ticketPath)) {
+    lifecycleError('invalidInput', 'sessionTaskRef.ticketPath must be an absolute path');
+  }
+  return { sessionTaskRef: { sessionPath: path.resolve(sessionPath), ticketPath: path.resolve(ticketPath) } };
+}
+
+function normalizeParentLookupInput(parentSkill, lookupInput) {
+  if (parentSkill === 'fixme-pr-comments') return normalizePrLookupInput(lookupInput);
+  if (parentSkill === 'fixme-session') return normalizeSessionLookupInput(lookupInput);
+  lifecycleError('invalidInput', `Unsupported parentSkill: ${parentSkill}`);
+}
+
 function parentNaturalKeyFor(parentSkill, normalizedLookupInput) {
+  if (parentSkill === 'fixme-session') {
+    const ref = normalizedLookupInput.sessionTaskRef;
+    return stableHash({ parentSkill, sessionTaskRef: { sessionPath: ref.sessionPath, ticketPath: ref.ticketPath } });
+  }
   const ref = normalizedLookupInput.pullRequestRef;
   return stableHash({
     parentSkill,
@@ -8655,6 +8891,9 @@ function parentNaturalKeyFor(parentSkill, normalizedLookupInput) {
 }
 
 function parentBroadKeyFor(parentSkill, normalizedLookupInput) {
+  if (parentSkill === 'fixme-session') {
+    return parentNaturalKeyFor(parentSkill, normalizedLookupInput);
+  }
   const ref = normalizedLookupInput.pullRequestRef;
   return stableHash({
     parentSkill,
@@ -8726,9 +8965,7 @@ function validatePrCursorTransition(fromCursor, toCursor) {
   }
 }
 
-function lifecycleParentCreate(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const data = resolveLifecycleData(flags);
+function parentCreateCore(fixmeDir, data) {
   try {
     assertKnownJsonFields(data, 'parent create', PARENT_CREATE_FIELDS);
   } catch (e) {
@@ -8747,7 +8984,7 @@ function lifecycleParentCreate(flags) {
   }
   validatePrCursorPayload(data.cursor, data.payload);
 
-  const normalizedLookupInput = normalizePrLookupInput(data.lookupInput);
+  const normalizedLookupInput = normalizeParentLookupInput(data.parentSkill, data.lookupInput);
   const parentNaturalKey = parentNaturalKeyFor(data.parentSkill, normalizedLookupInput);
   const broadKey = parentBroadKeyFor(data.parentSkill, normalizedLookupInput);
   const durableCreateInput = {
@@ -8766,7 +9003,7 @@ function lifecycleParentCreate(flags) {
     if (existing.createInputDigest !== createInputDigest) {
       lifecycleError('conflictingDuplicate', `parent create idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
     }
-    return lifecycleOk(existing);
+    return existing;
   }
 
   // Natural-key dedup: return an existing nonterminal run with the same create digest.
@@ -8778,7 +9015,7 @@ function lifecycleParentCreate(flags) {
       // Map this idempotency key to the existing run too.
       const idemHash = stableHash({ parentSkill: data.parentSkill, idempotencyKey: data.idempotencyKey });
       appendParentIndexEntry(fixmeDir, `idem-${idemHash}`, candidate.parentRunId);
-      return lifecycleOk(candidate);
+      return candidate;
     }
     lifecycleError('conflictingDuplicate', `A nonterminal parent run with the same natural key has different create inputs`);
   }
@@ -8809,7 +9046,13 @@ function lifecycleParentCreate(flags) {
   const idemHash = stableHash({ parentSkill: data.parentSkill, idempotencyKey: data.idempotencyKey });
   appendParentIndexEntry(fixmeDir, `idem-${idemHash}`, parentRunId);
 
-  return lifecycleOk(state);
+  return state;
+}
+
+function lifecycleParentCreate(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  return lifecycleOk(parentCreateCore(fixmeDir, data));
 }
 
 // Full parent-checkpoint validation and write. Returns the next state object
@@ -8941,7 +9184,7 @@ function lifecycleParentResolve(flags) {
   if (!isNonEmptyString(data.parentSkill) || !isPlainObject(data.lookupInput)) {
     lifecycleError('invalidInput', 'parentSkill and lookupInput are required to resolve');
   }
-  const normalizedLookupInput = normalizePrLookupInput(data.lookupInput);
+  const normalizedLookupInput = normalizeParentLookupInput(data.parentSkill, data.lookupInput);
   const hasFlags = isPlainObject(data.lookupInput.normalizedFlags);
   const lookupKeyHash = hasFlags
     ? `nat-${parentNaturalKeyFor(data.parentSkill, normalizedLookupInput)}`
@@ -8966,6 +9209,280 @@ function lifecycleParentResolve(flags) {
     });
   }
   return lifecycleOk(nonterminal[0]);
+}
+
+function parentStaleStateError(parentState, details = {}) {
+  lifecycleError('staleState', details.message || 'Parent state is stale', {
+    parentRunId: parentState.parentRunId,
+    cursor: parentState.cursor,
+    status: parentState.status,
+    recovery: {
+      safeAutomaticRecovery: false,
+      commands: {
+        prepareChild: 'lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>',
+        abandon: 'lifecycle parent abandon --fixme-dir <fixme-dir> --data-file <abandon-payload.json>',
+      },
+    },
+    ...details.extra,
+  });
+}
+
+function parentAbandonCore(fixmeDir, data) {
+  try {
+    assertKnownJsonFields(data, 'parent abandon', PARENT_ABANDON_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['parentRunId', 'idempotencyKey', 'reason', 'message']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (data.preserveLedger === false) {
+    lifecycleError('invalidInput', 'preserveLedger cannot be false');
+  }
+  if (!PARENT_FAILURE_REASONS.has(data.reason)) {
+    lifecycleError('invalidInput', `Unsupported parent failure reason: ${data.reason}`);
+  }
+  const statePath = parentStatePath(fixmeDir, data.parentRunId);
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Parent run not found: ${data.parentRunId}`);
+  }
+  const current = readJsonFileStrict(statePath);
+  const failure = {
+    reason: data.reason,
+    message: data.message,
+    closedAt: current.failure && current.failure.closedAt ? current.failure.closedAt : new Date().toISOString(),
+  };
+  const appliedDigest = stableHash({ status: 'failed', cursor: 'summarize', payload: {}, ledger: current.ledger || {}, failure });
+  if (current.lastCheckpointKey === data.idempotencyKey) {
+    if (current.lastCheckpointDigest !== undefined && current.lastCheckpointDigest !== appliedDigest) {
+      lifecycleError('conflictingDuplicate', `parent abandon idempotencyKey '${data.idempotencyKey}' already applied with different inputs`);
+    }
+    return current;
+  }
+  if (PR_TERMINAL_STATUSES.has(current.status)) {
+    lifecycleError('staleState', `Parent run is already terminal: ${data.parentRunId}`);
+  }
+  const next = {
+    ...current,
+    status: 'failed',
+    cursor: 'summarize',
+    revision: current.revision + 1,
+    payload: {},
+    ledger: current.ledger || {},
+    updatedAt: new Date().toISOString(),
+    failure,
+    lastCheckpointKey: data.idempotencyKey,
+    lastCheckpointDigest: appliedDigest,
+  };
+  assertCamelCaseJsonKeys(next, 'parent state');
+  writeJsonAtomic(statePath, next);
+  return next;
+}
+
+function lifecycleParentAbandon(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  return lifecycleOk(parentAbandonCore(fixmeDir, data));
+}
+
+function validatePrepareChildData(data) {
+  try {
+    assertKnownJsonFields(data, 'parent prepare-child', LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isPlainObject(data.parent)) lifecycleError('missingRequiredField', 'parent is required');
+  if (!isPlainObject(data.child)) lifecycleError('missingRequiredField', 'child is required');
+  if (!isPlainObject(data.await)) lifecycleError('missingRequiredField', 'await is required');
+  try {
+    assertKnownJsonFields(data.parent, 'prepare-child parent', PREPARE_CHILD_PARENT_FIELDS);
+    assertKnownJsonFields(data.child, 'prepare-child child', PREPARE_CHILD_CHILD_FIELDS);
+    assertKnownJsonFields(data.child.handoff || {}, 'prepare-child handoff', PREPARE_CHILD_HANDOFF_FIELDS);
+    assertKnownJsonFields(data.await, 'prepare-child await', PREPARE_CHILD_AWAIT_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['parentSkill', 'idempotencyKey']) {
+    if (!isNonEmptyString(data.parent[field])) lifecycleError('missingRequiredField', `parent.${field} is required`);
+  }
+  for (const field of ['idempotencyKey', 'agentName', 'runtime', 'transport']) {
+    if (!isNonEmptyString(data.child[field])) lifecycleError('missingRequiredField', `child.${field} is required`);
+  }
+  if (data.child.agentName !== 'fixme-task') {
+    lifecycleError('invalidInput', 'child.agentName must be fixme-task');
+  }
+  if (!VALID_RUNTIME_VALUES.has(data.child.runtime)) {
+    lifecycleError('invalidInput', `Unsupported child.runtime: ${data.child.runtime}`);
+  }
+  if (!DISPATCH_TRANSPORTS.has(data.child.transport)) {
+    lifecycleError('invalidInput', `child.transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
+  }
+  if (data.parent.parentSkill === 'fixme-pr-comments' && data.child.runtime === 'codex' && data.child.transport !== 'agent') {
+    lifecycleError('invalidInput', 'Codex fixme-pr-comments prepare-child must use child.transport agent');
+  }
+  if (!isPlainObject(data.child.handoff) || !isPlainObject(data.child.handoff.taskSaveData) || !isPlainObject(data.child.handoff.payload)) {
+    lifecycleError('missingRequiredField', 'child.handoff.taskSaveData and child.handoff.payload are required');
+  }
+  if (!isPlainObject(data.child.promptInputs)) {
+    lifecycleError('missingRequiredField', 'child.promptInputs is required');
+  }
+}
+
+function validatePrepareChildGroupedPayload(parent) {
+  if (parent.parentSkill !== 'fixme-pr-comments') return;
+  const payload = parent.payload || {};
+  if (payload.routedGroups !== undefined && !Array.isArray(payload.routedGroups)) {
+    lifecycleError('invalidInput', 'parent.payload.routedGroups must be an array of objects with groupId values');
+  }
+  for (const [index, group] of (payload.routedGroups || []).entries()) {
+    if (!isPlainObject(group)) lifecycleError('invalidInput', `parent.payload.routedGroups[${index}] must be an object`);
+    if (!isNonEmptyString(group.groupId)) lifecycleError('missingRequiredField', `parent.payload.routedGroups[${index}].groupId is required`);
+    if (!isNonEmptyString(group.route)) lifecycleError('missingRequiredField', `parent.payload.routedGroups[${index}].route is required`);
+    if (!Array.isArray(group.sourceIds)) lifecycleError('missingRequiredField', `parent.payload.routedGroups[${index}].sourceIds is required`);
+  }
+}
+
+function lifecycleParentPrepareChild(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  validatePrepareChildData(data);
+  validatePrepareChildGroupedPayload(data.parent);
+
+  const childPreflight = preflightChildHandoffIndex(fixmeDir, data.child);
+
+  const parentCreateData = data.parent.parentSkill === 'fixme-session'
+    ? {
+      parentSkill: data.parent.parentSkill,
+      idempotencyKey: data.parent.idempotencyKey,
+      lookupInput: data.parent.lookupInput,
+      status: 'running',
+      cursor: 'dispatchFixmeTask',
+      payload: {
+        fixBatches: data.await.fixBatches,
+        activeBatchIndex: data.await.activeBatchIndex,
+        parentContinuation: { parentSkill: data.parent.parentSkill, parentRunId: 'parent_pending', transport: data.child.transport, ...(data.parentContinuation || {}) },
+      },
+    }
+    : {
+      parentSkill: data.parent.parentSkill,
+      idempotencyKey: data.parent.idempotencyKey,
+      lookupInput: data.parent.lookupInput,
+      status: 'running',
+      cursor: 'presentAnalysis',
+      payload: data.parent.payload,
+    };
+
+  let parentState = parentCreateCore(fixmeDir, parentCreateData);
+  if (parentState.status === 'waitingForChild' && parentState.cursor === 'awaitFixmeTask') {
+    if (!isPlainObject(parentState.payload.activeChild)) {
+      if (data.recoverStaleParent !== true) {
+        parentStaleStateError(parentState, { message: 'Parent is waiting for child without activeChild' });
+      }
+      parentAbandonCore(fixmeDir, {
+        parentRunId: parentState.parentRunId,
+        idempotencyKey: `${data.parent.idempotencyKey}:recover-stale`,
+        reason: 'staleParentMissingActiveChild',
+        message: 'Recovered stale parent missing activeChild during prepare-child',
+      });
+      parentState = parentCreateCore(fixmeDir, { ...parentCreateData, idempotencyKey: `${data.parent.idempotencyKey}:recovered` });
+    }
+  }
+
+  const childTask = saveOrReuseChildHandoff(fixmeDir, data.child, childPreflight);
+  const parentContinuation = {
+    parentSkill: data.parent.parentSkill,
+    parentRunId: parentState.parentRunId,
+    transport: data.child.transport,
+    resumeStep: (data.parentContinuation && data.parentContinuation.resumeStep) || 'awaitFixmeTaskResult',
+    parentStatusId: data.child.parentStatusId || null,
+  };
+  const lightweightPromptInputs = {
+    ...data.child.promptInputs,
+    resumeRef: childTask.resumeRef,
+    taskPath: childTask.taskPath,
+    statePath: childTask.statePath,
+    handoffPayloadPath: childTask.handoffPayloadPath,
+  };
+  const dispatchData = {
+    idempotencyKey: `${data.child.idempotencyKey}:dispatch`,
+    agentName: 'fixme-task',
+    runtime: data.child.runtime,
+    transport: data.child.transport,
+    parentInvocationId: data.child.parentInvocationId,
+    pipelineRunId: data.child.pipelineRunId,
+    parentStatusId: data.child.parentStatusId,
+    taskStatePath: childTask.statePath,
+    parentContinuation,
+    promptInputs: lightweightPromptInputs,
+  };
+
+  let launch = dispatchPrepareCore(fixmeDir, dispatchData, flags);
+  launch = {
+    ...launch,
+    runtime: data.child.runtime,
+    promptBlocks: {
+      ...launch.promptBlocks,
+      parentContinuation,
+      promptInputs: lightweightPromptInputs,
+      taskInput: {
+        resumeRef: childTask.resumeRef,
+        taskPath: childTask.taskPath,
+        statePath: childTask.statePath,
+        handoffPayloadPath: childTask.handoffPayloadPath,
+        source: 'savedTaskWithHandoffPayload',
+      },
+    },
+  };
+  const activeChild = {
+    ...launch.activeChild,
+    taskStatePath: childTask.statePath,
+    resumeRef: childTask.resumeRef,
+  };
+  launch.activeChild = activeChild;
+  launch.promptBlocks.activeChild = activeChild;
+  launch.promptBlocks.taskStateOwner = { ownerSkill: 'fixme-task', taskStatePath: childTask.statePath };
+
+  if (!(parentState.status === 'waitingForChild' && parentState.cursor === 'awaitFixmeTask')) {
+    if (parentState.cursor !== 'dispatchFixmeTask') {
+      parentState = parentCheckpointCore(fixmeDir, parentState.parentRunId, {
+        idempotencyKey: `${data.parent.idempotencyKey}:dispatch`,
+        expectedRevision: parentState.revision,
+        status: 'running',
+        cursor: 'dispatchFixmeTask',
+        payload: {
+          fixBatches: data.await.fixBatches,
+          activeBatchIndex: data.await.activeBatchIndex,
+          parentContinuation,
+        },
+        ledger: { ...(parentState.ledger || {}), ...(data.await.ledger || {}) },
+      });
+    }
+    parentState = parentCheckpointCore(fixmeDir, parentState.parentRunId, {
+      idempotencyKey: `${data.parent.idempotencyKey}:await`,
+      expectedRevision: parentState.revision,
+      status: 'waitingForChild',
+      cursor: 'awaitFixmeTask',
+      payload: {
+        fixBatches: data.await.fixBatches,
+        activeBatchIndex: data.await.activeBatchIndex,
+        activeChild,
+      },
+      ledger: { ...(parentState.ledger || {}), ...(data.await.ledger || {}) },
+    });
+  }
+
+  return lifecycleOk({
+    parentRunId: parentState.parentRunId,
+    parentStatePath: parentStatePath(fixmeDir, parentState.parentRunId),
+    dispatchId: launch.dispatchId,
+    statusId: launch.statusId,
+    statusPath: launch.statusPath,
+    activeChild,
+    childTask,
+    launch,
+  });
 }
 
 // ============================================================================
@@ -9075,7 +9592,7 @@ function lifecycleTaskEventConsume(flags) {
   const parent = readJsonFileStrict(statePath);
   const activeChild = parent.payload && parent.payload.activeChild;
   if (!isPlainObject(activeChild) || !isNonEmptyString(activeChild.taskRunId)) {
-    lifecycleError('stateNotFound', 'Parent run has no active child');
+    parentStaleStateError(parent, { message: 'Parent run is waiting for a child but has no activeChild handle' });
   }
 
   const events = listTaskEvents(fixmeDir, parentRunId);
@@ -9837,6 +10354,87 @@ function commandHelpSchema(command, subcommand, args) {
       },
     });
   }
+  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'complete') {
+    return commandHelpPayload({
+      command: 'lifecycle dispatch complete',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['dispatchId', 'statusId', 'status'],
+      optionalDataFields: ['parentStatusId', 'currentCommand', 'failure', 'runtimeHandle'],
+      enumValues: { status: ['completed', 'failed'] },
+      example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed' } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'create') {
+    return commandHelpPayload({
+      command: 'lifecycle parent create',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: setValues(PARENT_CREATE_FIELDS),
+      optionalDataFields: [],
+      enumValues: { status: setValues(PR_PARENT_STATUSES), cursor: setValues(PR_PARENT_CURSORS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { parentSkill: 'fixme-pr-comments', idempotencyKey: 'parent-key', lookupInput: {}, status: 'running', cursor: 'fetchReviewItems', payload: {} } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'checkpoint') {
+    return commandHelpPayload({
+      command: 'lifecycle parent checkpoint',
+      requiredFlags: ['fixme-dir', 'parent-run-id'],
+      requiredDataFields: ['idempotencyKey', 'expectedRevision', 'status', 'cursor', 'payload', 'ledger'],
+      optionalDataFields: ['failure'],
+      enumValues: { status: setValues(PR_PARENT_STATUSES), cursor: setValues(PR_PARENT_CURSORS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...' }, data: { idempotencyKey: 'checkpoint-key', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: {}, ledger: {} } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'resolve') {
+    return commandHelpPayload({
+      command: 'lifecycle parent resolve',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: [],
+      optionalDataFields: ['parentSkill', 'lookupInput'],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...' }, data: { parentSkill: 'fixme-pr-comments', lookupInput: {} } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'prepare-child') {
+    return commandHelpPayload({
+      command: 'lifecycle parent prepare-child',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['parent', 'child', 'await'],
+      optionalDataFields: ['parentContinuation', 'recoverStaleParent'],
+      enumValues: { 'child.transport': setValues(DISPATCH_TRANSPORTS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/prepare-child.json' }, data: { parent: {}, child: {}, await: {} } },
+      guidance: 'Returns a launch block only; the runtime adapter performs the returned launch action.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'abandon') {
+    return commandHelpPayload({
+      command: 'lifecycle parent abandon',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['parentRunId', 'idempotencyKey', 'reason', 'message'],
+      optionalDataFields: ['preserveLedger'],
+      enumValues: { reason: setValues(PARENT_FAILURE_REASONS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/abandon.json' }, data: { parentRunId: 'parent_...', idempotencyKey: 'abandon-key', reason: 'staleParentMissingActiveChild', message: 'Parent is stale' } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'task-event' && args[0] === 'record') {
+    return commandHelpPayload({
+      command: 'lifecycle task-event record',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: setValues(TASK_EVENT_RECORD_FIELDS),
+      optionalDataFields: [],
+      enumValues: { status: ['completed', 'failed'] },
+      example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { parentRunId: 'parent_...', taskRunId: 'taskRun_...', taskStatePath: '/absolute/task.state.json', resultSummaryPath: '/absolute/result.json', terminalResultId: 'terminal_...', status: 'completed' } },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'task-event' && args[0] === 'consume') {
+    return commandHelpPayload({
+      command: 'lifecycle task-event consume',
+      requiredFlags: ['fixme-dir', 'parent-run-id'],
+      requiredDataFields: [],
+      optionalDataFields: ['event-id', 'next'],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', next: true } },
+    });
+  }
   return null;
 }
 
@@ -9879,7 +10477,9 @@ function main() {
       return resolvedFixmeRoot;
     };
 
-    maybeShowCommandHelp(command, subcommand, args, flags);
+    if (maybeShowCommandHelp(command, subcommand, args, flags)) {
+      return;
+    }
 
     switch (command) {
       case 'ticket':
@@ -9992,6 +10592,10 @@ function main() {
                 return lifecycleParentCheckpoint(flags);
               case 'resolve':
                 return lifecycleParentResolve(flags);
+              case 'prepare-child':
+                return lifecycleParentPrepareChild(flags);
+              case 'abandon':
+                return lifecycleParentAbandon(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle parent action: '${args[0] || ''}'`);
             }

@@ -43,7 +43,7 @@ If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED` or `run status` reports
 2. Print the returned `promptMarkdown` exactly, then wait for the user's answer.
 3. If the user response is a decision answer, call `lifecycle attention broker answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
 4. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
-5. Use `activeChild.resumeRef` from parent state and resume the child `fixme-task` with only `--resume <activeChild.resumeRef> --answer-attention <attention-id>` through the transport returned by the original `lifecycle dispatch prepare` (`transport=inline-skill`, with `parentContinuation` carrying `parentRunId`/`parentStatusId`/`resumeStep`). `lifecycle attention broker show` returns display fields only and does not return task-owned resume metadata. The saved task state is the context boundary; do not re-pass the routed PR fix item text on an attention resume. In Claude inline mode this is `Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")`; in Codex inline mode load `$HOME/.codex/skills/fixme-task/SKILL.md` and run those same arguments. When resuming, reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>` so `fixme-task` can consume the original attention status. The status id is context, not a command-line flag.
+5. Use `activeChild.resumeRef` from parent state and resume the child `fixme-task` with only `--resume <activeChild.resumeRef> --answer-attention <attention-id>` through the transport returned by the original launch (`transport=inline-skill` for Claude, `transport=agent` for Codex, with `parentContinuation` carrying `parentRunId`/`parentStatusId`/`resumeStep`). `lifecycle attention broker show` returns display fields only and does not return task-owned resume metadata. The saved task state is the context boundary; do not re-pass the routed PR fix item text on an attention resume. In Claude inline mode this is `Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")`; in Codex agent mode call `spawn_agent(agent_type="fixme-task", message="--resume <activeChild.resumeRef> --answer-attention <attention-id>")` after resolving runtime settings. The installed Codex skill path `$HOME/.codex/skills/fixme-task/SKILL.md` remains the source skill copy, but parent-driven resume launches the registered agent. When resuming, reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>` so `fixme-task` can consume the original attention status. The status id is context, not a command-line flag.
 
 If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again. Resume the child `fixme-task` immediately with `--resume <activeChild.resumeRef> --answer-attention <attention-id>` and the same `<liveness>` `statusId: <fixmeTaskStatusId>` so an interrupted broker does not duplicate a user decision.
 
@@ -869,49 +869,59 @@ Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQU
 
 #### Invoke fixme-task (inline-skill transport, parent-driven)
 
-Invoke fixme-task as an inline skill so it can dispatch its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) within platform depth limits. The Skill tool runs fixme-task in the current session context (depth 0), allowing its Agent dispatches to land at depth 1.
-
-Parent continuation is carried by `parentContinuation` (transport `inline-skill`), not by any command-line flag. The parent supplies `parentContinuation` (`parentSkill`, `parentRunId`, `transport: "inline-skill"`, `resumeStep`, `parentStatusId`) via `lifecycle dispatch prepare`; fixme-task then keeps its substeps inline (`Step 9.1` ... `Step 9.8`) and produces no run-summary substep, so the parent's pending Steps 10-15 (verify, commit, resolve) stay visible throughout and the parent owns the final summary.
-
-Before invoking `Skill("fixme-task", ...)`, prepare the dispatch and persist the active child into parent run state:
+Build one prepare-child payload file and let the CLI perform the stable parent-state choreography. The CLI saves or reuses the child task handoff before returning, writes heavy PR-comment payload data to a durable `child-handoff-payload` preparation artifact, persists `activeChild`, advances the parent to `awaitFixmeTask`, and returns a `launch` block only. The CLI does not invoke the model, Skill, or agent; the runtime adapter performs the launch from `launch.transport` and `launch.promptBlocks`.
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"fixme-task","runtime":"claude","transport":"inline-skill","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","parentContinuation":{"parentSkill":"fixme-pr-comments","parentRunId":"<parentRunId>","transport":"inline-skill","resumeStep":"verify","parentStatusId":"<parentStatusId>"},"promptInputs":{"routedFixGroups":[...]}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
 ```
 
-Use the `fixmeDir` field returned by `root` as `<fixme-dir>`. Store the returned `statusId` as `fixmeTaskStatusId`. Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask` via `lifecycle parent checkpoint`; do not derive, rename, or invent child handle fields. If `lifecycle dispatch prepare` fails, do not dispatch `fixme-task`; print the JSON error, fire `task_failed`, and stop.
+The payload must use this shape. Keep group ids as JSON values, never object keys:
 
-Render the child prompt from the returned `promptBlocks`, plus the returned `usageContext`, before invoking `Skill("fixme-task", ...)`. Do not reconstruct these blocks manually from project, liveness, or fix-item fields; the runtime output is the continuation contract. The child prompt must include the returned blocks in this shape and order:
+`child.handoff.taskSaveData` is the saved task handoff. `child.handoff.payload` is the heavy sidecar payload registered as a `child-handoff-payload` preparation artifact. `child.promptInputs` contains only lightweight summary/count/reference fields.
+
+```json
+{"parent":{"parentSkill":"fixme-pr-comments","idempotencyKey":"<stable-parent-key>","lookupInput":{"pullRequestRef":{"host":"github.com","owner":"owner","repo":"repo","number":123},"normalizedFlags":{"pause":false,"skipCommit":false,"skipPush":false,"skipResolve":false,"skipResponse":false}},"payload":{"flags":{},"reviewItems":{"currentPrFix":[]},"analysis":{},"routedGroups":[{"groupId":"G1","route":"currentPrFix","sourceIds":["G1"],"title":"Fix reviewed behavior"}]}},"child":{"idempotencyKey":"<stable-child-key>","agentName":"fixme-task","runtime":"codex","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","parentStatusId":"<parentStatusId>","handoff":{"mode":"createOrReuse","taskSaveData":{"title":"Address current PR review fixes","slug":"pr-comments-current-fixes","taskGoal":"Apply the current PR review fixes from the durable child handoff payload.","agreedApproach":["Read the child-handoff-payload preparation artifact before planning."],"userVisibleBehavior":["The child task resumes from a saved task reference."],"scope":{"inScope":["current PR review fixes from the child handoff payload"],"outOfScope":["unrelated PR changes"]},"laterPlanningNotes":["Use the sidecar payload as the authoritative PR-comment scope."],"pipelineResolution":{"pipeline":"standard","source":"userProseIntent","evidence":"Parent PR-comments workflow selected standard before save-first child handoff.","reason":"The parent-provided PR-comment handoff is the user-visible intent for this saved child task."},"source":"fixme-pr-comments","tags":["fixme-pr-comments","parent-driven"]},"payload":{"source":"fixme-pr-comments","routedFixGroups":[],"allowedUnresolvedThreadIds":[],"mustResolveThreadIds":[]}},"promptInputs":{"summary":"Current PR review fixes","routedFixGroupsCount":0,"mustResolveThreadCount":0}},"parentContinuation":{"resumeStep":"awaitFixmeTaskResult"},"await":{"fixBatches":[],"activeBatchIndex":0,"ledger":{}},"recoverStaleParent":false}
+```
+
+Render the child prompt from the returned `promptBlocks`, plus `usageContext`; in the helper response those values live under `launch.promptBlocks` and `launch.usageContext`. Do not reconstruct these blocks manually from project, liveness, or fix-item fields. Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`; `lifecycle parent prepare-child` performs that persistence before it returns. The child prompt must include the returned blocks in this shape and order:
 
 ```text
-<promptBlocks.taskStateOwner>
-<promptBlocks.parentContinuation>
-<promptBlocks.activeChild>
-<promptBlocks.project>
-<promptBlocks.liveness>
-<promptBlocks.taskInput>
-<usageContext>
+<launch.promptBlocks.taskStateOwner>
+<launch.promptBlocks.parentContinuation>
+<launch.promptBlocks.activeChild>
+<launch.promptBlocks.project>
+<launch.promptBlocks.liveness>
+<launch.promptBlocks.taskInput>
+<launch.usageContext>
 ```
 
-`promptBlocks.taskStateOwner` identifies `fixme-task` as the task-state owner. `promptBlocks.parentContinuation` carries `parentSkill`, `parentRunId`, `transport`, `resumeStep`, and `parentStatusId`. `promptBlocks.activeChild` carries the exact returned active-child handle. `usageContext` carries the returned pipeline and parent invocation context. Pass these returned blocks through verbatim, then append only parent-owned prose that is not already represented in `promptBlocks.taskInput` if the runtime output explicitly leaves room for it.
+Compatibility names for the returned prompt block members are `<promptBlocks.taskStateOwner>`, `<promptBlocks.parentContinuation>`, `<promptBlocks.activeChild>`, `<promptBlocks.project>`, `<promptBlocks.liveness>`, and `<promptBlocks.taskInput>` under `launch.promptBlocks`.
 
-In Claude inline mode:
+`launch.promptBlocks.taskStateOwner` identifies `fixme-task` as the task-state owner. The returned `promptBlocks.taskStateOwner`, `promptBlocks.parentContinuation`, and `promptBlocks.activeChild` are the continuation contract. `launch.promptBlocks.parentContinuation` carries `parentSkill`, `parentRunId`, `transport`, `resumeStep`, and `parentStatusId`. `launch.promptBlocks.activeChild` carries the exact returned active-child handle. `launch.usageContext` carries the returned pipeline and parent invocation context. Pass these returned blocks through verbatim, then append only parent-owned prose that is not already represented in `launch.promptBlocks.taskInput`.
+
+If `launch.transport == "inline-skill"`, Claude executes the installed/source `fixme-task` skill with the rendered prompt:
 
 ```text
 Skill(
   skill="fixme-task",
-  args="<promptBlocks.taskStateOwner>
-<promptBlocks.parentContinuation>
-<promptBlocks.activeChild>
-<promptBlocks.project>
-<promptBlocks.liveness>
-<promptBlocks.taskInput>
-<usageContext>"
+  args="<launch.promptBlocks.taskStateOwner>
+<launch.promptBlocks.parentContinuation>
+<launch.promptBlocks.activeChild>
+<launch.promptBlocks.project>
+<launch.promptBlocks.liveness>
+<launch.promptBlocks.taskInput>
+<launch.usageContext>"
 )
 ```
 
-In Codex inline mode, load `$HOME/.codex/skills/fixme-task/SKILL.md` and run the same rendered prompt content. The returned `promptBlocks.liveness` contains the child run context, including `statusId: <fixmeTaskStatusId>`.
+If `launch.transport == "agent"`, Codex launches the registered `fixme-task` agent with the returned prompt and runtime settings:
+
+```text
+spawn_agent(agent_type="fixme-task", reasoning_effort=launch.runtimeSettings.reasoningEffort, message="<rendered launch.promptBlocks>")
+```
+
+The returned `launch.promptBlocks.liveness` contains the child run context, including `statusId: <fixmeTaskStatusId>`.
 
 fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In parent-driven mode, its substeps appear as `Step 9.1` ... `Step 9.8` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
 

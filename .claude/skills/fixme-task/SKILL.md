@@ -873,12 +873,13 @@ Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")
 
 The parent supplied `transport=inline-skill` and `parentContinuation` via `lifecycle dispatch prepare`; transport is launch metadata, not a `fixme-task` flag. If the parent has the current `fixmeTaskStatusId`, keep that same liveness status in the resumed invocation context. The status id is context, not a command-line flag.
 
-**Codex parent broker, inline task transport:** Load the installed Codex skill and run the same workflow arguments:
+**Codex parent broker, agent task transport:** Resume the registered `fixme-task` agent with the same workflow arguments:
 
 ```text
-$HOME/.codex/skills/fixme-task/SKILL.md
-args: --resume FIXME-13 --answer-attention attn_review_123
+spawn_agent(agent_type="fixme-task", message="--resume FIXME-13 --answer-attention attn_review_123")
 ```
+
+Legacy installed-skill resume references may mention `$HOME/.codex/skills/fixme-task/SKILL.md`; parent-driven Codex execution now uses the registered agent transport.
 
 Use `$HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs` for the preceding `lifecycle attention broker show` and `lifecycle attention broker answer` calls.
 
@@ -916,11 +917,11 @@ Backward transitions (review retry) require `--reason`. Forward transitions do n
 
 No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse durable task state before the first phase dispatch. Execute the pipeline identically but skip all ticket transition dispatches.
 
-- **Parent-driven with `activeChild`:** materialize or reuse the reserved child task state before any child work:
+- **Parent-driven with `activeChild`:** materialize or reuse the reserved child task state before any child work. Parent-driven transports include `inline-skill`, `agent`, and `background`; transport is parent launch metadata, not a task flag.
   ```bash
-  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <activeChild.taskStatePath> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root> --parent-continuation '<parentContinuation-json>'
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <activeChild.taskStatePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
   ```
-  Store the returned `statePath` as `taskStatePath`. It must equal `activeChild.taskStatePath`; if it does not, stop. Use `activeChild.resumeRef` for later `--answer-attention` resumes. Parent-driven dispatches persist `parentContinuation` into task state through this init command before child work. Do not call `task save` for this parent-driven reserved-state path.
+  Store the returned `statePath` as `taskStatePath`. It must equal `activeChild.taskStatePath`; if it does not, stop. Use `activeChild.resumeRef` for later `--answer-attention` resumes. When a saved task reference is available from `launch.promptBlocks.taskInput`, prefer that saved task boundary and keep heavy parent payloads out of prompt blocks. Parent-driven dispatches persist `parentContinuation` into task state through this init command before child work. Do not call `task save` for this parent-driven reserved-state path unless the parent already saved a child handoff and provided it through `launch.promptBlocks.taskInput`.
 - **Direct no-ticket without `--resume`:** first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
 
 No-ticket task state is mandatory so another session can resume without chat history.
@@ -1147,10 +1148,10 @@ Dispatch sub-skills using their agent type via `subagent_type`. Each fixme sub-s
 Step 1 - Prepare the dispatch (resolves runtime settings, creates the child liveness status, updates the parent heartbeat, and builds the banner + prompt blocks in one call):
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"<agent-name>","runtime":"claude","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","taskStatePath":"<task-state-path>","promptInputs":{...}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>
 ```
 
-Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings.reasoningEffort` contains the runtime-specific reasoning setting; do not hardcode models, reasoning effort, or runtime behavior. Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` tool parameters when `runtimeSettings.reasoningEffort` is non-null. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
 
