@@ -7250,6 +7250,42 @@ test('fixme-task skill documents exact producer continuation with fresh fallback
   );
 });
 
+test('resumable producer skills document durable artifact precedence on continuation', () => {
+  const producerSkills = [
+    'fixme-write-product-spec',
+    'fixme-write-technical-spec',
+    'fixme-write-plan',
+    'fixme-execute-plan',
+  ];
+
+  for (const skillName of producerSkills) {
+    const skill = fs.readFileSync(path.join(repoRoot, `.claude/skills/${skillName}/SKILL.md`), 'utf8');
+    assert(skill.includes('## Producer Continuation Resume Contract'), `${skillName} should document resume contract`);
+    assert(
+      skill.includes('Live context is an optimization cache only'),
+      `${skillName} should state that live context is cache only`,
+    );
+    assert(
+      skill.includes('Re-read the current authoritative artifacts'),
+      `${skillName} should require current artifact reads on resume`,
+    );
+    assert(
+      skill.includes('PRODUCER_CONTINUATION_REJECTED'),
+      `${skillName} should expose a deterministic rejection directive`,
+    );
+  }
+
+  const executor = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-execute-plan/SKILL.md'), 'utf8');
+  assert(
+    executor.includes('On resume after implementation-only repair or plan-required rework'),
+    'executor should document repair and plan-required rework resume behavior',
+  );
+  assert(
+    executor.includes('Read the current plan and code map before deciding the next action'),
+    'executor should treat revised plan and code map as authoritative',
+  );
+});
+
 test('fixme-task skill: refreshes its own liveness while waiting on dispatched agents', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');

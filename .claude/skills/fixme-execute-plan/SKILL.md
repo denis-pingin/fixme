@@ -26,6 +26,26 @@ END_PROMPT_MARKDOWN
 
 Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
+## Producer Continuation Resume Contract
+
+Live context is an optimization cache only. Re-read the current authoritative artifacts named in the prompt and in this skill workflow before writing or acting on every resume.
+
+Durable artifacts, source files, task state, current review findings, current decisions, and current prompt inputs override remembered context. If remembered context conflicts with current artifacts and the conflict cannot be reconciled safely, do not proceed from memory.
+
+Output this directive before any normal completion directive:
+
+```text
+PRODUCER_CONTINUATION_REJECTED
+REASON: <artifact-conflict|missing-authoritative-artifact|stale-plan|runtime-state-invalid|other>
+DETAILS: <short concrete explanation>
+```
+
+Do not ask the user directly. If user input is genuinely required and `<task-state-owner>` is present, use `FIXME_CHILD_ATTENTION_REQUIRED` according to the existing task-bound contract.
+
+On resume after implementation-only repair or plan-required rework, Read the current plan and code map before deciding the next action. Treat the revised plan, code map, review findings, and task state as authoritative.
+
+Preserve only completed work that still satisfies the current plan. If live memory says a step is done but current files or tests disagree, use the current files and tests. If the current plan contradicts prior live memory in a way this executor cannot reconcile, emit `PRODUCER_CONTINUATION_REJECTED` so the orchestrator can fresh-dispatch.
+
 # Execute Plan
 
 Execute an implementation plan step by step. Verification is sacred. Work is never done until everything passes.

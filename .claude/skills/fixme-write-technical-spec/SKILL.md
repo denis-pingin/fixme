@@ -26,6 +26,22 @@ END_PROMPT_MARKDOWN
 
 Do not write `<fixme-dir>/decisions.md`; `fixme-task` owns decision persistence and resume.
 
+## Producer Continuation Resume Contract
+
+Live context is an optimization cache only. Re-read the current authoritative artifacts named in the prompt and in this skill workflow before writing or acting on every resume.
+
+Durable artifacts, source files, task state, current review findings, current decisions, and current prompt inputs override remembered context. If remembered context conflicts with current artifacts and the conflict cannot be reconciled safely, do not proceed from memory.
+
+Output this directive before any normal completion directive:
+
+```text
+PRODUCER_CONTINUATION_REJECTED
+REASON: <artifact-conflict|missing-authoritative-artifact|stale-plan|runtime-state-invalid|other>
+DETAILS: <short concrete explanation>
+```
+
+Do not ask the user directly. If user input is genuinely required and `<task-state-owner>` is present, use `FIXME_CHILD_ATTENTION_REQUIRED` according to the existing task-bound contract.
+
 # Write Technical Specification
 
 Write a technical specification that defines implementation contracts without becoming an implementation plan. The specification is the only output file - no source code modifications allowed.
