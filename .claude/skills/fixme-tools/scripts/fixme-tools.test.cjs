@@ -3910,6 +3910,75 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
 });
 
+test('parent prepare-child handles stale natural-key parent before create-digest conflicts', () => {
+  const fixmeDir = makeFixmeDir();
+  const staleCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    idempotencyKey: 'stale-before-conflict',
+    extra: {
+      cursor: 'presentAnalysis',
+      payload: {
+        flags: {},
+        reviewItems: { currentPrFix: [] },
+        analysis: { currentPrFixCount: 0 },
+        routedGroups: [],
+      },
+    },
+  })}'`);
+  assert(staleCreate.ok, `stale seed parent should create, got ${JSON.stringify(staleCreate.data)}`);
+  const staleState = parentState(fixmeDir, staleCreate.data.parentRunId);
+  staleState.status = 'waitingForChild';
+  staleState.cursor = 'awaitFixmeTask';
+  staleState.payload = { fixBatches: [{ id: 'batch-stale' }], activeBatchIndex: 0 };
+  staleState.updatedAt = new Date().toISOString();
+  writeParentState(fixmeDir, staleCreate.data.parentRunId, staleState);
+
+  const payload = prepareChildPayload({
+    suffix: 'recover-stale-before-conflict',
+    extra: { recoverStaleParent: true },
+  });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-recover-stale.json', payload);
+  const repaired = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(repaired.ok, `stale recovery should win before create conflict, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.parentRunId !== staleCreate.data.parentRunId, 'recovery creates a fresh parent run after abandoning stale state');
+  const abandoned = parentState(fixmeDir, staleCreate.data.parentRunId);
+  assert(abandoned.status === 'failed', `stale parent should be abandoned, got ${JSON.stringify(abandoned)}`);
+  assert(abandoned.failure.reason === 'staleParentMissingActiveChild', `stale failure reason should persist, got ${JSON.stringify(abandoned.failure)}`);
+});
+
+test('parent prepare-child preserves session ledger defaults in persisted parent state', () => {
+  const fixmeDir = makeFixmeDir();
+  const sessionTaskRef = {
+    sessionPath: path.join(fixmeDir, 'sessions', 's1'),
+    ticketPath: path.join(fixmeDir, 'sessions', 's1', '0001-ticket'),
+  };
+  const fixBatches = [{ id: 'session-batch', summary: 'session dispatch' }];
+  const payload = prepareChildPayload({
+    suffix: 'session-ledger',
+    parentSkill: 'fixme-session',
+    lookupInput: { sessionTaskRef },
+    parentPayload: {},
+    transport: 'background',
+    extra: {
+      await: {
+        fixBatches,
+        activeBatchIndex: 0,
+        ledger: { reviewItems: { carried: true } },
+      },
+    },
+  });
+  payload.child.runtime = 'codex';
+  payload.child.handoff.taskSaveData.source = 'fixme-session';
+  payload.child.handoff.taskSaveData.tags = ['fixme-session', 'parent-driven'];
+  payload.child.handoff.payload.source = 'fixme-session';
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-session-ledger.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `session prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const persisted = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(JSON.stringify(persisted.ledger.sessionTaskRef) === JSON.stringify(sessionTaskRef), `sessionTaskRef ledger should persist, got ${JSON.stringify(persisted.ledger)}`);
+  assert(JSON.stringify(persisted.ledger.fixBatches) === JSON.stringify(fixBatches), `fixBatches ledger should persist, got ${JSON.stringify(persisted.ledger)}`);
+  assert(persisted.ledger.reviewItems.carried === true, `caller ledger should be preserved, got ${JSON.stringify(persisted.ledger)}`);
+});
+
 test('parent prepare-child rejects dynamic group keys before state mutation and preserves Claude inline transport', () => {
   const fixmeDir = makeFixmeDir();
   const invalidPayload = prepareChildPayload({
@@ -7674,6 +7743,9 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
   const normalSection = prSkill.slice(prSkill.indexOf('#### Invoke fixme-task'), prSkill.indexOf('### 4. Verify All Changes'));
   assert(!normalSection.includes('lifecycle dispatch prepare --fixme-dir'), 'normal PR handoff should not call dispatch prepare directly');
   assert(!normalSection.includes('lifecycle parent checkpoint --fixme-dir'), 'normal PR handoff should not call parent checkpoint directly');
+  assert(!normalSection.includes('inline-skill transport, parent-driven'), 'normal PR handoff heading should not imply inline-only dispatch');
+  assert(!normalSection.includes('fixme-task runs inline in this session'), 'normal PR handoff should not contain inline-only execution note');
+  assert(normalSection.indexOf('If `launch.transport == "inline-skill"`') < normalSection.indexOf('If `launch.transport == "agent"`'), 'normal PR handoff should branch from returned launch transport');
 
   const sessionSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-session/SKILL.md'), 'utf8');
   assert(sessionSkill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'session should use prepare-child data-file handoff');
@@ -7820,7 +7892,7 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('Use `activeChild.resumeRef` from parent state'), 'PR comments should resume from parent-owned activeChild.resumeRef');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments must not expect broker show to return resumeRef');
   assert(skill.includes('Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
-  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the Codex inline resume invocation');
+  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the installed Codex skill source copy');
   assert(!skill.includes('--nested'), 'PR comments should no longer reference --nested');
   assert(skill.includes('reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>`'), 'PR comments should reuse the same task run status when resuming');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'PR comments should clarify liveness status is not a CLI argument');
@@ -7837,9 +7909,10 @@ test('fixme-pr-comments skill: dispatches fixme-task with returned prompt blocks
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   const dispatchSection = skill.slice(
-    skill.indexOf('#### Invoke fixme-task (inline-skill transport, parent-driven)'),
+    skill.indexOf('#### Invoke fixme-task from launch transport'),
     skill.indexOf('When waiting or reporting status while the child pipeline is active')
   );
+  assert(dispatchSection.length > 0, 'dispatch section should be found');
   assert(dispatchSection.includes('promptBlocks.taskStateOwner'), 'dispatch should include returned promptBlocks.taskStateOwner');
   assert(dispatchSection.includes('promptBlocks.parentContinuation'), 'dispatch should include returned promptBlocks.parentContinuation');
   assert(dispatchSection.includes('promptBlocks.activeChild'), 'dispatch should include returned promptBlocks.activeChild');

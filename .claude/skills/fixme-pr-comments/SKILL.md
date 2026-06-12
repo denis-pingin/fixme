@@ -867,7 +867,7 @@ Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQU
 
 **BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in live manifest task list before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
 
-#### Invoke fixme-task (inline-skill transport, parent-driven)
+#### Invoke fixme-task from launch transport
 
 Build one prepare-child payload file and let the CLI perform the stable parent-state choreography. The CLI saves or reuses the child task handoff before returning, writes heavy PR-comment payload data to a durable `child-handoff-payload` preparation artifact, persists `activeChild`, advances the parent to `awaitFixmeTask`, and returns a `launch` block only. The CLI does not invoke the model, Skill, or agent; the runtime adapter performs the launch from `launch.transport` and `launch.promptBlocks`.
 
@@ -925,7 +925,7 @@ The returned `launch.promptBlocks.liveness` contains the child run context, incl
 
 fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In parent-driven mode, its substeps appear as `Step 9.1` ... `Step 9.8` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
 
-**NOTE**: fixme-task runs inline in this session's context, not as an isolated agent. This is intentional - the Agent tool cannot be used from within an agent (platform constraint). The pipeline's sub-agents (fixme-write-plan, fixme-execute-plan, etc.) still get isolated context windows when dispatched by fixme-task via the Agent tool.
+The returned launch transport decides the execution path. Claude may use the `inline-skill` branch above. Codex must use the `agent` branch above, launching the registered `fixme-task` agent; that child task then owns its plan, execute, review, handler, research, investigation, and browser verification sub-agent dispatches.
 
 When waiting or reporting status while the child pipeline is active, read liveness instead of inferring progress from git or CI. `awaitFixmeTask` polls child liveness and advances to `brokerChildAttention` on a pending attention or to `consumeTaskEvent` when a durable task event exists for the active batch:
 

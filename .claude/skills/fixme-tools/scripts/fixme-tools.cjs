@@ -9287,6 +9287,59 @@ function lifecycleParentAbandon(flags) {
   return lifecycleOk(parentAbandonCore(fixmeDir, data));
 }
 
+function parentIsMissingActiveChild(state) {
+  return state.status === 'waitingForChild' &&
+    state.cursor === 'awaitFixmeTask' &&
+    !isPlainObject(state.payload && state.payload.activeChild);
+}
+
+function findNonterminalParentsForLookup(fixmeDir, parentSkill, lookupInput) {
+  const normalizedLookupInput = normalizeParentLookupInput(parentSkill, lookupInput);
+  const naturalKey = parentNaturalKeyFor(parentSkill, normalizedLookupInput);
+  const entries = readParentIndexEntries(fixmeDir, `nat-${naturalKey}`);
+  const states = [];
+  for (const runId of entries) {
+    const statePath = parentStatePath(fixmeDir, runId);
+    if (!fs.existsSync(statePath)) continue;
+    const candidate = readJsonFileStrict(statePath);
+    if (!PR_TERMINAL_STATUSES.has(candidate.status)) {
+      states.push(candidate);
+    }
+  }
+  return states;
+}
+
+function recoverStaleParentBeforeCreate(fixmeDir, data) {
+  const nonterminal = findNonterminalParentsForLookup(fixmeDir, data.parent.parentSkill, data.parent.lookupInput);
+  for (const candidate of nonterminal) {
+    if (!parentIsMissingActiveChild(candidate)) continue;
+    if (data.recoverStaleParent !== true) {
+      parentStaleStateError(candidate, { message: 'Parent is waiting for child without activeChild' });
+    }
+    parentAbandonCore(fixmeDir, {
+      parentRunId: candidate.parentRunId,
+      idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${candidate.parentRunId}`,
+      reason: 'staleParentMissingActiveChild',
+      message: 'Recovered stale parent missing activeChild during prepare-child',
+    });
+  }
+}
+
+function prepareChildLedger(parentState, data) {
+  const defaults = {};
+  if (data.parent.parentSkill === 'fixme-session') {
+    if (isPlainObject(data.parent.lookupInput) && isPlainObject(data.parent.lookupInput.sessionTaskRef)) {
+      defaults.sessionTaskRef = data.parent.lookupInput.sessionTaskRef;
+    }
+    defaults.fixBatches = data.await.fixBatches;
+  }
+  return {
+    ...defaults,
+    ...(parentState.ledger || {}),
+    ...(data.await.ledger || {}),
+  };
+}
+
 function validatePrepareChildData(data) {
   try {
     assertKnownJsonFields(data, 'parent prepare-child', LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS);
@@ -9351,6 +9404,7 @@ function lifecycleParentPrepareChild(flags) {
   validatePrepareChildGroupedPayload(data.parent);
 
   const childPreflight = preflightChildHandoffIndex(fixmeDir, data.child);
+  recoverStaleParentBeforeCreate(fixmeDir, data);
 
   const parentCreateData = data.parent.parentSkill === 'fixme-session'
     ? {
@@ -9375,19 +9429,17 @@ function lifecycleParentPrepareChild(flags) {
     };
 
   let parentState = parentCreateCore(fixmeDir, parentCreateData);
-  if (parentState.status === 'waitingForChild' && parentState.cursor === 'awaitFixmeTask') {
-    if (!isPlainObject(parentState.payload.activeChild)) {
-      if (data.recoverStaleParent !== true) {
-        parentStaleStateError(parentState, { message: 'Parent is waiting for child without activeChild' });
-      }
-      parentAbandonCore(fixmeDir, {
-        parentRunId: parentState.parentRunId,
-        idempotencyKey: `${data.parent.idempotencyKey}:recover-stale`,
-        reason: 'staleParentMissingActiveChild',
-        message: 'Recovered stale parent missing activeChild during prepare-child',
-      });
-      parentState = parentCreateCore(fixmeDir, { ...parentCreateData, idempotencyKey: `${data.parent.idempotencyKey}:recovered` });
+  if (parentIsMissingActiveChild(parentState)) {
+    if (data.recoverStaleParent !== true) {
+      parentStaleStateError(parentState, { message: 'Parent is waiting for child without activeChild' });
     }
+    parentAbandonCore(fixmeDir, {
+      parentRunId: parentState.parentRunId,
+      idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${parentState.parentRunId}`,
+      reason: 'staleParentMissingActiveChild',
+      message: 'Recovered stale parent missing activeChild during prepare-child',
+    });
+    parentState = parentCreateCore(fixmeDir, parentCreateData);
   }
 
   const childTask = saveOrReuseChildHandoff(fixmeDir, data.child, childPreflight);
@@ -9456,7 +9508,7 @@ function lifecycleParentPrepareChild(flags) {
           activeBatchIndex: data.await.activeBatchIndex,
           parentContinuation,
         },
-        ledger: { ...(parentState.ledger || {}), ...(data.await.ledger || {}) },
+        ledger: prepareChildLedger(parentState, data),
       });
     }
     parentState = parentCheckpointCore(fixmeDir, parentState.parentRunId, {
@@ -9469,7 +9521,7 @@ function lifecycleParentPrepareChild(flags) {
         activeBatchIndex: data.await.activeBatchIndex,
         activeChild,
       },
-      ledger: { ...(parentState.ledger || {}), ...(data.await.ledger || {}) },
+      ledger: prepareChildLedger(parentState, data),
     });
   }
 
