@@ -11,19 +11,17 @@ This skill does not interact with `<fixme-dir>` directly outside the carve-outs 
 1. Fetching PR comments
 2. Analyzing each comment
 3. Consulting the user on ambiguous fixes
-4. Invoking `Skill("fixme-task", ...)` with the routed `CURRENT_PR_FIX` groups as a text argument
+4. Preparing a saved child `fixme-task` handoff with `lifecycle parent prepare-child --data-file`
 5. Verifying, committing, replying to comments, resolving threads
 
-**Never use a literal `.fixme/` path or any task-owned `<fixme-dir>/` path in any tool except for parent run state, liveness, and attention brokering commands.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation and let `fixme-task` handle all pipeline state.
+**Never use a literal `.fixme/` path or any task-owned `<fixme-dir>/` path in any tool except for the lifecycle, liveness, and attention brokering commands listed below.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Put the routed current PR fix groups in `child.handoff.payload`, let `lifecycle parent prepare-child` save the child task boundary, and let `fixme-task` handle all pipeline state from that saved reference.
 
-Parent run state (via `lifecycle parent *`), liveness, and attention brokering are the runtime-state carve-outs; the parent-state API stores only parent-owned orchestration state and must not expose task-owned plans/specs/decisions/tickets/config/internals. This skill may resolve `<fixme-dir>`, persist/reload its own parent run state, dispatch `fixme-task`, read child run status, and broker a child `fixme-task` attention prompt only through:
+Parent run state (via `lifecycle parent *`), liveness, and attention brokering are the runtime-state carve-outs; the parent-state API stores only parent-owned orchestration state and must not expose task-owned plans/specs/decisions/tickets/config/internals. This skill may resolve `<fixme-dir>`, prepare the saved child handoff, read child run status, and broker a child `fixme-task` attention prompt only through:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent create --fixme-dir <fixme-dir> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent checkpoint --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent resolve --fixme-dir <fixme-dir> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>
@@ -33,7 +31,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event c
 
 Use only the `fixmeDir` field returned by `root`. Store the dispatched child's `statusId` as `fixmeTaskStatusId`. Do not read, write, list, or mutate any task-owned `<fixme-dir>` path (decisions, plans, specs, tickets, config) from this skill.
 
-When `fixme-task`'s SKILL.md says "the orchestrator persists the decision", **the orchestrator means `fixme-task` itself**, not the caller of `Skill("fixme-task")`. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
+When `fixme-task`'s SKILL.md says "the orchestrator persists the decision", **the orchestrator means `fixme-task` itself**, not this parent PR-comments skill. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
 
 Parent brokers must not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` after recording an attention answer.
 
@@ -62,7 +60,7 @@ Automatically fetch, normalize, analyze, and address PR feedback from inline rev
 - **Never use Edit, Write, or Bash to modify source files.** If you catch yourself about to edit a source file, STOP - you are bypassing the pipeline. Even "just one line" must go through fixme-task. The pipeline exists to catch what your confidence blinds you to.
 - **Never skip fixme-task dispatch for "simple" fixes.** The temptation is strongest when there's only 1 fix and it looks trivial. That is exactly when this constraint matters most - a one-line type change can break downstream consumers that the pipeline's review loop would catch.
 - **"Inline fix" is a forbidden concept.** If the words "inline", "no pipeline needed", "fixing directly", or "just one line" appear in your output, you are about to violate the pipeline constraint. There is no inline path. Every FIX item goes through fixme-task dispatch. No exceptions, no size threshold, no shortcut.
-- **Never touch `.fixme/` or `<fixme-dir>/` files outside the liveness and attention brokering carve-outs.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are passed as text inputs to `Skill("fixme-task", args=...)`, never written to disk by this skill.
+- **Never touch `.fixme/` or `<fixme-dir>/` files outside the lifecycle, liveness, and attention brokering carve-outs.** See the "Fixme Directory" preamble above. The pipeline state is owned exclusively by `fixme-task`. Reading `fixme-task`'s SKILL.md and deciding to "persist resolved decisions before dispatching" is the exact failure mode this constraint prevents - decisions from Step 6 consultation are included in the saved child handoff payload, never written to disk by this skill.
 
 ## Audible Alerts
 
@@ -863,7 +861,7 @@ Batch CURRENT_PR_FIX groups by implementation dependency cluster, not by comment
 
 Split into separate fixme-task dispatches only when a high-complexity `PLAN_REQUIRED` fix touches an unrelated subsystem, would block low-risk implementation-only fixes, or requires a materially different verification strategy. Otherwise prefer one dispatch with all current PR fix groups.
 
-**PIPELINE GATE (self-check before proceeding):** Your next action MUST be liveness setup followed by a `Skill("fixme-task")` invocation. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The Skill tool is the ONLY implementation tool you use in this step.
+**PIPELINE GATE (self-check before proceeding):** Your next action MUST be building the `prepare-child` payload file, calling `lifecycle parent prepare-child --data-file`, and launching only through the returned `launch.transport`. If you are about to call Read, Edit, Write, Grep, or Bash on source files instead, STOP - you are bypassing the pipeline. There is no "quick fix" path, no "just this one change" exception, no size-based threshold. The returned launch branch is the ONLY implementation entry point you use in this step.
 
 **BLOCKING GATE (manifest check):** Manifest Step 4 (Present `## PR Comment Analysis`) MUST be marked `completed` in live manifest task list before this dispatch can run. If Step 4 is still `pending` or `in_progress`, you have skipped the analysis-presentation gate. Stop. Present the analysis, mark Step 4 `completed`, then proceed. This gate is independent of `--pause` - the analysis report is always required, even when execution proceeds automatically.
 

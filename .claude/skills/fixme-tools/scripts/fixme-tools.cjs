@@ -9340,6 +9340,43 @@ function prepareChildLedger(parentState, data) {
   };
 }
 
+const PREPARE_CHILD_LIGHTWEIGHT_PROMPT_INPUT_FIELDS = new Set([
+  'summary',
+  'title',
+  'source',
+  'route',
+  'batchId',
+  'activeBatchIndex',
+  'routedFixGroupsCount',
+  'mustResolveThreadCount',
+  'allowedUnresolvedThreadCount',
+  'currentPrFixCount',
+  'followupCount',
+  'infoCount',
+  'noActionCount',
+  'mustResolveThreadIds',
+  'allowedUnresolvedThreadIds',
+]);
+
+function isLightweightPromptValue(value) {
+  if (value === null) return true;
+  if (['string', 'number', 'boolean'].includes(typeof value)) return true;
+  if (Array.isArray(value)) {
+    return value.every(item => item === null || ['string', 'number', 'boolean'].includes(typeof item));
+  }
+  return false;
+}
+
+function sanitizePrepareChildPromptInputs(promptInputs) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(promptInputs || {})) {
+    if (!PREPARE_CHILD_LIGHTWEIGHT_PROMPT_INPUT_FIELDS.has(key)) continue;
+    if (!isLightweightPromptValue(value)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 function validatePrepareChildData(data) {
   try {
     assertKnownJsonFields(data, 'parent prepare-child', LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS);
@@ -9451,7 +9488,7 @@ function lifecycleParentPrepareChild(flags) {
     parentStatusId: data.child.parentStatusId || null,
   };
   const lightweightPromptInputs = {
-    ...data.child.promptInputs,
+    ...sanitizePrepareChildPromptInputs(data.child.promptInputs),
     resumeRef: childTask.resumeRef,
     taskPath: childTask.taskPath,
     statePath: childTask.statePath,

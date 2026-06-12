@@ -3910,6 +3910,45 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
 });
 
+test('parent prepare-child sanitizes heavy child prompt inputs before launch', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({
+    suffix: 'heavy-prompt-inputs',
+    extra: {
+      child: {
+        ...prepareChildPayload({ suffix: 'heavy-prompt-inputs-inner' }).child,
+        idempotencyKey: 'prepare-child-heavy-prompt-inputs',
+        promptInputs: {
+          summary: 'Current PR review fixes',
+          routedFixGroupsCount: 1,
+          mustResolveThreadCount: 1,
+          routedFixGroups: [{ groupId: 'G1', instructions: 'do not leak implementation instructions' }],
+          evidence: [{ path: 'apps/example.ts', line: 42, summary: 'do not leak evidence arrays' }],
+          instructions: 'do not leak instructions',
+          fullReviewBody: 'do not leak full review bodies',
+          nestedContext: { body: 'do not leak unknown nested heavy objects' },
+        },
+      },
+    },
+  });
+  payload.child.handoff.taskSaveData.slug = 'prepare-child-heavy-prompt-inputs';
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-heavy-prompt-inputs.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `heavy prompt input payload should succeed with sanitization, got ${JSON.stringify(prepared.data)}`);
+  const promptInputs = prepared.data.launch.promptBlocks.promptInputs;
+  assert(promptInputs.summary === 'Current PR review fixes', 'lightweight summary survives sanitization');
+  assert(promptInputs.routedFixGroupsCount === 1, 'lightweight count survives sanitization');
+  assert(promptInputs.resumeRef === prepared.data.childTask.resumeRef, 'resumeRef is appended after sanitization');
+  assert(promptInputs.taskPath === prepared.data.childTask.taskPath, 'taskPath is appended after sanitization');
+  assert(promptInputs.statePath === prepared.data.childTask.statePath, 'statePath is appended after sanitization');
+  assert(promptInputs.handoffPayloadPath === prepared.data.childTask.handoffPayloadPath, 'handoffPayloadPath is appended after sanitization');
+  const promptText = JSON.stringify(prepared.data.launch.promptBlocks);
+  assert(!promptText.includes('do not leak'), `heavy prompt inputs should not leak, got ${promptText}`);
+  assert(!Object.prototype.hasOwnProperty.call(promptInputs, 'routedFixGroups'), 'routed fix detail arrays are omitted from promptInputs');
+  assert(!Object.prototype.hasOwnProperty.call(promptInputs, 'evidence'), 'evidence arrays are omitted from promptInputs');
+  assert(!Object.prototype.hasOwnProperty.call(promptInputs, 'nestedContext'), 'unknown nested objects are omitted from promptInputs');
+});
+
 test('parent prepare-child handles stale natural-key parent before create-digest conflicts', () => {
   const fixmeDir = makeFixmeDir();
   const staleCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
@@ -7740,6 +7779,19 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
   assert(prSkill.includes('child.handoff.payload'), 'PR comments should document durable sidecar payload');
   assert(prSkill.includes('child-handoff-payload'), 'PR comments should document child handoff payload artifact');
   assert(prSkill.includes('"routedGroups":[{"groupId":"G1"'), 'PR comments should show group ids as values');
+  const staleNormalDispatchPhrases = [
+    'Invoking `Skill("fixme-task", ...)` with the routed `CURRENT_PR_FIX` groups as a text argument',
+    'Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation',
+    'pass the routed current PR fix groups as text inputs to `Skill("fixme-task", args=...)`',
+    'Your next action MUST be liveness setup followed by a `Skill("fixme-task")` invocation',
+    'The Skill tool is the ONLY implementation tool you use in this step',
+    'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data',
+    'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent create --fixme-dir <fixme-dir> --data',
+    'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent checkpoint --fixme-dir <fixme-dir>',
+  ];
+  for (const phrase of staleNormalDispatchPhrases) {
+    assert(!prSkill.includes(phrase), `PR comments should not contain stale normal-dispatch phrase: ${phrase}`);
+  }
   const normalSection = prSkill.slice(prSkill.indexOf('#### Invoke fixme-task'), prSkill.indexOf('### 4. Verify All Changes'));
   assert(!normalSection.includes('lifecycle dispatch prepare --fixme-dir'), 'normal PR handoff should not call dispatch prepare directly');
   assert(!normalSection.includes('lifecycle parent checkpoint --fixme-dir'), 'normal PR handoff should not call parent checkpoint directly');
@@ -8081,8 +8133,8 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(!skill.includes('except for the liveness carve-out'), 'PR comments should not keep stale liveness-only carve-out prose');
   assert(!skill.includes('except for liveness carve-out'), 'PR comments should not keep stale liveness-only hard-constraint prose');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
-  assert(skill.includes('lifecycle parent create --fixme-dir <fixme-dir>'), 'PR comments should persist parent run state');
-  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should dispatch fixme-task via the lifecycle helper');
+  assert(skill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'PR comments should persist parent state and prepare child launch through prepare-child');
+  assert(!skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should not dispatch fixme-task through manual dispatch prepare');
   assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');
   assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'child fixme-task args should include statusId');
