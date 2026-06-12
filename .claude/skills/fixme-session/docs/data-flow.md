@@ -76,6 +76,8 @@ Path: `<session-dir>/session.md`
 | `tickets_done`, `tickets_failed`, `tickets_skipped`, `tickets_total` | `session summary` | Status/report flows | Session-level ticket counts. |
 | `duration_seconds` | `session summary` | Status/report flows | Session duration. |
 
+The broker records only the raw answer; `fixme-task` consumes the answered attention and resumes task state.
+
 ### Project Config
 
 Path: `<fixme-dir>/config.json`

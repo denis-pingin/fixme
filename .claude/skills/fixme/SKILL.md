@@ -28,6 +28,7 @@ If the user explicitly invokes a concrete skill such as `/fixme-task`, `/fixme-s
 - Route to a concrete Fixme skill as soon as the correct target is clear.
 - Do not dispatch more than one `fixme-task` at a time. For multiple `FIXME-N` labels, invoke `fixme-task` sequentially in the user's stated order and wait for each run to finish before starting the next.
 - Do not reinterpret a requested pipeline. Preserve explicit pipeline names such as `standard`, `bugfix`, `full`, `product-spec`, `technical-spec`, `plan-only`, and `execute-only`.
+- Parent brokers must not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` after recording an attention answer.
 - If two routes are plausible and they have different side effects, ask one concise question before dispatching.
 - If authoritative Linear ticket content is needed and Linear MCP is unavailable, stop per the repository Linear MCP rule instead of guessing.
 

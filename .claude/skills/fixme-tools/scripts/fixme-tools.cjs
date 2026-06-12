@@ -4092,14 +4092,7 @@ function buildDecisionContext(state, fixmeDir, { includeSuperseded = false } = {
   return { taskDecisions, taskDecisionMarkdown, projectDecisionMarkdown, mergedMarkdown };
 }
 
-function taskDecisionAppend(flags) {
-  const statePath = resolveTaskStatePathForDecision(flags);
-  let record;
-  try {
-    record = parseTaskData(flags.data);
-  } catch (e) {
-    lifecycleError('invalidInput', e.message);
-  }
+function validateTaskDecisionRecord(record) {
   try {
     assertCamelCaseJsonKeys(record, 'task decision');
   } catch (e) {
@@ -4128,9 +4121,9 @@ function taskDecisionAppend(flags) {
   if (record.supersededByDecisionId !== null && record.supersededByDecisionId !== undefined) {
     lifecycleError('invalidInput', "task decision 'supersededByDecisionId' must be null on append");
   }
+}
 
-  const state = readJsonFileStrict(statePath);
-  const fixmeDir = resolveFixmeDirForTaskState(flags, state, statePath);
+function appendTaskDecisionRecordToState(state, fixmeDir, record) {
   const decisions = Array.isArray(state.decisions) ? state.decisions.map(cloneJson) : [];
 
   // Idempotency by id.
@@ -4138,7 +4131,7 @@ function taskDecisionAppend(flags) {
   if (existing) {
     const incoming = normalizeDecisionForCompare(record);
     if (jsonEqual(normalizeDecisionForCompare(existing), incoming)) {
-      return lifecycleOk({ decision: existing, ...buildDecisionContext(state, fixmeDir) });
+      return { state, decision: existing, changed: false, alreadyExisting: true };
     }
     lifecycleError('conflictingDuplicate', `task decision '${record.id}' already exists with different data`);
   }
@@ -4178,9 +4171,39 @@ function taskDecisionAppend(flags) {
 
   const nextState = { ...state, decisions, updatedAt: new Date().toISOString() };
   assertCamelCaseJsonKeys(nextState, 'task state');
-  writeJsonAtomic(statePath, nextState);
+  return { state: nextState, decision: newRecord, changed: true, alreadyExisting: false };
+}
 
-  return lifecycleOk({ decision: newRecord, ...buildDecisionContext(nextState, fixmeDir) });
+function taskDecisionAppendPayload(decision, state, fixmeDir, compact = false) {
+  if (compact) {
+    return { decision, compact: true };
+  }
+  return { decision, ...buildDecisionContext(state, fixmeDir) };
+}
+
+function taskDecisionAppend(flags) {
+  const statePath = resolveTaskStatePathForDecision(flags);
+  let record;
+  try {
+    record = parseTaskData(flags.data);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  validateTaskDecisionRecord(record);
+
+  const state = readJsonFileStrict(statePath);
+  const fixmeDir = resolveFixmeDirForTaskState(flags, state, statePath);
+  const result = appendTaskDecisionRecordToState(state, fixmeDir, record);
+  if (result.changed) {
+    writeJsonAtomic(statePath, result.state);
+  }
+
+  return lifecycleOk(taskDecisionAppendPayload(
+    result.decision,
+    result.state,
+    fixmeDir,
+    Object.prototype.hasOwnProperty.call(flags, 'compact')
+  ));
 }
 
 function normalizeDecisionForCompare(record) {
@@ -4750,6 +4773,11 @@ function getCodexSkillAdapterHeader(skillName) {
     '- Omit `reasoning_effort` only when the resolver returns `null`. Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails.',
     '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
+    '',
+    '## Attention Brokers',
+    '',
+    '- When acting as a Fixme attention broker, record only the raw answer with `lifecycle attention broker answer`; do not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare`.',
+    '- Resume the existing `fixme-task` with `--resume <ref> --answer-attention <attention-id>` and let `fixme-task` consume the answer.',
     '',
     '## Workflow Manifests',
     '',
@@ -5785,6 +5813,49 @@ function runStatus(flags) {
   return output({ ...readRunStatusFile(statusPath, statusId), statusPath });
 }
 
+function resolveLivenessCompatFixmeDir(flags) {
+  if (Object.prototype.hasOwnProperty.call(flags, 'fixme-dir')) {
+    return validateRunFixmeDir(flags['fixme-dir']);
+  }
+  return path.join(findFixmeRoot(process.cwd()), '.fixme');
+}
+
+function normalizeLivenessCompatCheckpoint(rawPhase) {
+  const checkpoint = rawPhase && rawPhase !== true ? String(rawPhase) : 'working';
+  return validateRunCheckpoint(checkpoint);
+}
+
+function defaultRunStateForCheckpoint(checkpoint) {
+  if (checkpoint === 'waiting') return 'waiting';
+  if (checkpoint === 'done') return 'completed';
+  return 'running';
+}
+
+function livenessCompatPing(flags) {
+  const fixmeDir = resolveLivenessCompatFixmeDir(flags);
+  const checkpoint = normalizeLivenessCompatCheckpoint(flags.phase || flags.checkpoint);
+  const state = flags.state && flags.state !== true
+    ? validateRunState(String(flags.state))
+    : defaultRunStateForCheckpoint(checkpoint);
+  const currentCommand = Object.prototype.hasOwnProperty.call(flags, 'current-command')
+    ? flags['current-command']
+    : (Object.prototype.hasOwnProperty.call(flags, 'message') ? flags.message : 'null');
+  return runPing({
+    'fixme-dir': fixmeDir,
+    'status-id': flags['status-id'],
+    state,
+    checkpoint,
+    'current-command': currentCommand,
+  });
+}
+
+function livenessCompatStatus(flags) {
+  return runStatus({
+    'fixme-dir': resolveLivenessCompatFixmeDir(flags),
+    'status-id': flags['status-id'],
+  });
+}
+
 function normalizeRequiredAttentionDataString(data, key, errorMessage) {
   const value = data[key];
   if (typeof value !== 'string') {
@@ -6008,7 +6079,7 @@ function runAttentionAnswer(flags) {
   return output(runAttentionAnswerCore(flags));
 }
 
-function runAttentionClear(flags) {
+function runAttentionClearCore(flags) {
   const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
   const statusId = validateRequiredRunId(flags['status-id']);
   const { attentionId, attentionPath, record, runStatus } = readAttentionRecord(fixmeDir, statusId, flags['attention-id']);
@@ -6040,13 +6111,17 @@ function runAttentionClear(flags) {
     });
   }
 
-  return output({
+  return {
     statusId,
     attentionId,
     cleared: true,
     recordRemoved,
     warnings,
-  });
+  };
+}
+
+function runAttentionClear(flags) {
+  return output(runAttentionClearCore(flags));
 }
 
 function runAttention(args, flags) {
@@ -7581,6 +7656,109 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
 
 const LIFECYCLE_ATTENTION_OPEN_FIELDS = new Set(['statusId', 'taskStatePath', 'checkpointData', 'attention']);
 const LIFECYCLE_BROKER_ANSWER_FIELDS = new Set(['answer', 'answeredBy', 'answerKind']);
+const LIFECYCLE_ATTENTION_CONSUME_FIELDS = new Set(['statusId', 'taskStatePath', 'attentionId', 'mode', 'decisionRecords', 'checkpointData']);
+const LIFECYCLE_ATTENTION_CONSUME_MODES = Object.freeze(['resolvedDecision', 'clarificationRequest', 'partialDecision']);
+
+function normalizeLifecycleAttentionConsumeData(flags) {
+  const data = resolveLifecycleData(flags);
+  try {
+    assertCamelCaseJsonKeys(data, 'attention consume data');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  try {
+    assertKnownJsonFields(data, 'attention consume', LIFECYCLE_ATTENTION_CONSUME_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(data.statusId)) {
+    lifecycleError('missingRequiredField', 'statusId is required');
+  }
+  if (!isNonEmptyString(data.taskStatePath)) {
+    lifecycleError('missingRequiredField', 'taskStatePath is required');
+  }
+  if (!isNonEmptyString(data.attentionId)) {
+    lifecycleError('missingRequiredField', 'attentionId is required');
+  }
+  if (!isPlainObject(data.checkpointData)) {
+    lifecycleError('missingRequiredField', 'checkpointData is required');
+  }
+  const mode = data.mode || 'resolvedDecision';
+  if (!LIFECYCLE_ATTENTION_CONSUME_MODES.includes(mode)) {
+    lifecycleError('invalidInput', `mode must be one of: ${LIFECYCLE_ATTENTION_CONSUME_MODES.join(', ')}`);
+  }
+  const decisionRecords = Object.prototype.hasOwnProperty.call(data, 'decisionRecords') ? data.decisionRecords : [];
+  if (!Array.isArray(decisionRecords)) {
+    lifecycleError('invalidInput', 'decisionRecords must be an array');
+  }
+  if (mode !== 'resolvedDecision' && decisionRecords.length > 0) {
+    lifecycleError('invalidInput', `${mode} consume must not include final decisionRecords`);
+  }
+  for (const [index, record] of decisionRecords.entries()) {
+    if (!isPlainObject(record)) {
+      lifecycleError('invalidInput', `decisionRecords.${index} must be a JSON object`);
+    }
+    validateTaskDecisionRecord(record);
+  }
+  let attentionId;
+  try {
+    attentionId = validateAttentionId(data.attentionId);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  const statePath = path.resolve(String(data.taskStatePath));
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Task state file not found: ${statePath}`);
+  }
+  return {
+    statusId: data.statusId,
+    statePath,
+    attentionId,
+    mode,
+    decisionRecords,
+    checkpointData: data.checkpointData,
+  };
+}
+
+function taskStateMatchesCheckpointData(state, checkpointData) {
+  for (const [key, value] of Object.entries(checkpointData)) {
+    if (!jsonEqual(state[key], value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function taskStateIncludesDecisionRecords(state, decisionRecords) {
+  const decisions = Array.isArray(state.decisions) ? state.decisions : [];
+  for (const record of decisionRecords) {
+    const existing = decisions.find(decision => decision.id === record.id);
+    if (!existing || !jsonEqual(normalizeDecisionForCompare(existing), normalizeDecisionForCompare(record))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function taskStateReflectsConsume(state, checkpointData, decisionRecords) {
+  return taskStateMatchesCheckpointData(state, checkpointData)
+    && taskStateIncludesDecisionRecords(state, decisionRecords);
+}
+
+function lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, extras = {}) {
+  return lifecycleOk({
+    statusId,
+    taskStatePath: statePath,
+    attentionId,
+    mode,
+    decisionCount: decisionRecords.length,
+    decisions: decisionRecords.map(record => ({ id: record.id, attentionId: record.attentionId, status: 'active' })),
+    consumed: true,
+    cleared: true,
+    replay: true,
+    ...extras,
+  });
+}
 
 function lifecycleAttentionOpen(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
@@ -7762,6 +7940,118 @@ function lifecycleAttentionBrokerAnswer(flags) {
   } catch (e) {
     lifecycleError('invalidInput', e.message);
   }
+}
+
+function lifecycleAttentionConsume(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const { statusId, statePath, attentionId, mode, decisionRecords, checkpointData } = normalizeLifecycleAttentionConsumeData(flags);
+  const state = readJsonFileStrict(statePath);
+  const alreadyApplied = taskStateReflectsConsume(state, checkpointData, decisionRecords);
+  const attentionPath = runAttentionPath(fixmeDir, statusId, attentionId);
+
+  if (!fs.existsSync(attentionPath)) {
+    if (alreadyApplied) {
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
+    }
+    lifecycleError('stateNotFound', `Run attention not found: ${attentionId}`);
+  }
+
+  let attentionRecord;
+  let runStatus;
+  try {
+    const read = readAttentionRecord(fixmeDir, statusId, attentionId);
+    attentionRecord = read.record;
+    runStatus = read.runStatus;
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      if (alreadyApplied) {
+        return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
+      }
+      lifecycleError('stateNotFound', e.message);
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+
+  if (attentionRecord.taskStatePath !== statePath) {
+    lifecycleError('invalidInput', `attention taskStatePath does not match requested taskStatePath: ${attentionRecord.taskStatePath}`);
+  }
+  if (attentionRecord.status !== 'answered') {
+    lifecycleError('invalidInput', `Run attention must be answered before consume: ${attentionId}`);
+  }
+  const expectedCommand = `attention:${attentionId}`;
+  if (runStatus.currentCommand !== expectedCommand) {
+    if (alreadyApplied) {
+      let staleRecordRemoved = false;
+      try {
+        fs.rmSync(attentionPath, { force: true });
+        staleRecordRemoved = true;
+      } catch (_) {}
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: staleRecordRemoved });
+    }
+    lifecycleError('staleState', `Run is not waiting on attention ${attentionId}`);
+  }
+
+  const pendingDecision = isPlainObject(state.pendingDecision) ? state.pendingDecision : null;
+  if (!alreadyApplied) {
+    if (!pendingDecision || pendingDecision.attentionId !== attentionId) {
+      lifecycleError('staleState', `Task state pendingDecision does not match attention ${attentionId}`);
+    }
+    if (isNonEmptyString(pendingDecision.attentionStatusId) && pendingDecision.attentionStatusId !== statusId) {
+      lifecycleError('staleState', `Task state pendingDecision.attentionStatusId does not match run status ${statusId}`);
+    }
+  }
+
+  if (mode === 'clarificationRequest' && attentionRecord.answer && attentionRecord.answer.answerKind !== 'clarificationRequest') {
+    lifecycleError('invalidInput', 'clarificationRequest consume requires an answered clarificationRequest attention');
+  }
+  if ((mode === 'resolvedDecision' || mode === 'partialDecision') && attentionRecord.answer && attentionRecord.answer.answerKind !== 'decision') {
+    lifecycleError('invalidInput', `${mode} consume requires an answered decision attention`);
+  }
+
+  let nextState = state;
+  const consumedDecisions = [];
+  for (const record of decisionRecords) {
+    const result = appendTaskDecisionRecordToState(nextState, fixmeDir, record);
+    nextState = result.state;
+    consumedDecisions.push(result.decision);
+  }
+
+  let checkpointed;
+  try {
+    checkpointed = mergeTaskState(nextState, checkpointData);
+    assertCamelCaseJsonKeys(checkpointed, 'task state');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  writeJsonAtomic(statePath, checkpointed);
+
+  let clearResult;
+  try {
+    clearResult = runAttentionClearCore({
+      'fixme-dir': fixmeDir,
+      'status-id': statusId,
+      'attention-id': attentionId,
+    });
+  } catch (e) {
+    const currentState = readJsonFileStrict(statePath);
+    if (taskStateReflectsConsume(currentState, checkpointData, decisionRecords) && /not found|not waiting/i.test(e.message)) {
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { clearWarning: e.message });
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+
+  return lifecycleOk({
+    statusId,
+    taskStatePath: statePath,
+    attentionId,
+    mode,
+    decisionCount: consumedDecisions.length,
+    decisions: consumedDecisions.map(record => ({ id: record.id, attentionId: record.attentionId, status: record.status })),
+    consumed: true,
+    cleared: clearResult.cleared,
+    recordRemoved: clearResult.recordRemoved,
+    warnings: clearResult.warnings,
+  });
 }
 
 // ============================================================================
@@ -8990,6 +9280,189 @@ function errorPayload(payload) {
 // Main Router
 // ============================================================================
 
+function setValues(setOrArray) {
+  return Array.from(setOrArray);
+}
+
+function commandHelpPayload({
+  command,
+  requiredFlags = [],
+  requiredDataFields = [],
+  optionalDataFields = [],
+  enumValues = {},
+  example = {},
+  audience = null,
+  guidance = null,
+}) {
+  const payload = {
+    ok: true,
+    command,
+    requiredFlags,
+    requiredDataFields,
+    optionalDataFields,
+    enumValues,
+    example,
+  };
+  if (audience) payload.audience = audience;
+  if (guidance) payload.guidance = guidance;
+  return payload;
+}
+
+function commandHelpSchema(command, subcommand, args) {
+  if (command === 'task' && subcommand === 'decision' && args[0] === 'append') {
+    return commandHelpPayload({
+      command: 'task decision append',
+      requiredFlags: ['state'],
+      requiredDataFields: [
+        ...DECISION_REQUIRED_STRING_FIELDS,
+        'status',
+        'supersedesDecisionIds',
+        'supersededByDecisionId',
+      ],
+      optionalDataFields: ['supersedesProjectDecisionRefs'],
+      enumValues: { status: ['active'] },
+      example: {
+        flags: { state: '/absolute/task.state.json', compact: true },
+        data: {
+          id: 'decision_...',
+          attentionId: 'attn_...',
+          sourceSkill: 'fixme-handle-code-review',
+          prompt: 'Decision prompt',
+          answer: 'User answer',
+          interpretation: 'How fixme-task will proceed',
+          status: 'active',
+          supersedesDecisionIds: [],
+          supersedesProjectDecisionRefs: [],
+          supersededByDecisionId: null,
+          createdAt: '2026-06-08T00:00:00.000Z',
+        },
+      },
+    });
+  }
+  if (command === 'run' && subcommand === 'attention' && args[0] === 'answer') {
+    return commandHelpPayload({
+      command: 'run attention answer',
+      requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
+      requiredDataFields: setValues(RUN_ATTENTION_ANSWER_FIELDS),
+      optionalDataFields: [],
+      enumValues: {
+        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
+        answeredBy: ['user'],
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
+      },
+      audience: 'owner/internal',
+      guidance: 'Owner/internal API. Parent brokers should record raw user answers with lifecycle attention broker answer instead.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'answer') {
+    return commandHelpPayload({
+      command: 'lifecycle attention broker answer',
+      requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
+      requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
+      optionalDataFields: [],
+      enumValues: {
+        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
+        answeredBy: ['user'],
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing brokers record raw user answers only; fixme-task interprets and consumes them.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'open') {
+    return commandHelpPayload({
+      command: 'lifecycle attention open',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: setValues(LIFECYCLE_ATTENTION_OPEN_FIELDS),
+      optionalDataFields: [],
+      enumValues: {
+        'attention.answerMode': setValues(RUN_ATTENTION_ANSWER_MODES),
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme' },
+        data: {
+          statusId: 'run_...',
+          taskStatePath: '/absolute/task.state.json',
+          checkpointData: { status: 'waitingForUser', pendingDecision: { attentionId: 'attn_...' } },
+          attention: {
+            ownerSkill: 'fixme-task',
+            sourceSkill: 'fixme-handle-code-review',
+            kind: 'reviewDecision',
+            resumeRef: 'FIXME-1',
+            taskStatePath: '/absolute/task.state.json',
+            answerMode: 'decision-card',
+            promptMarkdown: '## Decision',
+          },
+        },
+      },
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'consume') {
+    return commandHelpPayload({
+      command: 'lifecycle attention consume',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['statusId', 'taskStatePath', 'attentionId', 'checkpointData'],
+      optionalDataFields: ['decisionRecords', 'mode'],
+      enumValues: {
+        mode: setValues(LIFECYCLE_ATTENTION_CONSUME_MODES),
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme' },
+        data: {
+          statusId: 'run_...',
+          taskStatePath: '/absolute/task.state.json',
+          attentionId: 'attn_...',
+          mode: 'resolvedDecision',
+          decisionRecords: [],
+          checkpointData: { status: 'running', pendingDecision: null },
+        },
+      },
+      audience: 'owner/internal',
+      guidance: 'Owner-only helper for fixme-task. It consumes answered attention before liveness pings, status resets, or child dispatch.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'prepare') {
+    return commandHelpPayload({
+      command: 'lifecycle dispatch prepare',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['idempotencyKey', 'agentName', 'transport', 'promptInputs'],
+      optionalDataFields: setValues(LIFECYCLE_DISPATCH_PREPARE_FIELDS)
+        .filter(field => !['idempotencyKey', 'agentName', 'transport', 'promptInputs'].includes(field)),
+      enumValues: {
+        transport: setValues(DISPATCH_TRANSPORTS),
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme' },
+        data: {
+          idempotencyKey: 'dispatch-key',
+          agentName: 'fixme-task',
+          transport: 'inline-skill',
+          promptInputs: {},
+        },
+      },
+    });
+  }
+  return null;
+}
+
+function maybeShowCommandHelp(command, subcommand, args, flags) {
+  if (!Object.prototype.hasOwnProperty.call(flags, 'help')) {
+    return false;
+  }
+  const schema = commandHelpSchema(command, subcommand, args);
+  if (!schema) {
+    return false;
+  }
+  output(schema);
+  return true;
+}
+
 function rootCommand() {
   const fixmeRoot = findFixmeRoot(process.cwd());
   return output({
@@ -9016,6 +9489,8 @@ function main() {
       }
       return resolvedFixmeRoot;
     };
+
+    maybeShowCommandHelp(command, subcommand, args, flags);
 
     switch (command) {
       case 'ticket':
@@ -9090,6 +9565,8 @@ function main() {
             switch (args[0]) {
               case 'open':
                 return lifecycleAttentionOpen(flags);
+              case 'consume':
+                return lifecycleAttentionConsume(flags);
               case 'broker':
                 switch (args[1]) {
                   case 'show':
@@ -9248,6 +9725,16 @@ function main() {
             return error(`Unknown run subcommand: '${subcommand}'. Valid: start, ping, status, attention`);
         }
 
+      case 'liveness':
+        switch (subcommand) {
+          case 'ping':
+            return livenessCompatPing(flags);
+          case 'status':
+            return livenessCompatStatus(flags);
+          default:
+            return error(`Unknown liveness subcommand: '${subcommand}'. Valid: ping, status`);
+        }
+
       case 'root':
         return rootCommand();
 
@@ -9279,7 +9766,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, liveness, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {

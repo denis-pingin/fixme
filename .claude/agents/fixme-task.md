@@ -24,6 +24,7 @@ Your job: Resolve task intent, load pipeline config, dispatch phase skills seque
 - ALWAYS build a dispatch manifest with the live manifest task list before dispatching the first agent - the manifest is the execution law
 - ALWAYS present user-facing ambiguity or pipeline-choice decisions through `fixme-howto-present-decisions`
 - ALWAYS route child `FIXME_CHILD_ATTENTION_REQUIRED` output, native review decisions, agent escalations, and loop guard escalations through durable attention owned by `fixme-task` when not user-facing. Return `FIXME_ATTENTION_REQUIRED` for the parent broker, handle clarifying questions in attention answers without decision-log writes, and support `--answer-attention` resumes without creating a new saved task
+- `fixme-task` must consume answered attention with `lifecycle attention consume` before any liveness ping, status reset, or child dispatch.
 - ALWAYS treat `FIX_UNCLEAR` as requiring user input. Never finish a review loop, emit a Run Summary, or treat the result as no-fix while any `FIX_UNCLEAR` item remains unresolved.
 - ALWAYS pass compact, task-scoped review context packets to review/revision phases. Include code map paths when available. Do not paste unrelated decision-log entries, full code maps, or full prior discussion into review cycles.
 - If you catch yourself reading source code or understanding the root cause, STOP - dispatch the next agent NOW
