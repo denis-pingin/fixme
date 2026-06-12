@@ -7265,6 +7265,14 @@ test('fixme-task skill documents exact producer continuation with fresh fallback
     'fixme-task should handle producer reconciliation rejection',
   );
   assert(
+    skill.includes('failure: { "reason": "producerContinuationRejected", "message": "<short concrete producer rejection>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }'),
+    'fixme-task should document full producerContinuationRejected failure payload with message',
+  );
+  assert(
+    skill.includes('failure: { "reason": "missingProducerDirective", "message": "<short concrete missing directive description>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "statusId": "<statusId>" } }'),
+    'fixme-task should document full missingProducerDirective failure payload with message',
+  );
+  assert(
     skill.includes('Reviewers, handlers, investigation, research, browser verification, and `fixme-task` stay fresh'),
     'fixme-task should document non-resumable roles',
   );

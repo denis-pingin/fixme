@@ -1191,7 +1191,7 @@ Fresh fallback mechanics:
 - If runtime resume fails before a child response, call `lifecycle dispatch complete` for the resume attempt with `status: "failed"`, `currentCommand: null`, and `failure: { "reason": "runtimeResumeFailed", "message": "<short concrete runtime failure>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }`.
 - After failed completion succeeds, call `task producer-continuation mark-bad --state <task-state-path> --agent-name <agent> --runtime <runtime> --reason "<same concrete reason>"`.
 - Then prepare a fresh fallback with a new idempotency key and `forceFreshReason: "runtimeResumeFailed"`.
-- If a resumed producer returns `PRODUCER_CONTINUATION_REJECTED`, first call `lifecycle dispatch complete` for the resumed dispatch with `status: "failed"` and `failure.reason: "producerContinuationRejected"`, then use `task producer-continuation mark-bad`, then run one fresh fallback with the same current durable inputs and a new idempotency key.
+- If a resumed producer returns `PRODUCER_CONTINUATION_REJECTED`, first call `lifecycle dispatch complete` for the resumed dispatch with `status: "failed"`, `currentCommand: null`, and `failure: { "reason": "producerContinuationRejected", "message": "<short concrete producer rejection>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }`, then use `task producer-continuation mark-bad`, then run one fresh fallback with the same current durable inputs and a new idempotency key.
 - If the fresh fallback also fails, handle it with the existing failure path.
 
 After the dispatched agent returns, finalize the child liveness status:
@@ -1521,7 +1521,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 1. **Do NOT take over the agent's work.** Do not run tests, commit code, verify output, or do anything the agent was supposed to do. You are a dispatcher.
 2. **Do NOT advance to the next manifest step.** The current step is incomplete.
-3. **If the missing or invalid directive came from a resumed producer**, first complete the resumed dispatch as failed with `failure.reason: "missingProducerDirective"`, then mark the handle bad through `task producer-continuation mark-bad`, then fresh fallback once with a new idempotency key and current durable inputs. Missing or invalid directives from a fresh producer use the existing redispatch or failure behavior.
+3. **If the missing or invalid directive came from a resumed producer**, first complete the resumed dispatch as failed with `status: "failed"`, `currentCommand: null`, and `failure: { "reason": "missingProducerDirective", "message": "<short concrete missing directive description>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "statusId": "<statusId>" } }`, then mark the handle bad through `task producer-continuation mark-bad`, then fresh fallback once with a new idempotency key and current durable inputs. Missing or invalid directives from a fresh producer use the existing redispatch or failure behavior.
 4. **Re-dispatch the agent automatically (once).** Construct a resume prompt:
    - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step.
    - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
