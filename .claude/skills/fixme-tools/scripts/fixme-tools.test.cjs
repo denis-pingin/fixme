@@ -78,6 +78,10 @@ function runInDir(args, cwd) {
   }
 }
 
+function cliErrorMessage(result) {
+  return result.data?.error || result.stderr || result.stdout || '';
+}
+
 function pipelineResolutionFlag(pipeline, fields = {}) {
   const resolution = {
     pipeline,
@@ -2446,12 +2450,13 @@ test('task checkpoint: merges allowed camelCase state fields and rejects invalid
 
 function initTaskState(slug) {
   const projectRoot = createTmpDir();
-  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
-  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const sessionDir = path.join(fixmeDir, 'sessions', 'test-session');
   const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
   const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
   assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
-  return { projectRoot, statePath: initialized.data.statePath };
+  return { projectRoot, fixmeDir, statePath: initialized.data.statePath };
 }
 
 test('task state initializes parentContinuation/decisions/terminalResult', () => {
@@ -2460,6 +2465,295 @@ test('task state initializes parentContinuation/decisions/terminalResult', () =>
   assert(state.parentContinuation === null, `parentContinuation should default null, got ${JSON.stringify(state.parentContinuation)}`);
   assert(Array.isArray(state.decisions) && state.decisions.length === 0, `decisions should default [], got ${JSON.stringify(state.decisions)}`);
   assert(state.terminalResult === null, `terminalResult should default null, got ${JSON.stringify(state.terminalResult)}`);
+});
+
+test('task state initializes and validates producer continuation entries', () => {
+  const { projectRoot, statePath } = initTaskState('producer-continuation-schema');
+  let state = readJson(statePath);
+
+  assert(Array.isArray(state.producerContinuations), 'producerContinuations should default to an array');
+  assert(state.producerContinuations.length === 0, 'producerContinuations should default empty');
+
+  const availableHandle = {
+    producerContinuations: [
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_1' },
+        status: 'available',
+        lastDispatchId: 'dispatch_plan_1',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+  };
+
+  let result = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify(availableHandle)}'`,
+    projectRoot,
+  );
+  assert(result.ok, `expected valid producer continuation to checkpoint: ${result.stderr || result.stdout}`);
+
+  state = readJson(statePath);
+  assert(state.producerContinuations[0].runtimeHandle.id === 'agent_plan_1', 'should persist exact handle id');
+
+  const nonResumableHandle = {
+    producerContinuations: [
+      {
+        agentName: 'fixme-review-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'codexAgentId', id: 'agent_review_1' },
+        status: 'available',
+        lastDispatchId: 'dispatch_review_1',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+  };
+
+  result = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify(nonResumableHandle)}'`,
+    projectRoot,
+  );
+  assert(!result.ok, 'checkpoint should reject non-resumable producer continuation entries');
+  assert(
+    cliErrorMessage(result).includes('producerContinuations[0].agentName'),
+    'error should identify the invalid producer continuation agent',
+  );
+
+  const mismatchedHandle = {
+    producerContinuations: [
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'claudeAgentId', id: 'agent_wrong_runtime' },
+        status: 'available',
+        lastDispatchId: 'dispatch_wrong_runtime',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+  };
+
+  result = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify(mismatchedHandle)}'`,
+    projectRoot,
+  );
+  assert(!result.ok, 'checkpoint should reject runtime handle kind mismatches');
+  assert(
+    cliErrorMessage(result).includes('runtimeHandle.kind'),
+    'error should identify the mismatched runtime handle kind',
+  );
+
+  const dualRuntimeHandles = {
+    producerContinuations: [
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_codex' },
+        status: 'available',
+        lastDispatchId: 'dispatch_plan_codex',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'claude',
+        runtimeHandle: { kind: 'claudeAgentId', id: 'agent_plan_claude' },
+        status: 'available',
+        lastDispatchId: 'dispatch_plan_claude',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+  };
+
+  result = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify(dualRuntimeHandles)}'`,
+    projectRoot,
+  );
+  assert(result.ok, `same producer across different runtimes should checkpoint: ${JSON.stringify(result.data)}`);
+
+  const duplicateRuntimeHandles = {
+    producerContinuations: [
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_codex_1' },
+        status: 'available',
+        lastDispatchId: 'dispatch_plan_codex_1',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+      {
+        agentName: 'fixme-write-plan',
+        runtime: 'codex',
+        runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_codex_2' },
+        status: 'available',
+        lastDispatchId: 'dispatch_plan_codex_2',
+        badReason: null,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+  };
+
+  result = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify(duplicateRuntimeHandles)}'`,
+    projectRoot,
+  );
+  assert(!result.ok, 'checkpoint should reject duplicate producer continuation entries for the same agent/runtime');
+  assert(
+    cliErrorMessage(result).includes('duplicate producerContinuations entry for fixme-write-plan/codex'),
+    `duplicate error should name the duplicate agent/runtime, got: ${cliErrorMessage(result)}`,
+  );
+});
+
+test('dispatch prepare selects exact producer continuation handles and reports fresh fallback reasons', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-select');
+
+  const checkpoint = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify({
+      producerContinuations: [
+        {
+          agentName: 'fixme-write-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_1' },
+          status: 'available',
+          lastDispatchId: 'dispatch_plan_1',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+      ],
+    })}'`,
+    projectRoot,
+  );
+  assert(checkpoint.ok, `expected checkpoint setup to pass: ${checkpoint.stderr || checkpoint.stdout}`);
+
+  const resume = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-resume-plan',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+
+  assert(resume.ok, `expected dispatch prepare to pass: ${resume.stderr || resume.stdout}`);
+  assert(resume.data.continuation.mode === 'resume', 'expected exact handle to resume');
+  assert(resume.data.continuation.reason === 'exactHandle', 'expected exactHandle reason');
+  assert(resume.data.continuation.runtimeHandle.id === 'agent_plan_1', 'expected exact stored handle id');
+  assert(
+    resume.data.promptBlocks.continuation.runtimeHandle.id === 'agent_plan_1',
+    'prompt blocks should carry the continuation decision for dispatch instructions',
+  );
+
+  const nonResumable = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-review-fresh',
+      agentName: 'fixme-review-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'review' },
+    })}'`,
+    projectRoot,
+  );
+
+  assert(nonResumable.ok, `expected non-resumable prepare to pass: ${nonResumable.stderr || nonResumable.stdout}`);
+  assert(nonResumable.data.continuation.mode === 'fresh', 'reviewer should always dispatch fresh');
+  assert(nonResumable.data.continuation.reason === 'agentNotResumable', 'reviewer should report non-resumable reason');
+
+  const missingHandle = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-executor-no-handle',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+
+  assert(missingHandle.ok, `expected missing-handle prepare to pass: ${missingHandle.stderr || missingHandle.stdout}`);
+  assert(missingHandle.data.continuation.mode === 'fresh', 'missing exact handle should dispatch fresh');
+  assert(missingHandle.data.continuation.reason === 'noStoredHandle', 'missing exact handle should be recorded');
+});
+
+test('dispatch prepare durable inputs include producer continuation controls', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-idempotency-controls');
+
+  const allowFirst = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-idempotency-allow',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: false,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(allowFirst.ok, `first allow-control prepare should pass: ${JSON.stringify(allowFirst.data)}`);
+
+  const allowConflict = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-idempotency-allow',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(
+    !allowConflict.ok && allowConflict.data?.error?.code === 'conflictingDuplicate',
+    `changed allowProducerContinuation should conflict, got ${JSON.stringify(allowConflict.data)}`,
+  );
+
+  const forcedFirst = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-idempotency-force',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      forceFreshReason: 'runtimeResumeFailed',
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(forcedFirst.ok, `first forceFreshReason prepare should pass: ${JSON.stringify(forcedFirst.data)}`);
+
+  const forcedConflict = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-idempotency-force',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      forceFreshReason: 'producerContinuationRejected',
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(
+    !forcedConflict.ok && forcedConflict.data?.error?.code === 'conflictingDuplicate',
+    `changed forceFreshReason should conflict, got ${JSON.stringify(forcedConflict.data)}`,
+  );
+
+  assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 2, 'conflicting same-key prepares should not create extra child run statuses');
 });
 
 test('task checkpoint accepts well-formed parentContinuation', () => {

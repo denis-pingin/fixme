@@ -241,6 +241,19 @@ const KNOWN_FIXME_AGENTS = new Set([
   'fixme-write-technical-spec',
 ]);
 
+const RESUMABLE_PRODUCER_AGENTS = new Set([
+  'fixme-write-product-spec',
+  'fixme-write-technical-spec',
+  'fixme-write-plan',
+  'fixme-execute-plan',
+]);
+
+const PRODUCER_CONTINUATION_STATUSES = new Set(['available', 'bad']);
+const RUNTIME_HANDLE_KINDS_BY_RUNTIME = Object.freeze({
+  codex: 'codexAgentId',
+  claude: 'claudeAgentId',
+});
+
 const RUN_STATES = Object.freeze(['running', 'waiting', 'blocked', 'completed', 'failed']);
 const RUN_CHECKPOINTS = Object.freeze(['dispatched', 'started', 'working', 'waiting', 'finalizing', 'done']);
 const RUN_ATTENTION_ANSWER_MODES = Object.freeze(['freeform', 'decision-card', 'multiple-choice']);
@@ -3050,6 +3063,7 @@ function defaultTaskState({ projectRoot, pipeline, pipelineResolution, fixmeRoot
     },
     pendingDecision: null,
     parentContinuation: null,
+    producerContinuations: [],
     decisions: [],
     terminalResult: null,
     updatedAt: now,
@@ -3780,6 +3794,7 @@ const TASK_CHECKPOINT_FIELDS = new Set([
   'loops',
   'pendingDecision',
   'parentContinuation',
+  'producerContinuations',
   'decisions',
   'terminalResult',
 ]);
@@ -3793,6 +3808,16 @@ const PARENT_CONTINUATION_FIELDS = new Set([
 ]);
 
 const PARENT_CONTINUATION_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
+
+const PRODUCER_CONTINUATION_FIELDS = new Set([
+  'agentName',
+  'runtime',
+  'runtimeHandle',
+  'status',
+  'lastDispatchId',
+  'badReason',
+  'updatedAt',
+]);
 
 const TERMINAL_RESULT_FIELDS = new Set([
   'terminalResultId',
@@ -3847,6 +3872,67 @@ function assertCheckpointString(value, fieldPath) {
   if (!isNonEmptyString(value)) {
     throw new Error(`${fieldPath} must be a non-empty string`);
   }
+}
+
+function producerContinuationKey(entry) {
+  return `${entry.agentName}/${entry.runtime}`;
+}
+
+function validateRuntimeHandle(runtime, runtimeHandle, pathLabel) {
+  if (!VALID_RUNTIME_VALUES.has(runtime)) {
+    throw new Error(`${pathLabel}.runtime must be one of: claude, codex`);
+  }
+  if (!isPlainObject(runtimeHandle)) {
+    throw new Error(`${pathLabel}.runtimeHandle must be a JSON object`);
+  }
+  assertKnownJsonFields(runtimeHandle, `${pathLabel}.runtimeHandle`, new Set(['kind', 'id']));
+  const expectedKind = RUNTIME_HANDLE_KINDS_BY_RUNTIME[runtime];
+  if (runtimeHandle.kind !== expectedKind) {
+    throw new Error(`${pathLabel}.runtimeHandle.kind must be ${expectedKind} for runtime ${runtime}`);
+  }
+  if (!isNonEmptyString(runtimeHandle.id)) {
+    throw new Error(`${pathLabel}.runtimeHandle.id must be a non-empty string`);
+  }
+}
+
+function validateProducerContinuations(value, pathLabel = 'producerContinuations') {
+  if (!Array.isArray(value)) {
+    throw new Error(`${pathLabel} must be an array`);
+  }
+
+  const seen = new Set();
+  value.forEach((entry, index) => {
+    const entryPath = `${pathLabel}[${index}]`;
+    if (!isPlainObject(entry)) {
+      throw new Error(`${entryPath} must be a JSON object`);
+    }
+    assertKnownJsonFields(entry, entryPath, PRODUCER_CONTINUATION_FIELDS);
+    if (!RESUMABLE_PRODUCER_AGENTS.has(entry.agentName)) {
+      throw new Error(`${entryPath}.agentName must be a resumable producer agent`);
+    }
+    if (!VALID_RUNTIME_VALUES.has(entry.runtime)) {
+      throw new Error(`${entryPath}.runtime must be one of: claude, codex`);
+    }
+    validateRuntimeHandle(entry.runtime, entry.runtimeHandle, entryPath);
+    if (!PRODUCER_CONTINUATION_STATUSES.has(entry.status)) {
+      throw new Error(`${entryPath}.status must be one of: available, bad`);
+    }
+    if (entry.status === 'bad') {
+      assertCheckpointString(entry.badReason, `${entryPath}.badReason`);
+    } else if (entry.badReason !== null) {
+      throw new Error(`${entryPath}.badReason must be null for available handles`);
+    }
+    if (entry.lastDispatchId !== null && !isNonEmptyString(entry.lastDispatchId)) {
+      throw new Error(`${entryPath}.lastDispatchId must be null or a non-empty string`);
+    }
+    assertCheckpointString(entry.updatedAt, `${entryPath}.updatedAt`);
+
+    const key = producerContinuationKey(entry);
+    if (seen.has(key)) {
+      throw new Error(`duplicate producerContinuations entry for ${key}`);
+    }
+    seen.add(key);
+  });
 }
 
 function assertTaskCheckpointShape(patch) {
@@ -3919,6 +4005,10 @@ function assertTaskCheckpointShape(patch) {
         throw new Error('parentContinuation.transport must be one of: agent, inline-skill, background, direct');
       }
     }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'producerContinuations')) {
+    validateProducerContinuations(patch.producerContinuations);
   }
 
   if (Object.prototype.hasOwnProperty.call(patch, 'terminalResult')) {
@@ -7321,6 +7411,7 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
 const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'idempotencyKey', 'agentName', 'transport', 'parentStatusId', 'parentInvocationId',
   'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs', 'runtime',
+  'allowProducerContinuation', 'forceFreshReason',
 ]);
 
 const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure']);
@@ -7400,6 +7491,72 @@ function resolveLifecycleDispatchRuntime(data, flags) {
   return inferInstalledRuntimeFromPath(__filename) || DEFAULT_RUNTIME;
 }
 
+function freshProducerContinuation(agentName, runtime, reason, extra = {}) {
+  return {
+    mode: 'fresh',
+    reason,
+    agentName,
+    runtime,
+    runtimeHandle: null,
+    ...extra,
+  };
+}
+
+function selectProducerContinuation({ agentName, runtime, taskStatePath, allowProducerContinuation, forceFreshReason }) {
+  if (!RESUMABLE_PRODUCER_AGENTS.has(agentName)) {
+    return freshProducerContinuation(agentName, runtime, 'agentNotResumable');
+  }
+  if (allowProducerContinuation !== true) {
+    return freshProducerContinuation(agentName, runtime, 'disabledForDispatch');
+  }
+  if (forceFreshReason) {
+    return freshProducerContinuation(agentName, runtime, 'forcedFresh', { forceFreshReason });
+  }
+  if (!isNonEmptyString(taskStatePath)) {
+    return freshProducerContinuation(agentName, runtime, 'missingTaskStatePath');
+  }
+
+  const resolvedTaskStatePath = path.resolve(String(taskStatePath));
+  let state;
+  try {
+    state = readJsonFileStrict(resolvedTaskStatePath);
+    validateProducerContinuations(state.producerContinuations || []);
+  } catch (e) {
+    return freshProducerContinuation(agentName, runtime, 'invalidStoredHandle', {
+      detail: `${agentName} continuation state invalid at ${resolvedTaskStatePath}: ${e.message}`,
+    });
+  }
+
+  const continuations = state.producerContinuations || [];
+  const sameAgentEntries = continuations.filter(entry => entry.agentName === agentName);
+  const exactEntries = sameAgentEntries.filter(entry => entry.runtime === runtime);
+
+  if (exactEntries.length === 0) {
+    if (sameAgentEntries.length > 0) {
+      return freshProducerContinuation(agentName, runtime, 'runtimeMismatch');
+    }
+    return freshProducerContinuation(agentName, runtime, 'noStoredHandle');
+  }
+  if (exactEntries.length > 1) {
+    return freshProducerContinuation(agentName, runtime, 'invalidStoredHandle', {
+      detail: `duplicate producerContinuations entry for ${agentName}/${runtime} at ${resolvedTaskStatePath}`,
+    });
+  }
+
+  const entry = exactEntries[0];
+  if (entry.status === 'bad') {
+    return freshProducerContinuation(agentName, runtime, 'storedHandleBad', { badReason: entry.badReason });
+  }
+
+  return {
+    mode: 'resume',
+    reason: 'exactHandle',
+    agentName,
+    runtime,
+    runtimeHandle: entry.runtimeHandle,
+  };
+}
+
 function lifecycleDispatchPrepare(flags, fixmeRoot) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
@@ -7432,6 +7589,8 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     pipelineRunId: data.pipelineRunId || null,
     taskStatePath: data.taskStatePath || null,
     parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
+    allowProducerContinuation: data.allowProducerContinuation === true,
+    forceFreshReason: data.forceFreshReason || null,
     promptInputs: data.promptInputs,
   };
   const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
@@ -7445,6 +7604,13 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
   }
 
   const runtimeSettings = resolveModel(data.agentName, path.dirname(fixmeDir), { runtime });
+  const continuation = selectProducerContinuation({
+    agentName: data.agentName,
+    runtime,
+    taskStatePath: data.taskStatePath,
+    allowProducerContinuation: data.allowProducerContinuation,
+    forceFreshReason: data.forceFreshReason,
+  });
   const child = runStartCore({ 'fixme-dir': fixmeDir, agent: data.agentName });
   const dispatchId = generateUsageId('dispatch');
   let activeChild = null;
@@ -7491,6 +7657,7 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
       ? { ownerSkill: 'fixme-task', taskStatePath: activeChild.taskStatePath }
       : null,
     parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
+    continuation,
     activeChild,
     promptInputs: data.promptInputs,
     liveness: { statusId: child.statusId, statusPath: child.statusPath },
@@ -7506,6 +7673,7 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
     statusPath: child.statusPath,
     runtimeSettings,
     bannerMarkdown: buildDispatchBannerMarkdown(data.agentName, runtimeSettings),
+    continuation,
     usageContext,
     activeChild,
     promptBlocks,
