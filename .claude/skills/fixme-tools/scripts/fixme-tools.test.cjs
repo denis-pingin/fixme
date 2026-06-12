@@ -79,7 +79,11 @@ function runInDir(args, cwd) {
 }
 
 function cliErrorMessage(result) {
-  return result.data?.error || result.stderr || result.stdout || '';
+  const cliError = result.data?.error;
+  if (typeof cliError === 'string') return cliError;
+  if (cliError && typeof cliError.message === 'string') return cliError.message;
+  if (cliError) return JSON.stringify(cliError);
+  return result.stderr || result.stdout || '';
 }
 
 function pipelineResolutionFlag(pipeline, fields = {}) {
@@ -2754,6 +2758,271 @@ test('dispatch prepare durable inputs include producer continuation controls', (
   );
 
   assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 2, 'conflicting same-key prepares should not create extra child run statuses');
+});
+
+test('dispatch complete stores runtime handles for resumable producers only', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-complete');
+
+  const prepare = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-complete-plan',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(prepare.ok, `expected prepare to pass: ${prepare.stderr || prepare.stdout}`);
+
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_after_success' },
+    })}'`,
+    projectRoot,
+  );
+  assert(complete.ok, `expected complete with runtime handle to pass: ${complete.stderr || complete.stdout}`);
+
+  const state = readJson(statePath);
+  assert(state.producerContinuations.length === 1, 'expected one producer continuation entry');
+  assert(state.producerContinuations[0].agentName === 'fixme-write-plan', 'expected plan producer entry');
+  assert(state.producerContinuations[0].runtime === 'codex', 'expected Codex runtime entry');
+  assert(state.producerContinuations[0].runtimeHandle.id === 'agent_plan_after_success', 'expected stored runtime handle id');
+  assert(state.producerContinuations[0].lastDispatchId === prepare.data.dispatchId, 'expected last dispatch id to be recorded');
+
+  const nextPrepare = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-complete-next',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan-repair' },
+    })}'`,
+    projectRoot,
+  );
+  assert(nextPrepare.ok, `expected next prepare to pass: ${nextPrepare.stderr || nextPrepare.stdout}`);
+  assert(nextPrepare.data.continuation.mode === 'resume', 'next producer dispatch should resume stored handle');
+  assert(nextPrepare.data.continuation.runtimeHandle.id === 'agent_plan_after_success', 'next dispatch should use stored handle');
+});
+
+test('dispatch complete rejects runtime handles for non-resumable agents', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-reviewer-reject');
+
+  const prepare = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-review-complete',
+      agentName: 'fixme-review-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'review' },
+    })}'`,
+    projectRoot,
+  );
+  assert(prepare.ok, `expected reviewer prepare to pass: ${prepare.stderr || prepare.stdout}`);
+  assert(prepare.data.continuation.mode === 'fresh', 'reviewer should prepare fresh');
+
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_review_after_success' },
+    })}'`,
+    projectRoot,
+  );
+  assert(!complete.ok, 'reviewer completion should reject runtime handle recording');
+  assert(
+    cliErrorMessage(complete).includes('runtimeHandle'),
+    'error should identify invalid runtime handle recording',
+  );
+});
+
+test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-fallback');
+
+  const checkpoint = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify({
+      producerContinuations: [
+        {
+          agentName: 'fixme-execute-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_executor_1' },
+          status: 'available',
+          lastDispatchId: 'dispatch_executor_1',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+      ],
+    })}'`,
+    projectRoot,
+  );
+  assert(checkpoint.ok, `expected available handle checkpoint to pass: ${checkpoint.stderr || checkpoint.stdout}`);
+
+  const resume = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-fallback-resume',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(resume.ok, `expected resume prepare to pass: ${resume.stderr || resume.stdout}`);
+  assert(resume.data.continuation.mode === 'resume', 'available executor handle should resume');
+
+  const markBad = runInDir(
+    `task producer-continuation mark-bad --state "${statePath}" --agent-name fixme-execute-plan --runtime codex --reason "resume_agent failed"`,
+    projectRoot,
+  );
+  assert(markBad.ok, `expected mark-bad helper to pass: ${markBad.stderr || markBad.stdout}`);
+
+  const badHandle = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-fallback-bad',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(badHandle.ok, `expected bad-handle prepare to pass: ${badHandle.stderr || badHandle.stdout}`);
+  assert(badHandle.data.continuation.mode === 'fresh', 'bad handle should dispatch fresh');
+  assert(badHandle.data.continuation.reason === 'storedHandleBad', 'bad handle reason should be recorded');
+
+  const forceFresh = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-fallback-force-fresh',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      forceFreshReason: 'runtimeResumeFailed',
+      promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(forceFresh.ok, `expected forced-fresh prepare to pass: ${forceFresh.stderr || forceFresh.stdout}`);
+  assert(forceFresh.data.continuation.mode === 'fresh', 'forced fresh should bypass any stored handle');
+  assert(forceFresh.data.continuation.reason === 'forcedFresh', 'forced fresh reason should be recorded');
+  assert(forceFresh.data.continuation.forceFreshReason === 'runtimeResumeFailed', 'specific forced-fresh reason should be preserved');
+});
+
+test('task producer-continuation mark-bad preserves sibling handles', () => {
+  const { projectRoot, statePath } = initTaskState('producer-continuation-preserve-siblings');
+
+  const checkpoint = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify({
+      producerContinuations: [
+        {
+          agentName: 'fixme-write-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_sibling' },
+          status: 'available',
+          lastDispatchId: 'dispatch_plan_sibling',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+        {
+          agentName: 'fixme-execute-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_executor_bad' },
+          status: 'available',
+          lastDispatchId: 'dispatch_executor_bad',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+      ],
+    })}'`,
+    projectRoot,
+  );
+  assert(checkpoint.ok, `expected two-handle setup to pass: ${checkpoint.stderr || checkpoint.stdout}`);
+
+  const markBad = runInDir(
+    `task producer-continuation mark-bad --state "${statePath}" --agent-name fixme-execute-plan --runtime codex --reason "resume_agent failed"`,
+    projectRoot,
+  );
+  assert(markBad.ok, `expected mark-bad helper to pass: ${markBad.stderr || markBad.stdout}`);
+
+  const state = readJson(statePath);
+  assert(state.producerContinuations.length === 2, 'mark-bad should preserve both continuation entries');
+
+  const plan = state.producerContinuations.find((entry) => entry.agentName === 'fixme-write-plan');
+  const executor = state.producerContinuations.find((entry) => entry.agentName === 'fixme-execute-plan');
+
+  assert(plan && plan.status === 'available', 'sibling plan handle should remain available');
+  assert(plan.runtimeHandle.id === 'agent_plan_sibling', 'sibling plan handle id should be preserved');
+  assert(executor && executor.status === 'bad', 'matching executor handle should be marked bad');
+  assert(executor.badReason === 'resume_agent failed', 'bad reason should be recorded on matching handle');
+});
+
+test('executor continuation survives changed prompt inputs for plan-required rework', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-executor-rework');
+
+  const checkpoint = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify({
+      producerContinuations: [
+        {
+          agentName: 'fixme-execute-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_executor_rework' },
+          status: 'available',
+          lastDispatchId: 'dispatch_executor_rework',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+      ],
+    })}'`,
+    projectRoot,
+  );
+  assert(checkpoint.ok, `expected executor handle checkpoint to pass: ${checkpoint.stderr || checkpoint.stdout}`);
+
+  const implementationRepair = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-executor-repair',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'implementation-repair', codeReview: 'repair current implementation' },
+    })}'`,
+    projectRoot,
+  );
+  assert(implementationRepair.ok, `expected repair prepare to pass: ${implementationRepair.stderr || implementationRepair.stdout}`);
+  assert(implementationRepair.data.continuation.mode === 'resume', 'implementation repair should resume exact executor handle');
+  assert(implementationRepair.data.continuation.runtimeHandle.id === 'agent_executor_rework', 'repair should use exact executor handle');
+
+  const planRequiredRework = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-continuation-executor-plan-required',
+      agentName: 'fixme-execute-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan-required-rework', planPath: '/tmp/current-plan.md', codeMapPath: '/tmp/current-code-map.md' },
+    })}'`,
+    projectRoot,
+  );
+  assert(planRequiredRework.ok, `expected plan-required prepare to pass: ${planRequiredRework.stderr || planRequiredRework.stdout}`);
+  assert(planRequiredRework.data.continuation.mode === 'resume', 'plan-required rework should resume exact executor handle');
+  assert(planRequiredRework.data.continuation.runtimeHandle.id === 'agent_executor_rework', 'plan-required rework should use exact executor handle');
 });
 
 test('task checkpoint accepts well-formed parentContinuation', () => {

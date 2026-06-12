@@ -3935,6 +3935,76 @@ function validateProducerContinuations(value, pathLabel = 'producerContinuations
   });
 }
 
+function upsertProducerContinuation(taskState, { agentName, runtime, runtimeHandle, lastDispatchId, updatedAt }) {
+  const producerContinuations = Array.isArray(taskState.producerContinuations)
+    ? taskState.producerContinuations
+    : [];
+  validateProducerContinuations(producerContinuations);
+  const replacement = {
+    agentName,
+    runtime,
+    runtimeHandle,
+    status: 'available',
+    lastDispatchId,
+    badReason: null,
+    updatedAt,
+  };
+  validateProducerContinuations([replacement]);
+
+  let replaced = false;
+  const nextContinuations = producerContinuations.map((entry) => {
+    if (entry.agentName === agentName && entry.runtime === runtime) {
+      replaced = true;
+      return replacement;
+    }
+    return entry;
+  });
+  if (!replaced) {
+    nextContinuations.push(replacement);
+  }
+  validateProducerContinuations(nextContinuations);
+  return {
+    ...taskState,
+    producerContinuations: nextContinuations,
+    updatedAt,
+  };
+}
+
+function markProducerContinuationBad(taskState, { agentName, runtime, badReason, updatedAt }) {
+  const producerContinuations = Array.isArray(taskState.producerContinuations)
+    ? taskState.producerContinuations
+    : [];
+  validateProducerContinuations(producerContinuations);
+  let matched = false;
+  const nextContinuations = producerContinuations.map((entry) => {
+    if (entry.agentName === agentName && entry.runtime === runtime) {
+      matched = true;
+      return {
+        ...entry,
+        status: 'bad',
+        badReason,
+        updatedAt,
+      };
+    }
+    return entry;
+  });
+  if (!matched) {
+    throw new CliJsonError({
+      ok: false,
+      error: {
+        code: 'stateNotFound',
+        message: `No producer continuation found for ${agentName}/${runtime}`,
+      },
+    });
+  }
+  validateProducerContinuations(nextContinuations);
+  return {
+    ...taskState,
+    producerContinuations: nextContinuations,
+    updatedAt,
+  };
+}
+
 function assertTaskCheckpointShape(patch) {
   if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
     assertCheckpointString(patch.status, 'status');
@@ -4059,6 +4129,47 @@ function taskCheckpoint(flags) {
   assertCamelCaseJsonKeys(next, 'task state');
   writeJsonAtomic(statePath, next);
   return output({ statePath });
+}
+
+function taskProducerContinuationMarkBad(flags) {
+  const statePath = flags.state && flags.state !== true ? path.resolve(String(flags.state)) : null;
+  const agentName = flags['agent-name'] && flags['agent-name'] !== true ? String(flags['agent-name']) : null;
+  const runtime = flags.runtime && flags.runtime !== true ? String(flags.runtime) : null;
+  const reason = flags.reason && flags.reason !== true ? String(flags.reason) : null;
+
+  if (!statePath) {
+    throw new Error('--state is required');
+  }
+  if (!fs.existsSync(statePath)) {
+    throw new Error(`Task state file not found: ${statePath}`);
+  }
+  if (!RESUMABLE_PRODUCER_AGENTS.has(agentName)) {
+    throw new Error('--agent-name must be a resumable producer agent');
+  }
+  if (!VALID_RUNTIME_VALUES.has(runtime)) {
+    throw new Error('--runtime must be one of: claude, codex');
+  }
+  if (!isNonEmptyString(reason)) {
+    throw new Error('--reason is required');
+  }
+
+  const previous = readJsonFileStrict(statePath);
+  const updatedAt = new Date().toISOString();
+  const next = markProducerContinuationBad(previous, {
+    agentName,
+    runtime,
+    badReason: reason,
+    updatedAt,
+  });
+  assertCamelCaseJsonKeys(next, 'task state');
+  writeJsonAtomic(statePath, next);
+
+  const updatedEntry = next.producerContinuations.find(entry => entry.agentName === agentName && entry.runtime === runtime);
+  return output({
+    statePath,
+    updatedEntry,
+    preservedCount: next.producerContinuations.length - 1,
+  });
 }
 
 // ============================================================================
@@ -7414,7 +7525,7 @@ const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'allowProducerContinuation', 'forceFreshReason',
 ]);
 
-const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure']);
+const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure', 'runtimeHandle']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
@@ -7554,6 +7665,52 @@ function selectProducerContinuation({ agentName, runtime, taskStatePath, allowPr
     agentName,
     runtime,
     runtimeHandle: entry.runtimeHandle,
+  };
+}
+
+function recordProducerContinuationFromCompletion(dispatchRecord, runtimeHandle, now) {
+  if (runtimeHandle === undefined) {
+    return null;
+  }
+
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const { agentName, runtime, taskStatePath } = durableInputs;
+  if (!RESUMABLE_PRODUCER_AGENTS.has(agentName)) {
+    lifecycleError('invalidInput', `runtimeHandle is only valid for resumable producer agents, got ${agentName}`);
+  }
+  if (!isNonEmptyString(taskStatePath)) {
+    lifecycleError('invalidInput', 'runtimeHandle requires taskStatePath on the prepared dispatch');
+  }
+  try {
+    validateRuntimeHandle(runtime, runtimeHandle, 'dispatch complete');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+
+  const statePath = path.resolve(String(taskStatePath));
+  let previous;
+  try {
+    previous = readJsonFileStrict(statePath);
+  } catch (e) {
+    lifecycleError('stateNotFound', `Task state file not found for runtimeHandle recording: ${statePath}`);
+  }
+  let next;
+  try {
+    next = upsertProducerContinuation(previous, {
+      agentName,
+      runtime,
+      runtimeHandle,
+      lastDispatchId: dispatchRecord.record.dispatchId,
+      updatedAt: now,
+    });
+    assertCamelCaseJsonKeys(next, 'task state');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  writeJsonAtomic(statePath, next);
+  return {
+    taskStatePath: statePath,
+    producerContinuation: next.producerContinuations.find(entry => entry.agentName === agentName && entry.runtime === runtime),
   };
 }
 
@@ -7727,11 +7884,15 @@ function lifecycleDispatchComplete(flags) {
   if (dispatchRecord.record.statusId !== data.statusId) {
     lifecycleError('invalidInput', `statusId ${data.statusId} does not match prepared dispatch ${data.dispatchId}`);
   }
+  if (data.runtimeHandle !== undefined && data.status !== 'completed') {
+    lifecycleError('invalidInput', 'runtimeHandle is only allowed when status is completed');
+  }
 
   const completionInputs = {
     status: data.status,
     currentCommand: data.currentCommand === undefined ? null : data.currentCommand,
     failure: data.failure === undefined ? null : data.failure,
+    runtimeHandle: data.runtimeHandle === undefined ? null : data.runtimeHandle,
   };
   if (dispatchRecord.record.completion !== undefined) {
     if (!jsonEqual(dispatchRecord.record.completion.inputs, completionInputs)) {
@@ -7759,10 +7920,12 @@ function lifecycleDispatchComplete(flags) {
         status: previous.state,
         currentCommand: previous.currentCommand === undefined ? null : previous.currentCommand,
         failure: previous.failure === undefined ? null : previous.failure,
+        runtimeHandle: data.runtimeHandle === undefined ? null : data.runtimeHandle,
       };
       if (!jsonEqual(persistedCompletionInputs, completionInputs)) {
         lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
       }
+      const producerContinuationResult = recordProducerContinuationFromCompletion(dispatchRecord, data.runtimeHandle, new Date().toISOString());
       const outputData = {
         dispatchId: data.dispatchId,
         statusId: data.statusId,
@@ -7772,6 +7935,9 @@ function lifecycleDispatchComplete(flags) {
       };
       if (previous.failure !== undefined) {
         outputData.failure = previous.failure;
+      }
+      if (producerContinuationResult) {
+        outputData.producerContinuation = producerContinuationResult.producerContinuation;
       }
       dispatchRecord.record.completion = {
         inputs: completionInputs,
@@ -7799,6 +7965,7 @@ function lifecycleDispatchComplete(flags) {
   }
   const next = writeRunStatus(statusPath, nextStatus);
   clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
+  const producerContinuationResult = recordProducerContinuationFromCompletion(dispatchRecord, data.runtimeHandle, new Date().toISOString());
   const outputData = {
     dispatchId: data.dispatchId,
     statusId: data.statusId,
@@ -7808,6 +7975,9 @@ function lifecycleDispatchComplete(flags) {
   };
   if (next.failure !== undefined) {
     outputData.failure = next.failure;
+  }
+  if (producerContinuationResult) {
+    outputData.producerContinuation = producerContinuationResult.producerContinuation;
   }
   dispatchRecord.record.completion = {
     inputs: completionInputs,
@@ -9705,6 +9875,13 @@ function main() {
             return taskInit(flags, getFixmeRoot());
           case 'checkpoint':
             return taskCheckpoint(flags);
+          case 'producer-continuation':
+            switch (args[0]) {
+              case 'mark-bad':
+                return taskProducerContinuationMarkBad(flags);
+              default:
+                return error(`Unknown task producer-continuation subcommand: '${args[0] || ''}'. Valid: mark-bad`);
+            }
           case 'resolve':
             return taskResolve(args[0], getFixmeRoot());
           case 'attach-artifact':
@@ -9726,7 +9903,7 @@ function main() {
                 return error(`Unknown task result subcommand: '${args[0] || ''}'. Valid: write`);
             }
           default:
-            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, resolve, attach-artifact, decision, result`);
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, producer-continuation, resolve, attach-artifact, decision, result`);
         }
 
       case 'lifecycle':
