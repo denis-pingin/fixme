@@ -6825,6 +6825,10 @@ config_file = "/Users/denis/.codex/agents/gsd-executor.toml"
   assert(taskToml.includes('sandbox_mode = "workspace-write"'), 'fixme-task should get workspace-write sandbox');
   assert(taskToml.includes('model_reasoning_effort = "xhigh"'), 'Codex agent TOML should default to extra-high reasoning');
   assert(taskToml.includes('spawn_agent(agent_type=..., reasoning_effort=..., message=...)'), 'agent TOML should include Codex dispatch adapter with reasoning effort');
+  assert(taskToml.includes('resume_agent'), 'agent TOML should mention resume_agent');
+  assert(taskToml.includes('send_input'), 'agent TOML should mention send_input');
+  assert(taskToml.includes('close_agent'), 'agent TOML should mention close_agent');
+  assert(taskToml.includes('runtimeHandle'), 'agent TOML should mention runtimeHandle recording');
   assert(!taskToml.includes('\nmodel = '), 'Codex agent TOML must not pin a model');
   assert(taskToml.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'agent TOML should rewrite Claude skill paths to Codex paths');
 
@@ -6916,6 +6920,10 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   const installedHandler = fs.readFileSync(path.join(codexSkillsDir, 'fixme-handle-plan-review', 'SKILL.md'), 'utf8');
   assert(installedTask.includes('<codex_skill_adapter>'), 'installed skill should include Codex adapter');
   assert(installedTask.includes('spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")'), 'adapter should map Agent dispatch to spawn_agent with reasoning effort');
+  assert(installedTask.includes('resume_agent'), 'installed Codex task skill should mention resume_agent');
+  assert(installedTask.includes('send_input'), 'installed Codex task skill should mention send_input');
+  assert(installedTask.includes('close_agent'), 'installed Codex task skill should mention close_agent');
+  assert(installedTask.includes('runtimeHandle'), 'installed Codex task skill should mention runtimeHandle recording');
   assert(installedTask.includes('resolve-model X --runtime codex'), 'adapter should resolve Codex runtime profile settings');
   assert(installedTask.includes('include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload'), 'adapter should force Codex runtime into lifecycle dispatch prepare payloads');
   assert(installedTask.includes('When Fixme source instructions require a live manifest task list, use Codex `update_plan`'), 'adapter should map live manifest task lists to Codex update_plan');
@@ -7139,7 +7147,7 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('task init --ticket'), 'fixme-tools skill should document task init for tickets');
   assert(toolsSkill.includes('`task save` and `task init` both require the caller to pass a resolved `pipelineResolution`'), 'fixme-tools skill should document resolved pipeline requirement');
   assert(toolsSkill.includes('task checkpoint --state'), 'fixme-tools skill should document task checkpoint');
-  assert(toolsSkill.includes('`task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, and `pendingDecision` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth'), 'fixme-tools skill should document checkpoint shape and forbidden field validation');
+  assert(toolsSkill.includes('`task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, `pendingDecision`, and `producerContinuations` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth'), 'fixme-tools skill should document checkpoint shape and forbidden field validation');
   assert(toolsSkill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'fixme-tools skill should document task resolve');
   assert(toolsSkill.includes('run attention set --fixme-dir'), 'fixme-tools skill should document run attention set');
   assert(toolsSkill.includes('run attention answer --fixme-dir'), 'fixme-tools skill should document run attention answer');
@@ -7159,6 +7167,15 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('`run attention show` only renders the attention currently referenced by `currentCommand`'), 'fixme-tools skill should document attention show safety requirements');
   assert(toolsSkill.includes('Attention reads reject stored records with unsupported top-level fields, missing `promptMarkdown`, malformed `metadata`, invalid timestamps, answer-shape mismatches, mismatched `attentionId`, or unsupported `status`.'), 'fixme-tools skill should document persisted attention record integrity checks');
   assert(toolsSkill.includes('`run attention clear` only clears an answered attention record that is still referenced by `currentCommand`'), 'fixme-tools skill should document attention clear safety requirements');
+});
+
+test('fixme-tools skill documents producer continuation lifecycle fields', () => {
+  const skill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-tools/SKILL.md'), 'utf8');
+
+  assert(skill.includes('producerContinuations'), 'fixme-tools docs should mention producer continuation task state');
+  assert(skill.includes('allowProducerContinuation'), 'fixme-tools docs should mention dispatch prepare continuation opt-in');
+  assert(skill.includes('forceFreshReason'), 'fixme-tools docs should mention forced fresh fallback');
+  assert(skill.includes('runtimeHandle'), 'fixme-tools docs should mention dispatch complete runtime handle recording');
 });
 
 test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {

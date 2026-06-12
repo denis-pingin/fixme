@@ -4973,6 +4973,11 @@ function getCodexSkillAdapterHeader(skillName) {
     '- When Fixme source instructions say `Agent(subagent_type="X", prompt="Y")`, use Codex `spawn_agent(agent_type="X", reasoning_effort="{resolved-reasoning-effort}", message="Y")` when the resolver returns a `reasoning_effort` value.',
     '- Omit `reasoning_effort` only when the resolver returns `null`. Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails.',
     '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
+    '- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.',
+    '- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.',
+    '- When fresh-dispatching a resumable producer with `spawn_agent`, preserve the returned agent id and pass it as `runtimeHandle` to `lifecycle dispatch complete`.',
+    '- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })`; do not keep producer agents open between phases.',
+    '- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
     '',
     '## Attention Brokers',
@@ -5181,6 +5186,11 @@ function codexDeveloperInstructions(agentContent) {
   lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, resolve Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex`, then use Codex `spawn_agent(agent_type=..., reasoning_effort=..., message=...)` with the same agent name and task prompt.');
   lines.push('- Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails. Omit `reasoning_effort` only when the resolver returns `null`.');
   lines.push('- When calling `lifecycle dispatch prepare`, include `"runtime":"codex"` in the JSON payload so lifecycle runtime settings match Codex dispatch.');
+  lines.push('- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.');
+  lines.push('- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.');
+  lines.push('- When fresh-dispatching a resumable producer with `spawn_agent`, preserve the returned agent id and pass it as `runtimeHandle` to `lifecycle dispatch complete`.');
+  lines.push('- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })`; do not keep producer agents open between phases.');
+  lines.push('- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.');
   lines.push('- When Fixme source instructions say `Skill("name", ...)` and no Skill tool exists, load `$HOME/.codex/skills/name/SKILL.md` and run that skill workflow in the current agent.');
   lines.push('- Do not convert a required Fixme dispatch into direct implementation work.');
   lines.push('</codex_runtime>');
