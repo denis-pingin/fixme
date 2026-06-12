@@ -14,6 +14,7 @@ const { execSync } = require('child_process');
 const os = require('os');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
+const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
 const {
   buildTransitionsFromPhases,
   findFixmeRoot,
@@ -7188,6 +7189,67 @@ test('fixme-task skill: creates liveness status for every dispatched agent', () 
   assert(skill.includes('lifecycle dispatch complete --fixme-dir <fixme-dir>'), 'fixme-task should finalize child liveness after dispatch returns');
 });
 
+test('fixme-task skill documents exact producer continuation with fresh fallback', () => {
+  const skill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-task/SKILL.md'), 'utf8');
+
+  assert(
+    skill.includes('Resumable producer agents are exactly `fixme-write-product-spec`, `fixme-write-technical-spec`, `fixme-write-plan`, and `fixme-execute-plan`'),
+    'fixme-task should define the exact resumable producer allowlist',
+  );
+  assert(
+    skill.includes('Never search for a compatible agent'),
+    'fixme-task should forbid compatible-agent search',
+  );
+  assert(
+    skill.includes('continuation.mode: "resume"'),
+    'fixme-task should branch on resume decisions from lifecycle dispatch prepare',
+  );
+  assert(
+    skill.includes('forceFreshReason'),
+    'fixme-task should document forced fresh fallback after resume failure',
+  );
+  assert(
+    skill.includes('One idempotency key identifies exactly one concrete child dispatch attempt'),
+    'fixme-task should document one key per concrete dispatch attempt',
+  );
+  assert(
+    skill.includes('Retries of the same exact attempt reuse the same idempotency key'),
+    'fixme-task should document retry key reuse',
+  );
+  assert(
+    skill.includes('Every new producer attempt, review-cycle rework, repair attempt, and forced-fresh fallback uses a distinct idempotency key'),
+    'fixme-task should document distinct keys for new attempts and fallbacks',
+  );
+  assert(
+    skill.includes('Same-key conflicts protect against retry drift; they do not replace distinct attempt keys'),
+    'fixme-task should document same-key conflicts as misuse protection, not normal attempt routing',
+  );
+  assert(
+    skill.includes('Complete the failed resume dispatch before marking the handle bad'),
+    'fixme-task should finalize failed resume dispatch attempts before fallback',
+  );
+  assert(
+    skill.includes('task producer-continuation mark-bad'),
+    'fixme-task should use the full-array-preserving mark-bad helper',
+  );
+  assert(
+    skill.includes('close_agent'),
+    'fixme-task should close completed Codex producers before later resume',
+  );
+  assert(
+    skill.includes('resume_agent resumes a previously closed agent'),
+    'fixme-task should document Codex closed-then-resumed lifecycle semantics',
+  );
+  assert(
+    skill.includes('PRODUCER_CONTINUATION_REJECTED'),
+    'fixme-task should handle producer reconciliation rejection',
+  );
+  assert(
+    skill.includes('Reviewers, handlers, investigation, research, browser verification, and `fixme-task` stay fresh'),
+    'fixme-task should document non-resumable roles',
+  );
+});
+
 test('fixme-task skill: refreshes its own liveness while waiting on dispatched agents', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -7354,7 +7416,7 @@ test('fixme-task skill: task-state docs include the durable runtime fields', () 
   assert(taskStateSection.includes('"parentContinuation": null'), 'task-state example should include parentContinuation');
   assert(taskStateSection.includes('"decisions": []'), 'task-state example should include decisions array');
   assert(taskStateSection.includes('"terminalResult": null'), 'task-state example should include terminalResult');
-  assert(taskStateSection.includes('The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `decisions`, and `terminalResult`.'), 'checkpoint prose should include every durable field accepted by runtime validation');
+  assert(taskStateSection.includes('The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.'), 'checkpoint prose should include every durable field accepted by runtime validation');
   assert(taskStateSection.includes('Task-owned decisions are normally written with `task decision append`'), 'docs should prefer task decision append for task-owned decisions');
   assert(taskStateSection.includes('terminal task results are normally written with `task result write`'), 'docs should prefer task result write for terminal task results');
   assert(taskStateSection.includes('checkpoint validation supports the complete durable state shape'), 'docs should clarify checkpoint validation still accepts the complete durable shape');

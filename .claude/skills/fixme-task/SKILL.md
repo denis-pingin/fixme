@@ -749,6 +749,7 @@ Durable state shape:
     "outerCycles": 0
   },
   "parentContinuation": null,
+  "producerContinuations": [],
   "decisions": [],
   "terminalResult": null,
   "pendingDecision": null,
@@ -756,7 +757,7 @@ Durable state shape:
 }
 ```
 
-Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `decisions`, and `terminalResult`.
+Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.
 
 Task-owned decisions are normally written with `task decision append`; terminal task results are normally written with `task result write`. Direct checkpoint writes to `decisions` and `terminalResult` are for durable state restoration and runtime helper coordination, and checkpoint validation supports the complete durable state shape.
 
@@ -1149,9 +1150,49 @@ Step 1 - Prepare the dispatch (resolves runtime settings, creates the child live
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '{"idempotencyKey":"<stable-key>","agentName":"<agent-name>","runtime":"claude","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","taskStatePath":"<task-state-path>","promptInputs":{...}}'
 ```
 
-Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings` contains `runtime`/`model`/`reasoning_effort`/`profile`/`source` (do not hardcode models, reasoning effort, or runtime behavior). Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` when present. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
+
+### Producer Continuation
+
+Continuation is automatic internal dispatcher behavior. It is an optimization cache only; durable task state, artifacts, source files, decisions, current review findings, and current prompt inputs remain authoritative.
+
+Resumable producer agents are exactly `fixme-write-product-spec`, `fixme-write-technical-spec`, `fixme-write-plan`, and `fixme-execute-plan`. Reviewers, handlers, investigation, research, browser verification, and `fixme-task` stay fresh.
+
+For task-bound producer dispatches with a known `taskStatePath`, call `lifecycle dispatch prepare` with `allowProducerContinuation: true`. It is safe if the CLI receives this field for other dispatches because the CLI enforces the producer allowlist, but prefer producer-only intent for clarity. Do not add continuation configuration to `<fixme-dir>/config.json`.
+
+One idempotency key identifies exactly one concrete child dispatch attempt. Retries of the same exact attempt reuse the same idempotency key. Every new producer attempt, review-cycle rework, repair attempt, and forced-fresh fallback uses a distinct idempotency key. The key must include enough cursor, phase, review cycle, outer cycle, attempt number, producer name, and fallback reason context to identify that concrete attempt. Do not reuse a prior key after task state or continuation state changes. `lifecycle dispatch prepare` hashes only `idempotencyKey` and replays or conflicts before running new continuation selection. Same-key conflicts protect against retry drift; they do not replace distinct attempt keys.
+
+Branch only on the `continuation` object returned by prepare:
+
+- If `continuation.mode: "resume"`, use only the exact `runtimeHandle` returned by prepare. Never search for a compatible agent. Never reuse a handle from another task, another producer, or another runtime.
+- If `continuation.mode: "fresh"`, use the existing fresh dispatch path. A fresh reason such as `noStoredHandle`, `storedHandleBad`, `forcedFresh`, or `agentNotResumable` is diagnostic, not user configuration.
+
+Codex runtime mechanics:
+
+- Fresh path uses `spawn_agent`.
+- `resume_agent resumes a previously closed agent`. Do not keep completed producers open between workflow phases.
+- Fresh path stores the id returned by `spawn_agent`, waits for the final result, calls `lifecycle dispatch complete` with `runtimeHandle: { "kind": "codexAgentId", "id": "<spawned-agent-id>" }` on successful resumable producer completion, then calls `close_agent({ target: "<spawned-agent-id>" })`.
+- Resume path calls `resume_agent({ id })` with the exact stored id, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.
+- After a resumed producer reaches a normal final result, call `lifecycle dispatch complete` with `runtimeHandle: { "kind": "codexAgentId", "id": "<id>" }`, then call `close_agent({ target: id })` again.
+- If `close_agent` fails after a successful dispatch, log a warning with agent name, runtime, and handle id. Do not mark the handle bad unless a later resume attempt fails.
+
+Claude runtime mechanics:
+
+- Fresh path uses existing `Agent(...)`.
+- Resume path uses the exact Claude agent id through the agent-team `SendMessage` mechanism when that handle is available.
+- On fresh success, call `lifecycle dispatch complete` with `runtimeHandle: { "kind": "claudeAgentId", "id": "<agent-id>" }` only when the runtime exposes the id.
+- If no runtime id is available, omit `runtimeHandle`; future dispatch remains fresh.
+
+Fresh fallback mechanics:
+
+- Complete the failed resume dispatch before marking the handle bad.
+- If runtime resume fails before a child response, call `lifecycle dispatch complete` for the resume attempt with `status: "failed"`, `currentCommand: null`, and `failure: { "reason": "runtimeResumeFailed", "message": "<short concrete runtime failure>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }`.
+- After failed completion succeeds, call `task producer-continuation mark-bad --state <task-state-path> --agent-name <agent> --runtime <runtime> --reason "<same concrete reason>"`.
+- Then prepare a fresh fallback with a new idempotency key and `forceFreshReason: "runtimeResumeFailed"`.
+- If a resumed producer returns `PRODUCER_CONTINUATION_REJECTED`, first call `lifecycle dispatch complete` for the resumed dispatch with `status: "failed"` and `failure.reason: "producerContinuationRejected"`, then use `task producer-continuation mark-bad`, then run one fresh fallback with the same current durable inputs and a new idempotency key.
+- If the fresh fallback also fails, handle it with the existing failure path.
 
 After the dispatched agent returns, finalize the child liveness status:
 
@@ -1363,6 +1404,7 @@ Do not configure `fixme-handle-spec-review` for a phase that only dispatches `fi
 - Path to plan
 - Path to task code map if available
 - Repair mode: path to plan + current review context packet + IMPLEMENT_ONLY code review FIX items + execution results summary. Do not rewrite the plan for this route.
+- It may resume across implementation-only repair and plan-required rework. Every resumed executor prompt must still pass the current plan path, code map path, task state owner block, and current review or handoff context.
 
 **fixme-review-code** (in `implement` phase review):
 - Path to plan
@@ -1479,11 +1521,12 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 1. **Do NOT take over the agent's work.** Do not run tests, commit code, verify output, or do anything the agent was supposed to do. You are a dispatcher.
 2. **Do NOT advance to the next manifest step.** The current step is incomplete.
-3. **Re-dispatch the agent automatically (once).** Construct a resume prompt:
+3. **If the missing or invalid directive came from a resumed producer**, first complete the resumed dispatch as failed with `failure.reason: "missingProducerDirective"`, then mark the handle bad through `task producer-continuation mark-bad`, then fresh fallback once with a new idempotency key and current durable inputs. Missing or invalid directives from a fresh producer use the existing redispatch or failure behavior.
+4. **Re-dispatch the agent automatically (once).** Construct a resume prompt:
    - For **executors**: include the plan path, a summary of what the previous dispatch accomplished (based on its truncated output), and instruct it to continue from the last completed plan step.
    - For **review handlers**: re-dispatch with the same inputs as the original dispatch (findings, plan path, decision log).
    - For **other phase skills**: re-dispatch with the original inputs plus a summary of what was already produced.
-4. **If the re-dispatched agent also returns without the expected directive**: escalate with structured context. In a direct user-facing run, present the Agent Escalation block and wait for the user's choice. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the Agent Escalation block with `lifecycle attention open`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. Do NOT advance the manifest.
+5. **If the re-dispatched agent also returns without the expected directive**: escalate with structured context. In a direct user-facing run, present the Agent Escalation block and wait for the user's choice. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the Agent Escalation block with `lifecycle attention open`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. Do NOT advance the manifest.
 
    Present the escalation using this format:
 
