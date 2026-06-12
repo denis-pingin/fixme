@@ -2845,6 +2845,9 @@ test('dispatch complete rejects runtime handles for non-resumable agents', () =>
     cliErrorMessage(complete).includes('runtimeHandle'),
     'error should identify invalid runtime handle recording',
   );
+  const rejectedStatus = readJson(prepare.data.statusPath);
+  assert(rejectedStatus.state === 'running', 'rejected runtime handle should leave child status running');
+  assert(rejectedStatus.checkpoint !== 'done', 'rejected runtime handle should not mark child checkpoint done');
 });
 
 test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {

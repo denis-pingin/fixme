@@ -7678,7 +7678,7 @@ function selectProducerContinuation({ agentName, runtime, taskStatePath, allowPr
   };
 }
 
-function recordProducerContinuationFromCompletion(dispatchRecord, runtimeHandle, now) {
+function preflightProducerContinuationFromCompletion(dispatchRecord, runtimeHandle, now) {
   if (runtimeHandle === undefined) {
     return null;
   }
@@ -7717,10 +7717,21 @@ function recordProducerContinuationFromCompletion(dispatchRecord, runtimeHandle,
   } catch (e) {
     lifecycleError('invalidInput', e.message);
   }
-  writeJsonAtomic(statePath, next);
   return {
     taskStatePath: statePath,
+    nextTaskState: next,
     producerContinuation: next.producerContinuations.find(entry => entry.agentName === agentName && entry.runtime === runtime),
+  };
+}
+
+function recordProducerContinuationFromCompletion(preflight) {
+  if (!preflight) {
+    return null;
+  }
+  writeJsonAtomic(preflight.taskStatePath, preflight.nextTaskState);
+  return {
+    taskStatePath: preflight.taskStatePath,
+    producerContinuation: preflight.producerContinuation,
   };
 }
 
@@ -7935,7 +7946,12 @@ function lifecycleDispatchComplete(flags) {
       if (!jsonEqual(persistedCompletionInputs, completionInputs)) {
         lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
       }
-      const producerContinuationResult = recordProducerContinuationFromCompletion(dispatchRecord, data.runtimeHandle, new Date().toISOString());
+      const producerContinuationPreflight = preflightProducerContinuationFromCompletion(
+        dispatchRecord,
+        data.runtimeHandle,
+        new Date().toISOString(),
+      );
+      const producerContinuationResult = recordProducerContinuationFromCompletion(producerContinuationPreflight);
       const outputData = {
         dispatchId: data.dispatchId,
         statusId: data.statusId,
@@ -7973,9 +7989,14 @@ function lifecycleDispatchComplete(flags) {
   if (completionInputs.failure !== null) {
     nextStatus.failure = completionInputs.failure;
   }
+  const producerContinuationPreflight = preflightProducerContinuationFromCompletion(
+    dispatchRecord,
+    data.runtimeHandle,
+    new Date().toISOString(),
+  );
   const next = writeRunStatus(statusPath, nextStatus);
   clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
-  const producerContinuationResult = recordProducerContinuationFromCompletion(dispatchRecord, data.runtimeHandle, new Date().toISOString());
+  const producerContinuationResult = recordProducerContinuationFromCompletion(producerContinuationPreflight);
   const outputData = {
     dispatchId: data.dispatchId,
     statusId: data.statusId,
