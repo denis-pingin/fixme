@@ -7356,12 +7356,32 @@ function resolveLifecycleFixmeDir(flags) {
   return path.resolve(String(raw));
 }
 
+function formatDispatchBannerModel(runtimeSettings) {
+  if (runtimeSettings.runtime === 'codex' && runtimeSettings.model === null) {
+    return 'preserved (user-selected Codex model)';
+  }
+  if (runtimeSettings.model === null || runtimeSettings.model === undefined) {
+    return 'inherited';
+  }
+  return String(runtimeSettings.model);
+}
+
+function formatDispatchBannerReasoning(runtimeSettings) {
+  if (runtimeSettings.runtime === 'codex' && runtimeSettings.reasoning_effort === null) {
+    return 'inherited (current Codex setting)';
+  }
+  if (runtimeSettings.reasoning_effort === null || runtimeSettings.reasoning_effort === undefined) {
+    return 'inherited';
+  }
+  return String(runtimeSettings.reasoning_effort);
+}
+
 function buildDispatchBannerMarkdown(agentName, runtimeSettings) {
   return [
     `## Dispatch: ${agentName}`,
     `- Runtime: ${runtimeSettings.runtime}`,
-    `- Model: ${runtimeSettings.model}`,
-    `- Reasoning effort: ${runtimeSettings.reasoning_effort}`,
+    `- Model: ${formatDispatchBannerModel(runtimeSettings)}`,
+    `- Reasoning effort: ${formatDispatchBannerReasoning(runtimeSettings)}`,
     `- Profile: ${runtimeSettings.profile}`,
     `- Config source: ${runtimeSettings.source}`,
   ].join('\n');

@@ -2992,6 +2992,21 @@ test('dispatch prepare honors explicit Codex runtime in durable payload', () => 
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `runtime mismatch should conflict, got ${JSON.stringify(conflict.data)}`);
 });
 
+test('dispatch prepare banner renders omitted Codex controls as preserved or inherited', () => {
+  const fixmeDir = makeFixmeDir();
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), JSON.stringify({ models: { profile: 'inherit' } }) + '\n');
+  const data = JSON.stringify({ idempotencyKey: 'd1-codex-inherit', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'codex', promptInputs: {} });
+  const r = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(r.ok, `dispatch prepare should succeed, got: ${JSON.stringify(r.data)}`);
+  assert(r.data.runtimeSettings.runtime === 'codex', `runtime should be codex, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.model === null, `machine model should remain null for Codex, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.runtimeSettings.reasoning_effort === null, `machine reasoning should remain null for inherit, got ${JSON.stringify(r.data.runtimeSettings)}`);
+  assert(r.data.bannerMarkdown.includes('- Model: preserved (user-selected Codex model)'), `banner should explain preserved model, got ${r.data.bannerMarkdown}`);
+  assert(r.data.bannerMarkdown.includes('- Reasoning effort: inherited (current Codex setting)'), `banner should explain inherited reasoning, got ${r.data.bannerMarkdown}`);
+  assert(!r.data.bannerMarkdown.includes('Model: null'), `banner should not expose raw null model, got ${r.data.bannerMarkdown}`);
+  assert(!r.data.bannerMarkdown.includes('Reasoning effort: null'), `banner should not expose raw null reasoning, got ${r.data.bannerMarkdown}`);
+});
+
 test('dispatch prepare auto-detects Codex runtime from installed tool path', () => {
   const projectRoot = createTmpDir();
   const fixmeDir = path.join(projectRoot, '.fixme');
