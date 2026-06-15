@@ -7632,7 +7632,7 @@ function childHandoffInputDigest(child) {
     transport: child.transport,
     taskSaveData: child.handoff.taskSaveData,
     payload: child.handoff.payload,
-    promptInputs: child.promptInputs || {},
+    promptInputs: sanitizePrepareChildPromptInputs(child.promptInputs || {}),
   });
 }
 

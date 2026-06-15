@@ -3949,6 +3949,47 @@ test('parent prepare-child sanitizes heavy child prompt inputs before launch', (
   assert(!Object.prototype.hasOwnProperty.call(promptInputs, 'nestedContext'), 'unknown nested objects are omitted from promptInputs');
 });
 
+test('parent prepare-child replay digest ignores stripped heavy prompt inputs only', () => {
+  const fixmeDir = makeFixmeDir();
+  const firstPayload = prepareChildPayload({
+    suffix: 'heavy-prompt-replay',
+    extra: {
+      child: {
+        ...prepareChildPayload({ suffix: 'heavy-prompt-replay-inner' }).child,
+        idempotencyKey: 'prepare-child-heavy-prompt-replay',
+        promptInputs: {
+          summary: 'Current PR review fixes',
+          routedFixGroupsCount: 1,
+          mustResolveThreadCount: 1,
+          routedFixGroups: [{ groupId: 'G1', instructions: 'heavy instructions v1' }],
+          evidence: [{ path: 'apps/example.ts', line: 42, summary: 'heavy evidence v1' }],
+        },
+      },
+    },
+  });
+  firstPayload.child.handoff.taskSaveData.slug = 'prepare-child-heavy-prompt-replay';
+  const firstPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-heavy-prompt-replay-1.json', firstPayload);
+  const first = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${firstPath}"`);
+  assert(first.ok, `initial prepare-child should succeed, got ${JSON.stringify(first.data)}`);
+
+  const heavyOnlyReplayPayload = JSON.parse(JSON.stringify(firstPayload));
+  heavyOnlyReplayPayload.child.promptInputs.routedFixGroups = [{ groupId: 'G1', instructions: 'heavy instructions v2' }];
+  heavyOnlyReplayPayload.child.promptInputs.evidence = [{ path: 'apps/example.ts', line: 99, summary: 'heavy evidence v2' }];
+  heavyOnlyReplayPayload.child.promptInputs.fullReviewBody = 'heavy body omitted from launch';
+  const heavyOnlyPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-heavy-prompt-replay-2.json', heavyOnlyReplayPayload);
+  const heavyOnlyReplay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${heavyOnlyPath}"`);
+  assert(heavyOnlyReplay.ok, `heavy-only prompt replay should reuse handoff, got ${JSON.stringify(heavyOnlyReplay.data)}`);
+  assert(heavyOnlyReplay.data.childTask.taskPath === first.data.childTask.taskPath, 'heavy-only prompt replay reuses saved task');
+  assert(heavyOnlyReplay.data.dispatchId === first.data.dispatchId, 'heavy-only prompt replay reuses dispatch');
+
+  const lightweightConflictPayload = JSON.parse(JSON.stringify(firstPayload));
+  lightweightConflictPayload.child.promptInputs.summary = 'Different lightweight summary';
+  const conflictPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-heavy-prompt-replay-conflict.json', lightweightConflictPayload);
+  const conflict = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${conflictPath}"`);
+  assert(!conflict.ok, 'changed lightweight prompt input should conflict');
+  assert(conflict.data.error.code === 'conflictingDuplicate', `changed lightweight prompt conflict should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
+});
+
 test('parent prepare-child handles stale natural-key parent before create-digest conflicts', () => {
   const fixmeDir = makeFixmeDir();
   const staleCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({

@@ -110,7 +110,7 @@ Step 5   [analyze/route]    Route: any FIX_UNCLEAR, ASK_USER, or ROUTE: DECISION
 Step 6   [consult]          Run consultation loop until all decisions are resolved
 Step 7   [consult/route]    Route: zero CURRENT_PR_FIX groups remain -> 14, --pause -> 8, otherwise -> 9
 Step 8   [confirm]          Present `## Ready to Execute` and wait for user response  (CONDITIONAL: included only if --pause is set; OMIT entirely otherwise)
-Step 9   [dispatch]         Dispatch Skill("fixme-task") with routed CURRENT_PR_FIX groups
+Step 9   [dispatch]         Prepare and launch fixme-task through returned launch.transport with routed CURRENT_PR_FIX groups
 Step 10  [verify]           Run build/lint/test using project-documented commands
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
 Step 12  [commit]           Commit changes (and push unless --skip-push is set)
@@ -127,7 +127,7 @@ Step numbers are stable anchors to the workflow definition, not sequence indices
 - **Step 7 (consult/route)**:
   - If after consultation zero `CURRENT_PR_FIX` groups remain (every item was rejected, already-fixed, or routed to follow-up only), jump to Step 14 to post replies and skip the dispatch path entirely. When zero `CURRENT_PR_FIX` groups remain and replies are needed, Step 14 runs in the same turn as the Step 4 presentation. Do not ask whether to proceed with replies, thread resolution, or hand-picked fixes.
   - If `--pause` IS set and at least one `CURRENT_PR_FIX` group remains: advance to Step 8 and wait for user confirmation in a separate turn.
-  - If `--pause` is NOT set and at least one `CURRENT_PR_FIX` group remains: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `Skill("fixme-task")` tool call for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
+  - If `--pause` is NOT set and at least one `CURRENT_PR_FIX` group remains: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `lifecycle parent prepare-child --data-file` call plus the returned launch action for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
 - **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
 - **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
 
@@ -143,12 +143,12 @@ When `--pause` is NOT set, the turn that emits the Step 4 presentation has a str
 
 - The last user-visible line of the report is the final entry of the **Accounting Ledger** section.
 - **No question, prompt, or call-to-action** follows the ledger. The following phrases are explicitly forbidden as closings: `Proceed?`, `Should I dispatch?`, `Should I proceed with replies?`, `stop here`, `hand-pick`, `Continue with B1 and B2?`, `(yes / no / modify)`, `Ready to dispatch?`, `Want me to proceed?`, or any other interrogative or confirmation-seeking sentence.
-- If at least one `CURRENT_PR_FIX` group remains, the same turn must contain the `Skill("fixme-task")` tool invocation for Step 9, immediately after the report. The tool call is the closing - not a prompt to the user.
+- If at least one `CURRENT_PR_FIX` group remains, the same turn must contain the `prepare-child` call and runtime-specific launch action for Step 9, immediately after the report. The launch action is the closing - not a prompt to the user.
 - If zero `CURRENT_PR_FIX` groups remain and replies are needed, the same turn must execute Step 14 immediately after the report. The Step 14 reply/resolve execution is the closing action - not a prompt to the user.
 
 When `--pause` IS set, the turn that emits the Step 4 presentation may end with a neutral pointer to Step 8 (e.g. `See ## Ready to Execute below.`) followed by the Step 8 prompt in the same turn. The Step 8 prompt is the **only** place a user-facing confirmation question is allowed in this skill.
 
-**Anti-pattern self-check.** Before submitting the turn that contains the Step 4 presentation, scan your draft output for any of these tokens: `?`, `(yes`, `(modify`, `Proceed`, `dispatch?`, `Continue`. If any appear in your final paragraph and `--pause` is OFF, STOP. You are about to violate this gate. The cause is almost always recency-driven pattern matching from a prior session that did use `--pause`. Re-read the parsed flags. Confirm `--pause` is OFF. Replace the closing question with the Step 9 dispatch tool call.
+**Anti-pattern self-check.** Before submitting the turn that contains the Step 4 presentation, scan your draft output for any of these tokens: `?`, `(yes`, `(modify`, `Proceed`, `dispatch?`, `Continue`. If any appear in your final paragraph and `--pause` is OFF, STOP. You are about to violate this gate. The cause is almost always recency-driven pattern matching from a prior session that did use `--pause`. Re-read the parsed flags. Confirm `--pause` is OFF. Replace the closing question with the Step 9 prepare-child call and returned launch action.
 
 ### Creating the Manifest with the live manifest task list
 
@@ -166,7 +166,7 @@ TaskCreate([
   { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
   { content: "Step 7 [consult/route] Route on remaining CURRENT_PR_FIX groups and --pause", status: "pending", activeForm: "Routing on confirmation" },
   { content: "Step 8 [confirm] Present `## Ready to Execute` and wait", status: "pending", activeForm: "Awaiting confirmation" },
-  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups", status: "pending", activeForm: "Dispatching fixme-task" },
+  { content: "Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups", status: "pending", activeForm: "Launching fixme-task" },
   { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
@@ -187,7 +187,7 @@ TaskCreate([
   { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
   { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
   { content: "Step 7 [consult/route] Route to dispatch or resolve (no --pause confirmation gate)", status: "pending", activeForm: "Routing to dispatch or resolve" },
-  { content: "Step 9 [dispatch] Dispatch Skill(fixme-task) with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "pending", activeForm: "Dispatching fixme-task" },
+  { content: "Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "pending", activeForm: "Launching fixme-task" },
   { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
   { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
@@ -208,7 +208,7 @@ Execute steps in order. After each step (whether a Bash command, an analysis, a 
 3. Set the next step (per routing rules) to `in_progress`
 4. Execute the next step
 
-**Same-turn execution rule (when `--pause` is OFF):** Step 4 (analysis presentation) and the routed next action are executed in a single turn. If current fixes remain, the analysis report is emitted, then the `Skill("fixme-task")` tool call follows in the same turn. If zero current fixes remain and replies are needed, the analysis report is emitted, then Step 14 reply/resolve execution follows in the same turn. Do not return to the user between Step 4 and the routed next action in this mode. The user invoked the skill without `--pause` precisely so they would not have to confirm; honor that contract.
+**Same-turn execution rule (when `--pause` is OFF):** Step 4 (analysis presentation) and the routed next action are executed in a single turn. If current fixes remain, the analysis report is emitted, then the `prepare-child` call and returned launch action follow in the same turn. If zero current fixes remain and replies are needed, the analysis report is emitted, then Step 14 reply/resolve execution follows in the same turn. Do not return to the user between Step 4 and the routed next action in this mode. The user invoked the skill without `--pause` precisely so they would not have to confirm; honor that contract.
 
 **Never skip steps. Never combine steps (except the explicit Step 4 + Step 9 same-turn execution above when `--pause` is OFF). Never "optimize" the sequence. The manifest is the law.**
 
@@ -1169,7 +1169,7 @@ reviewer who leaves actionable findings in the review body instead of inline thr
 - **Surface item IDs**: Every `review_item` gets a permanent ID at normalization time: `T1`, `T2` for inline review threads; `I1`, `I2` for issue-comment findings; `R1`, `R2` for PR-review findings. IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
-- **fixme-task invocation**: uses `Skill("fixme-task")` to run the pipeline inline in the current session. fixme-task dispatches its sub-agents (fixme-write-plan, fixme-execute-plan, etc.) via the Agent tool at depth 1. This avoids the platform constraint that agents cannot dispatch other agents.
+- **fixme-task invocation**: uses `lifecycle parent prepare-child --data-file` followed only by the returned `launch.transport` branch. Claude may execute the `inline-skill` branch when returned by the CLI. Codex must execute the `agent` branch and launch the registered `fixme-task` agent, which owns its downstream sub-agent dispatches.
 
 ## Review-Level PR Comment Metadata
 
