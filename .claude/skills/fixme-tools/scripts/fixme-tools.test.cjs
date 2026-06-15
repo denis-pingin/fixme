@@ -835,6 +835,19 @@ test('run start: creates dispatched status for a known fixme agent', () => {
   assert(typeof status.updatedAt === 'string' && !Number.isNaN(Date.parse(status.updatedAt)), `updatedAt should be ISO timestamp, got ${status.updatedAt}`);
 });
 
+test('run start --help prints schema and does not create liveness state', () => {
+  const base = createTmpDir();
+  const fixmeDir = path.join(base, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+
+  const result = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task --help`);
+
+  assert(result.ok, `run start --help should succeed, got: ${JSON.stringify(result.data)}`);
+  assert(result.data.command === 'run start', `help should describe run start, got ${JSON.stringify(result.data)}`);
+  assert(!Object.prototype.hasOwnProperty.call(result.data, 'statusId'), 'help must not create a statusId');
+  assert(!fs.existsSync(path.join(fixmeDir, 'runs')), 'help must not create a runs directory');
+});
+
 test('run commands: explicit fixmeDir is independent from cwd config resolution', () => {
   const target = createTmpDir();
   const fixmeDir = path.join(target, '.fixme');
@@ -4023,6 +4036,56 @@ test('parent prepare-child handles stale natural-key parent before create-digest
   const abandoned = parentState(fixmeDir, staleCreate.data.parentRunId);
   assert(abandoned.status === 'failed', `stale parent should be abandoned, got ${JSON.stringify(abandoned)}`);
   assert(abandoned.failure.reason === 'staleParentMissingActiveChild', `stale failure reason should persist, got ${JSON.stringify(abandoned.failure)}`);
+});
+
+test('parent prepare-child recovers stale natural-key parent after consumed terminal child event', () => {
+  const fixmeDir = makeFixmeDir();
+  const staleCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    idempotencyKey: 'stale-consumed-child',
+    extra: {
+      cursor: 'presentAnalysis',
+      payload: {
+        flags: {},
+        reviewItems: { currentPrFix: [{ id: 'old' }] },
+        analysis: { currentPrFixCount: 1 },
+        routedGroups: [{ groupId: 'old', route: 'currentPrFix', sourceIds: ['old'] }],
+      },
+    },
+  })}'`);
+  assert(staleCreate.ok, `stale consumed-child seed parent should create, got ${JSON.stringify(staleCreate.data)}`);
+  const staleState = parentState(fixmeDir, staleCreate.data.parentRunId);
+  staleState.status = 'waitingForChild';
+  staleState.cursor = 'awaitFixmeTask';
+  staleState.payload = {
+    fixBatches: [{ id: 'old-batch' }],
+    activeBatchIndex: 0,
+    activeChild: {
+      statusId: 'run_old_child',
+      taskRunId: 'taskRun_old_child',
+      taskStatePath: path.join(fixmeDir, 'tasks', 'old.state.json'),
+      resumeRef: path.join(fixmeDir, 'tasks', 'old.md'),
+    },
+    consumedTaskEvent: {
+      eventId: 'taskEvent_old_child',
+      terminalResultId: 'terminalResult_old_child',
+      resultSummaryPath: path.join(fixmeDir, 'tasks', 'old.result.json'),
+      status: 'completed',
+    },
+  };
+  staleState.updatedAt = new Date().toISOString();
+  writeParentState(fixmeDir, staleCreate.data.parentRunId, staleState);
+
+  const payload = prepareChildPayload({
+    suffix: 'recover-consumed-child',
+    extra: { recoverStaleParent: true },
+  });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-recover-consumed-child.json', payload);
+  const repaired = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(repaired.ok, `consumed child recovery should win before create conflict, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.parentRunId !== staleCreate.data.parentRunId, 'recovery creates a fresh parent run after abandoning consumed-child stale state');
+  const abandoned = parentState(fixmeDir, staleCreate.data.parentRunId);
+  assert(abandoned.status === 'failed', `consumed-child stale parent should be abandoned, got ${JSON.stringify(abandoned)}`);
+  assert(abandoned.failure.reason === 'staleParentConsumedTaskEvent', `stale consumed-child reason should persist, got ${JSON.stringify(abandoned.failure)}`);
 });
 
 test('parent prepare-child preserves session ledger defaults in persisted parent state', () => {
@@ -7826,6 +7889,7 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
     'pass the routed current PR fix groups as text inputs to `Skill("fixme-task", args=...)`',
     'Your next action MUST be liveness setup followed by a `Skill("fixme-task")` invocation',
     'The Skill tool is the ONLY implementation tool you use in this step',
+    'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task',
     'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data',
     'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent create --fixme-dir <fixme-dir> --data',
     'node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent checkpoint --fixme-dir <fixme-dir>',
@@ -8175,6 +8239,7 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(!skill.includes('except for liveness carve-out'), 'PR comments should not keep stale liveness-only hard-constraint prose');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
   assert(skill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'PR comments should persist parent state and prepare child launch through prepare-child');
+  assert(!skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should not pre-create child liveness outside prepare-child');
   assert(!skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should not dispatch fixme-task through manual dispatch prepare');
   assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');

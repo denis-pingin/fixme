@@ -22,14 +22,13 @@ Parent run state (via `lifecycle parent *`), liveness, and attention brokering a
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent resolve --fixme-dir <fixme-dir> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run start --fixme-dir <fixme-dir> --agent fixme-task
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next
 ```
 
-Use only the `fixmeDir` field returned by `root`. Store the dispatched child's `statusId` as `fixmeTaskStatusId`. Do not read, write, list, or mutate any task-owned `<fixme-dir>` path (decisions, plans, specs, tickets, config) from this skill.
+Use only the `fixmeDir` field returned by `root`. Do not call `run start` for the child `fixme-task`; `lifecycle parent prepare-child` creates child liveness and returns the dispatched child's `statusId`. Store that returned `statusId` as `fixmeTaskStatusId`. Do not read, write, list, or mutate any task-owned `<fixme-dir>` path (decisions, plans, specs, tickets, config) from this skill.
 
 When `fixme-task`'s SKILL.md says "the orchestrator persists the decision", **the orchestrator means `fixme-task` itself**, not this parent PR-comments skill. Reading `fixme-task`'s SKILL.md and concluding "I should pre-write the decision log before dispatching" is a misinterpretation - exactly the failure mode this preamble exists to prevent.
 

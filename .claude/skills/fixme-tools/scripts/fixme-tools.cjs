@@ -8760,7 +8760,8 @@ const PARENT_LEDGER_SLOTS = new Set([
 const PARENT_FAILURE_REASONS = new Set([
   'userAborted', 'fetchFailed', 'analysisFailed', 'taskDispatchFailed', 'childFailed',
   'verificationFailed', 'commitFailed', 'pushFailed', 'replyFailed', 'resolveFailed',
-  'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'staleParentMissingActiveChild', 'unknown',
+  'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'staleParentMissingActiveChild',
+  'staleParentConsumedTaskEvent', 'unknown',
 ]);
 
 const PARENT_CREATE_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'status', 'cursor', 'payload']);
@@ -9293,6 +9294,19 @@ function parentIsMissingActiveChild(state) {
     !isPlainObject(state.payload && state.payload.activeChild);
 }
 
+function parentHasConsumedTerminalChildEvent(state) {
+  const payload = state.payload || {};
+  const consumedTaskEvent = payload.consumedTaskEvent;
+  return state.status === 'waitingForChild' &&
+    state.cursor === 'awaitFixmeTask' &&
+    isPlainObject(payload.activeChild) &&
+    isPlainObject(consumedTaskEvent) &&
+    ['completed', 'failed'].includes(consumedTaskEvent.status) &&
+    isNonEmptyString(consumedTaskEvent.eventId) &&
+    isNonEmptyString(consumedTaskEvent.terminalResultId) &&
+    isNonEmptyString(consumedTaskEvent.resultSummaryPath);
+}
+
 function findNonterminalParentsForLookup(fixmeDir, parentSkill, lookupInput) {
   const normalizedLookupInput = normalizeParentLookupInput(parentSkill, lookupInput);
   const naturalKey = parentNaturalKeyFor(parentSkill, normalizedLookupInput);
@@ -9312,15 +9326,25 @@ function findNonterminalParentsForLookup(fixmeDir, parentSkill, lookupInput) {
 function recoverStaleParentBeforeCreate(fixmeDir, data) {
   const nonterminal = findNonterminalParentsForLookup(fixmeDir, data.parent.parentSkill, data.parent.lookupInput);
   for (const candidate of nonterminal) {
-    if (!parentIsMissingActiveChild(candidate)) continue;
+    let staleReason = null;
+    let staleMessage = null;
+    if (parentIsMissingActiveChild(candidate)) {
+      staleReason = 'staleParentMissingActiveChild';
+      staleMessage = 'Recovered stale parent missing activeChild during prepare-child';
+    } else if (parentHasConsumedTerminalChildEvent(candidate)) {
+      staleReason = 'staleParentConsumedTaskEvent';
+      staleMessage = 'Recovered stale parent with already-consumed terminal child event during prepare-child';
+    } else {
+      continue;
+    }
     if (data.recoverStaleParent !== true) {
-      parentStaleStateError(candidate, { message: 'Parent is waiting for child without activeChild' });
+      parentStaleStateError(candidate, { message: staleMessage });
     }
     parentAbandonCore(fixmeDir, {
       parentRunId: candidate.parentRunId,
       idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${candidate.parentRunId}`,
-      reason: 'staleParentMissingActiveChild',
-      message: 'Recovered stale parent missing activeChild during prepare-child',
+      reason: staleReason,
+      message: staleMessage,
     });
   }
 }
@@ -10304,6 +10328,17 @@ function commandHelpPayload({
 }
 
 function commandHelpSchema(command, subcommand, args) {
+  if (command === 'run' && subcommand === 'start') {
+    return commandHelpPayload({
+      command: 'run start',
+      requiredFlags: ['fixme-dir', 'agent'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { agent: setValues(KNOWN_FIXME_AGENTS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', agent: 'fixme-task' } },
+      guidance: 'Creates a liveness record for explicit agent dispatches. Parent prepare-child creates child liveness itself.',
+    });
+  }
   if (command === 'task' && subcommand === 'decision' && args[0] === 'append') {
     return commandHelpPayload({
       command: 'task decision append',
