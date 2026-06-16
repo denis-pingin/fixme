@@ -2447,6 +2447,12 @@ function reviewValidatePlanReadiness(flags) {
       return error(`readiness routing block missing ${key}`);
     }
   }
+  const allowedKeys = new Set(requiredKeys);
+  for (const key of Object.keys(parsedBlock.parsed)) {
+    if (!allowedKeys.has(key)) {
+      return error(`readiness routing block unexpected directive key ${key}`);
+    }
+  }
 
   const result = parsedBlock.parsed.READINESS_RESULT;
   const allowedResults = new Set(['EXECUTE', 'REVISE_PLAN', 'ASK_USER', 'FULL_PLAN_REVIEW']);

@@ -8148,6 +8148,12 @@ test('review validate-plan-readiness validates route consistency and camelCase J
   assert(!invalid.ok, 'EXECUTE with blocking findings should fail');
   assert(cliErrorMessage(invalid).includes('EXECUTE requires BLOCKING_FINDING_COUNT: 0'), `error should explain fail-closed rule, got ${cliErrorMessage(invalid)}`);
 
+  const extraKeyOutput = validOutput.concat('\nNEXT_ACTION: DONE');
+  const extraKeyPath = writeJsonFixture(createTmpDir(), 'extra-readiness-key.json', { output: extraKeyOutput });
+  const extraKey = run(`review validate-plan-readiness --data-file "${extraKeyPath}"`);
+  assert(!extraKey.ok, 'readiness output with extra directive keys should fail');
+  assert(cliErrorMessage(extraKey).includes('unexpected directive key NEXT_ACTION'), `error should name unexpected key, got ${cliErrorMessage(extraKey)}`);
+
   const fullReviewOutput = [
     '---',
     'READINESS_RESULT: FULL_PLAN_REVIEW',
