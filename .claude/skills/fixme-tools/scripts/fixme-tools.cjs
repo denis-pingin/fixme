@@ -5122,7 +5122,7 @@ function getUsageTrackingBlock(skillName, runtime) {
     `node ${toolPath} usage start --skill ${skillName} --runtime ${runtime} --role ${role}`,
     '```',
     '',
-    'If the dispatch prompt includes `pipelineRunId`, include `--pipeline-run-id <pipelineRunId>`. If it includes `parentInvocationId`, include `--parent-invocation-id <parentInvocationId>`. Never pass the reserved task flag.',
+    'If the dispatch prompt includes `pipelineRunId`, include `--pipeline-run-id <pipelineRunId>`. If it includes `parentInvocationId`, include `--parent-invocation-id <parentInvocationId>`. If it includes a non-empty `usageSourcePath`, include `--source-path <usageSourcePath>`. Never pass the reserved task flag.',
     '',
     'Store the returned `invocationId`. On normal completion, run `usage finish --invocation-id <invocationId> --outcome complete`. On failure, use `--outcome failed --reason <reason>`. On abort, use `--outcome aborted --reason <reason>`. Reasons must be one of: `verification_failed`, `user_aborted`, `usage_tracking_failed`, `runtime_error`, `dispatch_failed`, `timeout`, `invalid_usage_request`, or `unknown`.',
     '',
@@ -6506,6 +6506,57 @@ function explicitUsageSourcePath(runtime, explicitPath) {
   return sourceRef ? sourceRef.path : null;
 }
 
+function normalizeUsageSourcePathField(value, label) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0) {
+    const err = new Error(`${label} must be a non-empty string without surrounding whitespace`);
+    err.code = 'INVALID_USAGE_SOURCE_PATH';
+    throw err;
+  }
+  return path.resolve(expandHomePath(value));
+}
+
+function usageSourcePathFromSnapshot(snapshot) {
+  const sourcePath = snapshot && snapshot.source && typeof snapshot.source.path === 'string'
+    ? snapshot.source.path
+    : null;
+  return sourcePath ? path.resolve(expandHomePath(sourcePath)) : null;
+}
+
+function usageSourcePathFromInvocation(fixmeDir, invocationId) {
+  if (!isNonEmptyString(invocationId)) return null;
+  try {
+    const pendingPath = path.join(usagePendingDir(fixmeDir), `${invocationId}.json`);
+    if (fs.existsSync(pendingPath)) {
+      const pending = readJsonFileStrict(pendingPath);
+      const sourcePath = usageSourcePathFromSnapshot(pending.sourceSnapshot);
+      if (sourcePath) return sourcePath;
+    }
+  } catch (_) {
+    return null;
+  }
+  try {
+    const rows = readUsageRowsForInvocation(usageProjectEventPath(fixmeDir), invocationId);
+    for (const row of rows) {
+      const sourcePath = row && row.source && typeof row.source.path === 'string'
+        ? path.resolve(expandHomePath(row.source.path))
+        : null;
+      if (sourcePath) return sourcePath;
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+function resolveDispatchUsageSourcePath(fixmeDir, runtime, data) {
+  const explicitPath = normalizeUsageSourcePathField(data.usageSourcePath, 'usageSourcePath');
+  if (explicitPath) return explicitPath;
+  const parentPath = usageSourcePathFromInvocation(fixmeDir, data.parentInvocationId);
+  if (parentPath) return parentPath;
+  return explicitUsageSourcePath(runtime, null);
+}
+
 function captureCodexCumulativeStartSnapshot(sourcePath, cursor) {
   if (!sourcePath || !cursor || !cursor.size || cursor.size <= 0 || !fs.existsSync(sourcePath)) return null;
   const endByte = cursor.size;
@@ -7058,6 +7109,7 @@ function usageStartCore(flags, fixmeRoot) {
 
   const startedAt = new Date().toISOString();
   const pendingPath = path.join(usagePendingDir(fixmeDir), `${invocationId}.json`);
+  const sourceSnapshot = captureSourceSnapshot(runtime, flags['source-path'], projectRoot, flags.skill, startedAt);
   const pending = {
     schemaVersion: 1,
     invocationId,
@@ -7069,7 +7121,7 @@ function usageStartCore(flags, fixmeRoot) {
     startedAt,
     projectRoot,
     fixmeDir,
-    sourceSnapshot: captureSourceSnapshot(runtime, flags['source-path'], projectRoot, flags.skill, startedAt),
+    sourceSnapshot,
     finalizedEvent: null,
     appendState: {
       projectWritten: false,
@@ -7089,6 +7141,7 @@ function usageStartCore(flags, fixmeRoot) {
       pendingPath,
       runtime,
       startedAt,
+      usageSourcePath: sourceSnapshot.source && sourceSnapshot.source.path ? sourceSnapshot.source.path : null,
       finishCommand: `node "${process.argv[1]}" usage finish --invocation-id ${invocationId} --outcome complete --fixme-dir "${fixmeDir}"`,
     },
   };
@@ -7099,8 +7152,8 @@ function usageStart(flags, fixmeRoot) {
   if (!core.ok) {
     return usageCliError(core.code, core.message, core.extra || {});
   }
-  const { invocationId, pipelineRunId, pendingPath, runtime, startedAt, finishCommand } = core.result;
-  return output({ invocationId, pipelineRunId, pendingPath, runtime, startedAt, finishCommand });
+  const { invocationId, pipelineRunId, pendingPath, runtime, startedAt, usageSourcePath, finishCommand } = core.result;
+  return output({ invocationId, pipelineRunId, pendingPath, runtime, startedAt, usageSourcePath, finishCommand });
 }
 
 function validateOutcomeAndReason(outcome, rawReason) {
@@ -7418,7 +7471,7 @@ function usageFinish(flags, fixmeRoot) {
 
 const LIFECYCLE_INVOCATION_START_FIELDS = new Set([
   'skill', 'runtime', 'role', 'idempotencyKey', 'pipelineRunId',
-  'parentInvocationId', 'taskStatePath', 'createRunStatusForAgent',
+  'parentInvocationId', 'taskStatePath', 'createRunStatusForAgent', 'usageSourcePath',
 ]);
 
 function usageIdempotencyPath(fixmeDir, keyHash) {
@@ -7470,6 +7523,12 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
     taskStatePath: data.taskStatePath || null,
     createRunStatusForAgent: data.createRunStatusForAgent || null,
   };
+  let usageSourcePath = null;
+  try {
+    usageSourcePath = normalizeUsageSourcePathField(data.usageSourcePath, 'usageSourcePath');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
   const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
   const recordPath = usageIdempotencyPath(fixmeDir, keyHash);
 
@@ -7483,6 +7542,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
       pipelineRunId: existing.pipelineRunId,
       fixmeDir,
       usageFinishCommand: existing.usageFinishCommand,
+      usageSourcePath: existing.usageSourcePath || null,
     };
     if (existing.statusId) {
       out.statusId = existing.statusId;
@@ -7498,6 +7558,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
     'fixme-dir': fixmeDir,
     'pipeline-run-id': data.pipelineRunId,
     'parent-invocation-id': data.parentInvocationId,
+    'source-path': usageSourcePath,
   };
   const startCore = usageStartCore(usageFlags, fixmeRoot);
   if (!startCore.ok) {
@@ -7521,6 +7582,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
     statusPath,
     usageFinishCommand: startResult.finishCommand,
     pipelineRunId: startResult.pipelineRunId,
+    usageSourcePath: startResult.usageSourcePath,
     durableInputs,
     createdAt: new Date().toISOString(),
   };
@@ -7531,6 +7593,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
     pipelineRunId: startResult.pipelineRunId,
     fixmeDir,
     usageFinishCommand: startResult.finishCommand,
+    usageSourcePath: startResult.usageSourcePath,
   };
   if (statusId) {
     out.statusId = statusId;
@@ -7604,7 +7667,7 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
 const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'idempotencyKey', 'agentName', 'transport', 'parentStatusId', 'parentInvocationId',
   'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs', 'runtime',
-  'allowProducerContinuation', 'forceFreshReason',
+  'allowProducerContinuation', 'forceFreshReason', 'usageSourcePath',
 ]);
 
 const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure', 'runtimeHandle']);
@@ -8021,9 +8084,16 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     }
   }
 
+  let usageSourcePath = null;
+  try {
+    usageSourcePath = resolveDispatchUsageSourcePath(fixmeDir, runtime, data);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
   const usageContext = {
     pipelineRunId: data.pipelineRunId || null,
     parentInvocationId: data.parentInvocationId || null,
+    usageSourcePath,
   };
   const promptBlocks = {
     project: { projectRoot: path.dirname(fixmeDir), fixmeDir },

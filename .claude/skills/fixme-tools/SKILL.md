@@ -64,7 +64,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope p
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage claude-hook
 ```
 
-`usage start` creates pending invocation state and captures the runtime counter source at start only. Codex source binding uses `CODEX_THREAD_ID` to read `threads.rollout_path` from `~/.codex/state_5.sqlite`; Claude source binding uses the managed hook's `session_id` to read the hook-recorded `transcript_path`. `usage claude-hook` is run by Claude Code's `UserPromptSubmit` hook and records only session metadata and transcript path, never transcript contents. `usage finish` extracts runtime counters only from the start-captured source, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
+`usage start` creates pending invocation state and captures the runtime counter source at start only. Codex source binding uses an explicit `--source-path`, `FIXME_USAGE_SOURCE_PATH`, `CODEX_SESSION_FILE`, or `CODEX_THREAD_ID` to read `threads.rollout_path` from `~/.codex/state_5.sqlite`; Claude source binding uses the managed hook's `session_id` to read the hook-recorded `transcript_path`. `usage claude-hook` is run by Claude Code's `UserPromptSubmit` hook and records only session metadata and transcript path, never transcript contents. `usage finish` extracts runtime counters only from the start-captured source, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
 
 ## Run Liveness Commands
 
@@ -115,7 +115,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepa
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent abandon --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 ```
 
-`lifecycle dispatch prepare` accepts `allowProducerContinuation` to opt a task-bound producer dispatch into exact-handle continuation and `forceFreshReason` to bypass a stored handle after runtime resume failure or producer rejection. Prepare output includes `continuation.mode`, `continuation.reason`, and `continuation.runtimeHandle`. Continuation is exact-handle, task-local, producer-only, and optional. If no valid handle exists, callers dispatch fresh.
+`lifecycle dispatch prepare` accepts `allowProducerContinuation` to opt a task-bound producer dispatch into exact-handle continuation and `forceFreshReason` to bypass a stored handle after runtime resume failure or producer rejection. Prepare output includes `continuation.mode`, `continuation.reason`, and `continuation.runtimeHandle`. It also propagates `usageContext.usageSourcePath` from explicit input, the dispatching `parentInvocationId` usage record, or the current runtime source binding so nested Codex agents can pass `--source-path` to `usage start` without guessing session files. Continuation is exact-handle, task-local, producer-only, and optional. If no valid handle exists, callers dispatch fresh.
 
 `lifecycle dispatch complete` accepts `runtimeHandle` on successful resumable producer completion. The helper records that handle in task-state `producerContinuations` so later prepare calls for the same task, agent, and runtime can return `continuation.mode: "resume"`.
 

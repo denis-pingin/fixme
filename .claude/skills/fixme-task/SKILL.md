@@ -76,12 +76,12 @@ When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<pr
 Start and finish this active `fixme-task` invocation through the lifecycle invocation helper, which brackets usage and (for direct runs) creates a self-owned run status in one call:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data '{"skill":"fixme-task","runtime":"claude","role":"orchestrator","idempotencyKey":"<stable-key>","createRunStatusForAgent":"fixme-task","pipelineRunId":"<incoming-or-omit>","parentInvocationId":"<incoming-or-omit>"}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data '{"skill":"fixme-task","runtime":"claude","role":"orchestrator","idempotencyKey":"<stable-key>","createRunStatusForAgent":"fixme-task","pipelineRunId":"<incoming-or-omit>","parentInvocationId":"<incoming-or-omit>","usageSourcePath":"<incoming-or-omit>"}'
 ```
 
-Direct runs pass `createRunStatusForAgent: "fixme-task"` to get a self-owned run status (`statusId`/`statusPath`) for durable attention. Store the returned `invocationId` as `usageInvocationId`, the returned `pipelineRunId` as `pipelineRunId`, and the returned `statusId` as the self-owned liveness status.
+Direct runs pass `createRunStatusForAgent: "fixme-task"` to get a self-owned run status (`statusId`/`statusPath`) for durable attention. Store the returned `invocationId` as `usageInvocationId`, the returned `pipelineRunId` as `pipelineRunId`, the returned `usageSourcePath` as `usageSourcePath` when non-empty, and the returned `statusId` as the self-owned liveness status.
 
-Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pipelineRunId === usageInvocationId`. Parent-driven `fixme-task` receives a `pipelineRunId` from its parent's `lifecycle dispatch prepare` `usageContext` and passes it in; the returned `pipelineRunId` reuses the parent value.
+Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pipelineRunId === usageInvocationId`. Parent-driven `fixme-task` receives `pipelineRunId` and, when available, `usageSourcePath` from its parent's `lifecycle dispatch prepare` `usageContext` and passes them in; the returned `pipelineRunId` reuses the parent value and the returned `usageSourcePath` preserves the runtime counter source for nested child agents.
 
 On completion run:
 
@@ -1251,6 +1251,7 @@ Agent(
     <usage>
     pipelineRunId: <pipelineRunId>
     parentInvocationId: <usageInvocationId>
+    usageSourcePath: <usageSourcePath>
     </usage>
 
     <task-state-owner>
@@ -1268,7 +1269,7 @@ Agent(
 
 When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
 
-Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipelineRunId` and the dispatching `fixme-task` `parentInvocationId`; non-pipeline direct skill invocations omit both fields.
+Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipelineRunId` and the dispatching `fixme-task` `parentInvocationId`; when `usageSourcePath` is known, pass it through both the child prompt `<usage>` block and the child `lifecycle dispatch prepare` JSON as `usageSourcePath`. Non-pipeline direct skill invocations omit these fields.
 
 Include the `<task-state-owner>` block only when this dispatch is part of a resumable `fixme-task` run with a known task state. It tells child skills that user-facing pauses must return `FIXME_CHILD_ATTENTION_REQUIRED` to `fixme-task` instead of calling AskUserQuestion or waiting directly.
 

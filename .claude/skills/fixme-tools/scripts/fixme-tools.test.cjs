@@ -3475,8 +3475,9 @@ test('usage start to finish round trip schema unchanged after core extraction', 
   assert(start.ok, `usage start should succeed, got: ${JSON.stringify(start.data)}`);
   assert(/^usage_/.test(start.data.invocationId), 'invocationId generated');
   assert(typeof start.data.finishCommand === 'string' && start.data.finishCommand.includes('usage finish'), 'finishCommand present');
+  assert(start.data.usageSourcePath === null, `usageSourcePath should be null when no source is bound, got ${JSON.stringify(start.data.usageSourcePath)}`);
   const startKeys = Object.keys(start.data).sort();
-  assert(JSON.stringify(startKeys) === JSON.stringify(['finishCommand', 'invocationId', 'pendingPath', 'pipelineRunId', 'runtime', 'startedAt']),
+  assert(JSON.stringify(startKeys) === JSON.stringify(['finishCommand', 'invocationId', 'pendingPath', 'pipelineRunId', 'runtime', 'startedAt', 'usageSourcePath']),
     `usage start keys unchanged, got ${JSON.stringify(startKeys)}`);
   const finish = runInDirWithEnv(`usage finish --invocation-id ${start.data.invocationId} --outcome complete --fixme-dir "${workspace.fixmeDir}"`, workspace.projectRoot, workspace.env);
   assert(finish.ok, `usage finish should succeed, got: ${JSON.stringify(finish.data)}`);
@@ -3514,6 +3515,31 @@ test('invocation start with createRunStatusForAgent returns a self-owned status'
   assert(fs.existsSync(r.data.statusPath), 'run status file exists');
   const status = readJson(r.data.statusPath);
   assert(status.agent === 'fixme-task', `agent should be fixme-task, got ${status.agent}`);
+});
+
+test('invocation start binds explicit usageSourcePath for parent-driven Codex task usage', () => {
+  const w = createUsageWorkspace();
+  const sourcePath = path.join(w.projectRoot, 'codex-parent-driven-task.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 },
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 }
+    ),
+  ]);
+  const data = JSON.stringify({
+    skill: 'fixme-task',
+    runtime: 'codex',
+    role: 'orchestrator',
+    idempotencyKey: 'k-source-path',
+    pipelineRunId: 'usage_parent_pipeline',
+    parentInvocationId: 'usage_parent_invocation',
+    usageSourcePath: sourcePath,
+  });
+  const started = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, { ...w.env, CODEX_THREAD_ID: '', CODEX_SESSION_FILE: '', FIXME_USAGE_SOURCE_PATH: '' });
+  assert(started.ok, `invocation start with usageSourcePath should succeed, got: ${JSON.stringify(started.data)}`);
+  assert(started.data.usageSourcePath === sourcePath, `start output should echo usageSourcePath, got ${JSON.stringify(started.data)}`);
+  const pending = readJson(path.join(w.fixmeDir, 'usage', 'pending', `${started.data.invocationId}.json`));
+  assert(pending.sourceSnapshot.source.path === sourcePath, `pending usage should bind explicit source path, got ${JSON.stringify(pending.sourceSnapshot)}`);
 });
 
 test('invocation start retry with same idempotencyKey returns existing invocation and status', () => {
@@ -3697,6 +3723,54 @@ test('dispatch prepare honors explicit Codex runtime in durable payload', () => 
   const conflictData = JSON.stringify({ idempotencyKey: 'd1-codex', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'claude', promptInputs: {} });
   const conflict = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `runtime mismatch should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch prepare propagates Codex usage source from parent invocation to nested agent prompts', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-parent-source.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const parent = runInDirWithEnv(`usage start --skill fixme-task --runtime codex --role orchestrator --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(parent.ok, `parent usage start should succeed, got ${JSON.stringify(parent.data)}`);
+
+  const dispatchEnv = { ...ctx.env, CODEX_THREAD_ID: '', CODEX_SESSION_FILE: '', FIXME_USAGE_SOURCE_PATH: '' };
+  const dispatchPayload = {
+    idempotencyKey: 'd1-codex-usage-source',
+    agentName: 'fixme-review-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    parentInvocationId: parent.data.invocationId,
+    pipelineRunId: parent.data.pipelineRunId,
+    promptInputs: { phase: 'plan-review' },
+  };
+  const prepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(dispatchPayload)}'`, ctx.projectRoot, dispatchEnv);
+  assert(prepared.ok, `dispatch prepare should succeed without Codex env source, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.usageContext.usageSourcePath === sourcePath, `usageContext should carry parent source path, got ${JSON.stringify(prepared.data.usageContext)}`);
+  assert(prepared.data.promptBlocks.usageContext.usageSourcePath === sourcePath, `promptBlocks should carry usageSourcePath, got ${JSON.stringify(prepared.data.promptBlocks.usageContext)}`);
+
+  const child = runInDirWithEnv(
+    `usage start --skill fixme-review-plan --runtime codex --role reviewer --pipeline-run-id ${prepared.data.usageContext.pipelineRunId} --parent-invocation-id ${prepared.data.usageContext.parentInvocationId} --source-path "${prepared.data.usageContext.usageSourcePath}"`,
+    ctx.projectRoot,
+    dispatchEnv
+  );
+  assert(child.ok, `child usage start should accept propagated source path, got ${JSON.stringify(child.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 50, cached_input_tokens: 5, output_tokens: 12, reasoning_output_tokens: 7, total_tokens: 74 },
+      { input_tokens: 20, cached_input_tokens: 2, output_tokens: 8, reasoning_output_tokens: 5, total_tokens: 35 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${child.data.invocationId} --outcome complete`, ctx.projectRoot, dispatchEnv);
+  assert(finished.ok, `child usage finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === child.data.invocationId);
+  assert(row && row.status === 'measured', `child usage should be measured from propagated source path, got ${JSON.stringify(row)}`);
+  assert(row.pipelineRunId === parent.data.pipelineRunId, `child pipelineRunId should stay inherited, got ${JSON.stringify(row)}`);
+  assert(row.parentInvocationId === parent.data.invocationId, `child parentInvocationId should stay inherited, got ${JSON.stringify(row)}`);
+  assert(row.source.path === sourcePath, `child usage source should be the propagated source path, got ${JSON.stringify(row.source)}`);
 });
 
 test('dispatch prepare banner renders omitted Codex controls as preserved or inherited', () => {
@@ -7553,6 +7627,7 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('If the dispatch prompt includes `pipelineRunId`'), 'Codex usage block should detect camelCase pipelineRunId prompt metadata');
   assert(installedTask.includes('--pipeline-run-id <pipelineRunId>'), 'Codex usage block should map camelCase prompt metadata to CLI flag');
   assert(installedTask.includes('If it includes `parentInvocationId`'), 'Codex usage block should detect camelCase parentInvocationId prompt metadata');
+  assert(installedTask.includes('If it includes a non-empty `usageSourcePath`, include `--source-path <usageSourcePath>`'), 'Codex usage block should propagate runtime counter source paths');
   assert(!installedTask.includes('pipeline_run_id'), 'Codex installed skill should not use snake_case pipeline_run_id prompt metadata');
   assert(!installedTask.includes('parent_invocation_id'), 'Codex installed skill should not use snake_case parent_invocation_id prompt metadata');
   assert(installedTask.includes('Only run this block when `fixme-task` is the active skill invocation.'), 'usage block should have active-skill guard');
@@ -7786,9 +7861,12 @@ test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', (
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('usageInvocationId'), 'fixme-task should name its usage invocation state');
   assert(skill.includes('pipelineRunId'), 'fixme-task should name the shared pipelineRunId state');
+  assert(skill.includes('usageSourcePath'), 'fixme-task should name the runtime counter source path state');
   assert(skill.includes('pipelineRunId: <pipelineRunId>'), 'child prompts should include camelCase pipelineRunId');
   assert(skill.includes('parentInvocationId: <usageInvocationId>'), 'child prompts should include camelCase parentInvocationId');
-  assert(skill.includes('Parent-driven `fixme-task` receives a `pipelineRunId`'), 'parent-driven pipeline ID reuse should be explicit');
+  assert(skill.includes('usageSourcePath: <usageSourcePath>'), 'child prompts should include camelCase usageSourcePath when known');
+  assert(skill.includes('child `lifecycle dispatch prepare` JSON as `usageSourcePath`'), 'child dispatch prepare should receive usageSourcePath');
+  assert(skill.includes('Parent-driven `fixme-task` receives `pipelineRunId`'), 'parent-driven pipeline ID reuse should be explicit');
   assert(skill.includes('ownerSkill: fixme-task'), 'task-state owner prompt should use camelCase ownerSkill');
   assert(skill.includes('resumeRef: <FIXME-N|task-path|state-path|ticket-path>'), 'task-state owner prompt should use camelCase resumeRef');
   assert(skill.includes('taskStatePath: <task-state-path>'), 'task-state owner prompt should use camelCase taskStatePath');
