@@ -18,6 +18,7 @@ const MODEL_PROFILES = {
     'fixme-write-technical-spec': 'opus',
     'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
+    'fixme-plan-readiness': 'opus',
     'fixme-review-code': 'opus',
     'fixme-investigate': 'opus',
     'fixme-research': 'opus',
@@ -34,6 +35,7 @@ const MODEL_PROFILES = {
     'fixme-write-technical-spec': 'opus',
     'fixme-review-spec': 'opus',
     'fixme-review-plan': 'opus',
+    'fixme-plan-readiness': 'opus',
     'fixme-review-code': 'opus',
     'fixme-investigate': 'opus',
     'fixme-research': 'opus',
@@ -50,6 +52,7 @@ const MODEL_PROFILES = {
     'fixme-write-technical-spec': 'sonnet',
     'fixme-review-spec': 'sonnet',
     'fixme-review-plan': 'sonnet',
+    'fixme-plan-readiness': 'sonnet',
     'fixme-review-code': 'sonnet',
     'fixme-investigate': 'sonnet',
     'fixme-research': 'sonnet',
@@ -75,6 +78,7 @@ const CLAUDE_EXTRA_HIGH_AGENTS = new Set([
   'fixme-write-technical-spec',
   'fixme-review-spec',
   'fixme-review-plan',
+  'fixme-plan-readiness',
   'fixme-review-code',
   'fixme-handle-spec-review',
   'fixme-handle-plan-review',
@@ -108,7 +112,7 @@ const STANDARD_PIPELINES = {
     {
       name: 'plan',
       skills: ['fixme-write-plan'],
-      review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
+      review: { readiness: 'fixme-plan-readiness', skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 },
     },
     {
       name: 'implement',
@@ -214,6 +218,7 @@ const KNOWN_FIXME_SKILLS = new Set([
   'fixme-handle-spec-review',
   'fixme-investigate',
   'fixme-research',
+  'fixme-plan-readiness',
   'fixme-review-code',
   'fixme-review-plan',
   'fixme-review-spec',
@@ -232,6 +237,7 @@ const KNOWN_FIXME_AGENTS = new Set([
   'fixme-handle-spec-review',
   'fixme-investigate',
   'fixme-research',
+  'fixme-plan-readiness',
   'fixme-review-code',
   'fixme-review-plan',
   'fixme-review-spec',
@@ -1930,6 +1936,12 @@ function validatePipeline(pipeline, workflowName) {
       if (normalizedPhase.review.enabled !== undefined && typeof normalizedPhase.review.enabled !== 'boolean') {
         throw new Error(`${fieldPrefix}.review.enabled must be a boolean when present`);
       }
+      if (normalizedPhase.review.readiness !== undefined) {
+        if (typeof normalizedPhase.review.readiness !== 'string' || normalizedPhase.review.readiness.trim() === '') {
+          throw new Error(`${fieldPrefix}.review.readiness must be a non-empty string`);
+        }
+        collectUnknownSkillWarnings([normalizedPhase.review.readiness], warnings, `${fieldPrefix}.review.readiness`);
+      }
       if (normalizedPhase.review.skills !== undefined) {
         validateStringArray(normalizedPhase.review.skills, `${fieldPrefix}.review.skills`);
         collectUnknownSkillWarnings(normalizedPhase.review.skills, warnings, `${fieldPrefix}.review.skills`);
@@ -2348,6 +2360,149 @@ function configReviewLevelResolve(flags, fixmeRoot) {
     warnings: resolution.warnings,
   });
 }
+
+// ============================================================================
+// Subcommands: review
+// ============================================================================
+
+function parseReadinessRoutingBlock(outputText) {
+  const delimiterIndex = outputText.lastIndexOf('\n---');
+  const block = delimiterIndex === -1
+    ? outputText.trim()
+    : outputText.slice(delimiterIndex + 1).trim();
+  if (!block.startsWith('---')) {
+    throw new Error('readiness output must end with a --- routing block');
+  }
+  const routingBlock = block;
+  const parsed = {};
+  for (const line of routingBlock.split(/\r?\n/).slice(1)) {
+    const match = line.match(/^([A-Z_]+):\s*(.*)$/);
+    if (match) {
+      parsed[match[1]] = match[2].trim();
+    }
+  }
+  return { routingBlock, parsed, contentBeforeRouting: delimiterIndex === -1 ? '' : outputText.slice(0, delimiterIndex) };
+}
+
+function parseNonNegativeIntegerField(value, fieldName) {
+  if (!/^(0|[1-9]\d*)$/.test(value || '')) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+  return Number(value);
+}
+
+function parseReadinessBlockingFindings(content) {
+  const sectionMatch = content.match(/(?:^|\n)### Blocking Findings\s*\n([\s\S]*?)(?=\n### |\n---|$)/);
+  if (!sectionMatch) return [];
+
+  const section = sectionMatch[1].trim();
+  if (!section) return [];
+
+  const entries = [];
+  const entryRegex = /(?:^|\n)\s*\d+\.\s+\*\*(.+?)\*\*\s*\n([\s\S]*?)(?=\n\s*\d+\.\s+\*\*|$)/g;
+  let match;
+  while ((match = entryRegex.exec(section)) !== null) {
+    const finding = { title: match[1].trim() };
+    const body = match[2];
+    const fieldMap = [
+      ['problem', 'Problem'],
+      ['requiredPlanChange', 'Required plan change'],
+      ['evidence', 'Evidence'],
+      ['affectedPlanSections', 'Affected plan sections'],
+    ];
+    for (const [key, label] of fieldMap) {
+      const fieldMatch = body.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, 'm'));
+      finding[key] = fieldMatch ? fieldMatch[1].trim() : '';
+      if (!finding[key]) {
+        throw new Error(`readiness blocking finding '${finding.title}' missing required ${key}`);
+      }
+    }
+    entries.push(finding);
+  }
+
+  if (entries.length === 0) {
+    throw new Error('### Blocking Findings section must contain numbered findings');
+  }
+  return entries;
+}
+
+function reviewValidatePlanReadiness(flags) {
+  const data = resolveJsonArgument(flags, 'data', { missingMessage: '--data is required for review validate-plan-readiness' });
+  if (typeof data.output !== 'string' || data.output.trim() === '') {
+    return error('--data.output must be a non-empty string');
+  }
+
+  let parsedBlock;
+  let blockingFindings;
+  try {
+    parsedBlock = parseReadinessRoutingBlock(data.output);
+    blockingFindings = parseReadinessBlockingFindings(parsedBlock.contentBeforeRouting);
+  } catch (e) {
+    return error(e.message);
+  }
+
+  const requiredKeys = ['READINESS_RESULT', 'SUMMARY', 'BLOCKING_FINDING_COUNT', 'QUESTION_COUNT', 'RISK_LEVEL'];
+  for (const key of requiredKeys) {
+    if (!Object.prototype.hasOwnProperty.call(parsedBlock.parsed, key) || parsedBlock.parsed[key] === '') {
+      return error(`readiness routing block missing ${key}`);
+    }
+  }
+
+  const result = parsedBlock.parsed.READINESS_RESULT;
+  const allowedResults = new Set(['EXECUTE', 'REVISE_PLAN', 'ASK_USER', 'FULL_PLAN_REVIEW']);
+  if (!allowedResults.has(result)) {
+    return error('READINESS_RESULT must be one of: EXECUTE, REVISE_PLAN, ASK_USER, FULL_PLAN_REVIEW');
+  }
+
+  const summary = parsedBlock.parsed.SUMMARY;
+  let blockingFindingCount;
+  let questionCount;
+  try {
+    blockingFindingCount = parseNonNegativeIntegerField(parsedBlock.parsed.BLOCKING_FINDING_COUNT, 'BLOCKING_FINDING_COUNT');
+    questionCount = parseNonNegativeIntegerField(parsedBlock.parsed.QUESTION_COUNT, 'QUESTION_COUNT');
+  } catch (e) {
+    return error(e.message);
+  }
+
+  const riskLevel = parsedBlock.parsed.RISK_LEVEL;
+  if (!['low', 'high'].includes(riskLevel)) {
+    return error('RISK_LEVEL must be one of: low, high');
+  }
+
+  if (result === 'EXECUTE') {
+    if (blockingFindingCount !== 0) return error('EXECUTE requires BLOCKING_FINDING_COUNT: 0');
+    if (questionCount !== 0) return error('EXECUTE requires QUESTION_COUNT: 0');
+    if (riskLevel !== 'low') return error('EXECUTE requires RISK_LEVEL: low');
+  } else if (result === 'REVISE_PLAN') {
+    if (blockingFindingCount <= 0) return error('REVISE_PLAN requires BLOCKING_FINDING_COUNT > 0');
+    if (questionCount !== 0) return error('REVISE_PLAN requires QUESTION_COUNT: 0');
+    if (blockingFindings.length !== blockingFindingCount) {
+      return error('REVISE_PLAN requires BLOCKING_FINDING_COUNT to match parsed blocking findings');
+    }
+  } else if (result === 'ASK_USER') {
+    if (questionCount <= 0) return error('ASK_USER requires QUESTION_COUNT > 0');
+  } else if (result === 'FULL_PLAN_REVIEW') {
+    if (blockingFindingCount !== 0) return error('FULL_PLAN_REVIEW requires BLOCKING_FINDING_COUNT: 0');
+    if (questionCount !== 0) return error('FULL_PLAN_REVIEW requires QUESTION_COUNT: 0');
+    if (riskLevel !== 'high') return error('FULL_PLAN_REVIEW requires RISK_LEVEL: high');
+  }
+
+  if (result !== 'REVISE_PLAN' && blockingFindings.length !== 0) {
+    return error('Only REVISE_PLAN may include parsed blocking findings');
+  }
+
+  return output({
+    schemaVersion: 1,
+    result,
+    summary,
+    blockingFindingCount,
+    blockingFindings,
+    questionCount,
+    riskLevel,
+    routingBlock: parsedBlock.routingBlock,
+  });
+}
+
 
 function configSet(keyPath, rawValue, fixmeRoot) {
   const parts = splitConfigKey(keyPath);
@@ -10857,6 +11012,14 @@ function main() {
             return error(`Unknown pipeline subcommand: '${subcommand}'. Valid: resolve`);
         }
 
+      case 'review':
+        switch (subcommand) {
+          case 'validate-plan-readiness':
+            return reviewValidatePlanReadiness(flags);
+          default:
+            return error(`Unknown review subcommand: '${subcommand}'. Valid: validate-plan-readiness`);
+        }
+
       case 'session':
         switch (subcommand) {
           case 'create':
@@ -11003,7 +11166,7 @@ function main() {
       }
 
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, liveness, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, review, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, liveness, root, resolve-model, alert`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {

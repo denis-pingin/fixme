@@ -749,10 +749,12 @@ When seeding a missing standard workflow or offering "Use standard workflow", us
 **standard:**
 ```json
 [
-  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+  { "name": "plan", "skills": ["fixme-write-plan"], "review": { "readiness": "fixme-plan-readiness", "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
   { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } }
 ]
 ```
+
+The standard workflow runs the readiness checker first; its FULL_PLAN_REVIEW route preserves the listed full plan review skills as escalation.
 
 **full:**
 ```json

@@ -25,6 +25,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from workflow config
 - Resolve workflow pipeline selection from eligible user and artifact candidates
+- Validate compact plan-readiness routing blocks before fixme-task routes plan-phase readiness results.
 - Record dispatched-agent liveness under `<fixme-dir>/runs/<statusId>/status.json`
 - Save standalone task briefs and maintain low-level resumable task state
 - Record usage start and finish events with pending state, runtime counter extraction, and append-only project/global usage JSONL
@@ -40,6 +41,14 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow config
 ```
 
 `config migrate` creates missing config, backfills final standard workflows, validates final review-level fields, and preserves custom workflows and unknown keys. It rejects obsolete `pipelines`, `workflowControls`, removed workflow aliases, and old review filters instead of translating them. Workflow writes must use `config workflow configure` so phase shapes and cycle limits are validated before JSON is saved.
+
+## Review Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <absolute-json-file>
+```
+
+The JSON payload is `{ "output": "<full readiness checker output>" }`.
 
 ## Codex Install Commands
 

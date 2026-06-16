@@ -39,6 +39,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
           "name": "plan",
           "skills": ["fixme-write-plan"],
           "review": {
+            "readiness": "fixme-plan-readiness",
             "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
             "maxCycles": 3,
             "level": "standard"
@@ -121,9 +122,12 @@ Each phase in `workflows.<workflowName>.phases` has:
 | `enabled` | boolean | No | `true` | When `false`, the phase is skipped. |
 | `skills` | string[] | Yes | - | Ordered skill names to execute for this phase. |
 | `review` | object | No | - | Review loop configuration for the phase. |
+| `review.readiness` | string | No | - | Optional compact readiness checker dispatched before `review.skills`. |
 | `review.skills` | string[] | Yes if review is enabled | - | Ordered review and handler skill chain. |
 | `review.maxCycles` | number | No | `3` | Max internal review-loop iterations before escalation. |
 | `review.level` | string | No | workflow/global/builtin fallback | Phase review level override. |
+
+When `review.readiness` is present, `fixme-task` validates the readiness route before either skipping to execution, re-entering plan writing, asking the user, or escalating to the configured full plan review `review.skills` chain.
 
 ## Review Level
 

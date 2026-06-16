@@ -30,7 +30,7 @@ Routes each `FIXME-N` label to `fixme-task` sequentially. The example runs `FIXM
 /fixme-task fix the login button being unresponsive on mobile
 ```
 
-Runs the standard workflow: plan -> review -> execute -> code review. Fully automated with review loops that catch issues before they ship.
+Runs the standard workflow: plan -> readiness -> execute -> code review. Fully automated with review loops that catch issues before they ship.
 
 ### Fix a task with a specific pipeline
 
@@ -159,7 +159,7 @@ Workflows are defined in `.fixme/config.json`:
     "standard": {
       "outerMaxCycles": 2,
       "phases": [
-        { "name": "plan", "skills": ["fixme-write-plan"], "review": { "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
+        { "name": "plan", "skills": ["fixme-write-plan"], "review": { "readiness": "fixme-plan-readiness", "skills": ["fixme-review-plan", "fixme-handle-plan-review"], "maxCycles": 3 } },
         { "name": "implement", "skills": ["fixme-execute-plan"], "review": { "skills": ["fixme-review-code", "fixme-handle-code-review"], "maxCycles": 3 } }
       ]
     },
@@ -257,6 +257,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-write-product-spec` | Write product specifications from feature requests or review FIX items |
 | `fixme-write-technical-spec` | Write technical specifications from product specifications, source material, or review FIX items |
 | `fixme-write-plan` | Write implementation plans (4 modes: fresh, plan revision, code revision, rewrite) |
+| `fixme-plan-readiness` | Compact independent plan readiness triage before execution |
 | `fixme-review-spec` | Review specifications for deterministic implementability |
 | `fixme-handle-spec-review` | Triage specification review findings (unified taxonomy) |
 | `fixme-review-plan` | Review plans for correctness and feasibility |
@@ -285,7 +286,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
 
-- **Review loops catch what confidence blinds you to.** Every plan is reviewed before execution. Every execution is reviewed after. FIX items loop back through the pipeline - never applied inline.
+- Review gates catch what confidence blinds you to. Routine standard runs use readiness before execution, and high-risk plans escalate to full plan review. Every execution is reviewed after. FIX items loop back through the pipeline - never applied inline.
 
 ## Installation
 

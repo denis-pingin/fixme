@@ -100,6 +100,20 @@ Required inputs (provided by orchestrator as arguments):
 - **FIX items**: classified findings from the plan review handler (markdown)
 - **Decision log path**: under a task-bound `fixme-task` (a `<task-state-owner>` block is present), obtain locked decisions by calling `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown` and reading the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly (may not exist on first iteration)
 
+### Readiness-Driven Plan Revision Mode
+
+Triggered when the orchestrator provides: previous plan path + `READINESS_RESULT: REVISE_PLAN` output from `fixme-plan-readiness`.
+Required inputs:
+- **Original task**: the unchanged task description
+- **Previous plan path**: the plan being revised
+- **Review context packet**: compact current-run decisions, readiness summary, verification summaries, and source references
+- **Code map path**: task code map from the prior plan, if available
+- **Readiness output**: full output from `fixme-plan-readiness`
+- **Readiness blocking findings**: each finding must include title, required plan change, evidence file references, and affected plan sections
+- **Decision log path**: under a task-bound `fixme-task`, call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field
+
+Read all readiness blocking findings before editing the plan. Do not treat readiness findings as handler-classified FIX items. Apply every readiness blocking finding as a required plan edit unless it conflicts with a locked decision; if a conflict exists, use the task-bound user input contract.
+
 ### Code Revision Mode
 
 Triggered when the orchestrator provides: previous plan path + code review FIX items + execution results.
@@ -267,6 +281,7 @@ These are exactly the conditions under which silent overrides happen. The gate e
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
    - **Never silently drop a FIX item.** If you believe a FIX should not be implemented, that is not your call - flag it back to the user via the Input Audit as a new question with concrete evidence (what you read, what tradeoff changed your mind, what alternative you propose). "Drop it and add a clarifying comment" is only acceptable when the handler's Approach field explicitly specifies exactly that as the full resolution.
    - **Never substitute your own "lighter touch" for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems "simpler" is a silent override and the exact failure mode the handler's Multi-Option Discipline exists to prevent.
+   For readiness-driven plan revision mode, read the full readiness output and every readiness blocking finding. Re-read the referenced plan sections and source/code-map references. Apply the required plan changes directly. Do not require handler fields such as Classification, Route Scope, or Approach, and do not relabel readiness findings as handler FIX items.
 6. In **code revision only**: re-read all files that were modified during execution (listed in execution results, review context packet, or code map). The codebase has changed - file-level context is stale.
 7. Skip full codebase exploration. Only do targeted re-reads as described above.
 8. **Never repeat a failed approach.** If the previous plan was executed and failed, understand why from the execution results, review context packet, code map, and FIX items. Design a fundamentally different approach, not a tweak of the same one. If all obvious approaches have been tried, combine insights from prior failures to derive a new strategy.

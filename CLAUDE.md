@@ -136,6 +136,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
   fixme-review-spec/        # Reviews specifications for deterministic implementability
   fixme-handle-spec-review/ # Triages specification review findings (unified taxonomy)
   fixme-write-plan/         # Writes implementation plans
+  fixme-plan-readiness/   # Compact independent plan readiness triage
   fixme-review-plan/        # Reviews plans for correctness/completeness/feasibility
   fixme-handle-plan-review/ # Triages plan review findings (unified taxonomy)
   fixme-execute-plan/       # Executes plans step-by-step with verification gates
@@ -179,6 +180,7 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-write-product-spec | Product specification writer | Writes only product specification files | opus | xhigh | xhigh |
 | fixme-write-technical-spec | Technical specification writer | Writes only technical specification files | opus | xhigh | xhigh |
 | fixme-write-plan | Plan writer | Reads codebase, writes only plan files | opus | xhigh | xhigh |
+| fixme-plan-readiness | Plan readiness checker | Read-only, compact route decision | opus | xhigh | xhigh |
 | fixme-execute-plan | Plan executor | Follows plan exactly, runs verification | opus | medium | medium |
 | fixme-review-plan | Plan reviewer | Read-only, structured findings | opus | xhigh | xhigh |
 | fixme-review-code | Code reviewer | Read-only, structured findings | opus | xhigh | xhigh |
@@ -204,7 +206,7 @@ Terminal states: `done`, `failed`, `skipped`. Backward transitions (any phase to
 
 ### fixme-task Pipeline Flow
 
-Config-driven: reads workflow phases from `.fixme/config.json`. Each phase can have skills and optional review loops:
+Config-driven: reads workflow phases from `.fixme/config.json`. Routine standard plan phases run `fixme-write-plan -> fixme-plan-readiness`, where readiness can execute, revise, ask the user, or escalate to full plan review through `fixme-review-plan -> fixme-handle-plan-review`. Each phase can have skills and optional review loops:
 
 ```
 for each phase:

@@ -303,7 +303,7 @@ function createPipelineConfig(baseDir) {
       standard: {
         outerMaxCycles: 2,
         phases: [
-          { name: 'plan', skills: ['fixme-write-plan'], review: { skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
+          { name: 'plan', skills: ['fixme-write-plan'], review: { readiness: 'fixme-plan-readiness', skills: ['fixme-review-plan', 'fixme-handle-plan-review'], maxCycles: 3 } },
           { name: 'implement', skills: ['fixme-execute-plan'], review: { skills: ['fixme-review-code', 'fixme-handle-code-review'], maxCycles: 3 } }
         ]
       },
@@ -6268,6 +6268,7 @@ test('config migrate creates final standard workflows and review level defaults'
   assert(config.review.level === 'standard', 'review.level should default to standard');
   assert(!config.review.softness, 'review.softness must not be written in final config');
   assert(config.workflows.standard.phases[0].review.maxCycles === 3, 'standard plan review should use 3 cycles');
+  assert(config.workflows.standard.phases[0].review.readiness === 'fixme-plan-readiness', 'standard plan review should use readiness triage before full review escalation');
   assert(config.workflows.standard.phases[1].review.maxCycles === 3, 'standard implement review should use 3 cycles');
   assert(!config.workflows.quick.phases.some(phase => phase.review), 'quick should have no review blocks');
   assert(phaseNames(config.workflows.full) === 'product-spec -> technical-spec -> plan -> implement -> verify', `full phases should be feature lifecycle, got ${phaseNames(config.workflows.full)}`);
@@ -6697,9 +6698,53 @@ test('STANDARD_PIPELINES exports final workflow names', () => {
   const names = Object.keys(STANDARD_PIPELINES).sort();
   assert(arraysEqual(names, ['bugfix', 'execute-only', 'full', 'plan-only', 'product-spec', 'quick', 'standard', 'technical-spec']), `unexpected exported workflows: ${names.join(', ')}`);
   assert(phaseNames({ phases: STANDARD_PIPELINES.standard }) === 'plan -> implement', 'standard should be plan -> implement');
+  assert(STANDARD_PIPELINES.standard[0].review.readiness === 'fixme-plan-readiness', 'standard plan review should dispatch readiness triage first');
+  assert(arraysEqual(STANDARD_PIPELINES.standard[0].review.skills, ['fixme-review-plan', 'fixme-handle-plan-review']), 'standard full plan review escalation chain should remain available');
+  assert(!Object.prototype.hasOwnProperty.call(STANDARD_PIPELINES.full[2].review, 'readiness'), 'full workflow should keep explicit full plan review by default');
+  assert(!Object.prototype.hasOwnProperty.call(STANDARD_PIPELINES.bugfix[2].review, 'readiness'), 'bugfix workflow should keep explicit full plan review by default');
   assert(phaseNames({ phases: STANDARD_PIPELINES.full }) === 'product-spec -> technical-spec -> plan -> implement -> verify', 'full should be feature lifecycle');
   assert(phaseNames({ phases: STANDARD_PIPELINES.bugfix }) === 'investigate -> research -> plan -> implement -> verify', 'bugfix should be investigate workflow');
   assert(!STANDARD_PIPELINES.quick.some(phase => phase.review), 'quick should have no review blocks');
+});
+
+test('config workflow configure validates plan readiness skill field', () => {
+  const tmp = createTmpDir();
+  const workflow = JSON.stringify({
+    phases: [
+      {
+        name: 'plan',
+        skills: ['fixme-write-plan'],
+        review: {
+          readiness: 'fixme-plan-readiness',
+          skills: ['fixme-review-plan', 'fixme-handle-plan-review'],
+          maxCycles: 3,
+        },
+      },
+    ],
+  });
+
+  let result = runInDir(`config workflow configure custom --data '${workflow}'`, tmp);
+  assert(result.ok, `workflow configure should accept readiness triage: ${JSON.stringify(result.data)}`);
+  assert(!result.data.warnings.some(warning => warning.includes('fixme-plan-readiness')), `readiness skill should be known, got warnings ${JSON.stringify(result.data.warnings)}`);
+  const config = readProjectConfig(tmp);
+  assert(config.workflows.custom.phases[0].review.readiness === 'fixme-plan-readiness', 'readiness skill should be preserved');
+
+  const invalidRoot = createTmpDir();
+  const invalidWorkflow = JSON.stringify({
+    phases: [
+      {
+        name: 'plan',
+        skills: ['fixme-write-plan'],
+        review: {
+          readiness: 42,
+          skills: ['fixme-review-plan'],
+        },
+      },
+    ],
+  });
+  result = runInDir(`config workflow configure custom --data '${invalidWorkflow}'`, invalidRoot);
+  assert(!result.ok, 'non-string readiness should fail');
+  assert(cliErrorMessage(result).includes('review.readiness must be a non-empty string'), `error should explain readiness type, got ${cliErrorMessage(result)}`);
 });
 
 test('config workflow configure rejects invalid cycle counts', () => {
@@ -7161,6 +7206,27 @@ test('multi-root: context load from Codex-linked worktree reads canonical worksp
 // ============================================================================
 // resolve-model tests
 // ============================================================================
+
+test('resolve-model uses review-grade effort for plan readiness checker', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('resolve-model fixme-plan-readiness --runtime claude', tmp);
+  assert(result.ok, `Claude readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === 'opus', `quality readiness model should be opus, got ${result.data.model}`);
+  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Claude reasoning, got ${result.data.reasoning_effort}`);
+
+  result = runInDir('resolve-model fixme-plan-readiness --runtime codex', tmp);
+  assert(result.ok, `Codex readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === null, 'Codex readiness model should not pin a model');
+  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Codex reasoning, got ${result.data.reasoning_effort}`);
+
+  const budgetRoot = createTmpDir();
+  writeProjectConfig(budgetRoot, { models: { profile: 'budget' } });
+  result = runInDir('resolve-model fixme-plan-readiness --runtime claude', budgetRoot);
+  assert(result.ok, `budget readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === 'sonnet', `budget readiness model should be sonnet, got ${result.data.model}`);
+  assert(result.data.reasoning_effort === 'xhigh', `budget readiness should keep xhigh reasoning, got ${result.data.reasoning_effort}`);
+});
 
 test('resolve-model: no config returns opus/quality/default', () => {
   const dir = createTmpDir();
@@ -8000,6 +8066,152 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
 });
 
+test('review validate-plan-readiness validates route consistency and camelCase JSON', () => {
+  const validOutput = [
+    '## Plan Readiness Triage',
+    '',
+    '**Summary**: Plan is concrete, complete, and low risk.',
+    '',
+    '---',
+    'READINESS_RESULT: EXECUTE',
+    'SUMMARY: Plan is concrete, complete, and low risk.',
+    'BLOCKING_FINDING_COUNT: 0',
+    'QUESTION_COUNT: 0',
+    'RISK_LEVEL: low',
+  ].join('\n');
+  const validPath = writeJsonFixture(createTmpDir(), 'readiness.json', { output: validOutput });
+  const valid = run(`review validate-plan-readiness --data-file "${validPath}"`);
+  assert(valid.ok, `valid readiness output should pass: ${JSON.stringify(valid.data)}`);
+  assert(valid.data.result === 'EXECUTE', `result should be EXECUTE, got ${valid.data.result}`);
+  assert(valid.data.summary === 'Plan is concrete, complete, and low risk.', `summary should be parsed, got ${valid.data.summary}`);
+  assert(valid.data.blockingFindingCount === 0, 'blockingFindingCount should be parsed');
+  assert(valid.data.questionCount === 0, 'questionCount should be parsed');
+  assert(valid.data.riskLevel === 'low', 'riskLevel should be parsed');
+  assert(Array.isArray(valid.data.blockingFindings), 'blockingFindings should be an array');
+  assert(valid.data.blockingFindings.length === 0, 'EXECUTE should return no blocking findings');
+  assertNoSnakeCaseKeys(valid.data, 'readiness validation output');
+
+  const reviseOutput = [
+    '## Plan Readiness Triage',
+    '',
+    '**Summary**: Plan needs one concrete test step before execution.',
+    '',
+    '### Blocking Findings',
+    '',
+    '1. **Missing TDD failure step**',
+    '   Problem: The plan writes implementation before proving the expected test failure.',
+    '   Required plan change: Add a test-first step and an expected failure assertion before the implementation step.',
+    '   Evidence: [plan.md:42](/tmp/plan.md#L42)',
+    '   Affected plan sections: Task 1 Step 1',
+    '',
+    '---',
+    'READINESS_RESULT: REVISE_PLAN',
+    'SUMMARY: Plan needs one concrete test step before execution.',
+    'BLOCKING_FINDING_COUNT: 1',
+    'QUESTION_COUNT: 0',
+    'RISK_LEVEL: low',
+  ].join('\n');
+  const revisePath = writeJsonFixture(createTmpDir(), 'revise-readiness.json', { output: reviseOutput });
+  const revise = run(`review validate-plan-readiness --data-file "${revisePath}"`);
+  assert(revise.ok, `REVISE_PLAN readiness output should pass: ${JSON.stringify(revise.data)}`);
+  assert(revise.data.result === 'REVISE_PLAN', `result should be REVISE_PLAN, got ${revise.data.result}`);
+  assert(revise.data.blockingFindings.length === 1, `one blocking finding should be parsed, got ${JSON.stringify(revise.data.blockingFindings)}`);
+  assert(revise.data.blockingFindings[0].title === 'Missing TDD failure step', `title should be parsed, got ${JSON.stringify(revise.data.blockingFindings[0])}`);
+  assert(revise.data.blockingFindings[0].problem === 'The plan writes implementation before proving the expected test failure.', 'problem should be parsed');
+  assert(revise.data.blockingFindings[0].requiredPlanChange === 'Add a test-first step and an expected failure assertion before the implementation step.', 'requiredPlanChange should be parsed');
+  assert(revise.data.blockingFindings[0].evidence === '[plan.md:42](/tmp/plan.md#L42)', 'evidence should be parsed');
+  assert(revise.data.blockingFindings[0].affectedPlanSections === 'Task 1 Step 1', 'affectedPlanSections should be parsed');
+  assertNoSnakeCaseKeys(revise.data, 'revise readiness validation output');
+
+  const mismatchedReviseOutput = reviseOutput.replace('BLOCKING_FINDING_COUNT: 1', 'BLOCKING_FINDING_COUNT: 2');
+  const mismatchedRevisePath = writeJsonFixture(createTmpDir(), 'bad-revise-count.json', { output: mismatchedReviseOutput });
+  const mismatchedRevise = run(`review validate-plan-readiness --data-file "${mismatchedRevisePath}"`);
+  assert(!mismatchedRevise.ok, 'REVISE_PLAN with mismatched parsed finding count should fail');
+  assert(cliErrorMessage(mismatchedRevise).includes('REVISE_PLAN requires BLOCKING_FINDING_COUNT to match parsed blocking findings'), `error should explain count mismatch, got ${cliErrorMessage(mismatchedRevise)}`);
+
+  const missingFieldReviseOutput = reviseOutput.replace('   Required plan change: Add a test-first step and an expected failure assertion before the implementation step.\n', '');
+  const missingFieldRevisePath = writeJsonFixture(createTmpDir(), 'bad-revise-field.json', { output: missingFieldReviseOutput });
+  const missingFieldRevise = run(`review validate-plan-readiness --data-file "${missingFieldRevisePath}"`);
+  assert(!missingFieldRevise.ok, 'REVISE_PLAN missing a required finding field should fail');
+  assert(cliErrorMessage(missingFieldRevise).includes('requiredPlanChange'), `error should name missing requiredPlanChange, got ${cliErrorMessage(missingFieldRevise)}`);
+
+  const invalidOutput = [
+    '---',
+    'READINESS_RESULT: EXECUTE',
+    'SUMMARY: Bad route.',
+    'BLOCKING_FINDING_COUNT: 1',
+    'QUESTION_COUNT: 0',
+    'RISK_LEVEL: low',
+  ].join('\n');
+  const invalidPath = writeJsonFixture(createTmpDir(), 'bad-readiness.json', { output: invalidOutput });
+  const invalid = run(`review validate-plan-readiness --data-file "${invalidPath}"`);
+  assert(!invalid.ok, 'EXECUTE with blocking findings should fail');
+  assert(cliErrorMessage(invalid).includes('EXECUTE requires BLOCKING_FINDING_COUNT: 0'), `error should explain fail-closed rule, got ${cliErrorMessage(invalid)}`);
+
+  const fullReviewOutput = [
+    '---',
+    'READINESS_RESULT: FULL_PLAN_REVIEW',
+    'SUMMARY: Plan is structurally complete but high risk.',
+    'BLOCKING_FINDING_COUNT: 0',
+    'QUESTION_COUNT: 0',
+    'RISK_LEVEL: high',
+  ].join('\n');
+  const fullReviewPath = writeJsonFixture(createTmpDir(), 'full-review-readiness.json', { output: fullReviewOutput });
+  const fullReview = run(`review validate-plan-readiness --data-file "${fullReviewPath}"`);
+  assert(fullReview.ok, `FULL_PLAN_REVIEW with high risk should pass: ${JSON.stringify(fullReview.data)}`);
+  assert(fullReview.data.result === 'FULL_PLAN_REVIEW', `result should be FULL_PLAN_REVIEW, got ${fullReview.data.result}`);
+});
+
+test('plan readiness skill and agent define compact independent triage contract', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-plan-readiness', 'SKILL.md');
+  const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-plan-readiness.md');
+
+  assert(fs.existsSync(skillPath), 'fixme-plan-readiness skill should exist');
+  assert(fs.existsSync(agentPath), 'fixme-plan-readiness agent should exist');
+
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const agent = fs.readFileSync(agentPath, 'utf8');
+
+  assert(skill.includes('READINESS_RESULT: EXECUTE | REVISE_PLAN | ASK_USER | FULL_PLAN_REVIEW'), 'readiness skill should define the route directive');
+  assert(skill.includes('fail closed'), 'readiness skill should require fail-closed routing');
+  assert(skill.includes('must not rewrite the plan'), 'readiness skill should forbid plan rewriting');
+  assert(skill.includes('task decision list --state <task-state-path> --format markdown'), 'readiness skill should consume task decisions through the task API');
+  assert(skill.includes('Task Coverage'), 'readiness skill should check task coverage');
+  assert(skill.includes('TDD Completeness'), 'readiness skill should check TDD completeness');
+  assert(skill.includes('Full Plan Review Escalation'), 'readiness skill should define full review escalation');
+  assert(skill.includes('Required plan change'), 'readiness skill should structure findings for plan revision');
+  assert(skill.includes('Affected plan sections'), 'readiness skill should identify sections the planner must revise');
+
+  assert(agent.includes('name: fixme-plan-readiness'), 'agent frontmatter should use the readiness name');
+  assert(agent.includes('tools: Read, Bash, Grep, Glob'), 'agent should be read-only');
+  assert(agent.includes('- fixme-plan-readiness'), 'agent should preload readiness skill');
+  assert(agent.includes('- fixme-howto-present-decisions'), 'agent should preload decision presentation');
+  assert(agent.includes('You are a fixme plan readiness checker'), 'agent role should identify readiness checker');
+  assert(agent.includes('Never modify files'), 'agent should forbid file modifications');
+});
+
+test('fixme-task skill routes plan readiness before optional full plan review', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const normalizedSkill = skill.replace(/\s+/g, ' ').trim();
+  const includesNormalized = expected => normalizedSkill.includes(expected.replace(/\s+/g, ' ').trim());
+  const allowlistMatch = skill.match(/## Orchestrator Tool Allowlist[\s\S]*?Any Bash command with a literal `\.fixme\/` argument is forbidden\./);
+
+  assert(skill.includes('fixme-plan-readiness'), 'fixme-task should dispatch the plan readiness checker');
+  assert(skill.includes('READINESS_RESULT: EXECUTE | REVISE_PLAN | ASK_USER | FULL_PLAN_REVIEW'), 'fixme-task should document readiness routes');
+  assert(allowlistMatch, 'fixme-task should have an extractable orchestrator allowlist section');
+  assert(allowlistMatch[0].includes('review validate-plan-readiness --data-file <readiness-validation.json>'), 'fixme-task Bash allowlist should permit readiness validation');
+  assert(skill.includes('review validate-plan-readiness --data-file <readiness-validation.json>'), 'fixme-task should validate readiness output through the CLI helper');
+  assert(skill.includes('READINESS_RESULT: EXECUTE` marks the full plan review steps completed as skipped by readiness'), 'EXECUTE should skip full plan review only through an explicit readiness route');
+  assert(skill.includes('READINESS_RESULT: FULL_PLAN_REVIEW` advances to `fixme-review-plan`'), 'FULL_PLAN_REVIEW should preserve full plan review escalation');
+  assert(skill.includes('READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode'), 'REVISE_PLAN should use the writer readiness-revision contract');
+  assert(skill.includes('readiness blocking findings are not handler-classified FIX items'), 'fixme-task should not pass readiness findings as handler output');
+  assert(skill.includes('READINESS_RESULT: ASK_USER` stores the readiness decision prompt through `lifecycle attention open`'), 'ASK_USER should use durable task-owned attention');
+  assert(includesNormalized('Step 2 [plan/readiness] Dispatch fixme-plan-readiness'), 'default manifest should include readiness before full plan review');
+  assert(includesNormalized('Step 3 [plan/readiness] Route on READINESS_RESULT'), 'default manifest should include readiness route');
+  assert(includesNormalized('Step 4 [plan/review] Dispatch fixme-review-plan'), 'default manifest should keep full plan review after readiness');
+});
+
 test('source skills document prepare-child handoff and safe JSON contracts', () => {
   const prSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-pr-comments/SKILL.md'), 'utf8');
   assert(prSkill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'PR comments should use prepare-child data-file handoff');
@@ -8253,6 +8465,17 @@ test('task-bound plan/review/handler readers consume decisions via task decision
 test('task-bound spec-writer readers consume decisions via task decision list', () => {
   assertTaskBoundDecisionReader('fixme-write-product-spec', 'Do not write `<fixme-dir>/decisions.md`');
   assertTaskBoundDecisionReader('fixme-write-technical-spec', 'Do not write `<fixme-dir>/decisions.md`');
+});
+
+test('fixme-write-plan accepts readiness-driven plan revision inputs distinctly from handler fixes', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-write-plan', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('### Readiness-Driven Plan Revision Mode'), 'write-plan should define readiness-driven revision mode');
+  assert(skill.includes('READINESS_RESULT: REVISE_PLAN'), 'write-plan should name the readiness revision trigger');
+  assert(skill.includes('readiness blocking findings'), 'write-plan should accept readiness blocking findings');
+  assert(skill.includes('Do not treat readiness findings as handler-classified FIX items.'), 'write-plan should keep readiness input distinct from handler output');
+  assert(skill.includes('title, required plan change, evidence file references, and affected plan sections'), 'readiness findings should have required fields');
 });
 
 test('every task-bound reader names task decision list and the markdown field on its task-bound path', () => {
@@ -9177,6 +9400,30 @@ test('README, CLAUDE, config schema, and data flow document review level', () =>
 
   assert(dataFlow.includes('`full` uses `product-spec`, `technical-spec`, `plan`, `implement`, and `verify`'), 'data-flow should document final full feature lifecycle');
   assert(!dataFlow.includes('Standard `full` uses `investigate`'), 'data-flow must not describe full as the bugfix lifecycle');
+});
+
+test('README, CLAUDE, config schema, and fixme-config document plan readiness triage', () => {
+  const readme = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
+  const configSchema = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'references', 'config-schema.md'), 'utf8');
+  const configSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-config', 'SKILL.md'), 'utf8');
+  const toolsSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-tools', 'SKILL.md'), 'utf8');
+
+  for (const doc of [readme, claude, configSchema, configSkill]) {
+    assert(doc.includes('fixme-plan-readiness'), 'doc should mention the readiness checker skill');
+    assert(doc.includes('full plan review'), 'doc should preserve full plan review escalation language');
+  }
+
+  for (const configDoc of [readme, configSchema, configSkill]) {
+    assert(configDoc.includes('"readiness": "fixme-plan-readiness"'), 'config-facing docs should show the readiness config key');
+  }
+
+  assert(readme.includes('plan -> readiness -> execute -> code review'), 'README quick start should describe the lean standard path');
+  assert(readme.includes('Review gates catch what confidence blinds you to. Routine standard runs use readiness before execution, and high-risk plans escalate to full plan review.'), 'README design principle should describe readiness plus escalation');
+  assert(claude.includes('| fixme-plan-readiness | Plan readiness checker | Read-only, compact route decision | opus | xhigh | xhigh |'), 'CLAUDE agent table should include readiness checker');
+  assert(claude.includes('fixme-plan-readiness/   # Compact independent plan readiness triage'), 'CLAUDE skill layout should include readiness skill');
+  assert(configSchema.includes('| `review.readiness` | string | No | - | Optional compact readiness checker dispatched before `review.skills`. |'), 'config schema should document review.readiness');
+  assert(toolsSkill.includes('Validate compact plan-readiness routing blocks'), 'fixme-tools skill docs should mention readiness validation');
 });
 
 test('fixme reviewer and handler agents preload importance rubric', () => {

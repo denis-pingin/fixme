@@ -523,6 +523,7 @@ Review levels use `strict | standard | lenient | fast-track | critical`. The top
        "name": "plan",
        "skills": ["fixme-write-plan"],
        "review": {
+         "readiness": "fixme-plan-readiness",
          "skills": ["fixme-review-plan", "fixme-handle-plan-review"],
          "maxCycles": 3
        }
@@ -964,6 +965,7 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '<json-object>'` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data '<json-object>'` (after each dispatched agent returns)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <readiness-validation.json>` (installed Codex skills use the `.codex` tool path)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data '<json-object>'` (parent-driven runs only)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
@@ -983,13 +985,18 @@ Before dispatching ANY agent, expand the full pipeline into a flat, numbered dis
 Always build the manifest for ALL phases in the pipeline, regardless of entry point. For each phase, add entries in this order:
 
 1. One dispatch entry per skill in `phase.skills`
-2. If `phase.review` exists and `review.enabled !== false`:
-   a. One dispatch entry per skill in `phase.review.skills` (reviewer first, then handler)
-   b. One routing entry with explicit jump targets
+2. If `phase.review.readiness` exists and review is enabled:
+   a. One `[phase-name/readiness]` Dispatch <readiness-skill> entry
+   b. One `[phase-name/readiness]` Route on READINESS_RESULT entry
+3. If `phase.review.skills` exists and review is enabled:
+   a. One `[phase-name/review]` dispatch entry per skill in `phase.review.skills`
+   b. One `[phase-name/route]` routing entry using `HANDLER_RESULT`
+
+Readiness routes are manifest-controlled jumps. Marking full plan review steps completed as skipped by readiness after `READINESS_RESULT: EXECUTE` is an explicit manifest route, not an inline bypass.
 
 After the last phase: add a "Run Summary" entry.
 
-Tag each entry with its phase name and step type: `[phase-name]` for execute steps, `[phase-name/review]` for review steps, `[phase-name/route]` for routing steps.
+Tag each entry with its phase name and step type: `[phase-name]` for execute steps, `[phase-name/readiness]` for readiness steps, `[phase-name/review]` for review steps, and `[phase-name/route]` for routing steps.
 
 **Entry point marking:** After building the full manifest, apply the entry point. Mark all steps before the entry point as `completed`. Set the entry point step to `in_progress`. All subsequent steps remain `pending`. This ensures the full manifest exists for cross-phase backward jumps, while execution starts from the correct point.
 
@@ -999,14 +1006,16 @@ For the hardcoded standard pipeline (no ticket):
 
 ```
 Step 1  [plan]              Dispatch fixme-write-plan
-Step 2  [plan/review]       Dispatch fixme-review-plan
-Step 3  [plan/review]       Dispatch fixme-handle-plan-review
-Step 4  [plan/route]        Route: CLEAN->5, PLAN_REQUIRED->1 (max 3), FOLLOWUP_ONLY->5, HAS_ASK_USER->decision input then re-run 3
-Step 5  [implement]         Dispatch fixme-execute-plan
-Step 6  [implement/review]  Dispatch fixme-review-code
-Step 7  [implement/review]  Dispatch fixme-handle-code-review
-Step 8  [implement/route]   Route: CLEAN->9, PLAN_REQUIRED->1 (outer, max workflows.<pipeline>.outerMaxCycles), IMPLEMENT_ONLY->5 repair mode, HAS_ASK_USER->decision input then re-run 7
-Step 9  [done]              Run Summary
+Step 2  [plan/readiness]    Dispatch fixme-plan-readiness
+Step 3  [plan/readiness]    Route on READINESS_RESULT: EXECUTE->7, REVISE_PLAN->1 (max 3), ASK_USER->decision input then re-run 2, FULL_PLAN_REVIEW->4
+Step 4  [plan/review]       Dispatch fixme-review-plan
+Step 5  [plan/review]       Dispatch fixme-handle-plan-review
+Step 6  [plan/route]        Route: CLEAN->7, PLAN_REQUIRED->1 (max 3), FOLLOWUP_ONLY->7, HAS_ASK_USER->decision input then re-run 5
+Step 7  [implement]         Dispatch fixme-execute-plan
+Step 8  [implement/review]  Dispatch fixme-review-code
+Step 9  [implement/review]  Dispatch fixme-handle-code-review
+Step 10 [implement/route]   Route: CLEAN->11, PLAN_REQUIRED->1 (outer, max workflows.<pipeline>.outerMaxCycles), IMPLEMENT_ONLY->7 repair mode, HAS_ASK_USER->decision input then re-run 9
+Step 11 [done]              Run Summary
 ```
 
 The manifest always contains ALL steps. When entering mid-pipeline (e.g., plan already exists), pre-entry steps are marked `completed` so backward jumps have valid targets. Example: entering at implement phase marks steps 1-4 as `completed` and step 5 as `in_progress`.
@@ -1362,8 +1371,24 @@ Custom skills and standard skills also receive the `<liveness>` block. They also
 - Fresh mode (first invocation): original task description
 - PR comment task mode: original task description + only `ROUTE: CURRENT_PR_FIX` groups + their `VERDICT`, `SEVERITY`, `COMPLEXITY`, `CONFIDENCE`, `ROUTE`, and `ROUTE_SCOPE` metadata + separate non-dispatch summary of `FOLLOWUP_ONLY` and `INFO` groups
 - Plan revision mode (review FIX loop): original task + path to previous plan + current code map path if available + current review context packet + FIX items from handler + path to decision log
+- Readiness revision mode: when readiness returns `READINESS_RESULT: REVISE_PLAN`, re-dispatch `fixme-write-plan` in readiness-driven plan revision mode with the original task, previous plan path, current code map path, current review context packet, full readiness output, parsed readiness blocking findings, and decision log path. The readiness blocking findings are not handler-classified FIX items.
 - Code revision mode (PLAN_REQUIRED outer loop from later phase): original task + path to previous plan + current code map path if available + current review context packet + execution results summary + PLAN_REQUIRED FIX items from handler + path to decision log
 - Must output `PLAN_PATH: <absolute path>` and `CODE_MAP_PATH: <absolute path>`; capture them as `planPath` and `codeMapPath`
+
+**fixme-plan-readiness** (in `plan` phase readiness):
+- Built-in read-only readiness checker, not a full reviewer and not a handler.
+- Inputs: original task, path to plan, path to task code map, current review context packet, path to decision log if it exists, and project verification command summary.
+- Must output:
+
+  ```text
+  READINESS_RESULT: EXECUTE | REVISE_PLAN | ASK_USER | FULL_PLAN_REVIEW
+  SUMMARY: <one sentence>
+  BLOCKING_FINDING_COUNT: <number>
+  QUESTION_COUNT: <number>
+  RISK_LEVEL: low | high
+  ```
+
+- `READINESS_RESULT: REVISE_PLAN` uses the writer readiness-revision contract above. The readiness blocking findings are not handler-classified FIX items.
 
 **fixme-write-product-spec** (when writing a product specification):
 - Fresh mode: original product request, ticket, or source material
@@ -1515,6 +1540,7 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
 | Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
 | Plan writer | `PLAN_PATH: <absolute path>` + `CODE_MAP_PATH: <absolute path>` | End of fixme-write-plan output |
+| Plan readiness checker (`fixme-plan-readiness`) | `READINESS_RESULT: EXECUTE|REVISE_PLAN|ASK_USER|FULL_PLAN_REVIEW` + `BLOCKING_FINDING_COUNT: <number>` + `QUESTION_COUNT: <number>` + `RISK_LEVEL: low|high` | End of fixme-plan-readiness output |
 | Review handler (spec/plan/code) | `HANDLER_RESULT: CLEAN\|HAS_BLOCKING_FIX\|HAS_NONBLOCKING_FINDINGS\|HAS_ASK_USER` | End of fixme-handle-spec-review, fixme-handle-plan-review, or fixme-handle-code-review output |
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
@@ -1569,6 +1595,21 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 2. Mark step `completed`, set next step to `in_progress`
 3. Pass the findings and current review context packet as input to the handler dispatch (the next manifest step)
 
+**Readiness steps** (`[phase/readiness]` dispatch and route entries):
+
+1. Validate the raw readiness footer exists.
+2. Write `{ "output": "<full readiness output>" }` to a temporary absolute JSON file.
+3. Run:
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <readiness-validation.json>
+   ```
+
+   Installed Codex skills use the `.codex` tool path.
+4. If validation fails, do not route from prose. Re-dispatch readiness once with the validation error and the same inputs. A CLI validation failure does not create a new logical dispatch attempt. Fix the payload and retry with the same idempotency key. If it fails again, use the existing Agent Escalation path.
+5. Capture the returned `summary`, counts, risk level, route, and `blockingFindings` array for the review context packet.
+6. Mark the readiness dispatch step `completed`, set the readiness route step to `in_progress`, and follow Readiness routing steps below.
+
 **Handler steps** (`[phase/review]` entries - handlers like fixme-handle-spec-review, fixme-handle-plan-review, fixme-handle-code-review):
 
 1. Validate the routing directive. All review handlers use the same contract: `HANDLER_RESULT: CLEAN|HAS_BLOCKING_FIX|HAS_NONBLOCKING_FINDINGS|HAS_ASK_USER`.
@@ -1598,6 +1639,25 @@ Every agent dispatch has an expected routing directive in its output. Before pro
    - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.
    - **HAS_ASK_USER**: batch questions for user input (see ASK_USER Batching). In a direct user-facing run, present the Review Classification block and wait normally. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the complete Review Classification block with `lifecycle attention open`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. After the answer is available, persist answers with `task decision append`. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 6. Do NOT apply fixes yourself. Do NOT proceed past blocking fixes without dispatching the required producer. Follow-up-only items may proceed without a producer dispatch.
+
+**Readiness routing steps** (`[phase/readiness]` route entries):
+
+- `READINESS_RESULT: EXECUTE` marks the full plan review steps completed as skipped by readiness, marks the readiness route completed, and advances to `fixme-execute-plan`.
+- `READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode, increments the plan phase review counter, resets the plan writer, readiness, and any pending full plan review steps to pending, and passes the full readiness output plus the validator-returned `blockingFindings` array using the readiness-driven revision contract. The readiness blocking findings are not handler-classified FIX items.
+- `READINESS_RESULT: ASK_USER` stores the readiness decision prompt through `lifecycle attention open`, persists answers through `task decision append`, and re-dispatches `fixme-plan-readiness` with the updated decision log. Do not mark the readiness route completed until readiness returns a non-ASK_USER route.
+- `READINESS_RESULT: FULL_PLAN_REVIEW` advances to `fixme-review-plan` without incrementing loop counters.
+
+Readiness `REVISE_PLAN` counts against the plan phase `review.maxCycles`. `FULL_PLAN_REVIEW` does not count as a failed readiness cycle.
+
+For non-decision readiness routes, print this compact visible status block:
+
+```markdown
+## Plan Readiness
+
+The plan readiness check {approved execution | requested plan revision | escalated to full plan review}: {summary}
+```
+
+This block must not include internal route tokens such as `READINESS_RESULT`, `EXECUTE`, `REVISE_PLAN`, `ASK_USER`, or `FULL_PLAN_REVIEW`. Decision routes reuse the decision cards produced by the readiness checker and the same durable attention path as review handler decisions.
 
 **Run Summary step** (`[done]` entry, **standalone mode only** - does not exist in parent-driven mode):
 
