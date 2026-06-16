@@ -873,12 +873,133 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
 ```
 
+Do not call lifecycle `--help` during normal execution. This section is the command contract; build this payload and call the documented command directly.
+
 The payload must use this shape. Keep group ids as JSON values, never object keys:
 
-`child.handoff.taskSaveData` is the saved task handoff. `child.handoff.payload` is the heavy sidecar payload registered as a `child-handoff-payload` preparation artifact. `child.promptInputs` contains only lightweight summary/count/reference fields.
+`child.handoff.taskSaveData` is the saved task handoff. `child.handoff.payload` is the authoritative heavy sidecar payload registered as a `child-handoff-payload` preparation artifact. `child.handoff.payload.routedFixGroups` MUST contain full routed group objects, not group IDs. Each group must carry `groupId`, `sourceIds`, `title`, and the actionable fix detail such as `problem`, `requiredBehavior`, `instructions`, `evidence`, and thread/comment metadata. `child.promptInputs` contains only lightweight summary/count/reference fields.
+
+For `fixme-pr-comments`, `await.ledger` MUST be `{}` at launch. Do not put `currentPrFixGroups`, `mustResolveThreadIds`, or any other ad hoc routing keys under `await.ledger`; those values belong in `child.handoff.payload`.
 
 ```json
-{"parent":{"parentSkill":"fixme-pr-comments","idempotencyKey":"<stable-parent-key>","lookupInput":{"pullRequestRef":{"host":"github.com","owner":"owner","repo":"repo","number":123},"normalizedFlags":{"pause":false,"skipCommit":false,"skipPush":false,"skipResolve":false,"skipResponse":false}},"payload":{"flags":{},"reviewItems":{"currentPrFix":[]},"analysis":{},"routedGroups":[{"groupId":"G1","route":"currentPrFix","sourceIds":["G1"],"title":"Fix reviewed behavior"}]}},"child":{"idempotencyKey":"<stable-child-key>","agentName":"fixme-task","runtime":"codex","transport":"agent","parentInvocationId":"<usageInvocationId>","pipelineRunId":"<pipelineRunId>","parentStatusId":"<parentStatusId>","handoff":{"mode":"createOrReuse","taskSaveData":{"title":"Address current PR review fixes","slug":"pr-comments-current-fixes","taskGoal":"Apply the current PR review fixes from the durable child handoff payload.","agreedApproach":["Read the child-handoff-payload preparation artifact before planning."],"userVisibleBehavior":["The child task resumes from a saved task reference."],"scope":{"inScope":["current PR review fixes from the child handoff payload"],"outOfScope":["unrelated PR changes"]},"laterPlanningNotes":["Use the sidecar payload as the authoritative PR-comment scope."],"pipelineResolution":{"pipeline":"standard","source":"userProseIntent","evidence":"Parent PR-comments workflow selected standard before save-first child handoff.","reason":"The parent-provided PR-comment handoff is the user-visible intent for this saved child task."},"source":"fixme-pr-comments","tags":["fixme-pr-comments","parent-driven"]},"payload":{"source":"fixme-pr-comments","routedFixGroups":[],"allowedUnresolvedThreadIds":[],"mustResolveThreadIds":[]}},"promptInputs":{"summary":"Current PR review fixes","routedFixGroupsCount":0,"mustResolveThreadCount":0}},"parentContinuation":{"resumeStep":"awaitFixmeTaskResult"},"await":{"fixBatches":[],"activeBatchIndex":0,"ledger":{}},"recoverStaleParent":false}
+{
+  "parent": {
+    "parentSkill": "fixme-pr-comments",
+    "idempotencyKey": "<stable-parent-key>",
+    "lookupInput": {
+      "pullRequestRef": {
+        "host": "github.com",
+        "owner": "owner",
+        "repo": "repo",
+        "number": 123
+      },
+      "normalizedFlags": {
+        "pause": false,
+        "skipCommit": false,
+        "skipPush": false,
+        "skipResolve": false,
+        "skipResponse": false
+      }
+    },
+    "payload": {
+      "flags": {},
+      "reviewItems": {
+        "currentPrFix": []
+      },
+      "analysis": {},
+      "routedGroups": [
+        {
+          "groupId": "G1",
+          "route": "currentPrFix",
+          "sourceIds": ["PRRT_example"],
+          "title": "Fix reviewed behavior"
+        }
+      ]
+    }
+  },
+  "child": {
+    "idempotencyKey": "<stable-child-key>",
+    "agentName": "fixme-task",
+    "runtime": "codex",
+    "transport": "agent",
+    "parentInvocationId": "<usageInvocationId>",
+    "pipelineRunId": "<pipelineRunId>",
+    "parentStatusId": "<parentStatusId>",
+    "handoff": {
+      "mode": "createOrReuse",
+      "taskSaveData": {
+        "title": "Address current PR review fixes",
+        "slug": "pr-comments-current-fixes",
+        "taskGoal": "Apply the current PR review fixes from the durable child handoff payload.",
+        "agreedApproach": ["Read the child-handoff-payload preparation artifact before planning."],
+        "userVisibleBehavior": ["The child task resumes from a saved task reference."],
+        "scope": {
+          "inScope": ["current PR review fixes from the child handoff payload"],
+          "outOfScope": ["unrelated PR changes"]
+        },
+        "laterPlanningNotes": ["Use the sidecar payload as the authoritative PR-comment scope."],
+        "pipelineResolution": {
+          "pipeline": "standard",
+          "source": "userProseIntent",
+          "evidence": "Parent PR-comments workflow selected standard before save-first child handoff.",
+          "reason": "The parent-provided PR-comment handoff is the user-visible intent for this saved child task."
+        },
+        "source": "fixme-pr-comments",
+        "tags": ["fixme-pr-comments", "parent-driven"]
+      },
+      "payload": {
+        "source": "fixme-pr-comments",
+        "routedFixGroups": [
+          {
+            "groupId": "G1",
+            "route": "currentPrFix",
+            "sourceIds": ["PRRT_example"],
+            "title": "Fix reviewed behavior",
+            "problem": "The implementation does not satisfy the current PR review thread.",
+            "requiredBehavior": ["Apply the requested current PR review fix."],
+            "instructions": "Use the fetched PR review item evidence and preserve unrelated behavior.",
+            "evidence": [
+              {
+                "path": "apps/example.ts",
+                "line": 42,
+                "summary": "Reviewer requested the behavior change on this line."
+              }
+            ],
+            "thread": {
+              "threadId": "PRRT_example",
+              "commentIds": ["PRRC_example"],
+              "source": "pullRequestReviewThread",
+              "verdict": "currentPrFix",
+              "authorType": "human"
+            }
+          }
+        ],
+        "allowedUnresolvedThreadIds": [],
+        "mustResolveThreadIds": ["PRRT_example"]
+      }
+    },
+    "promptInputs": {
+      "summary": "Current PR review fixes",
+      "routedFixGroupsCount": 1,
+      "mustResolveThreadCount": 1,
+      "allowedUnresolvedThreadCount": 0
+    }
+  },
+  "parentContinuation": {
+    "resumeStep": "awaitFixmeTaskResult"
+  },
+  "await": {
+    "fixBatches": [
+      {
+        "id": "batch-0",
+        "summary": "current PR review fixes"
+      }
+    ],
+    "activeBatchIndex": 0,
+    "ledger": {}
+  },
+  "recoverStaleParent": true
+}
 ```
 
 Render the child prompt from the returned `promptBlocks`, plus `usageContext`; in the helper response those values live under `launch.promptBlocks` and `launch.usageContext`. Do not reconstruct these blocks manually from project, liveness, or fix-item fields. Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`; `lifecycle parent prepare-child` performs that persistence before it returns. The child prompt must include the returned blocks in this shape and order:

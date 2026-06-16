@@ -9436,11 +9436,54 @@ function validatePrepareChildData(data) {
   if (data.parent.parentSkill === 'fixme-pr-comments' && data.child.runtime === 'codex' && data.child.transport !== 'agent') {
     lifecycleError('invalidInput', 'Codex fixme-pr-comments prepare-child must use child.transport agent');
   }
+  if (data.parent.parentSkill === 'fixme-pr-comments') {
+    for (const field of ['parentInvocationId', 'pipelineRunId', 'parentStatusId']) {
+      if (!isNonEmptyString(data.child[field])) lifecycleError('missingRequiredField', `child.${field} is required`);
+    }
+  }
   if (!isPlainObject(data.child.handoff) || !isPlainObject(data.child.handoff.taskSaveData) || !isPlainObject(data.child.handoff.payload)) {
     lifecycleError('missingRequiredField', 'child.handoff.taskSaveData and child.handoff.payload are required');
   }
   if (!isPlainObject(data.child.promptInputs)) {
     lifecycleError('missingRequiredField', 'child.promptInputs is required');
+  }
+  validatePrepareChildAwaitLedger(data.await.ledger);
+  validatePrepareChildHandoffPayload(data);
+}
+
+function validatePrepareChildAwaitLedger(ledger) {
+  if (ledger === undefined) return;
+  if (!isPlainObject(ledger)) lifecycleError('invalidInput', 'await.ledger must be a JSON object');
+  for (const slot of Object.keys(ledger)) {
+    if (!PARENT_LEDGER_SLOTS.has(slot)) {
+      lifecycleError('invalidInput', `Unsupported ledger slot: ${slot}`);
+    }
+  }
+}
+
+function hasNonEmptyStringItem(value) {
+  return Array.isArray(value) && value.some(item => isNonEmptyString(item));
+}
+
+function validatePrepareChildHandoffPayload(data) {
+  if (data.parent.parentSkill !== 'fixme-pr-comments') return;
+  const payload = data.child.handoff.payload;
+  if (payload.routedFixGroups !== undefined && !Array.isArray(payload.routedFixGroups)) {
+    lifecycleError('invalidInput', 'child.handoff.payload.routedFixGroups must be an array of objects with groupId values');
+  }
+  for (const [index, group] of (payload.routedFixGroups || []).entries()) {
+    if (!isPlainObject(group)) lifecycleError('invalidInput', `child.handoff.payload.routedFixGroups[${index}] must be an object`);
+    if (!isNonEmptyString(group.groupId)) lifecycleError('missingRequiredField', `child.handoff.payload.routedFixGroups[${index}].groupId is required`);
+    if (!Array.isArray(group.sourceIds)) lifecycleError('missingRequiredField', `child.handoff.payload.routedFixGroups[${index}].sourceIds is required`);
+    if (!isNonEmptyString(group.title)) lifecycleError('missingRequiredField', `child.handoff.payload.routedFixGroups[${index}].title is required`);
+    if (!isNonEmptyString(group.instructions) && !hasNonEmptyStringItem(group.requiredBehavior) && !isNonEmptyString(group.recommendedAction)) {
+      lifecycleError('missingRequiredField', `child.handoff.payload.routedFixGroups[${index}] must include instructions, requiredBehavior, or recommendedAction`);
+    }
+  }
+  for (const field of ['allowedUnresolvedThreadIds', 'mustResolveThreadIds']) {
+    if (payload[field] !== undefined && !Array.isArray(payload[field])) {
+      lifecycleError('invalidInput', `child.handoff.payload.${field} must be an array`);
+    }
   }
 }
 

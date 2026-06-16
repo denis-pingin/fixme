@@ -3864,9 +3864,12 @@ function prepareChildPayload(overrides = {}) {
           routedFixGroups: [
             {
               groupId: 'G1',
+              sourceIds: ['PRRT_example'],
               threadId: 'PRRT_example',
               commentIds: ['PRRC_example'],
               title: 'Fix reviewed behavior',
+              problem: 'The implementation does not satisfy the current PR review thread.',
+              requiredBehavior: ['Apply the requested current PR review fix.'],
               instructions: 'Detailed implementation instructions live only in the child handoff payload sidecar.',
               evidence: [{ path: 'apps/example.ts', line: 42, summary: 'Evidence lives in sidecar payload.' }],
             },
@@ -3879,7 +3882,7 @@ function prepareChildPayload(overrides = {}) {
     },
     parentContinuation: { resumeStep: 'awaitFixmeTaskResult' },
     await: { fixBatches: [{ id: 'batch-0', summary: 'example' }], activeBatchIndex: 0, ledger: {} },
-    recoverStaleParent: false,
+    recoverStaleParent: true,
     ...overrides.extra,
   };
 }
@@ -3921,6 +3924,54 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.dispatchId === first.data.dispatchId, 'replay reuses dispatch');
   assert(replay.data.statusId === first.data.statusId, 'replay reuses child run status');
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
+});
+
+test('parent prepare-child rejects malformed PR-comments launch payloads before state mutation', () => {
+  const fixmeDir = makeFixmeDir();
+  const assertNoCreatedState = (message) => {
+    assert(!fs.existsSync(path.join(fixmeDir, 'parents')) || fs.readdirSync(path.join(fixmeDir, 'parents')).filter(name => name !== 'index').length === 0, `${message}: no parent state created`);
+    assert(!fs.existsSync(path.join(fixmeDir, 'tasks')) || fs.readdirSync(path.join(fixmeDir, 'tasks')).length === 0, `${message}: no child task state created`);
+  };
+
+  const groupIdsOnly = prepareChildPayload({ suffix: 'invalid-child-group-ids' });
+  groupIdsOnly.child.handoff.payload.routedFixGroups = ['G1'];
+  const groupIdsOnlyPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-invalid-child-group-ids.json', groupIdsOnly);
+  const groupIdsOnlyResult = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${groupIdsOnlyPath}"`);
+  assert(!groupIdsOnlyResult.ok, 'child handoff group ids should fail');
+  assert(groupIdsOnlyResult.data.error.code === 'invalidInput', `child handoff group ids should be invalidInput, got ${JSON.stringify(groupIdsOnlyResult.data)}`);
+  assert(groupIdsOnlyResult.data.error.message.includes('child.handoff.payload.routedFixGroups[0] must be an object'), `child handoff group id error should identify object requirement, got ${JSON.stringify(groupIdsOnlyResult.data)}`);
+  assertNoCreatedState('group ids only');
+
+  const emptyActionableDetail = prepareChildPayload({ suffix: 'empty-child-actionable-detail' });
+  const emptyDetailGroup = emptyActionableDetail.child.handoff.payload.routedFixGroups[0];
+  delete emptyDetailGroup.instructions;
+  delete emptyDetailGroup.recommendedAction;
+  emptyDetailGroup.requiredBehavior = [];
+  const emptyActionableDetailPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-empty-actionable-detail.json', emptyActionableDetail);
+  const emptyActionableDetailResult = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${emptyActionableDetailPath}"`);
+  assert(!emptyActionableDetailResult.ok, 'child handoff group with empty actionable detail should fail');
+  assert(emptyActionableDetailResult.data.error.code === 'missingRequiredField', `empty actionable detail should be missingRequiredField, got ${JSON.stringify(emptyActionableDetailResult.data)}`);
+  assert(emptyActionableDetailResult.data.error.message.includes('must include instructions, requiredBehavior, or recommendedAction'), `empty actionable detail error should identify actionable detail requirement, got ${JSON.stringify(emptyActionableDetailResult.data)}`);
+  assertNoCreatedState('empty actionable detail');
+
+  const missingPipelineRunId = prepareChildPayload({ suffix: 'missing-pipeline-run-id' });
+  delete missingPipelineRunId.child.pipelineRunId;
+  const missingPipelineRunIdPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-missing-pipeline-run-id.json', missingPipelineRunId);
+  const missingPipelineRunIdResult = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${missingPipelineRunIdPath}"`);
+  assert(!missingPipelineRunIdResult.ok, 'PR-comments child pipelineRunId should be required');
+  assert(missingPipelineRunIdResult.data.error.code === 'missingRequiredField', `missing pipelineRunId should be missingRequiredField, got ${JSON.stringify(missingPipelineRunIdResult.data)}`);
+  assert(missingPipelineRunIdResult.data.error.message.includes('child.pipelineRunId is required'), `missing pipelineRunId error should identify child.pipelineRunId, got ${JSON.stringify(missingPipelineRunIdResult.data)}`);
+  assertNoCreatedState('missing pipelineRunId');
+
+  const unsupportedLedgerSlots = prepareChildPayload({ suffix: 'unsupported-await-ledger' });
+  unsupportedLedgerSlots.await.ledger.currentPrFixGroups = [{ groupId: 'G1' }];
+  unsupportedLedgerSlots.await.ledger.mustResolveThreadIds = ['PRRT_example'];
+  const unsupportedLedgerSlotsPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-unsupported-await-ledger.json', unsupportedLedgerSlots);
+  const unsupportedLedgerSlotsResult = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${unsupportedLedgerSlotsPath}"`);
+  assert(!unsupportedLedgerSlotsResult.ok, 'unsupported await ledger slots should fail');
+  assert(unsupportedLedgerSlotsResult.data.error.code === 'invalidInput', `unsupported await ledger slot should be invalidInput, got ${JSON.stringify(unsupportedLedgerSlotsResult.data)}`);
+  assert(unsupportedLedgerSlotsResult.data.error.message.includes('Unsupported ledger slot: currentPrFixGroups'), `unsupported ledger error should identify the bad slot, got ${JSON.stringify(unsupportedLedgerSlotsResult.data)}`);
+  assertNoCreatedState('unsupported ledger slots');
 });
 
 test('parent prepare-child sanitizes heavy child prompt inputs before launch', () => {
@@ -7882,7 +7933,19 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
   assert(prSkill.includes('child.handoff.taskSaveData'), 'PR comments should document saved task handoff data');
   assert(prSkill.includes('child.handoff.payload'), 'PR comments should document durable sidecar payload');
   assert(prSkill.includes('child-handoff-payload'), 'PR comments should document child handoff payload artifact');
-  assert(prSkill.includes('"routedGroups":[{"groupId":"G1"'), 'PR comments should show group ids as values');
+  assert(prSkill.includes('Do not call lifecycle `--help` during normal execution'), 'PR comments should not probe lifecycle help during normal execution');
+  assert(prSkill.includes('`await.ledger` MUST be `{}` at launch'), 'PR comments should keep prepare-child launch ledger empty');
+  assert(prSkill.includes('Do not put `currentPrFixGroups`, `mustResolveThreadIds`, or any other ad hoc routing keys under `await.ledger`'), 'PR comments should route fix metadata through child handoff payload, not await ledger');
+  assert(prSkill.includes('MUST contain full routed group objects, not group IDs'), 'PR comments should forbid id-only child routedFixGroups');
+  assert(prSkill.includes('"routedGroups": ['), 'PR comments should show group ids as values');
+  assert(prSkill.includes('"routedFixGroups": ['), 'PR comments should document child routedFixGroups');
+  assert(prSkill.includes('"problem": "The implementation does not satisfy the current PR review thread."'), 'PR comments should include problem detail in child handoff groups');
+  assert(prSkill.includes('"requiredBehavior": ["Apply the requested current PR review fix."]'), 'PR comments should include required behavior detail in child handoff groups');
+  assert(prSkill.includes('"pipelineRunId": "<pipelineRunId>"'), 'PR comments should require child pipelineRunId');
+  assert(prSkill.includes('"recoverStaleParent": true'), 'PR comments should enable automatic stale-parent recovery');
+  assert(!prSkill.includes('"recoverStaleParent": false'), 'PR comments should not document disabled stale-parent recovery');
+  assert(!prSkill.includes('"ledger": {"currentPrFixGroups"'), 'PR comments should not put currentPrFixGroups in await ledger JSON');
+  assert(!prSkill.includes('"ledger": {"mustResolveThreadIds"'), 'PR comments should not put mustResolveThreadIds in await ledger JSON');
   const staleNormalDispatchPhrases = [
     'Invoking `Skill("fixme-task", ...)` with the routed `CURRENT_PR_FIX` groups as a text argument',
     'Pass the routed current PR fix groups as text in the `Skill("fixme-task", args=...)` invocation',
