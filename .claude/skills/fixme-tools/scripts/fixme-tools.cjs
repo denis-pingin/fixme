@@ -6942,6 +6942,12 @@ function usageSourcePathFromInvocation(fixmeDir, invocationId) {
 function resolveDispatchUsageSourcePath(fixmeDir, runtime, data) {
   const explicitPath = normalizeUsageSourcePathField(data.usageSourcePath, 'usageSourcePath');
   if (explicitPath) return explicitPath;
+  // A parent session file is parent-scoped. For Codex child agent/background
+  // dispatches it cannot observe the child agent's token counters, so do not
+  // propagate it. The child captures its own runtime source at usage start.
+  if (runtime === 'codex' && (data.transport === 'agent' || data.transport === 'background')) {
+    return null;
+  }
   const parentPath = usageSourcePathFromInvocation(fixmeDir, data.parentInvocationId);
   if (parentPath) return parentPath;
   return explicitUsageSourcePath(runtime, null);

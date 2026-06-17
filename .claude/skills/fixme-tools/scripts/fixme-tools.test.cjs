@@ -3939,7 +3939,7 @@ test('dispatch prepare propagates Codex usage source from parent invocation to n
   const dispatchPayload = {
     idempotencyKey: 'd1-codex-usage-source',
     agentName: 'fixme-review-plan',
-    transport: 'agent',
+    transport: 'inline-skill',
     runtime: 'codex',
     parentInvocationId: parent.data.invocationId,
     pipelineRunId: parent.data.pipelineRunId,
@@ -11966,6 +11966,43 @@ test('prepare-child still blocks recovery over live unconsumed child work', () =
   assert(!repaired.ok, `live unconsumed child work must block recovery, got ${JSON.stringify(repaired.data)}`);
   const stillLive = parentState(fixmeDir, liveCreate.data.parentRunId);
   assert(stillLive.status !== 'failed', `live parent must not be auto-abandoned, got ${JSON.stringify(stillLive.status)}`);
+});
+
+test('Codex agent dispatch does not inherit parent invocation usage source', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-parent-source-no-inherit.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  const parent = runInDirWithEnv(`usage start --skill fixme-task --runtime codex --role orchestrator --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(parent.ok, `parent usage start should succeed, got ${JSON.stringify(parent.data)}`);
+
+  const dispatchEnv = { ...ctx.env, CODEX_THREAD_ID: '', CODEX_SESSION_FILE: '', FIXME_USAGE_SOURCE_PATH: '' };
+  const agentPayload = {
+    idempotencyKey: 'codex-agent-no-inherit', agentName: 'fixme-plan-readiness', transport: 'agent', runtime: 'codex',
+    parentInvocationId: parent.data.invocationId, pipelineRunId: parent.data.pipelineRunId, promptInputs: { phase: 'readiness' },
+  };
+  const agentPrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(agentPayload)}'`, ctx.projectRoot, dispatchEnv);
+  assert(agentPrepared.ok, `codex agent dispatch should succeed, got ${JSON.stringify(agentPrepared.data)}`);
+  assert(agentPrepared.data.usageContext.usageSourcePath === null, `codex agent dispatch must not inherit parent source, got ${JSON.stringify(agentPrepared.data.usageContext)}`);
+
+  const backgroundPayload = { ...agentPayload, idempotencyKey: 'codex-background-no-inherit', transport: 'background' };
+  const backgroundPrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(backgroundPayload)}'`, ctx.projectRoot, dispatchEnv);
+  assert(backgroundPrepared.ok, `codex background dispatch should succeed, got ${JSON.stringify(backgroundPrepared.data)}`);
+  assert(backgroundPrepared.data.usageContext.usageSourcePath === null, `codex background dispatch must not inherit parent source, got ${JSON.stringify(backgroundPrepared.data.usageContext)}`);
+
+  const explicitPayload = { ...agentPayload, idempotencyKey: 'codex-agent-explicit-source', usageSourcePath: sourcePath };
+  const explicitPrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(explicitPayload)}'`, ctx.projectRoot, dispatchEnv);
+  assert(explicitPrepared.ok, `codex agent dispatch with explicit source should succeed, got ${JSON.stringify(explicitPrepared.data)}`);
+  assert(explicitPrepared.data.usageContext.usageSourcePath === sourcePath, `explicit usageSourcePath is still honored, got ${JSON.stringify(explicitPrepared.data.usageContext)}`);
+
+  const inlinePayload = { ...agentPayload, idempotencyKey: 'codex-inline-inherit', transport: 'inline-skill' };
+  const inlinePrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(inlinePayload)}'`, ctx.projectRoot, dispatchEnv);
+  assert(inlinePrepared.ok, `codex inline-skill dispatch should succeed, got ${JSON.stringify(inlinePrepared.data)}`);
+  assert(inlinePrepared.data.usageContext.usageSourcePath === sourcePath, `codex inline-skill dispatch still inherits parent source, got ${JSON.stringify(inlinePrepared.data.usageContext)}`);
 });
 
 test('dispatch prepare exposes structured banner context for producer continuation modes', () => {
