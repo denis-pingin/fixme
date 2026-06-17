@@ -20,7 +20,13 @@ const {
   findFixmeRoot,
   STANDARD_PIPELINES,
   defaultReviewCyclesForPhase,
+  generateCodexAgentToml: _generateCodexAgentToml,
+  getCodexSkillAdapterHeader: _getCodexSkillAdapterHeader,
 } = require(TOOLS_PATH);
+
+function agentMarkdownForTest(name, tools) {
+  return `---\nname: ${name}\ndescription: Test ${name}\ntools: ${tools}\nskills:\n  - ${name}\neffort: high\n---\n\n<role>\nRead ~/.claude/skills/${name}/SKILL.md before working.\n</role>\n`;
+}
 
 let passed = 0;
 let failed = 0;
@@ -12193,6 +12199,64 @@ test('compact report line near zero total shows not-included count', () => {
   const reportLine = finishedSecond.data.reportLine;
   assert(typeof reportLine === 'string', `finish should return a reportLine, got ${JSON.stringify(finishedSecond.data)}`);
   assert(/not included: 2 invocation\(s\)/.test(reportLine), `compact line should show not-included count, got ${reportLine}`);
+});
+
+test('generated Codex adapter is role-aware', () => {
+  const PRODUCER_PROHIBITION = 'must not spawn, resume, message, wait on, or close agents';
+  const DISPATCH_RECIPES = ['spawn_agent', 'resume_agent', 'send_input', 'wait_agent', 'close_agent'];
+
+  // Agent TOML path.
+  const taskToml = _generateCodexAgentToml('fixme-task', agentMarkdownForTest('fixme-task', 'Agent, Read, Write, Bash'));
+  assert(taskToml.includes('spawn_agent'), 'fixme-task TOML keeps spawn_agent');
+  assert(taskToml.includes('resume_agent'), 'fixme-task TOML keeps resume_agent');
+  assert(taskToml.includes('close_agent'), 'fixme-task TOML keeps close_agent');
+
+  const planToml = _generateCodexAgentToml('fixme-write-plan', agentMarkdownForTest('fixme-write-plan', 'Read, Write, Bash, Grep, Glob'));
+  for (const recipe of DISPATCH_RECIPES) {
+    assert(!planToml.includes(recipe), `fixme-write-plan TOML omits ${recipe}`);
+  }
+  assert(planToml.includes(PRODUCER_PROHIBITION), `fixme-write-plan TOML includes producer prohibition, got: ${planToml}`);
+
+  for (const producer of ['fixme-write-product-spec', 'fixme-write-technical-spec', 'fixme-execute-plan']) {
+    const toml = _generateCodexAgentToml(producer, agentMarkdownForTest(producer, 'Read, Write, Edit, Bash'));
+    for (const recipe of DISPATCH_RECIPES) {
+      assert(!toml.includes(recipe), `${producer} TOML omits ${recipe}`);
+    }
+    assert(toml.includes(PRODUCER_PROHIBITION), `${producer} TOML includes producer prohibition`);
+  }
+
+  for (const nonDispatcher of ['fixme-review-plan', 'fixme-handle-plan-review', 'fixme-plan-readiness', 'fixme-research', 'fixme-investigate', 'fixme-browser-verify']) {
+    const toml = _generateCodexAgentToml(nonDispatcher, agentMarkdownForTest(nonDispatcher, 'Read, Bash, Grep, Glob'));
+    for (const recipe of DISPATCH_RECIPES) {
+      assert(!toml.includes(recipe), `${nonDispatcher} TOML omits ${recipe}`);
+    }
+    assert(toml.includes('does not dispatch, resume, message, wait on, or close agents'), `${nonDispatcher} TOML includes non-dispatch line`);
+  }
+
+  // Installed-skill adapter path.
+  const taskAdapter = _getCodexSkillAdapterHeader('fixme-task');
+  assert(taskAdapter.includes('## Agent Dispatch'), 'fixme-task adapter keeps Agent Dispatch block');
+  assert(taskAdapter.includes('spawn_agent') && taskAdapter.includes('resume_agent'), 'fixme-task adapter keeps dispatch recipes');
+
+  const planAdapter = _getCodexSkillAdapterHeader('fixme-write-plan');
+  for (const recipe of DISPATCH_RECIPES) {
+    assert(!planAdapter.includes(recipe), `fixme-write-plan adapter omits ${recipe}`);
+  }
+  assert(planAdapter.includes(PRODUCER_PROHIBITION), 'fixme-write-plan adapter includes producer prohibition');
+
+  for (const broker of ['fixme-pr-comments', 'fixme-session']) {
+    const adapter = _getCodexSkillAdapterHeader(broker);
+    assert(adapter.includes('lifecycle attention broker resume'), `${broker} adapter keeps child fixme-task broker mechanics`);
+    assert(!adapter.includes('close_agent'), `${broker} adapter omits generic producer close_agent recipe`);
+    assert(!adapter.includes('mark-bad'), `${broker} adapter omits generic producer mark-bad recipe`);
+    assert(!adapter.includes('forceFreshReason'), `${broker} adapter omits generic producer forceFreshReason recipe`);
+  }
+
+  for (const router of ['fixme', 'fixme-brainstorm']) {
+    const adapter = _getCodexSkillAdapterHeader(router);
+    assert(!adapter.includes('forceFreshReason'), `${router} adapter omits producer-continuation fallback`);
+    assert(!adapter.includes('mark-bad'), `${router} adapter omits producer mark-bad recipe`);
+  }
 });
 
 function setupTaskOwnedAnsweredAttention(slug, attentionId) {
