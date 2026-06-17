@@ -489,7 +489,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 ### Final Output Structure
 
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
-2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
+2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories. **Group stateful findings by failure family** where practical: when several findings about state transitions, idempotency, retries, lifecycle handoff, attention, generated artifacts, or semantic equality share one underlying invariant, report them as one failure-family cluster naming the cluster, the sibling-audit expectation (which other call sites, states, transports, or artifacts the same invariant governs), and the family-level proof gap, instead of one isolated symptom per finding.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 4. **Scope**: plan reviewed, code map used if provided, and review context packet used if provided.
 5. **Machine footer**: end with the exact footer below so `fixme-task` can route zero-finding reviews without a no-op handler dispatch. This is a reviewer result, not a handler classification.

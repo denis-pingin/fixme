@@ -136,6 +136,21 @@ Every classified finding must include:
 
 Items with `Level route: follow-up` contribute to NONBLOCKING_COUNT. Items with `Level route: dismissed` contribute only to DISMISSED_COUNT.
 
+## Failure-Family Expansion of Accepted Blocking Fixes
+
+This extends accepted-fix directives; it does not replace the taxonomy. For every accepted blocking fix directive (`Level route: blocking-fix`, especially `Route scope: PLAN_REQUIRED`), the handler must emit these four expansion fields so the writer revises the whole failure family rather than one symptom:
+
+- `Failure family: <the underlying invariant or contract the symptom violates>`
+- `Generalized fix: <the fix expressed at the contract level, not just the reported instance>`
+- `Sibling surfaces to audit: <other call sites, states, transports, or artifacts governed by the same invariant>`
+- `Required proof updates: <which behavioral tests or acceptance criteria must change to prove the generalized fix>`
+
+These fields travel with the plan-revision input packet (see the unified plan-revision input packet contract below) so the writer can re-derive the contract and its siblings.
+
+## Plan-Revision Input Packet Contract
+
+When routing a blocking finding back to the plan writer, produce one plan-revision input packet shared across `fixme-handle-plan-review` (`revisionSource: planReviewHandler`), `fixme-plan-readiness` (`revisionSource: readiness`), and `fixme-handle-code-review` (`revisionSource: codeReviewHandler`). Every packet lists: `revisionSource`, the accepted/blocking findings, the affected plan and artifact paths, the decision log path, and the four expansion fields (`Failure family`, `Generalized fix`, `Sibling surfaces to audit`, `Required proof updates`).
+
 ## Edge-Case Validity Gate
 
 Run this gate before normal classification for every finding about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.

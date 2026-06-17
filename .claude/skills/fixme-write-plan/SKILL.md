@@ -130,6 +130,23 @@ Required inputs (provided by orchestrator as arguments):
 - **Execution results**: summary from the executor's completion report (markdown)
 - **Decision log path**: task-bound runs call `task decision list --state <task-state-path> --format markdown` and read the `markdown` field; standalone runs read `<fixme-dir>/decisions.md` directly
 
+### First-Principles Expansion Gate
+
+In any plan revision mode (Plan Revision, Readiness-Driven Plan Revision, Code Revision) driven by a blocking plan-revision packet, run the First-Principles Expansion Gate before editing the plan. For each blocking finding:
+
+1. Identify the invariant or failure family the reported symptom violates (use the packet's `Failure family` and `Generalized fix` fields when present).
+2. List the sibling cases governed by the same invariant: other call sites, states, transports, retries, idempotency keys, generated artifacts, and acceptance proofs.
+3. Update all affected plan sections and the task code map so the generalized fix and every sibling surface are covered, not just the reported instance.
+4. Explain, in the plan, which sibling surfaces were audited and fixed, and why any sibling is intentionally out of scope.
+
+Do not close a blocking finding by patching only the single symptom. A targeted revision that ignores the failure family is incomplete.
+
+### State/Effect Contract Matrix Requirement
+
+When the plan touches durable state, idempotency, retries, lifecycle handoff, attention, generated artifacts, source-control staging, usage accounting, dispatch/wait behavior, or semantic equality, the plan MUST include a State/Effect Contract Matrix. Each row is one stateful effect, with these columns: State/artifact, Owner, Transition into it, Transition out of it, Durable evidence, Duplicate behavior, Stale input behavior, Retry behavior, Semantic equality rule, Consumer path, Behavioral proof.
+
+To reduce brittle pseudo-code, make invariants, exact behavior, public APIs, data shapes, and behavioral tests authoritative. Freeze internal ordering only when the ordering is itself the invariant.
+
 ### Rewrite Mode
 
 Triggered when a prior plan exists but there are no structured FIX items from a review handler. The user wants the plan improved or rewritten.

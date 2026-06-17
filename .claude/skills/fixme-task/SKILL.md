@@ -1067,6 +1067,12 @@ Handler route actions use this contract: `NEXT_ACTION: DONE | SPEC_REVISION | PL
 - **HAS_NONBLOCKING_FINDINGS**: print the review classification, record follow-up-only items in the run summary, and advance without re-running the producer. MINOR and INFO findings are reported as follow-up-only and do not trigger loop counters.
 - **HAS_ASK_USER**: batch questions for user input through the direct-or-attention path (see ASK_USER Batching), persist the answer with `task decision append` after it is available, and re-dispatch the handler (go back to the handler entry, NOT this routing step). Do NOT advance past the routing step until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
 
+### Contract Replan Routing
+
+For repeated blocking plan-review cycles in the same phase, the first two blocking plan-review cycles use ordinary targeted revision. The next automatic writer pass for the same phase is a contract replan of the affected state/effect area from first principles (the writer's First-Principles Expansion Gate and State/Effect Contract Matrix), not another symptom patch.
+
+Loop precedence: the first contract-replan-eligible cycle is attempted as a contract replan **before stall escalation**. Stall detection applies only after the contract-replan attempt, or when the configured hard loop limit (`phase.review.maxCycles` / `workflows.<pipelineName>.outerMaxCycles`) is reached. Do not stop the first contract replan solely because the previous targeted revision did not reduce the unresolved blocking count. The configured loop guard and the user attention gate stay in force throughout.
+
 ### Edge-Case Validity Routing
 
 Handlers may include edge-case validity classifications in addition to the normal `Classification` field. These classifications make the support decision explicit without changing the top-level `HANDLER_RESULT` contract.

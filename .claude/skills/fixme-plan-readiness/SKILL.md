@@ -97,7 +97,7 @@ Fail closed: if unsure between `EXECUTE` and any other route, choose the other r
 
 ## Output Format
 
-Keep output compact. Do not include optional style feedback. For `REVISE_PLAN`, every blocking finding must use the exact field labels shown below so `fixme-task` can validate and pass structured findings to `fixme-write-plan`.
+Keep output compact. Do not include optional style feedback. For `REVISE_PLAN`, every blocking finding must use the exact field labels shown below so `fixme-task` can validate and pass structured findings to `fixme-write-plan`. Readiness stays a compact triage gate, not a handler: it carries the full readiness output and the parsed blocking findings so `fixme-task` can convert them into the same plan-revision input packet shape defined in `fixme-handle-plan-review` (`revisionSource: readiness`, accepted/blocking findings, affected plan/artifact paths, decision log path, and the four expansion fields `Failure family`, `Generalized fix`, `Sibling surfaces to audit`, `Required proof updates`).
 
 ```markdown
 ## Plan Readiness Triage

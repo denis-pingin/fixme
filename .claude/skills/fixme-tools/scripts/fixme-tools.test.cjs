@@ -12520,6 +12520,29 @@ test('orchestrators document watchdog waits and quiet command output', () => {
   }
 });
 
+test('plan-process skills document failure-family expansion, State/Effect Contract Matrix, and contract-replan routing', () => {
+  const read = name => fs.readFileSync(path.join(repoRoot, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+  const expansionFields = ['Failure family', 'Generalized fix', 'Sibling surfaces to audit', 'Required proof updates'];
+  for (const handler of ['fixme-handle-plan-review', 'fixme-handle-code-review']) {
+    const content = read(handler);
+    for (const field of expansionFields) {
+      assert(content.includes(field), `${handler} should document expansion field "${field}"`);
+    }
+  }
+  const planReadiness = read('fixme-plan-readiness');
+  for (const field of expansionFields) {
+    assert(planReadiness.includes(field), `fixme-plan-readiness should reference expansion field "${field}"`);
+  }
+  const writePlan = read('fixme-write-plan');
+  assert(writePlan.includes('First-Principles Expansion Gate'), 'fixme-write-plan should document the First-Principles Expansion Gate');
+  assert(writePlan.includes('State/Effect Contract Matrix'), 'fixme-write-plan should require a State/Effect Contract Matrix');
+  const reviewPlan = read('fixme-review-plan');
+  assert(/failure family/i.test(reviewPlan), 'fixme-review-plan should document failure-family clustering');
+  const task = read('fixme-task');
+  assert(/contract replan/i.test(task), 'fixme-task should document contract replan routing');
+  assert(task.includes('before stall escalation'), 'fixme-task should sequence contract replan before stall escalation');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

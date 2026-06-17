@@ -154,6 +154,17 @@ Every classified finding must include:
 
 Items with `Level route: follow-up` contribute to NONBLOCKING_COUNT. Items with `Level route: dismissed` contribute only to DISMISSED_COUNT.
 
+## Failure-Family Expansion on PLAN_REQUIRED Routes
+
+Before the writer is dispatched, every `Route scope: PLAN_REQUIRED` finding must carry the same four expansion fields used by `fixme-handle-plan-review`:
+
+- `Failure family: <the underlying invariant or contract the symptom violates>`
+- `Generalized fix: <the fix expressed at the contract level, not just the reported instance>`
+- `Sibling surfaces to audit: <other call sites, states, transports, or artifacts governed by the same invariant>`
+- `Required proof updates: <which behavioral tests or acceptance criteria must change to prove the generalized fix>`
+
+Emit a plan-revision input packet (`revisionSource: codeReviewHandler`) with the same shape defined in `fixme-handle-plan-review`: `revisionSource`, accepted/blocking findings, affected plan/artifact paths, decision log path, and the four expansion fields.
+
 ## Edge-Case Validity Gate
 
 Run this gate before normal classification for every finding about an edge case, missing error handling, null or empty input, invalid input, unsupported product state, rare branch, boundary condition, precondition, or "this could happen if..." scenario.
