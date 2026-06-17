@@ -11968,6 +11968,27 @@ test('prepare-child still blocks recovery over live unconsumed child work', () =
   assert(stillLive.status !== 'failed', `live parent must not be auto-abandoned, got ${JSON.stringify(stillLive.status)}`);
 });
 
+test('dispatch prepare returns a completion template carrying dispatchId, statusId, parentStatusId and currentCommand null', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const prepData = JSON.stringify({ idempotencyKey: 'completion-template', agentName: 'fixme-write-plan', transport: 'agent', parentStatusId: parent.data.statusId, promptInputs: {} });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepData}'`);
+  assert(prep.ok, `prepare should succeed, got ${JSON.stringify(prep.data)}`);
+  const template = prep.data.completionTemplate;
+  assert(template && typeof template === 'object', `completionTemplate present, got ${JSON.stringify(template)}`);
+  assert(template.dispatchId === prep.data.dispatchId, `template dispatchId matches, got ${template.dispatchId}`);
+  assert(template.statusId === prep.data.statusId, `template statusId matches, got ${template.statusId}`);
+  assert(template.parentStatusId === parent.data.statusId, `template parentStatusId matches, got ${template.parentStatusId}`);
+  assert(template.currentCommand === null, `template currentCommand null, got ${template.currentCommand}`);
+  assertNoSnakeCaseKeys(prep.data, 'dispatch prepare output');
+
+  const completeData = JSON.stringify({ ...template, status: 'completed' });
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${completeData}'`);
+  assert(complete.ok, `complete built from template should succeed, got ${JSON.stringify(complete.data)}`);
+  const cleared = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(cleared.data.currentCommand === null, `parent wait marker cleared, got ${cleared.data.currentCommand}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

@@ -8562,6 +8562,12 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     continuation,
     usageContext,
     activeChild,
+    completionTemplate: {
+      dispatchId,
+      statusId: child.statusId,
+      parentStatusId: data.parentStatusId || null,
+      currentCommand: null,
+    },
     promptBlocks,
   };
 
