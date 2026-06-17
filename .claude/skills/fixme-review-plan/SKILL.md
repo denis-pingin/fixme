@@ -492,6 +492,16 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 4. **Scope**: plan reviewed, code map used if provided, and review context packet used if provided.
+5. **Machine footer**: end with the exact footer below so `fixme-task` can route zero-finding reviews without a no-op handler dispatch. This is a reviewer result, not a handler classification.
+
+```text
+---
+REVIEW_RESULT: CLEAN | HAS_ITEMS
+FINDING_COUNT: <number>
+QUESTION_COUNT: <number>
+```
+
+Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`. Use `REVIEW_RESULT: HAS_ITEMS` whenever any finding, question, uncertainty, follow-up, or note needs handler classification or user-visible accounting.
 
 ## Rules
 

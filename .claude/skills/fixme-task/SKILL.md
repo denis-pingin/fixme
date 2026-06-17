@@ -15,7 +15,7 @@ Execute a named or intent-selected workflow from `<fixme-dir>/config.json`. Each
 - **Never override locked decisions silently.** If a conflict arises, present it to the user.
 - **Never push code that doesn't pass verification.** The fixme-execute-plan sub-skill enforces this, but the orchestrator must not proceed past execution if verification failed.
 - **Never output Run Summary until the FULL pipeline completes.** The pipeline is not done after a phase with no review. If a subsequent phase exists, it must run. If the current phase has a review loop, the review must complete before moving on. The Run Summary is ONLY output after the final phase's review handler returns Clean (or the phase has no review and it's the last phase) or after a loop guard triggers in direct standalone mode. In parent-driven (a parent-provided `parentContinuation`) or attention mode, loop guards use durable attention and do not emit a Run Summary. If you feel like outputting a completion report mid-pipeline, STOP - you are about to skip remaining phases.
-- **Never present intermediate findings to the user with bypass options.** Code review findings go to their handler skill. Plan review findings go to their handler skill. After the handler classifies findings, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
+- **Never present intermediate findings to the user with bypass options.** Non-empty code review findings go to their handler skill. Non-empty plan review findings go to their handler skill. A reviewer machine footer that proves zero findings and zero questions may use the Synthetic Clean Handler Fast Path below, which still produces the same handler routing directive before routing. After the handler classifies findings or the synthetic clean handler block is generated, the orchestrator prints the required Review Classification block, then follows the normal route. It must never ask "want me to fix this directly?", "should we skip the loop?", or offer any bypass around the configured workflow.
 - **Never hardcode ticket backend paths.** All ticket operations go through the `fixme-tickets` abstraction skill, which reads `ticketBackend` from `<fixme-dir>/config.json` and routes to the correct backend. Never call `fixme-tools.cjs` or any backend directly from this orchestrator.
 - **Save follows the full user instruction.** Save-only requests write a deferred task and stop. Save-and-continue requests write the task brief first, then continue into the selected or auto-detected pipeline. Ambiguous save requests stop and ask; never guess.
 
@@ -169,7 +169,7 @@ Ineligible sources:
 Before task save, task init, Config Loading, ticket transitions, or dispatch, construct a compact camelCase candidate payload and run:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data-file <pipeline-candidates.json>
 ```
 
 Input shape:
@@ -183,6 +183,8 @@ Input shape:
 Use the resolver output as `pipelineResolution`. Dispatch using `pipelineResolution.pipeline`. Do not hand-author the final pipeline after resolver output exists.
 
 Do not call `task save` or `task init` without `pipelineResolution`. These commands do not infer a default workflow; the orchestrator must resolve the pipeline first and pass the exact resolver output.
+
+Inline `--data` JSON is allowed only for tiny flat examples; workflow payloads with nested objects or arrays must be written to an absolute JSON file and passed with `--data-file`.
 
 ### Task Resolution
 
@@ -212,6 +214,8 @@ Save intent can be terminal or non-terminal depending on the rest of the instruc
 
 Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`. Use ISO date format `YYYY-MM-DD`. Use a short lowercase slug derived from the generated title. The saved task state lives beside it as `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.state.json`.
 
+When a saved task is intentionally replaced or discarded in favor of another saved task, mark it durably with `task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>`. Do not rely on chat prose, Run Summary notes, or body text to suppress a stale saved task.
+
 Every saved task gets a project-scoped label in the form `FIXME-<number>`. Label: `FIXME-<number>`. The label is assigned by the shared CLI from `<fixme-dir>/tasks/.counter`, which belongs to the resolved Fixme directory and is therefore per project.
 
 The counter file stores the next available task number. The CLI reads and updates `<fixme-dir>/tasks/.counter`. If the counter file is missing, the CLI uses `1` as the next number. If the counter file exists but is not a positive integer, the CLI aborts; relay this user note and do not write a task file yourself:
@@ -225,10 +229,10 @@ After assigning label `FIXME-N`, the CLI writes `N + 1` plus a trailing newline 
 The orchestrator does not hand-write saved task markdown, the counter, or task state JSON. It constructs a compact camelCase JSON input object and runs:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>
 ```
 
-The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, `laterPlanningNotes`, and `pipelineResolution`. Optional keys: `scope.outOfScope`, `lockedDecisions`, `constraints`, `knownContext`, `openQuestions`, `source`, and `tags`. Do not send `pipelineHint` or `pipeline` in task-save JSON; the CLI rejects those fields.
+The JSON input must use camelCase JSON keys only. Required keys: `title`, `taskGoal`, `settledSolutionShape`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, `laterPlanningNotes`, and `pipelineResolution`. Optional keys: `scope.outOfScope`, `lockedDecisions`, `constraints`, `knownContext`, `source`, and `tags`. `openQuestions` must be omitted or empty; the CLI rejects non-empty `openQuestions`. Do not send `pipelineHint` or `pipeline` in task-save JSON; the CLI rejects those fields.
 
 ### Save Mode Lossless Handoff Gate
 
@@ -236,30 +240,53 @@ Treat the saved task file as the context boundary. A future run must be able to 
 
 Before calling `task save`, build the payload from the resolved task context and check it against this invariant:
 
-- Every settled solution-shape detail from the conversation appears under `agreedApproach`, including concrete systems, data shapes, fallback behavior, and rejected alternatives when relevant.
+- `settledSolutionShape` contains the full unchanged solution shape from the conversation or explicit source artifact, including structure, examples, data shapes, fallback behavior, rejected alternatives, sequencing, and any details that would be lossy if forced into the rest of the template.
+- Every settled solution-shape detail from the conversation or source artifacts also appears in normalized form under `agreedApproach`, including concrete systems, data shapes, fallback behavior, and rejected alternatives when relevant.
 - Every observed behavior or expected change appears under `userVisibleBehavior`.
 - Every included and excluded work item appears under `scope.inScope` or `scope.outOfScope`.
 - Every known fact, investigated root cause, file reference, command, data value, or constraint needed to avoid re-discussion appears under `knownContext` or `constraints`.
 - Every test, verification, sequencing, or risk note that the planner should preserve appears under `laterPlanningNotes`.
 
-Do not compress a rich discussion into only a title and one-sentence goal. Do not rely on the next agent to rediscover already-settled approach details. If the payload would lose any information needed after context loss, repair the payload before saving. If the missing information cannot be recovered from arguments, IDE selection, or conversation context, abort and ask the user for the missing scope.
+Do not compress a rich discussion into only a title and one-sentence goal. Do not translate an already-settled design only into the fixed template fields if doing so drops nuance, ordering, examples, or tradeoff rationale. `settledSolutionShape` is the escape hatch for preserving the exact shape without fighting the template.
 
-The CLI rejects skeletal handoffs that omit concrete `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`. Treat that rejection as a save-mode bug in your payload, not as a reason to hand-write the task file.
+Do not rely on the next agent to rediscover already-settled approach details. If the payload would lose any information needed after context loss, repair the payload before saving. If the missing information cannot be recovered from arguments, IDE selection, conversation context, explicit artifacts, or hard evidence, use the Save Mode Question Resolution Gate before saving.
+
+The CLI rejects skeletal handoffs that omit concrete `settledSolutionShape`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`. It also rejects non-empty `openQuestions`. Treat that rejection as a save-mode bug in your payload, not as a reason to hand-write the task file.
+
+### Save Mode Question Resolution Gate
+
+Saved tasks must not contain unresolved questions. `Open Questions` is not a durable parking lot for ambiguity.
+
+Before calling `task save`, collect every candidate question that would otherwise land in `openQuestions` or remain implicit in the handoff. For each question:
+
+1. Try to resolve it from hard evidence already available to this save: the task text, conversation, IDE selection, explicit artifacts such as brainstorm/research/investigation files, codebase facts already read for this task, official/current online docs already researched, or other cited evidence.
+2. If hard evidence resolves it, integrate the answer into the full task payload. Put product or approach answers in `settledSolutionShape` and `agreedApproach`, scope answers in `scope`, constraints in `constraints`, facts in `knownContext`, and intentional choices in `lockedDecisions`. Do not leave the question in `openQuestions`.
+3. If no hard evidence resolves it, ask the user before saving.
+
+When asking, batch all unresolved questions into one user-facing prompt. Follow `fixme-howto-present-decisions` for the prompt shape, adjusted for a clarification batch instead of a binary decision card:
+
+- Lead with the save blocker and recommendation.
+- Group questions by subject if there are several.
+- For each question, include why hard evidence did not answer it and what part of the saved task will change based on the answer.
+- Include feasible options only when real alternatives exist; otherwise ask for a concise freeform answer.
+
+After the user answers, revise the entire task payload from scratch against the answers. Do not append an answer transcript. Ensure `settledSolutionShape`, `agreedApproach`, `scope`, `lockedDecisions`, `constraints`, `knownContext`, `userVisibleBehavior`, and `laterPlanningNotes` are mutually consistent. Then call `task save` with `openQuestions` omitted or empty.
 
 ### Save Mode Context Resolution
 
-Resolve the saved task context from the same sources as Task Resolution, with one difference: save mode never asks the user to invent missing scope.
+Resolve the saved task context from the same sources as Task Resolution, with one difference: save mode never asks the user to invent an entire missing task. It asks only the blocking clarification questions identified by the Save Mode Question Resolution Gate.
 
 1. Use the explicit task argument if present.
 2. Use IDE selection context if it contains a task, issue, plan, specification, or agreed approach.
-3. Use conversation context if the task, issue, solution approach, or agreed shape was discussed earlier.
-4. If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort with this user note:
+3. Use explicit artifact paths or artifact content supplied by the user or previous Fixme skills, including brainstorm, research, investigation, product specification, technical specification, or implementation plan artifacts. Read only the referenced artifact; do not discover artifacts by recency.
+4. Use conversation context if the task, issue, solution approach, or agreed shape was discussed earlier.
+5. If no task, issue, solution approach, agreed shape, or explicit artifact exists in arguments, IDE selection, or conversation context, abort with this user note:
 
    ```text
    I do not have a task, issue, or agreed solution approach to save yet. Discuss the work first, then say `fixme-task --save`.
    ```
 
-Do not search `<fixme-dir>/plans/`, `<fixme-dir>/specs/`, or any source directories to discover a task to save. Save mode preserves context already provided; it never guesses from filesystem recency.
+Do not search `<fixme-dir>/plans/`, `<fixme-dir>/specs/`, `<fixme-dir>/brainstorms/`, `<fixme-dir>/research/`, or any source directories to discover a task to save. Save mode preserves context already provided; it never guesses from filesystem recency.
 
 ### Save Mode Title And Filename
 
@@ -296,6 +323,10 @@ tags: []
 ## Task Goal
 
 One sentence describing the outcome, not the implementation steps.
+
+## Settled Solution Shape
+
+Freeform markdown preserving the full unchanged solution shape from the discussion or explicit artifact. Keep headings, ordering, examples, data shapes, fallback behavior, rejected alternatives, and nuance that would be lossy in the fixed template fields.
 
 ## Agreed Approach
 
@@ -335,11 +366,6 @@ One sentence describing the outcome, not the implementation steps.
 - Relevant facts from the conversation.
 - Existing artifacts or file paths if already known.
 - Do not invent codebase facts here.
-
-## Open Questions
-
-- Questions that must be answered before planning.
-- Omit this section if there are none.
 
 ## Suggested Pipeline
 
@@ -495,10 +521,11 @@ If the task asks "why", "what causes", "debug", or describes unexpected behavior
 Load the workflow definition and project settings (using `<fixme-dir>` resolved in Input Resolution):
 
 1. **Read `<fixme-dir>/config.json`** if it exists
-2. **Extract the selected workflow** from `workflows.<pipelineName>.phases`
-3. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
-4. **If no config or no workflow key and no explicit pipeline was selected**, use the hardcoded `standard` workflow.
-5. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
+2. **Auto-migrate the config only when the runtime migration helper reports a needed change**. Existing legacy standard workflow shapes are upgraded before use; current configs are not rewritten.
+3. **Extract the selected workflow** from `workflows.<pipelineName>.phases`
+4. **If the selected workflow is missing from config but is one of the standard workflows below**, use the hardcoded standard workflow.
+5. **If no config or no workflow key and no explicit pipeline was selected**, use the hardcoded `standard` workflow.
+6. **Extract `outerMaxCycles`** from `workflows.<pipelineName>.outerMaxCycles` if present. Missing or invalid values use the standard default below.
 
 ### Standard Workflow Metadata
 
@@ -758,15 +785,17 @@ Durable state shape:
 }
 ```
 
-Run `task checkpoint --state <task-state-path> --data '<json-object>'` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.
+Run `task checkpoint --state <task-state-path> --data-file <checkpoint.json>` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.
 
 Task-owned decisions are normally written with `task decision append`; terminal task results are normally written with `task result write`. Direct checkpoint writes to `decisions` and `terminalResult` are for durable state restoration and runtime helper coordination, and checkpoint validation supports the complete durable state shape.
 
 Persist review loop counters only under `loops.phaseReviewCycles`; never send a top-level `phaseReviewCycles` field to `task checkpoint`. Example:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '{"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-file <checkpoint.json>
 ```
+
+The `<checkpoint.json>` payload for a plan review loop counter is `{"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}}`.
 
 If `task checkpoint` rejects a top-level `phaseReviewCycles` field, retry with the nested `loops.phaseReviewCycles` payload above. Do not report that the helper lacks support for `phaseReviewCycles`.
 
@@ -813,9 +842,9 @@ When `fixme-task` needs user input in attention mode, it must:
 3. Open the durable attention through a single `lifecycle attention open` call, which checkpoints task state before creating the attention record (checkpoint-first). Set the `checkpointData` to state `waitingForUser` with `pendingDecision.attentionId`, `pendingDecision.attentionStatusId`, the same `sourceSkill`, the current `cursor`, and enough routing context to re-dispatch the same handler or child step. `pendingDecision.attentionStatusId` is the current fixme-task liveness status id.
 4. Open the prompt through:
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data '{"statusId":"<current-fixme-task-status-id>","taskStatePath":"<absolute-task-state-path>","checkpointData":{"status":"waitingForUser","pendingDecision":{...}},"attention":{"attentionId":"<attn-id>","ownerSkill":"fixme-task","sourceSkill":"<source>","kind":"<kind>","resumeRef":"<resume-ref>","taskStatePath":"<absolute-task-state-path>","promptMarkdown":"<prompt>","answerMode":"<answer-mode>"}}'
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data-file <attention-open.json>
    ```
-   Installed Codex skills use the Codex-installed tool path. The attention payload must include `attentionId`, `ownerSkill: "fixme-task"`, `sourceSkill`, `kind`, `resumeRef`, absolute `taskStatePath`, `promptMarkdown`, and `answerMode`.
+   Installed Codex skills use the Codex-installed tool path. The attention payload must include `attentionId`, `ownerSkill: "fixme-task"`, `sourceSkill`, `kind`, `resumeRef`, absolute `taskStatePath`, `promptMarkdown`, and `answerMode`. The payload must contain `"taskStatePath":"<absolute-task-state-path>"`.
 5. `lifecycle attention open` is checkpoint-first and self-repairing: it checkpoints, then creates the attention; if attention creation fails it restores the pre-open task-state snapshot and returns `attentionBlocked` (`repaired:true`) or `ioFailure` (`repaired:false`). On `attentionBlocked` report `FIXME_ATTENTION_BLOCKED` with the failed command and attention id; on `ioFailure` mark the task failed/blocked. Do not return `FIXME_ATTENTION_REQUIRED` for a prompt the parent cannot show.
 6. After a successful `lifecycle attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`; the helper already marked the run as waiting, and ordinary pings are rejected while `currentCommand` points at active attention.
 7. Return the helper's `directive` as the final content:
@@ -853,7 +882,7 @@ Attention examples use the same checkpoint-first order as the main contract.
 **Inside `fixme-task`, handler asks for input:** If `fixme-handle-code-review` returns `HANDLER_RESULT: HAS_ASK_USER`, `fixme-task` first generates `attn_review_123`, checkpoints `pendingDecision.attentionId` and `pendingDecision.attentionStatusId`, then stores the Review Classification block:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data '{"statusId":"<fixmeTaskStatusId>","taskStatePath":"<absolute-task-state-path>","checkpointData":{"status":"waitingForUser","pendingDecision":{"attentionId":"attn_review_123"}},"attention":{"attentionId":"attn_review_123","ownerSkill":"fixme-task","sourceSkill":"fixme-handle-code-review","kind":"reviewDecision","resumeRef":"FIXME-13","taskStatePath":"<absolute-task-state-path>","promptMarkdown":"<Review Classification block>","answerMode":"decision-card"}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data-file <attention-open.json>
 ```
 
 Then it returns:
@@ -869,7 +898,7 @@ RESUME_REF: FIXME-13
 **Parent broker answer path:** After `lifecycle attention broker show`, the parent broker calls `lifecycle attention broker resume`. That helper records or reuses the raw answer, validates `activeChild`, and returns `resume.message`:
 
 ```text
-spawn_agent(agent_type="fixme-task", message="--resume FIXME-13 --answer-attention attn_review_123")
+--resume FIXME-13 --answer-attention attn_review_123
 ```
 
 Claude inline, Claude background, and Codex agent transports all launch `fixme-task` with the returned `resume.message` only. Parent brokers do not hand-compose the message and do not include original task text, prior artifacts, or selected answer prose. If the parent has the current task status id, keep the returned `resume.liveness` in the resumed invocation context. The status id is context, not a command-line flag.
@@ -884,13 +913,13 @@ Ticket mode. The orchestrator tracks pipeline progress via ticket state transiti
 
 - **Before the first phase dispatch**: initialize low-level task state with:
   ```bash
-  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root>
   ```
   Store the returned `statePath` as `taskStatePath`.
 - **At each phase start**: dispatch ticket transition through the `fixme-tickets` abstraction skill (Agent tool with the fixme-tickets SKILL.md). The fixme-tickets skill handles backend resolution and CLI invocation internally.
   - First transition includes `--pipeline <name>` flag to store the pipeline name in the ticket
   - Subsequent transitions omit the `--pipeline` flag (already stored)
-- **After every low-level routing change**: update `taskStatePath` with `task checkpoint --state <task-state-path> --data '<json-object>'`.
+- **After every low-level routing change**: update `taskStatePath` with `task checkpoint --state <task-state-path> --data-file <checkpoint.json>`.
 - **On pipeline completion**: do NOT transition to `done`. The session orchestrator owns terminal transitions (`done`, `failed`, `skipped`) because they require cleanup (git commit/revert). Report success via output.
 - **On pipeline failure**: do NOT transition to `failed`. Report failure details via output. The session orchestrator handles the terminal transition.
 - **Report final status** in the Run Summary: success/failure + details for the session to act on.
@@ -925,7 +954,7 @@ No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`ba
   ```
 
   Store the returned `statePath` as `taskStatePath`; it must equal `activeChild.taskStatePath`. Use `activeChild.resumeRef` for later `--answer-attention` resumes. Reserved-state children must not call `task init --task` because no saved task markdown is the boundary.
-- **Direct no-ticket without `--resume`:** first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
+- **Direct no-ticket without `--resume`:** first create a saved task with `task save --data-file <task-save.json>` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
 
 No-ticket task state is mandatory so another session can resume without chat history.
 
@@ -951,25 +980,26 @@ If you find yourself understanding the root cause before dispatching, you have a
 
 The orchestrator may ONLY use these tools:
 - **Agent** - to dispatch sub-skills (phase skills, review skills, ticket transitions)
-- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/tasks/*.md`, `<fixme-dir>/tasks/*.state.json`, ticket `task-state.json` files, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, or specification/plan/code-map files referenced in conversation
+- **Read** - ONLY on `<fixme-dir>/config.json`, `<fixme-dir>/tasks/*.md`, `<fixme-dir>/tasks/*.state.json`, ticket `task-state.json` files, `<fixme-dir>/specs/**/*.md`, `<fixme-dir>/plans/*.md`, `<fixme-dir>/brainstorms/**/*.md`, `<fixme-dir>/research/**/*.md`, `<fixme-dir>/context/*-code-map.md`, `<fixme-dir>/decisions.md`, explicit preparation artifacts attached to the saved task, or specification/plan/code-map/preparation artifact files referenced in conversation
 - **Bash** - ONLY:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <task-state-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-file <checkpoint.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision append --state <task-state-path> --data '<decision-record-json>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision append --state <task-state-path> --data-file <decision-record.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision list --state <task-state-path> --format markdown`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data '<json-object>'`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data-file <task-result.json>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data-file <invocation-start.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <id> --outcome <complete|failed|aborted>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data '<json-object>'` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data '<json-object>'` (after each dispatched agent returns)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data '<json-object>'`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data-file <dispatch-complete.json>` (after each dispatched agent returns)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data-file <attention-open.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <readiness-validation.json>` (installed Codex skills use the `.codex` tool path)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data '<json-object>'` (parent-driven runs only)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>` (parent-driven runs only)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
@@ -989,8 +1019,8 @@ Always build the manifest for ALL phases in the pipeline, regardless of entry po
 
 1. One dispatch entry per skill in `phase.skills`
 2. If `phase.review.readiness` exists and review is enabled:
-   a. One `[phase-name/readiness]` Dispatch <readiness-skill> entry
-   b. One `[phase-name/readiness]` Route on READINESS_RESULT entry
+   a. One `[phase-name/readiness] Dispatch <readiness-skill>` entry
+   b. One `[phase-name/readiness] Route on READINESS_RESULT` entry
 3. If `phase.review.skills` exists and review is enabled:
    a. One `[phase-name/review]` dispatch entry per skill in `phase.review.skills`
    b. One `[phase-name/route]` routing entry using `HANDLER_RESULT`
@@ -999,7 +1029,7 @@ Readiness routes are manifest-controlled jumps. Marking full plan review steps c
 
 After the last phase: add a "Run Summary" entry.
 
-Tag each entry with its phase name and step type: `[phase-name]` for execute steps, `[phase-name/readiness]` for readiness steps, `[phase-name/review]` for review steps, and `[phase-name/route]` for routing steps.
+Tag each entry with its phase name and step type: `[phase-name]` for execute steps, `[phase-name/review]` for review steps, `[phase-name/route]` for routing steps.
 
 **Entry point marking:** After building the full manifest, apply the entry point. Mark all steps before the entry point as `completed`. Set the entry point step to `in_progress`. All subsequent steps remain `pending`. This ensures the full manifest exists for cross-phase backward jumps, while execution starts from the correct point.
 
@@ -1045,6 +1075,33 @@ Handlers may include edge-case validity classifications in addition to the norma
 - ASK_USER_VALIDITY counts as a decision needed. It routes through the normal decision batching flow and asks whether the reported state should be supported before any fix approach is selected.
 - `REJECT_IMPOSSIBLE` and `REJECT_UNSUPPORTED` are dismissed findings. They appear in the Review Classification block as dismissed findings and do not trigger producer loops.
 
+## Synthetic Clean Handler Fast Path
+
+Use this only when a reviewer returns a valid machine footer proving there is nothing for the handler to classify:
+
+```text
+REVIEW_RESULT: CLEAN
+FINDING_COUNT: 0
+QUESTION_COUNT: 0
+```
+
+Do not synthesize a handler result from prose such as "no issues" or "looks clean". For built-in reviewers, a missing or malformed footer follows the missing-directive recovery procedure. For custom or unknown review skills, a missing or malformed footer only disables synthetic clean routing and the next configured handler runs normally. A valid `REVIEW_RESULT: HAS_ITEMS` footer, non-zero count footer, or custom review output without an exact clean footer dispatches the configured handler normally.
+
+When the clean footer is valid and the next manifest step is the matching handler (`fixme-handle-spec-review`, `fixme-handle-plan-review`, or `fixme-handle-code-review`):
+
+1. Do not call `lifecycle dispatch prepare` for the handler. Do not create a handler run status, dispatch banner, child usage row, or agent.
+2. Run the deterministic helper to generate the handler-equivalent output:
+
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review synthesize-clean-handler --kind <plan|code|specification>
+   ```
+
+3. Use the returned `routingBlock` as the handler output and validate it with the same handler directive/count rules used for real handler output.
+4. Checkpoint the handler manifest step with `dispatchMode: "syntheticClean"`, the current review summary, and the synthetic handler result.
+5. Mark the reviewer step and handler step completed, set the routing step to `in_progress`, and continue through the ordinary routing-step logic. The Review Classification block is still printed from the validated handler-equivalent output.
+
+This fast path does not remove the handler from the manifest. It completes an empty handler step deterministically. Any reviewer output with findings, questions, decisions, follow-up notes, rejected candidates, malformed counts, or missing machine footer must go through the configured handler agent.
+
 ### PR Comment Triage Inputs
 
 When invoked by `fixme-pr-comments`, the task input may already contain risk-aware PR comment triage. Incoming PR comment fix items may include VERDICT, SEVERITY, COMPLEXITY, CONFIDENCE, ROUTE, and ROUTE_SCOPE metadata.
@@ -1075,14 +1132,16 @@ The manifest is created in one of two modes depending on whether this run is par
 ```
 TaskCreate([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
-  { content: "Step 9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
+  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "pending", activeForm: "Dispatching fixme-plan-readiness" },
+  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "pending", activeForm: "Routing on plan readiness result" },
+  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 5 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 6 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 7 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 8 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 9 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 10 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
+  { content: "Step 11 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
 ])
 ```
 
@@ -1090,7 +1149,9 @@ TaskCreate([
 ```
 TaskCreate([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "completed", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "in_progress", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "completed", activeForm: "Dispatching fixme-plan-readiness" },
+  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "completed", activeForm: "Routing on plan readiness result" },
+  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "in_progress", activeForm: "Dispatching fixme-review-plan" },
   ...remaining steps as pending...
 ])
 ```
@@ -1099,27 +1160,29 @@ TaskCreate([
 
 When parent-driven, the parent skill (e.g. `fixme-pr-comments`) owns its own live manifest task list and final summary. The child `fixme-task` run creates a separate child-owned live manifest task list using the same step shape as standalone mode, except it omits the terminal Run Summary step.
 
-**CRITICAL: Parent-driven mode produces NO Run Summary and has NO terminal `[done]` step.** The parent skill owns the workflow's final summary at its own terminal step (e.g. `fixme-pr-comments`'s `Step 15 [done] Run summary`). fixme-task in parent-driven mode ends at the implement-routing step (own Step 8). After Step 8 is marked `completed`, record a durable terminal task event for the parent to consume. Do NOT print a `## Run Summary` block. Do NOT write a paragraph announcing the handoff. Do NOT start parent-owned verification, commit, or reply steps from inside `fixme-task`.
+**CRITICAL: Parent-driven mode produces NO Run Summary and has NO terminal `[done]` step.** The parent skill owns its final summary at its own terminal step. fixme-task in parent-driven mode ends at the implement-routing step (own Step 10). After Step 10 is marked `completed`, record a durable terminal task event for the parent to consume. Do NOT print a `## Run Summary` block. Do NOT write a paragraph announcing the handoff. Do NOT start parent-owned verification, commit, or reply steps from inside `fixme-task`.
 
 Construction rules:
 
-1. Build child steps from the standalone manifest's Steps 1-8 ONLY. Omit Step 9 "Run Summary" entirely because parent-driven mode has no Run Summary step.
+1. Build child steps from the standalone manifest's Steps 1-10 ONLY. Omit Step 11 "Run Summary" entirely because parent-driven mode has no Run Summary step.
 2. The first child step is `in_progress`. All other child steps are `pending` (or `completed` for mid-pipeline entry, same as standalone mode).
 3. Create only the child live manifest task list. Do not read, copy, or update the parent's manifest.
 4. Every subsequent live manifest task list update includes only child steps.
-5. **Terminal task event at Step 8.** When the implement-routing step returns CLEAN and the child pipeline has nothing more to do internally, mark Step 8 `completed`, then record a durable terminal task event for the parent to consume. Do not output a Run Summary and do not advance the parent manifest.
+5. **Terminal task event at Step 10.** When the implement-routing step returns CLEAN and the child pipeline has nothing more to do internally, mark Step 10 `completed`, then record a durable terminal task event for the parent to consume. Do not output a Run Summary and do not advance the parent manifest.
 
 **Parent-driven child manifest example**:
 ```
 TaskCreate([
   { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" }
+  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "pending", activeForm: "Dispatching fixme-plan-readiness" },
+  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "pending", activeForm: "Routing on plan readiness result" },
+  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 5 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 6 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 7 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 8 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 9 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 10 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" }
 ])
 ```
 
@@ -1163,6 +1226,14 @@ Step 1 - Prepare the dispatch (resolves runtime settings, creates the child live
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>
 ```
 
+Dispatch prepare request payload has exactly these required fields:
+
+- Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.
+- Optional: `parentStatusId`, `parentInvocationId`, `pipelineRunId`, `taskStatePath`, `parentContinuation`, `runtime`, `allowProducerContinuation`, `forceFreshReason`, and `usageSourcePath`.
+- Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, and `bannerMarkdown`.
+
+Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload. They are response values built by the lifecycle helper after it accepts the request.
+
 Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings.reasoningEffort` contains the runtime-specific reasoning setting; do not hardcode models, reasoning effort, or runtime behavior. Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` tool parameters when `runtimeSettings.reasoningEffort` is non-null. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
@@ -1175,7 +1246,7 @@ Resumable producer agents are exactly `fixme-write-product-spec`, `fixme-write-t
 
 For task-bound producer dispatches with a known `taskStatePath`, call `lifecycle dispatch prepare` with `allowProducerContinuation: true`. It is safe if the CLI receives this field for other dispatches because the CLI enforces the producer allowlist, but prefer producer-only intent for clarity. Do not add continuation configuration to `<fixme-dir>/config.json`.
 
-One idempotency key identifies exactly one concrete child dispatch attempt. Retries of the same exact attempt reuse the same idempotency key. Every new producer attempt, review-cycle rework, repair attempt, and forced-fresh fallback uses a distinct idempotency key. The key must include enough cursor, phase, review cycle, outer cycle, attempt number, producer name, and fallback reason context to identify that concrete attempt. Do not reuse a prior key after task state or continuation state changes. `lifecycle dispatch prepare` hashes only `idempotencyKey` and replays or conflicts before running new continuation selection. Same-key conflicts protect against retry drift; they do not replace distinct attempt keys.
+One idempotency key identifies exactly one concrete child dispatch attempt. Retries of the same exact attempt reuse the same idempotency key. A CLI validation failure does not create a new logical dispatch attempt. Fix the payload and retry with the same idempotency key. Every new producer attempt, review-cycle rework, repair attempt, and forced-fresh fallback uses a distinct idempotency key. The key must include enough cursor, phase, review cycle, outer cycle, attempt number, producer name, and fallback reason context to identify that concrete attempt. Do not reuse a prior key after task state or continuation state changes. `lifecycle dispatch prepare` hashes only `idempotencyKey` and replays or conflicts before running new continuation selection. Same-key conflicts protect against retry drift; they do not replace distinct attempt keys. Use a new idempotency key only after a recorded dispatch conflict, bad continuation, completed prior dispatch, or intentional fresh fallback.
 
 Branch only on the `continuation` object returned by prepare:
 
@@ -1210,7 +1281,7 @@ Fresh fallback mechanics:
 After the dispatched agent returns, finalize the child liveness status:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data '{"dispatchId":"<dispatchId>","statusId":"<statusId>","status":"<completed|failed>"}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data-file <dispatch-complete.json>
 ```
 
 Step 2.5 - Refresh this fixme-task invocation's own liveness while it waits on the dispatched agent:
@@ -1218,13 +1289,13 @@ Step 2.5 - Refresh this fixme-task invocation's own liveness while it waits on t
 Before every Agent dispatch wait, ping the current fixme-task invocation if this fixme-task invocation received its own `<liveness>` `statusId`:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command "waiting for <agent-name>"
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command waiting-for:<agent-name>
 ```
 
 Installed Codex skills use the Codex-installed tool path:
 
 ```bash
-node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command "waiting for <agent-name>"
+node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command waiting-for:<agent-name>
 ```
 
 After the dispatched agent returns, ping the current fixme-task invocation again:
@@ -1536,15 +1607,18 @@ Follow these procedures after each agent dispatch returns. The manifest determin
 
 ### Directive Validation (NON-NEGOTIABLE)
 
-Every agent dispatch has an expected routing directive in its output. Before processing, you MUST validate that the directive is present:
+Every built-in Fixme agent dispatch has an expected routing directive in its output. Before processing built-in dispatch output, you MUST validate that the directive is present:
 
 | Agent type | Expected directive | Example |
 |---|---|---|
 | Phase skill (executor) | `EXECUTOR_STATUS: COMPLETE` + `NEXT_PIPELINE_STEP: <skill>` | End of fixme-execute-plan output |
 | Specification writer | `SPEC_PATH: <absolute path>` | End of fixme-write-product-spec or fixme-write-technical-spec output |
 | Plan writer | `PLAN_PATH: <absolute path>` + `CODE_MAP_PATH: <absolute path>` | End of fixme-write-plan output |
-| Plan readiness checker (`fixme-plan-readiness`) | `READINESS_RESULT: EXECUTE|REVISE_PLAN|ASK_USER|FULL_PLAN_REVIEW` + `BLOCKING_FINDING_COUNT: <number>` + `QUESTION_COUNT: <number>` + `RISK_LEVEL: low|high` | End of fixme-plan-readiness output |
+| Plan readiness checker (`fixme-plan-readiness`) | `READINESS_RESULT: EXECUTE\|REVISE_PLAN\|ASK_USER\|FULL_PLAN_REVIEW` + `BLOCKING_FINDING_COUNT: <number>` + `QUESTION_COUNT: <number>` + `RISK_LEVEL: low\|high` | End of fixme-plan-readiness output |
+| Built-in reviewer (`fixme-review-spec`, `fixme-review-plan`, `fixme-review-code`) | `REVIEW_RESULT: CLEAN\|HAS_ITEMS` + `FINDING_COUNT: <number>` + `QUESTION_COUNT: <number>` | End of fixme-review-spec, fixme-review-plan, or fixme-review-code output |
 | Review handler (spec/plan/code) | `HANDLER_RESULT: CLEAN\|HAS_BLOCKING_FIX\|HAS_NONBLOCKING_FINDINGS\|HAS_ASK_USER` | End of fixme-handle-spec-review, fixme-handle-plan-review, or fixme-handle-code-review output |
+
+This built-in reviewer row does not apply to custom review skills. Custom review skills may opt into the clean fast path by ending with the exact reviewer machine footer, but the footer is not a hard dispatch-completion directive for unknown review skills. For custom or unknown review skills, a missing or malformed footer only disables synthetic clean routing and the next configured handler runs normally.
 
 **If the expected directive is MISSING from the agent's output**, the agent is incomplete - it was truncated (hit context/output limit), crashed, or otherwise failed to finish. This is NOT "agent done without a directive."
 
@@ -1594,9 +1668,10 @@ Every agent dispatch has an expected routing directive in its output. Before pro
 
 **Review steps** (`[phase/review]` entries - reviewers like fixme-review-plan, fixme-review-code):
 
-1. Capture the review findings needed by the handler. Keep the dispatch context compact; do not append unrelated prior outputs.
-2. Mark step `completed`, set next step to `in_progress`
-3. Pass the findings and current review context packet as input to the handler dispatch (the next manifest step)
+1. For built-in reviewers, validate the reviewer machine footer: `REVIEW_RESULT: CLEAN|HAS_ITEMS`, `FINDING_COUNT: <number>`, and `QUESTION_COUNT: <number>`. For built-in reviewers, a missing or malformed footer follows the missing-directive recovery procedure. For custom review skills, parse the same footer only if present; a missing or malformed custom footer disables synthetic clean routing but does not make the review step incomplete.
+2. Capture the review findings needed by the handler. Keep the dispatch context compact; do not append unrelated prior outputs.
+3. If the reviewer footer is exactly `REVIEW_RESULT: CLEAN`, `FINDING_COUNT: 0`, and `QUESTION_COUNT: 0`, and the next manifest step is the matching review handler, use the Synthetic Clean Handler Fast Path. Do not dispatch the handler agent.
+4. Otherwise, mark the review step `completed`, set the handler step to `in_progress`, and pass the findings and current review context packet as input to the handler dispatch (the next manifest step).
 
 **Readiness steps** (`[phase/readiness]` dispatch and route entries):
 
@@ -1691,13 +1766,23 @@ When a review handler returns blocking FIX items, **always route through the pro
 
 When `parentContinuation` is present in task state (parent-driven mode), `fixme-task` does NOT print a Run Summary and does NOT own verification, commit, reply, resolve, or the final summary - the parent owns those. On reaching a terminal state, `fixme-task` instead produces a durable terminal result and an optional wake-up notification, in this order:
 
+Before emitting `TASK_EVENT_RECORDED` or any final directive, verify exactly one terminal child handoff sequence has completed for this `fixme-task` run:
+
+1. Every dispatched child needed for the terminal route, including the final review handler when one ran, has a completed `lifecycle dispatch complete` record.
+2. The final cursor, route, artifact, and loop state has been persisted with `task checkpoint`.
+3. Parent-driven mode has written the terminal result with `task result write`.
+4. Parent-driven mode has recorded the wakeable event with `lifecycle task-event record`.
+5. The current `fixme-task` usage invocation has been closed with `lifecycle invocation finish`.
+
+Emit the usage report line and terminal task-event directive exactly once. If any item above is missing or was already emitted, stop and repair the durable state instead of printing another terminal directive.
+
 1. Write the terminal result summary (this stamps a once-generated `terminalResultId` into task state and writes a parent-readable `<taskStem>.result.json`):
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data '{"status":"<completed|failed>","summaryMarkdown":"<summary>","changedFiles":[...],"artifactPaths":[...],"failure":<null|{"reason":"<reason>","message":"<msg>"}>}'
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data-file <task-result.json>
    ```
 2. Record the terminal task event so the parent can consume it (recordable only AFTER the result summary and terminal task state exist):
    ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data '{"parentRunId":"<parentRunId>","taskRunId":"<taskRunId>","taskStatePath":"<task-state-path>","resultSummaryPath":"<result-summary-path>","terminalResultId":"<terminalResultId>","status":"<completed|failed>"}'
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>
    ```
 3. Emit an OPTIONAL plain-text notification carrying only the `eventId` (no required state). Place it AFTER the `lifecycle invocation finish` usage report line.
 
@@ -1705,7 +1790,7 @@ Direct user-facing runs (no `parentContinuation`) keep the existing Run Summary 
 
 ## Decision Log
 
-Task-owned decisions are persisted with `task decision append --state <task-state-path> --data '<decision-record-json>'`, which writes one structured decision into task-state `decisions` and applies active/superseded semantics. Only the orchestrator (`fixme-task`) persists task-owned decisions; sub-skills read the merged decision context with `task decision list --state <task-state-path> --format markdown` (the `markdown` field). Project-level `<fixme-dir>/decisions.md` remains markdown-primary for non-task standalone flows.
+Task-owned decisions are persisted with `task decision append --state <task-state-path> --data-file <decision-record.json>`, which writes one structured decision into task-state `decisions` and applies active/superseded semantics. Only the orchestrator (`fixme-task`) persists task-owned decisions; sub-skills read the merged decision context with `task decision list --state <task-state-path> --format markdown` (the `markdown` field). Project-level `<fixme-dir>/decisions.md` remains markdown-primary for non-task standalone flows.
 
 The merged markdown view (`task decision list --format markdown`) renders the same human-readable shape downstream readers consume:
 

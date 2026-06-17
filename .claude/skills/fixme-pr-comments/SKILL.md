@@ -115,9 +115,10 @@ Step 9   [dispatch]         Prepare and launch fixme-task through returned launc
 Step 10  [verify]           Run build/lint/test using project-documented commands
 Step 11  [commit/route]     Route: --skip-commit -> 13, otherwise -> 12
 Step 12  [commit]           Commit changes (and push unless --skip-push is set)
-Step 13  [resolve/route]    Route: --skip-resolve -> 15, otherwise -> 14
+Step 13  [resolve/route]    Route: --skip-resolve -> 16, otherwise -> 14
 Step 14  [resolve]          Build reply execution table, preflight reply bodies, then reply/resolve per surface/author rules
-Step 15  [done]             Run summary
+Step 15  [final-check]      Re-fetch unresolved review threads after reply/resolve; late unresolved threads restart fetch/analyze
+Step 16  [done]             Run summary
 ```
 
 Step numbers are stable anchors to the workflow definition, not sequence indices. When Step 8 is omitted, Step 9 is still numbered 9; the live manifest task list simply has no entry between Step 7 and Step 9.
@@ -130,7 +131,8 @@ Step numbers are stable anchors to the workflow definition, not sequence indices
   - If `--pause` IS set and at least one `CURRENT_PR_FIX` group remains: advance to Step 8 and wait for user confirmation in a separate turn.
   - If `--pause` is NOT set and at least one `CURRENT_PR_FIX` group remains: jump to Step 9 in the **same turn** as the Step 4 presentation. The turn output must contain (a) the analysis report from Step 4, (b) **no** closing question or confirmation prompt, and (c) the `lifecycle parent prepare-child --data-file` call plus the returned launch action for Step 9. Splitting Step 4 and Step 9 across two turns when `--pause` is OFF is forbidden - the user did not ask to be consulted.
 - **Step 11 (commit/route)**: If `--skip-commit` is set, jump to Step 13. Otherwise advance to Step 12.
-- **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 15. Otherwise advance to Step 14.
+- **Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 16. Otherwise advance to Step 14.
+- **Step 15 (final-check)**: Run only after Step 14 has completed every required reply and allowed thread resolution. If no new unresolved review threads remain outside the allowed unresolved set, advance to Step 16. If late unresolved threads are found, restart the fetch/analyze path from Step 1 using all three GitHub surfaces; do not handle them as ad hoc one-offs.
 
 ### BLOCKING GATE
 
@@ -173,7 +175,8 @@ TaskCreate([
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
   { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
   { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
-  { content: "Step 15 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
+  { content: "Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve", status: "pending", activeForm: "Checking for late comments" },
+  { content: "Step 16 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
 ])
 ```
 
@@ -194,7 +197,8 @@ TaskCreate([
   { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
   { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
   { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
-  { content: "Step 15 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
+  { content: "Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve", status: "pending", activeForm: "Checking for late comments" },
+  { content: "Step 16 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
 ])
 ```
 
@@ -213,7 +217,7 @@ Execute steps in order. After each step (whether a Bash command, an analysis, a 
 
 **Never skip steps. Never combine steps (except the explicit Step 4 + Step 9 same-turn execution above when `--pause` is OFF). Never "optimize" the sequence. The manifest is the law.**
 
-**Never treat any step as workflow completion unless it is Step 15 (Run summary).** If uncompleted steps remain in the manifest, the workflow is not done. If you feel like outputting a completion message and there are pending steps, STOP - you are about to skip remaining steps.
+**Never treat any step as workflow completion unless it is Step 16 (Run summary).** If uncompleted steps remain in the manifest, the workflow is not done. If you feel like outputting a completion message and there are pending steps, STOP - you are about to skip remaining steps.
 
 ## Workflow
 
@@ -529,7 +533,7 @@ lists, decision context, options, everything. No plain-text file paths.
 **Every summary surface in this skill MUST start with a clickable PR link**, in the form
 `**PR**: [{owner}/{repo}#{pr_number}]({pr_html_url})`. This is non-negotiable and applies to
 the Step 4 `## PR Comment Analysis` report, the Step 8 `## Ready to Execute` confirmation, and
-the Step 15 `Run summary` output. The link is the first non-heading line so the user can jump
+the Step 16 `Run summary` output. The link is the first non-heading line so the user can jump
 to the PR from any summary surface without scrolling. Use the canonical GitHub PR URL
 (`https://github.com/{owner}/{repo}/pull/{pr_number}`) - never a plain-text PR reference.
 
@@ -1254,6 +1258,32 @@ reviewer who leaves actionable findings in the review body instead of inline thr
 
 **No thread resolve**: There is no `resolveReviewThread` call for `issue_comment` or
 `pull_request_review` items. The reply comment is the resolution signal.
+
+### 6.5. Final Unresolved-Thread Check
+
+Run this only after Step 14. Do not run the final unresolved-thread check until Step 14 has posted every required reply, completed every allowed `resolveReviewThread` mutation, and verified those target thread states.
+
+This check is not a substitute for Step 14. It exists only to detect review threads that arrived after the initial fetch or while the current fix batch was being implemented, replied to, or resolved.
+
+Procedure:
+
+1. Re-fetch review threads with the same GraphQL cursor pagination used in Step 1.
+2. Build the set of currently unresolved review thread IDs.
+3. Remove allowed unresolved threads from the set:
+   - human-authored rejected or clarification-needed threads that Step 14 intentionally left unresolved
+   - threads explicitly skipped by `--skip-response` where no resolution signal was posted
+4. If the remaining set is empty, Step 15 is complete and the workflow may advance to Step 16.
+5. If late unresolved threads are found, restart the fetch/analyze path from Step 1 using all three GitHub surfaces; do not handle them as ad hoc one-offs.
+
+When restarting for late threads:
+
+- Re-fetch `inline_review_threads`, `issue_comments`, and `pull_request_reviews`.
+- Normalize the late unresolved threads into `review_item` records with the same ID/accounting model.
+- Analyze every late item individually before dispatching `fixme-task`, posting replies, or resolving anything.
+- Preserve prior Step 14 reply/resolve results as already-posted resolution evidence; do not duplicate replies for already addressed containers.
+- Do not start another final unresolved-thread check until the late-thread cycle has pushed any needed fix, posted required replies, resolved allowed threads, and reached Step 15 again.
+
+If `--skip-resolve` is set, do not run this final unresolved-thread loop. The user explicitly asked to skip replies/resolution, so existing unresolved threads are expected.
 
 ## Decision Guide
 

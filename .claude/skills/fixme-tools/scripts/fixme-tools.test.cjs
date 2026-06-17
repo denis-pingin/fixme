@@ -178,7 +178,15 @@ function createUsageWorkspace() {
     projectRoot,
     homeDir,
     fixmeDir: path.join(projectRoot, '.fixme'),
-    env: { HOME: homeDir },
+    env: {
+      HOME: homeDir,
+      CODEX_SESSION_FILE: '',
+      CODEX_SQLITE_HOME: '',
+      CODEX_THREAD_ID: '',
+      CLAUDE_CODE_SESSION_ID: '',
+      CLAUDE_TRANSCRIPT_PATH: '',
+      FIXME_USAGE_SOURCE_PATH: '',
+    },
     projectEvents: path.join(projectRoot, '.fixme', 'usage', 'events.jsonl'),
     globalEvents: path.join(homeDir, '.fixme', 'usage', 'events.jsonl'),
   };
@@ -1926,6 +1934,7 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   const data = JSON.stringify({
     title: 'Resume Fixme Task',
     taskGoal: 'Make fixme-task resumable from a stable task reference.',
+    settledSolutionShape: 'Save a standalone task brief with a sibling low-level task state file, while keeping ticket state reserved for session scheduling.',
     agreedApproach: [
       'Use a separate low-level task state file.',
       'Keep ticket state as the session scheduler state.',
@@ -2003,6 +2012,82 @@ test('task save: writes FIXME-labelled task brief and camelCase checkpoint', () 
   assert(!Object.prototype.hasOwnProperty.call(state.artifacts, 'decisionLogPath'), 'artifacts should not include decisionLogPath');
 });
 
+test('task save: preserves settled solution shape as a freeform handoff section', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const settledSolutionShape = [
+    '### Import command flow',
+    '',
+    '- Keep the staged parser contract unchanged: `parse -> normalize -> validate -> commit`.',
+    '- Preserve the brainstormed fallback: if validation cannot prove safety, stop before commit and show the collected evidence.',
+    '- Do not replace the parser with a broad regex pass; that alternative was rejected because it would lose field-level diagnostics.',
+  ].join('\n');
+  const dataPath = writeJsonFixture(projectRoot, 'save-lossless-task.json', {
+    title: 'Save Lossless Import Shape',
+    taskGoal: 'Save the settled import command solution shape without losing artifact-level detail.',
+    settledSolutionShape,
+    agreedApproach: [
+      'Use the staged parser contract that was already settled in the brainstorm artifact.',
+      'Keep the rejected broad-regex alternative visible for the future planner.',
+    ],
+    userVisibleBehavior: [
+      'A future run can plan from the saved task without recovering chat history or the brainstorm artifact.',
+    ],
+    scope: {
+      inScope: ['Saved task markdown handoff for the import command flow'],
+      outOfScope: ['Implementing the import command flow'],
+    },
+    laterPlanningNotes: ['Treat the settled solution shape as authoritative unless codebase evidence contradicts it.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
+    source: 'test',
+  });
+
+  const result = runInDir(`task save --data-file "${dataPath}"`, projectRoot);
+
+  assert(result.ok, `task save should succeed, got: ${JSON.stringify(result.data)}`);
+  const taskMarkdown = fs.readFileSync(result.data.taskPath, 'utf8');
+  assert(taskMarkdown.includes(`## Settled Solution Shape\n\n${settledSolutionShape}\n\n## Agreed Approach`), 'saved task should preserve the freeform settled solution shape');
+  assert(!taskMarkdown.includes('## Open Questions'), 'saved task should omit Open Questions when all questions are resolved before save');
+});
+
+test('task save: rejects unresolved open questions before writing artifacts', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const dataPath = writeJsonFixture(projectRoot, 'save-open-questions-task.json', {
+    title: 'Reject Unresolved Questions',
+    taskGoal: 'Require save mode to resolve unclear handoff details before writing a task.',
+    settledSolutionShape: 'Use the discussed settings editor flow after clarifying the remaining ownership question.',
+    agreedApproach: ['Clarify unresolved ownership questions before saving the task.'],
+    userVisibleBehavior: ['Saved task briefs do not contain unresolved planning questions.'],
+    scope: {
+      inScope: ['Saved task handoff validation'],
+      outOfScope: ['Answering the user question in the CLI test'],
+    },
+    openQuestions: ['Which team owns the persisted settings document?'],
+    laterPlanningNotes: ['Save only after the answer has been integrated across the task brief.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
+    source: 'test',
+  });
+
+  const result = runInDir(`task save --data-file "${dataPath}"`, projectRoot);
+
+  assert(!result.ok, 'task save should reject unresolved open questions');
+  assert(cliErrorMessage(result).includes('resolve openQuestions before saving'), `error should require question resolution, got ${cliErrorMessage(result)}`);
+  assert(!fs.existsSync(path.join(projectRoot, '.fixme', 'tasks', '.counter')), 'counter should not advance when unresolved questions block save');
+});
+
 test('task save: rejects obsolete pipelineHint and pipeline fields', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -2010,6 +2095,7 @@ test('task save: rejects obsolete pipelineHint and pipeline fields', () => {
   const baseData = {
     title: 'Reject Pipeline Hint',
     taskGoal: 'Ensure task save uses final pipeline resolution data.',
+    settledSolutionShape: 'Require callers to provide pipelineResolution instead of obsolete shortcut fields.',
     agreedApproach: ['Use pipelineResolution only.'],
     userVisibleBehavior: ['Old task-save pipeline fields are rejected.'],
     scope: { inScope: ['task CLI save'], outOfScope: [] },
@@ -2031,6 +2117,7 @@ test('task save: requires pipelineResolution before writing artifacts', () => {
   const data = JSON.stringify({
     title: 'Require Pipeline Resolution',
     taskGoal: 'Ensure task save does not infer a workflow.',
+    settledSolutionShape: 'Save mode must receive an already-resolved workflow before any task artifacts are written.',
     agreedApproach: ['Resolve the workflow before saving task state.'],
     userVisibleBehavior: ['Missing pipeline resolution fails visibly.'],
     scope: { inScope: ['task CLI save'], outOfScope: [] },
@@ -2052,6 +2139,7 @@ test('task save: rejects invalid pipeline resolution before writing artifacts', 
   const data = JSON.stringify({
     title: 'Reject Removed Alias',
     taskGoal: 'Ensure task save does not create artifacts for invalid workflows.',
+    settledSolutionShape: 'Validate the final workflow name before reserving a saved-task label or writing artifacts.',
     agreedApproach: ['Validate the selected workflow before reserving a task number.'],
     userVisibleBehavior: ['Invalid saved-task workflow input fails without creating a saved task.'],
     scope: { inScope: ['task CLI save'], outOfScope: [] },
@@ -2102,6 +2190,7 @@ test('task save: persists explicit pipeline resolution in task state', () => {
   const data = JSON.stringify({
     title: 'Write Technical Specification',
     taskGoal: 'Create a technical specification from a product specification.',
+    settledSolutionShape: 'Resume the technical-spec workflow from the saved task state using the explicit pipeline resolution.',
     agreedApproach: ['Use the technical-spec workflow to turn the product specification into deterministic implementation guidance.'],
     userVisibleBehavior: ['A future run can resume the saved specification-writing task without chat context.'],
     scope: {
@@ -2138,6 +2227,55 @@ test('task save: persists explicit pipeline resolution in task state', () => {
   assert(state.cursor.phase === 'technical-spec', `cursor should use technical-spec workflow first phase, got ${state.cursor.phase}`);
 });
 
+test('task supersede: marks a saved task and state durably and blocks re-init', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+
+  const saveDataPath = writeJsonFixture(projectRoot, 'save-task.json', {
+    title: 'Superseded Saved Task',
+    taskGoal: 'Persist that a saved task was replaced.',
+    settledSolutionShape: 'Mark replaced saved tasks through durable frontmatter and sibling state updates.',
+    agreedApproach: ['Use a dedicated supersede command instead of prose-only notes.'],
+    userVisibleBehavior: ['A replaced saved task no longer resumes as active work.'],
+    scope: {
+      inScope: ['Saved task supersession state'],
+      outOfScope: ['Ticket state transitions'],
+    },
+    laterPlanningNotes: ['The replacement task contains the corrected scope.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
+    source: 'test',
+  });
+  const saved = runInDir(`task save --data-file "${saveDataPath}"`, projectRoot);
+  assert(saved.ok, `task save should succeed, got: ${JSON.stringify(saved.data)}`);
+
+  const superseded = runInDir('task supersede --task FIXME-1 --by FIXME-2 --reason "Replaced by corrected saved task"', projectRoot);
+  assert(superseded.ok, `task supersede should succeed, got: ${JSON.stringify(superseded.data)}`);
+  assertNoSnakeCaseKeys(superseded.data, 'task supersede output');
+  assert(superseded.data.status === 'superseded', `status should be superseded, got ${superseded.data.status}`);
+  assert(superseded.data.supersededBy === 'FIXME-2', `supersededBy should be FIXME-2, got ${superseded.data.supersededBy}`);
+  assert(superseded.data.stateUpdated === true, 'task supersede should update sibling state JSON');
+
+  const taskMarkdown = fs.readFileSync(saved.data.taskPath, 'utf8');
+  assert(/^status:\s+"?superseded"?$/m.test(taskMarkdown), 'task frontmatter should be marked superseded');
+  assert(/^supersededBy:\s+"?FIXME-2"?$/m.test(taskMarkdown), 'task frontmatter should record replacement reference');
+  assert(taskMarkdown.includes('supersedeReason: "Replaced by corrected saved task"'), 'task frontmatter should record supersede reason');
+
+  const state = readJson(saved.data.statePath);
+  assertNoSnakeCaseKeys(state, 'superseded task state');
+  assert(state.status === 'superseded', `state status should be superseded, got ${state.status}`);
+  assert(state.supersededBy === 'FIXME-2', `state supersededBy should be FIXME-2, got ${state.supersededBy}`);
+  assert(state.supersedeReason === 'Replaced by corrected saved task', `state reason should be preserved, got ${state.supersedeReason}`);
+
+  const initialized = runInDir(`task init --task "${saved.data.taskPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(!initialized.ok, 'task init should reject superseded saved task briefs');
+  assert(cliErrorMessage(initialized).includes('is superseded by FIXME-2'), `error should mention replacement task, got ${cliErrorMessage(initialized)}`);
+});
+
 test('task resolve: resolves FIXME label and task path to canonical state paths', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -2145,6 +2283,7 @@ test('task resolve: resolves FIXME label and task path to canonical state paths'
   const data = JSON.stringify({
     title: 'Resolve Saved Task',
     taskGoal: 'Resolve a saved task by label.',
+    settledSolutionShape: 'Keep the task markdown and sibling state as the canonical references for every supported resume form.',
     agreedApproach: ['Save a standalone task, then resolve it by visible label, task path, and state path.'],
     userVisibleBehavior: ['A user can resume the same saved task through each supported reference form.'],
     scope: {
@@ -2190,6 +2329,7 @@ test('task attach-artifact: indexes preparation artifact on saved task brief and
   const data = JSON.stringify({
     title: 'Prepare Saved Task',
     taskGoal: 'Prepare a saved task for implementation.',
+    settledSolutionShape: 'Attach preparation artifacts directly to the saved task instead of relying on chat history or filesystem recency.',
     agreedApproach: ['Attach preparation artifacts to the saved task instead of relying on chat history.'],
     userVisibleBehavior: ['A future resume can discover the attached preparation artifact from the saved task.'],
     scope: {
@@ -3263,6 +3403,29 @@ test('cli help emits command schemas before required validation', () => {
       guidanceIncludes: 'record raw user answers',
     },
     {
+      args: 'lifecycle attention broker resume --help',
+      command: 'lifecycle attention broker resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['answer', 'answeredBy', 'answerKind'],
+      optionalDataFields: [],
+      enumChecks: [['answerKind', ['decision', 'clarificationRequest']]],
+      audience: 'parent-facing',
+      guidanceIncludes: 'returns only the fixme-task resume message',
+    },
+    {
+      args: 'lifecycle attention broker acknowledge-resume --help',
+      command: 'lifecycle attention broker acknowledge-resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
+      optionalDataFields: ['runtimeHandle'],
+      enumChecks: [
+        ['transport', ['agent', 'inline-skill', 'background', 'direct']],
+        ['runtime', ['claude', 'codex']],
+      ],
+      audience: 'parent-facing',
+      guidanceIncludes: 'records resume-dispatch evidence and returns the parent to waitingForChild',
+    },
+    {
       args: 'lifecycle attention open --help',
       command: 'lifecycle attention open',
       requiredFlags: ['fixme-dir'],
@@ -3396,35 +3559,14 @@ test('every lifecycle/task-decision helper named in any installed skill exists i
     'lifecycle invocation start', 'lifecycle invocation finish',
     'lifecycle dispatch prepare', 'lifecycle dispatch complete',
     'lifecycle attention open', 'lifecycle attention consume', 'lifecycle attention broker show', 'lifecycle attention broker answer',
+    'lifecycle attention broker resume',
+    'lifecycle attention broker acknowledge-resume',
     'lifecycle wait begin', 'lifecycle wait end',
     'lifecycle parent create', 'lifecycle parent checkpoint', 'lifecycle parent resolve', 'lifecycle parent prepare-child', 'lifecycle parent abandon',
     'lifecycle task-event record', 'lifecycle task-event consume',
     'task decision append', 'task decision list',
     'task result write',
   ]);
-    {
-      args: 'lifecycle attention broker resume --help',
-      command: 'lifecycle attention broker resume',
-      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
-      requiredDataFields: ['answer', 'answeredBy', 'answerKind'],
-      optionalDataFields: [],
-      enumChecks: [['answerKind', ['decision', 'clarificationRequest']]],
-      audience: 'parent-facing',
-      guidanceIncludes: 'returns only the fixme-task resume message',
-    },
-    {
-      args: 'lifecycle attention broker acknowledge-resume --help',
-      command: 'lifecycle attention broker acknowledge-resume',
-      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
-      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
-      optionalDataFields: ['runtimeHandle'],
-      enumChecks: [
-        ['transport', ['agent', 'inline-skill', 'background', 'direct']],
-        ['runtime', ['claude', 'codex']],
-      ],
-      audience: 'parent-facing',
-      guidanceIncludes: 'records resume-dispatch evidence and returns the parent to waitingForChild',
-    },
   const skillsRoot = path.resolve(__dirname, '..', '..');
   const skillDirs = fs.readdirSync(skillsRoot).filter(name => name.startsWith('fixme-'));
   // Match `fixme-tools.cjs <namespace> <verb> [<action>]` for lifecycle/task decision/task result.
@@ -3559,12 +3701,40 @@ test('invocation start binds explicit usageSourcePath for parent-driven Codex ta
     usageSourcePath: sourcePath,
   });
   const started = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, { ...w.env, CODEX_THREAD_ID: '', CODEX_SESSION_FILE: '', FIXME_USAGE_SOURCE_PATH: '' });
-    'lifecycle attention broker resume',
-    'lifecycle attention broker acknowledge-resume',
   assert(started.ok, `invocation start with usageSourcePath should succeed, got: ${JSON.stringify(started.data)}`);
   assert(started.data.usageSourcePath === sourcePath, `start output should echo usageSourcePath, got ${JSON.stringify(started.data)}`);
   const pending = readJson(path.join(w.fixmeDir, 'usage', 'pending', `${started.data.invocationId}.json`));
   assert(pending.sourceSnapshot.source.path === sourcePath, `pending usage should bind explicit source path, got ${JSON.stringify(pending.sourceSnapshot)}`);
+});
+
+test('invocation start binds Codex source from CODEX_SQLITE_HOME state database', () => {
+  const w = createUsageWorkspace();
+  const threadId = 'thread_20260616_lifecycle_sqlite_home';
+  const sqliteHome = path.join(w.homeDir, '.codex', 'sqlite');
+  const sourcePath = codexSessionPath(w, 'rollout-lifecycle-sqlite-home');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 },
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 }
+    ),
+  ]);
+  writeCodexStateThread(w, threadId, sourcePath, { sqliteHome });
+
+  const data = JSON.stringify({
+    skill: 'fixme-task',
+    runtime: 'codex',
+    role: 'orchestrator',
+    idempotencyKey: 'k-sqlite-home-source',
+  });
+  const started = runInDirWithEnv(
+    `lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`,
+    w.projectRoot,
+    { ...w.env, CODEX_THREAD_ID: threadId, CODEX_SQLITE_HOME: sqliteHome }
+  );
+  assert(started.ok, `invocation start should bind configured sqlite source, got: ${JSON.stringify(started.data)}`);
+  assert(started.data.usageSourcePath === sourcePath, `start output should use CODEX_SQLITE_HOME source path, got ${JSON.stringify(started.data)}`);
+  const pending = readJson(path.join(w.fixmeDir, 'usage', 'pending', `${started.data.invocationId}.json`));
+  assert(pending.sourceSnapshot.source.path === sourcePath, `pending usage should bind configured sqlite source path, got ${JSON.stringify(pending.sourceSnapshot)}`);
 });
 
 test('invocation start retry with same idempotencyKey returns existing invocation and status', () => {
@@ -4654,6 +4824,31 @@ test('dispatch complete with parentStatusId clears the parent wait marker', () =
   assert(cleared.data.state === 'running' && cleared.data.checkpoint === 'working', `parent reset to working, got ${cleared.data.state}/${cleared.data.checkpoint}`);
 });
 
+test('dispatch prepare rejects same-agent parent recursion', () => {
+  const fixmeDir = makeFixmeDir();
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-write-plan`);
+  assert(parent.ok, `parent run should start, got: ${JSON.stringify(parent.data)}`);
+
+  const prepareData = JSON.stringify({
+    idempotencyKey: 'same-agent-recursion',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    parentStatusId: parent.data.statusId,
+    promptInputs: {},
+  });
+  const result = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepareData}'`);
+
+  assert(!result.ok, `same-agent parent dispatch should be rejected, got ${JSON.stringify(result.data)}`);
+  assert(result.data.error.code === 'invalidInput', `same-agent dispatch should be invalid input, got ${JSON.stringify(result.data)}`);
+  assert(
+    cliErrorMessage(result).includes('cannot dispatch child agent fixme-write-plan from parent agent fixme-write-plan'),
+    `same-agent error should name parent and child agents, got ${cliErrorMessage(result)}`,
+  );
+  const parentStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${parent.data.statusId}`);
+  assert(parentStatus.data.currentCommand === null, `rejected prepare must not set parent wait marker, got ${parentStatus.data.currentCommand}`);
+  assert(fs.readdirSync(path.join(fixmeDir, 'runs')).length === 1, 'rejected prepare must not create a child run status');
+});
+
 test('dispatch complete leaves an active parent attention marker untouched', () => {
   const fixmeDir = makeFixmeDir();
   const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
@@ -4874,201 +5069,6 @@ test('attention broker answer replay does not expose task-owned decision state',
   }
 });
 
-test('attention consume resolved decision appends decision, checkpoints state, and clears attention', () => {
-  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-consume-resolved');
-  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_resolved')}'`);
-  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
-  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_resolved --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
-  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
-  const decision = completeDecisionObject('decision_consume_resolved', {
-    attentionId: 'attn_consume_resolved',
-    answer: 'A',
-    interpretation: 'Use option A.',
-  });
-  const checkpointData = { status: 'running', pendingDecision: null };
-  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
-  assert(consume.ok, `consume should succeed, got: ${JSON.stringify(consume.data)}`);
-  assert(consume.data.mode === 'resolvedDecision', `mode returned, got ${consume.data.mode}`);
-  assert(consume.data.decisionCount === 1, `decision count returned, got ${JSON.stringify(consume.data)}`);
-  assert(!fs.existsSync(open.data.attentionPath), 'consume removes attention record');
-  const state = readJson(statePath);
-  assert(state.status === 'running', `state status should be running, got ${state.status}`);
-  assert(state.pendingDecision === null, `pendingDecision should clear, got ${JSON.stringify(state.pendingDecision)}`);
-  assert(state.decisions.length === 1 && state.decisions[0].id === 'decision_consume_resolved', `decision persisted, got ${JSON.stringify(state.decisions)}`);
-  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${statusId}`);
-  assert(status.ok, `status should read, got ${JSON.stringify(status.data)}`);
-  assert(status.data.currentCommand === null, `attention marker cleared, got ${status.data.currentCommand}`);
-  assert(status.data.state === 'running' && status.data.checkpoint === 'working', `run status restored, got ${status.data.state}/${status.data.checkpoint}`);
-
-  const replay = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
-  assert(replay.ok, `consume replay after clear should succeed, got: ${JSON.stringify(replay.data)}`);
-  const replayState = readJson(statePath);
-  assert(replayState.decisions.length === 1, `replay must not duplicate decisions, got ${JSON.stringify(replayState.decisions)}`);
-});
-
-test('attention consume is idempotent after decision append partial success', () => {
-  const { fixmeDir, projectRoot, statePath, statusId } = initTaskWithRunStatus('attn-consume-decision-written');
-  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_written')}'`);
-  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
-  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_written --data '${JSON.stringify({ answer: 'B', answeredBy: 'user', answerKind: 'decision' })}'`);
-  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
-  const decision = completeDecisionObject('decision_consume_written', {
-    attentionId: 'attn_consume_written',
-    answer: 'B',
-    interpretation: 'Use option B.',
-  });
-  const appended = runInDir(`task decision append --state "${statePath}" --compact --data '${JSON.stringify(decision)}'`, projectRoot);
-  assert(appended.ok, `partial decision append should succeed, got: ${JSON.stringify(appended.data)}`);
-
-  const checkpointData = { status: 'running', pendingDecision: null };
-  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_written', 'resolvedDecision', checkpointData, [decision])}'`);
-  assert(consume.ok, `consume after decision append should succeed, got: ${JSON.stringify(consume.data)}`);
-  const state = readJson(statePath);
-  assert(state.decisions.length === 1 && state.decisions[0].id === 'decision_consume_written', `decision should not duplicate, got ${JSON.stringify(state.decisions)}`);
-  assert(state.pendingDecision === null, 'checkpoint applied after partial decision append');
-  assert(!fs.existsSync(open.data.attentionPath), 'attention cleared after partial decision append');
-});
-
-test('attention consume accepts equivalent checkpoint replay and clears consumed attention', () => {
-  const { fixmeDir, projectRoot, statePath, statusId } = initTaskWithRunStatus('attn-consume-checkpoint-written');
-  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_checkpoint')}'`);
-  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
-  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_checkpoint --data '${JSON.stringify({ answer: 'question?', answeredBy: 'user', answerKind: 'clarificationRequest' })}'`);
-  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
-  const checkpointData = {
-    status: 'running',
-    pendingDecision: {
-      kind: 'plan-decision',
-      clarificationContext: {
-        answer: 'question?',
-      },
-    },
-  };
-  const checkpointed = runInDir(`task checkpoint --state "${statePath}" --data '${JSON.stringify(checkpointData)}'`, projectRoot);
-  assert(checkpointed.ok, `partial checkpoint should succeed, got: ${JSON.stringify(checkpointed.data)}`);
-  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_checkpoint', 'clarificationRequest', checkpointData, [])}'`);
-  assert(consume.ok, `consume after checkpoint should succeed, got: ${JSON.stringify(consume.data)}`);
-  const state = readJson(statePath);
-  assert(state.status === 'running', `state running, got ${state.status}`);
-  assert(state.pendingDecision && state.pendingDecision.clarificationContext.answer === 'question?', `clarification context preserved, got ${JSON.stringify(state.pendingDecision)}`);
-  assert(!fs.existsSync(open.data.attentionPath), 'attention cleared after checkpoint replay');
-});
-
-test('attention consume clarification and partial modes checkpoint pendingDecision without decisions', () => {
-  const clarification = initTaskWithRunStatus('attn-consume-clarification');
-  const clarificationOpen = run(`lifecycle attention open --fixme-dir "${clarification.fixmeDir}" --data '${ownerAttentionOpenData(clarification.statusId, clarification.statePath, 'attn_consume_clarification')}'`);
-  assert(clarificationOpen.ok, `clarification open should succeed, got: ${JSON.stringify(clarificationOpen.data)}`);
-  const clarificationAnswer = run(`lifecycle attention broker answer --fixme-dir "${clarification.fixmeDir}" --status-id ${clarification.statusId} --attention-id attn_consume_clarification --data '${JSON.stringify({ answer: 'What about C?', answeredBy: 'user', answerKind: 'clarificationRequest' })}'`);
-  assert(clarificationAnswer.ok, `clarification answer should succeed, got: ${JSON.stringify(clarificationAnswer.data)}`);
-  const clarificationCheckpoint = {
-    status: 'running',
-    pendingDecision: {
-      kind: 'plan-decision',
-      clarificationContext: { answer: 'What about C?' },
-    },
-  };
-  const clarificationConsume = run(`lifecycle attention consume --fixme-dir "${clarification.fixmeDir}" --data '${consumeAttentionData(clarification.statusId, clarification.statePath, 'attn_consume_clarification', 'clarificationRequest', clarificationCheckpoint, [])}'`);
-  assert(clarificationConsume.ok, `clarification consume should succeed, got: ${JSON.stringify(clarificationConsume.data)}`);
-  const clarificationState = readJson(clarification.statePath);
-  assert(clarificationState.decisions.length === 0, `clarification should not append decisions, got ${JSON.stringify(clarificationState.decisions)}`);
-  assert(clarificationState.pendingDecision.clarificationContext.answer === 'What about C?', `clarification context persisted, got ${JSON.stringify(clarificationState.pendingDecision)}`);
-  assert(!fs.existsSync(clarificationOpen.data.attentionPath), 'clarification consume clears old attention');
-
-  const partial = initTaskWithRunStatus('attn-consume-partial');
-  const partialOpen = run(`lifecycle attention open --fixme-dir "${partial.fixmeDir}" --data '${ownerAttentionOpenData(partial.statusId, partial.statePath, 'attn_consume_partial')}'`);
-  assert(partialOpen.ok, `partial open should succeed, got: ${JSON.stringify(partialOpen.data)}`);
-  const partialAnswer = run(`lifecycle attention broker answer --fixme-dir "${partial.fixmeDir}" --status-id ${partial.statusId} --attention-id attn_consume_partial --data '${JSON.stringify({ answer: '1=A, still unsure on 2', answeredBy: 'user', answerKind: 'decision' })}'`);
-  assert(partialAnswer.ok, `partial answer should succeed, got: ${JSON.stringify(partialAnswer.data)}`);
-  const partialCheckpoint = {
-    status: 'running',
-    pendingDecision: {
-      kind: 'plan-decision',
-      partialAnswers: {
-        first: 'A',
-      },
-    },
-  };
-  const partialConsume = run(`lifecycle attention consume --fixme-dir "${partial.fixmeDir}" --data '${consumeAttentionData(partial.statusId, partial.statePath, 'attn_consume_partial', 'partialDecision', partialCheckpoint, [])}'`);
-  assert(partialConsume.ok, `partial consume should succeed, got: ${JSON.stringify(partialConsume.data)}`);
-  const partialState = readJson(partial.statePath);
-  assert(partialState.decisions.length === 0, `partial should not append final decisions, got ${JSON.stringify(partialState.decisions)}`);
-  assert(partialState.pendingDecision.partialAnswers.first === 'A', `partial answers persisted, got ${JSON.stringify(partialState.pendingDecision)}`);
-  assert(!fs.existsSync(partialOpen.data.attentionPath), 'partial consume clears old attention');
-});
-
-test('attention consume fails closed for unanswered, mismatched, and stale attention', () => {
-  const unanswered = initTaskWithRunStatus('attn-consume-unanswered');
-  const unansweredOpen = run(`lifecycle attention open --fixme-dir "${unanswered.fixmeDir}" --data '${ownerAttentionOpenData(unanswered.statusId, unanswered.statePath, 'attn_consume_unanswered')}'`);
-  assert(unansweredOpen.ok, `unanswered open should succeed, got: ${JSON.stringify(unansweredOpen.data)}`);
-  const unansweredConsume = run(`lifecycle attention consume --fixme-dir "${unanswered.fixmeDir}" --data '${consumeAttentionData(unanswered.statusId, unanswered.statePath, 'attn_consume_unanswered', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
-  assert(!unansweredConsume.ok, 'unanswered attention should fail');
-  assert(unansweredConsume.data.error.code === 'invalidInput', `unanswered should be invalidInput, got ${JSON.stringify(unansweredConsume.data)}`);
-  assert(unansweredConsume.data.error.message.includes('answered'), `unanswered error should mention answered state, got ${JSON.stringify(unansweredConsume.data)}`);
-
-  const mismatched = initTaskWithRunStatus('attn-consume-mismatch');
-  const mismatchedOpen = run(`lifecycle attention open --fixme-dir "${mismatched.fixmeDir}" --data '${ownerAttentionOpenData(mismatched.statusId, mismatched.statePath, 'attn_consume_mismatch')}'`);
-  assert(mismatchedOpen.ok, `mismatch open should succeed, got: ${JSON.stringify(mismatchedOpen.data)}`);
-  const mismatchedAnswer = run(`lifecycle attention broker answer --fixme-dir "${mismatched.fixmeDir}" --status-id ${mismatched.statusId} --attention-id attn_consume_mismatch --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
-  assert(mismatchedAnswer.ok, `mismatch answer should succeed, got: ${JSON.stringify(mismatchedAnswer.data)}`);
-  const otherStatePath = path.join(mismatched.fixmeDir, 'tasks', 'other.state.json');
-  fs.mkdirSync(path.dirname(otherStatePath), { recursive: true });
-  fs.writeFileSync(otherStatePath, JSON.stringify(readJson(mismatched.statePath), null, 2) + '\n');
-  const badStatePath = run(`lifecycle attention consume --fixme-dir "${mismatched.fixmeDir}" --data '${consumeAttentionData(mismatched.statusId, otherStatePath, 'attn_consume_mismatch', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
-  assert(!badStatePath.ok, 'mismatched taskStatePath should fail');
-  assert(badStatePath.data.error.code === 'invalidInput', `mismatch should be invalidInput, got ${JSON.stringify(badStatePath.data)}`);
-
-  const staleAttention = run(`lifecycle attention consume --fixme-dir "${mismatched.fixmeDir}" --data '${consumeAttentionData(mismatched.statusId, mismatched.statePath, 'attn_missing_consume', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
-  assert(!staleAttention.ok, 'missing attention should fail');
-  assert(staleAttention.data.error.code === 'stateNotFound', `missing attention should be stateNotFound, got ${JSON.stringify(staleAttention.data)}`);
-});
-
-console.log('\n=== lifecycle wait tests ===\n');
-
-test('wait begin sets working command marker and wait end clears it', () => {
-  const fixmeDir = makeFixmeDir();
-  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
-  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "yarn test"`);
-  assert(begin.ok, `wait begin should succeed, got: ${JSON.stringify(begin.data)}`);
-  const afterBegin = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
-  assert(afterBegin.data.state === 'running' && afterBegin.data.checkpoint === 'working', 'running/working');
-  assert(afterBegin.data.currentCommand === 'yarn test', `command set, got ${afterBegin.data.currentCommand}`);
-  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
-  assert(end.ok, `wait end should succeed, got: ${JSON.stringify(end.data)}`);
-  const afterEnd = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
-  assert(afterEnd.data.currentCommand === null, `command cleared, got ${afterEnd.data.currentCommand}`);
-});
-
-test('wait begin same label updates and different label rejects', () => {
-  const fixmeDir = makeFixmeDir();
-  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
-  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
-  const same = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
-  assert(same.ok, `same label should update, got: ${JSON.stringify(same.data)}`);
-  const diff = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-b"`);
-  assert(!diff.ok && diff.data.error.code === 'staleState', `different label should be staleState, got ${JSON.stringify(diff.data)}`);
-});
-
-test('wait begin and end reject while attention marker active', () => {
-  const fixmeDir = makeFixmeDir();
-  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
-  const attentionData = JSON.stringify({
-    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
-    resumeRef: 'FIXME-1', taskStatePath: path.join(fixmeDir, 'tasks', 't.state.json'),
-    promptMarkdown: '## D', answerMode: 'freeform',
-  });
-  run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
-  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
-  assert(!begin.ok && begin.data.error.code === 'activeAttention', `begin should be activeAttention, got ${JSON.stringify(begin.data)}`);
-  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
-  assert(!end.ok && end.data.error.code === 'activeAttention', `end should be activeAttention, got ${JSON.stringify(end.data)}`);
-});
-
-test('wait end after cleared returns current status idempotently', () => {
-  const fixmeDir = makeFixmeDir();
-  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
-  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
-  run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
-  const again = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
 test('attention broker resume records raw answer and returns minimal existing-task launch', () => {
   const fixmeDir = makeFixmeDir();
   const payload = prepareChildPayload({ suffix: 'broker-resume-success' });
@@ -5273,6 +5273,201 @@ test('attention broker resume is idempotent and fails closed for stale child sta
   assert(mismatchRecord.status === 'waiting', `mismatched helper must not store answer, got ${JSON.stringify(mismatchRecord)}`);
 });
 
+test('attention consume resolved decision appends decision, checkpoints state, and clears attention', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-consume-resolved');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_resolved')}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_resolved --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  const decision = completeDecisionObject('decision_consume_resolved', {
+    attentionId: 'attn_consume_resolved',
+    answer: 'A',
+    interpretation: 'Use option A.',
+  });
+  const checkpointData = { status: 'running', pendingDecision: null };
+  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
+  assert(consume.ok, `consume should succeed, got: ${JSON.stringify(consume.data)}`);
+  assert(consume.data.mode === 'resolvedDecision', `mode returned, got ${consume.data.mode}`);
+  assert(consume.data.decisionCount === 1, `decision count returned, got ${JSON.stringify(consume.data)}`);
+  assert(!fs.existsSync(open.data.attentionPath), 'consume removes attention record');
+  const state = readJson(statePath);
+  assert(state.status === 'running', `state status should be running, got ${state.status}`);
+  assert(state.pendingDecision === null, `pendingDecision should clear, got ${JSON.stringify(state.pendingDecision)}`);
+  assert(state.decisions.length === 1 && state.decisions[0].id === 'decision_consume_resolved', `decision persisted, got ${JSON.stringify(state.decisions)}`);
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${statusId}`);
+  assert(status.ok, `status should read, got ${JSON.stringify(status.data)}`);
+  assert(status.data.currentCommand === null, `attention marker cleared, got ${status.data.currentCommand}`);
+  assert(status.data.state === 'running' && status.data.checkpoint === 'working', `run status restored, got ${status.data.state}/${status.data.checkpoint}`);
+
+  const replay = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
+  assert(replay.ok, `consume replay after clear should succeed, got: ${JSON.stringify(replay.data)}`);
+  const replayState = readJson(statePath);
+  assert(replayState.decisions.length === 1, `replay must not duplicate decisions, got ${JSON.stringify(replayState.decisions)}`);
+});
+
+test('attention consume is idempotent after decision append partial success', () => {
+  const { fixmeDir, projectRoot, statePath, statusId } = initTaskWithRunStatus('attn-consume-decision-written');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_written')}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_written --data '${JSON.stringify({ answer: 'B', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  const decision = completeDecisionObject('decision_consume_written', {
+    attentionId: 'attn_consume_written',
+    answer: 'B',
+    interpretation: 'Use option B.',
+  });
+  const appended = runInDir(`task decision append --state "${statePath}" --compact --data '${JSON.stringify(decision)}'`, projectRoot);
+  assert(appended.ok, `partial decision append should succeed, got: ${JSON.stringify(appended.data)}`);
+
+  const checkpointData = { status: 'running', pendingDecision: null };
+  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_written', 'resolvedDecision', checkpointData, [decision])}'`);
+  assert(consume.ok, `consume after decision append should succeed, got: ${JSON.stringify(consume.data)}`);
+  const state = readJson(statePath);
+  assert(state.decisions.length === 1 && state.decisions[0].id === 'decision_consume_written', `decision should not duplicate, got ${JSON.stringify(state.decisions)}`);
+  assert(state.pendingDecision === null, 'checkpoint applied after partial decision append');
+  assert(!fs.existsSync(open.data.attentionPath), 'attention cleared after partial decision append');
+});
+
+test('attention consume accepts equivalent checkpoint replay and clears consumed attention', () => {
+  const { fixmeDir, projectRoot, statePath, statusId } = initTaskWithRunStatus('attn-consume-checkpoint-written');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, 'attn_consume_checkpoint')}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_consume_checkpoint --data '${JSON.stringify({ answer: 'question?', answeredBy: 'user', answerKind: 'clarificationRequest' })}'`);
+  assert(answer.ok, `answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  const checkpointData = {
+    status: 'running',
+    pendingDecision: {
+      kind: 'plan-decision',
+      clarificationContext: {
+        answer: 'question?',
+      },
+    },
+  };
+  const checkpointed = runInDir(`task checkpoint --state "${statePath}" --data '${JSON.stringify(checkpointData)}'`, projectRoot);
+  assert(checkpointed.ok, `partial checkpoint should succeed, got: ${JSON.stringify(checkpointed.data)}`);
+  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_checkpoint', 'clarificationRequest', checkpointData, [])}'`);
+  assert(consume.ok, `consume after checkpoint should succeed, got: ${JSON.stringify(consume.data)}`);
+  const state = readJson(statePath);
+  assert(state.status === 'running', `state running, got ${state.status}`);
+  assert(state.pendingDecision && state.pendingDecision.clarificationContext.answer === 'question?', `clarification context preserved, got ${JSON.stringify(state.pendingDecision)}`);
+  assert(!fs.existsSync(open.data.attentionPath), 'attention cleared after checkpoint replay');
+});
+
+test('attention consume clarification and partial modes checkpoint pendingDecision without decisions', () => {
+  const clarification = initTaskWithRunStatus('attn-consume-clarification');
+  const clarificationOpen = run(`lifecycle attention open --fixme-dir "${clarification.fixmeDir}" --data '${ownerAttentionOpenData(clarification.statusId, clarification.statePath, 'attn_consume_clarification')}'`);
+  assert(clarificationOpen.ok, `clarification open should succeed, got: ${JSON.stringify(clarificationOpen.data)}`);
+  const clarificationAnswer = run(`lifecycle attention broker answer --fixme-dir "${clarification.fixmeDir}" --status-id ${clarification.statusId} --attention-id attn_consume_clarification --data '${JSON.stringify({ answer: 'What about C?', answeredBy: 'user', answerKind: 'clarificationRequest' })}'`);
+  assert(clarificationAnswer.ok, `clarification answer should succeed, got: ${JSON.stringify(clarificationAnswer.data)}`);
+  const clarificationCheckpoint = {
+    status: 'running',
+    pendingDecision: {
+      kind: 'plan-decision',
+      clarificationContext: { answer: 'What about C?' },
+    },
+  };
+  const clarificationConsume = run(`lifecycle attention consume --fixme-dir "${clarification.fixmeDir}" --data '${consumeAttentionData(clarification.statusId, clarification.statePath, 'attn_consume_clarification', 'clarificationRequest', clarificationCheckpoint, [])}'`);
+  assert(clarificationConsume.ok, `clarification consume should succeed, got: ${JSON.stringify(clarificationConsume.data)}`);
+  const clarificationState = readJson(clarification.statePath);
+  assert(clarificationState.decisions.length === 0, `clarification should not append decisions, got ${JSON.stringify(clarificationState.decisions)}`);
+  assert(clarificationState.pendingDecision.clarificationContext.answer === 'What about C?', `clarification context persisted, got ${JSON.stringify(clarificationState.pendingDecision)}`);
+  assert(!fs.existsSync(clarificationOpen.data.attentionPath), 'clarification consume clears old attention');
+
+  const partial = initTaskWithRunStatus('attn-consume-partial');
+  const partialOpen = run(`lifecycle attention open --fixme-dir "${partial.fixmeDir}" --data '${ownerAttentionOpenData(partial.statusId, partial.statePath, 'attn_consume_partial')}'`);
+  assert(partialOpen.ok, `partial open should succeed, got: ${JSON.stringify(partialOpen.data)}`);
+  const partialAnswer = run(`lifecycle attention broker answer --fixme-dir "${partial.fixmeDir}" --status-id ${partial.statusId} --attention-id attn_consume_partial --data '${JSON.stringify({ answer: '1=A, still unsure on 2', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(partialAnswer.ok, `partial answer should succeed, got: ${JSON.stringify(partialAnswer.data)}`);
+  const partialCheckpoint = {
+    status: 'running',
+    pendingDecision: {
+      kind: 'plan-decision',
+      partialAnswers: {
+        first: 'A',
+      },
+    },
+  };
+  const partialConsume = run(`lifecycle attention consume --fixme-dir "${partial.fixmeDir}" --data '${consumeAttentionData(partial.statusId, partial.statePath, 'attn_consume_partial', 'partialDecision', partialCheckpoint, [])}'`);
+  assert(partialConsume.ok, `partial consume should succeed, got: ${JSON.stringify(partialConsume.data)}`);
+  const partialState = readJson(partial.statePath);
+  assert(partialState.decisions.length === 0, `partial should not append final decisions, got ${JSON.stringify(partialState.decisions)}`);
+  assert(partialState.pendingDecision.partialAnswers.first === 'A', `partial answers persisted, got ${JSON.stringify(partialState.pendingDecision)}`);
+  assert(!fs.existsSync(partialOpen.data.attentionPath), 'partial consume clears old attention');
+});
+
+test('attention consume fails closed for unanswered, mismatched, and stale attention', () => {
+  const unanswered = initTaskWithRunStatus('attn-consume-unanswered');
+  const unansweredOpen = run(`lifecycle attention open --fixme-dir "${unanswered.fixmeDir}" --data '${ownerAttentionOpenData(unanswered.statusId, unanswered.statePath, 'attn_consume_unanswered')}'`);
+  assert(unansweredOpen.ok, `unanswered open should succeed, got: ${JSON.stringify(unansweredOpen.data)}`);
+  const unansweredConsume = run(`lifecycle attention consume --fixme-dir "${unanswered.fixmeDir}" --data '${consumeAttentionData(unanswered.statusId, unanswered.statePath, 'attn_consume_unanswered', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
+  assert(!unansweredConsume.ok, 'unanswered attention should fail');
+  assert(unansweredConsume.data.error.code === 'invalidInput', `unanswered should be invalidInput, got ${JSON.stringify(unansweredConsume.data)}`);
+  assert(unansweredConsume.data.error.message.includes('answered'), `unanswered error should mention answered state, got ${JSON.stringify(unansweredConsume.data)}`);
+
+  const mismatched = initTaskWithRunStatus('attn-consume-mismatch');
+  const mismatchedOpen = run(`lifecycle attention open --fixme-dir "${mismatched.fixmeDir}" --data '${ownerAttentionOpenData(mismatched.statusId, mismatched.statePath, 'attn_consume_mismatch')}'`);
+  assert(mismatchedOpen.ok, `mismatch open should succeed, got: ${JSON.stringify(mismatchedOpen.data)}`);
+  const mismatchedAnswer = run(`lifecycle attention broker answer --fixme-dir "${mismatched.fixmeDir}" --status-id ${mismatched.statusId} --attention-id attn_consume_mismatch --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(mismatchedAnswer.ok, `mismatch answer should succeed, got: ${JSON.stringify(mismatchedAnswer.data)}`);
+  const otherStatePath = path.join(mismatched.fixmeDir, 'tasks', 'other.state.json');
+  fs.mkdirSync(path.dirname(otherStatePath), { recursive: true });
+  fs.writeFileSync(otherStatePath, JSON.stringify(readJson(mismatched.statePath), null, 2) + '\n');
+  const badStatePath = run(`lifecycle attention consume --fixme-dir "${mismatched.fixmeDir}" --data '${consumeAttentionData(mismatched.statusId, otherStatePath, 'attn_consume_mismatch', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
+  assert(!badStatePath.ok, 'mismatched taskStatePath should fail');
+  assert(badStatePath.data.error.code === 'invalidInput', `mismatch should be invalidInput, got ${JSON.stringify(badStatePath.data)}`);
+
+  const staleAttention = run(`lifecycle attention consume --fixme-dir "${mismatched.fixmeDir}" --data '${consumeAttentionData(mismatched.statusId, mismatched.statePath, 'attn_missing_consume', 'resolvedDecision', { status: 'running', pendingDecision: null }, [])}'`);
+  assert(!staleAttention.ok, 'missing attention should fail');
+  assert(staleAttention.data.error.code === 'stateNotFound', `missing attention should be stateNotFound, got ${JSON.stringify(staleAttention.data)}`);
+});
+
+console.log('\n=== lifecycle wait tests ===\n');
+
+test('wait begin sets working command marker and wait end clears it', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "yarn test"`);
+  assert(begin.ok, `wait begin should succeed, got: ${JSON.stringify(begin.data)}`);
+  const afterBegin = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(afterBegin.data.state === 'running' && afterBegin.data.checkpoint === 'working', 'running/working');
+  assert(afterBegin.data.currentCommand === 'yarn test', `command set, got ${afterBegin.data.currentCommand}`);
+  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(end.ok, `wait end should succeed, got: ${JSON.stringify(end.data)}`);
+  const afterEnd = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(afterEnd.data.currentCommand === null, `command cleared, got ${afterEnd.data.currentCommand}`);
+});
+
+test('wait begin same label updates and different label rejects', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
+  const same = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-a"`);
+  assert(same.ok, `same label should update, got: ${JSON.stringify(same.data)}`);
+  const diff = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd-b"`);
+  assert(!diff.ok && diff.data.error.code === 'staleState', `different label should be staleState, got ${JSON.stringify(diff.data)}`);
+});
+
+test('wait begin and end reject while attention marker active', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
+    resumeRef: 'FIXME-1', taskStatePath: path.join(fixmeDir, 'tasks', 't.state.json'),
+    promptMarkdown: '## D', answerMode: 'freeform',
+  });
+  run(`run attention set --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --data '${attentionData}'`);
+  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
+  assert(!begin.ok && begin.data.error.code === 'activeAttention', `begin should be activeAttention, got ${JSON.stringify(begin.data)}`);
+  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(!end.ok && end.data.error.code === 'activeAttention', `end should be activeAttention, got ${JSON.stringify(end.data)}`);
+});
+
+test('wait end after cleared returns current status idempotently', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
+  run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  const again = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
   assert(again.ok, `repeated wait end should be idempotent, got: ${JSON.stringify(again.data)}`);
   assert(again.data.currentCommand === null, 'currentCommand stays null');
 });
@@ -6613,6 +6808,78 @@ test('config migrate creates final standard workflows and review level defaults'
   assert(!config.workflows['idea-to-production'], 'removed idea-to-production workflow should not be written');
 });
 
+test('config migrate upgrades legacy standard workflow with plan readiness', () => {
+  const tmp = createTmpDir();
+  const generated = runInDir('config migrate', tmp);
+  assert(generated.ok, `initial config migrate should succeed: ${JSON.stringify(generated.data)}`);
+
+  const config = readProjectConfig(tmp);
+  delete config.workflows.standard.phases[0].review.readiness;
+  config.workflows.standard.phases[0].review.maxCycles = 5;
+  writeProjectConfig(tmp, config);
+
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `config migrate should upgrade legacy standard workflow: ${JSON.stringify(result.data)}`);
+  assert(result.data.migrated === true, 'migration should report a config write');
+  assert(result.data.addedWorkflows.length === 0, 'legacy standard upgrade should not add workflows');
+
+  const migrated = readProjectConfig(tmp);
+  assert(migrated.workflows.standard.phases[0].review.readiness === 'fixme-plan-readiness', 'legacy standard plan review should gain readiness triage');
+  assert(migrated.workflows.standard.phases[0].review.maxCycles === 5, 'legacy standard migration should preserve existing plan maxCycles');
+});
+
+test('config migrate leaves custom standard workflow without readiness unchanged', () => {
+  const tmp = createTmpDir();
+  const generated = runInDir('config migrate', tmp);
+  assert(generated.ok, `initial config migrate should succeed: ${JSON.stringify(generated.data)}`);
+
+  const config = readProjectConfig(tmp);
+  config.workflows.standard.phases[0].review.skills = ['custom-plan-review', 'fixme-handle-plan-review'];
+  delete config.workflows.standard.phases[0].review.readiness;
+  writeProjectConfig(tmp, config);
+
+  const before = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  const result = runInDir('config migrate', tmp);
+  assert(result.ok, `config migrate should accept custom standard workflow: ${JSON.stringify(result.data)}`);
+  assert(result.data.migrated === false, 'custom standard workflow should not be migrated');
+
+  const after = fs.readFileSync(path.join(tmp, '.fixme', 'config.json'), 'utf8');
+  assert(after === before, 'custom standard workflow config should not be rewritten');
+});
+
+test('task init auto-migrates legacy standard workflow on first use', () => {
+  const projectRoot = createTmpDir();
+  const generated = runInDir('config migrate', projectRoot);
+  assert(generated.ok, `initial config migrate should succeed: ${JSON.stringify(generated.data)}`);
+
+  const config = readProjectConfig(projectRoot);
+  delete config.workflows.standard.phases[0].review.readiness;
+  writeProjectConfig(projectRoot, config);
+
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'legacy-standard-ticket', 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `task init should succeed and migrate config, got: ${JSON.stringify(initialized.data)}`);
+
+  const migrated = readProjectConfig(projectRoot);
+  assert(migrated.workflows.standard.phases[0].review.readiness === 'fixme-plan-readiness', 'first standard workflow use should add readiness triage');
+});
+
+test('task init does not rewrite current config on first use', () => {
+  const projectRoot = createTmpDir();
+  const generated = runInDir('config migrate', projectRoot);
+  assert(generated.ok, `initial config migrate should succeed: ${JSON.stringify(generated.data)}`);
+
+  const before = fs.readFileSync(path.join(projectRoot, '.fixme', 'config.json'), 'utf8');
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'current-config-ticket', 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `task init should succeed without migrating config, got: ${JSON.stringify(initialized.data)}`);
+
+  const after = fs.readFileSync(path.join(projectRoot, '.fixme', 'config.json'), 'utf8');
+  assert(after === before, 'current config should not be rewritten on workflow use');
+});
+
 test('config migrate rejects obsolete config keys without conversion', () => {
   const cases = [
     {
@@ -7041,6 +7308,28 @@ test('STANDARD_PIPELINES exports final workflow names', () => {
   assert(!STANDARD_PIPELINES.quick.some(phase => phase.review), 'quick should have no review blocks');
 });
 
+test('config workflow configure rejects invalid cycle counts', () => {
+  const tmp = createTmpDir();
+  const workflow = JSON.stringify({
+    phases: [
+      {
+        name: 'plan',
+        skills: ['fixme-write-plan'],
+        review: {
+          skills: ['fixme-review-plan'],
+          maxCycles: 0
+        }
+      }
+    ],
+    outerMaxCycles: 2
+  });
+
+  const result = runInDir(`config workflow configure standard --data '${workflow}'`, tmp);
+  assert(!result.ok, 'invalid review maxCycles should fail');
+  assert(result.data && result.data.error, 'error should be returned');
+  assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
+});
+
 test('config workflow configure validates plan readiness skill field', () => {
   const tmp = createTmpDir();
   const workflow = JSON.stringify({
@@ -7079,28 +7368,6 @@ test('config workflow configure validates plan readiness skill field', () => {
   result = runInDir(`config workflow configure custom --data '${invalidWorkflow}'`, invalidRoot);
   assert(!result.ok, 'non-string readiness should fail');
   assert(cliErrorMessage(result).includes('review.readiness must be a non-empty string'), `error should explain readiness type, got ${cliErrorMessage(result)}`);
-});
-
-test('config workflow configure rejects invalid cycle counts', () => {
-  const tmp = createTmpDir();
-  const workflow = JSON.stringify({
-    phases: [
-      {
-        name: 'plan',
-        skills: ['fixme-write-plan'],
-        review: {
-          skills: ['fixme-review-plan'],
-          maxCycles: 0
-        }
-      }
-    ],
-    outerMaxCycles: 2
-  });
-
-  const result = runInDir(`config workflow configure standard --data '${workflow}'`, tmp);
-  assert(!result.ok, 'invalid review maxCycles should fail');
-  assert(result.data && result.data.error, 'error should be returned');
-  assert(result.data.error.includes('positive integer'), `error should explain cycle count: ${result.data.error}`);
 });
 
 test('config workflow writes and migration reject obsolete pipeline phase alias', () => {
@@ -7541,27 +7808,6 @@ test('multi-root: context load from Codex-linked worktree reads canonical worksp
 // resolve-model tests
 // ============================================================================
 
-test('resolve-model uses review-grade effort for plan readiness checker', () => {
-  const tmp = createTmpDir();
-
-  let result = runInDir('resolve-model fixme-plan-readiness --runtime claude', tmp);
-  assert(result.ok, `Claude readiness model should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.model === 'opus', `quality readiness model should be opus, got ${result.data.model}`);
-  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Claude reasoning, got ${result.data.reasoning_effort}`);
-
-  result = runInDir('resolve-model fixme-plan-readiness --runtime codex', tmp);
-  assert(result.ok, `Codex readiness model should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.model === null, 'Codex readiness model should not pin a model');
-  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Codex reasoning, got ${result.data.reasoning_effort}`);
-
-  const budgetRoot = createTmpDir();
-  writeProjectConfig(budgetRoot, { models: { profile: 'budget' } });
-  result = runInDir('resolve-model fixme-plan-readiness --runtime claude', budgetRoot);
-  assert(result.ok, `budget readiness model should resolve: ${JSON.stringify(result.data)}`);
-  assert(result.data.model === 'sonnet', `budget readiness model should be sonnet, got ${result.data.model}`);
-  assert(result.data.reasoning_effort === 'xhigh', `budget readiness should keep xhigh reasoning, got ${result.data.reasoning_effort}`);
-});
-
 test('resolve-model: no config returns opus/quality/default', () => {
   const dir = createTmpDir();
   const res = runInDir('resolve-model fixme-write-plan', dir);
@@ -7695,6 +7941,27 @@ test('resolve-model: inherit profile omits runtime controls', () => {
   assert(codex.data.model === null, `codex model: ${codex.data.model}`);
   assert(codex.data.reasoning_effort === null, `codex reasoning_effort: ${codex.data.reasoning_effort}`);
   assert(codex.data.source === 'profile', `codex source: ${codex.data.source}`);
+});
+
+test('resolve-model uses review-grade effort for plan readiness checker', () => {
+  const tmp = createTmpDir();
+
+  let result = runInDir('resolve-model fixme-plan-readiness --runtime claude', tmp);
+  assert(result.ok, `Claude readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === 'opus', `quality readiness model should be opus, got ${result.data.model}`);
+  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Claude reasoning, got ${result.data.reasoning_effort}`);
+
+  result = runInDir('resolve-model fixme-plan-readiness --runtime codex', tmp);
+  assert(result.ok, `Codex readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === null, 'Codex readiness model should not pin a model');
+  assert(result.data.reasoning_effort === 'xhigh', `readiness checker should use xhigh Codex reasoning, got ${result.data.reasoning_effort}`);
+
+  const budgetRoot = createTmpDir();
+  writeProjectConfig(budgetRoot, { models: { profile: 'budget' } });
+  result = runInDir('resolve-model fixme-plan-readiness --runtime claude', budgetRoot);
+  assert(result.ok, `budget readiness model should resolve: ${JSON.stringify(result.data)}`);
+  assert(result.data.model === 'sonnet', `budget readiness model should be sonnet, got ${result.data.model}`);
+  assert(result.data.reasoning_effort === 'xhigh', `budget readiness should keep xhigh reasoning, got ${result.data.reasoning_effort}`);
 });
 
 test('resolve-model: spec reviewer follows reviewer profile mapping', () => {
@@ -8014,32 +8281,28 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedTask.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'source skill body should rewrite Claude paths to Codex paths');
   assert(installedTask.includes('~/.codex/rules/spec-review-rules.md'), 'tilde Claude paths should rewrite to Codex paths');
   assert(!installedTask.includes('$HOME/.claude/'), 'installed skill should not retain Claude home paths');
-  assert(installedTask.includes('## Fixme Usage Tracking'), 'installed Codex skill should include usage tracking block');
-  assert(installedTask.includes('## Fixme Agent Liveness'), 'installed Codex skill should include liveness block');
-  assert(installedTask.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'Codex liveness block should use run ping');
-  assert(!installedTask.includes('liveness ping --status-id'), 'Codex liveness block should not use obsolete liveness ping');
-  assert(!installedTask.includes('fixme-tools.cjs liveness'), 'Codex liveness block should not call obsolete liveness namespace');
-  assert(installedTask.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'Codex liveness block should be optional when no statusId exists');
-  assert(installedTask.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'Codex liveness block should not ping over active attention');
-  assert(installedTask.includes('--runtime codex'), 'Codex usage block should pass --runtime codex');
-  assert(!installedTask.includes('--runtime auto'), 'Codex usage block should not pass --runtime auto');
+  assert(!installedTask.includes('## Fixme Usage Tracking'), 'fixme-task owns native usage reporting and should not receive generated usage block');
+  assert(!installedTask.includes('## Fixme Agent Liveness'), 'fixme-task owns native lifecycle liveness and should not receive generated liveness block');
+  assert(!installedTask.includes('liveness ping --status-id'), 'Codex task skill should not use obsolete liveness ping');
+  assert(!installedTask.includes('fixme-tools.cjs liveness'), 'Codex task skill should not call obsolete liveness namespace');
+  assert(!installedTask.includes('--runtime auto'), 'Codex task skill should not pass --runtime auto');
   assert(!installedTask.includes('--task'), 'usage block must not pass --task');
-  assert(installedTask.includes('If the dispatch prompt includes `pipelineRunId`'), 'Codex usage block should detect camelCase pipelineRunId prompt metadata');
-  assert(installedTask.includes('--pipeline-run-id <pipelineRunId>'), 'Codex usage block should map camelCase prompt metadata to CLI flag');
-  assert(installedTask.includes('If it includes `parentInvocationId`'), 'Codex usage block should detect camelCase parentInvocationId prompt metadata');
-  assert(installedTask.includes('If it includes a non-empty `usageSourcePath`, include `--source-path <usageSourcePath>`'), 'Codex usage block should propagate runtime counter source paths');
   assert(!installedTask.includes('pipeline_run_id'), 'Codex installed skill should not use snake_case pipeline_run_id prompt metadata');
   assert(!installedTask.includes('parent_invocation_id'), 'Codex installed skill should not use snake_case parent_invocation_id prompt metadata');
-  assert(installedTask.includes('Only run this block when `fixme-task` is the active skill invocation.'), 'usage block should have active-skill guard');
-  assert(installedTask.includes('--role orchestrator'), 'fixme-task should be instrumented as orchestrator');
-  assert(installedTask.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
-  assert(installedHandler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
+  assert(installedHandler.includes('## Fixme Usage Tracking'), 'handler should include generated usage block');
   assert(installedHandler.includes('## Fixme Agent Liveness'), 'handler should include liveness block');
+  assert(installedHandler.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'handler liveness block should use run ping');
+  assert(installedHandler.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'handler liveness block should be optional when no statusId exists');
+  assert(installedHandler.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'handler liveness block should not ping over active attention');
+  assert(installedHandler.includes('--runtime codex'), 'handler usage block should pass --runtime codex');
+  assert(installedHandler.includes('--pipeline-run-id <pipelineRunId>'), 'handler usage block should map camelCase prompt metadata to CLI flag');
+  assert(installedHandler.includes('If it includes a non-empty `usageSourcePath`, include `--source-path <usageSourcePath>`'), 'handler usage block should propagate runtime counter source paths');
+  assert(installedHandler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
 
   const usageBlockCount = (installedTask.match(/## Fixme Usage Tracking/g) || []).length;
-  assert(usageBlockCount === 1, `usage block should be idempotent, got ${usageBlockCount}`);
+  assert(usageBlockCount === 0, `fixme-task should not get generated usage blocks, got ${usageBlockCount}`);
   const livenessBlockCount = (installedTask.match(/## Fixme Agent Liveness/g) || []).length;
-  assert(livenessBlockCount === 1, `liveness block should be idempotent, got ${livenessBlockCount}`);
+  assert(livenessBlockCount === 0, `fixme-task should not get generated liveness blocks, got ${livenessBlockCount}`);
 
   const installedReference = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'references', 'dispatch.md'), 'utf8');
   assert(installedReference.includes('.codex/skills/fixme-task/SKILL.md'), 'markdown references should be path-converted');
@@ -8052,6 +8315,8 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   const reinstalledTask = fs.readFileSync(path.join(codexSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
   const adapterCount = (reinstalledTask.match(/<codex_skill_adapter>/g) || []).length;
   assert(adapterCount === 1, `adapter should be idempotent, got ${adapterCount}`);
+  const reinstallUsageBlockCount = (reinstalledTask.match(/## Fixme Usage Tracking/g) || []).length;
+  assert(reinstallUsageBlockCount === 0, `fixme-task should still omit generated usage blocks after reinstall, got ${reinstallUsageBlockCount}`);
 });
 
 test('claude-skills install: writes Claude skills with usage tracking and cleans stale copies', () => {
@@ -8080,25 +8345,16 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   const handler = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-handle-plan-review', 'SKILL.md'), 'utf8');
   const reference = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-howto-code-map', 'SKILL.md'), 'utf8');
 
-  assert(task.includes('## Fixme Usage Tracking'), 'Claude task skill should include usage tracking block');
-  assert(task.includes('## Fixme Agent Liveness'), 'Claude task skill should include liveness block');
-  assert(task.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'Claude liveness block should use run ping');
+  assert(!task.includes('## Fixme Usage Tracking'), 'Claude fixme-task owns native usage reporting and should not receive generated usage block');
+  assert(!task.includes('## Fixme Agent Liveness'), 'Claude fixme-task owns native lifecycle liveness and should not receive generated liveness block');
   assert(!task.includes('liveness ping --status-id'), 'Claude liveness block should not use obsolete liveness ping');
   assert(!task.includes('fixme-tools.cjs liveness'), 'Claude liveness block should not call obsolete liveness namespace');
-  assert(task.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'Claude liveness block should be optional when no statusId exists');
-  assert(task.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'Claude liveness block should not ping over active attention');
-  assert(task.includes('--runtime claude'), 'Claude usage block should pass --runtime claude');
   assert(!task.includes('--runtime auto'), 'Claude usage block should not pass --runtime auto');
   assert(!task.includes('--task'), 'usage block must not pass --task');
-  assert(task.includes('If the dispatch prompt includes `pipelineRunId`'), 'Claude usage block should detect camelCase pipelineRunId prompt metadata');
-  assert(task.includes('--pipeline-run-id <pipelineRunId>'), 'Claude usage block should map camelCase prompt metadata to CLI flag');
-  assert(task.includes('If it includes `parentInvocationId`'), 'Claude usage block should detect camelCase parentInvocationId prompt metadata');
   assert(!task.includes('pipeline_run_id'), 'Claude installed skill should not use snake_case pipeline_run_id prompt metadata');
   assert(!task.includes('parent_invocation_id'), 'Claude installed skill should not use snake_case parent_invocation_id prompt metadata');
-  assert(task.includes('--role orchestrator'), 'fixme-task role mapping');
   assert(reviewer.includes('--role reviewer'), 'fixme-review-* role mapping');
   assert(handler.includes('--role handler'), 'fixme-handle-* role mapping');
-  assert(task.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'usage report line must come before terminal directives');
   assert(handler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
   assert(reviewer.includes('## Fixme Agent Liveness'), 'reviewer should include liveness block');
   assert(handler.includes('## Fixme Agent Liveness'), 'handler should include liveness block');
@@ -8117,9 +8373,9 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(reinstall.ok, `reinstall should succeed, got: ${JSON.stringify(reinstall)}`);
   const reinstalledTask = fs.readFileSync(path.join(claudeSkillsDir, 'fixme-task', 'SKILL.md'), 'utf8');
   const blockCount = (reinstalledTask.match(/## Fixme Usage Tracking/g) || []).length;
-  assert(blockCount === 1, `usage block should be idempotent, got ${blockCount}`);
+  assert(blockCount === 0, `fixme-task should still omit generated usage blocks after reinstall, got ${blockCount}`);
   const livenessBlockCount = (reinstalledTask.match(/## Fixme Agent Liveness/g) || []).length;
-  assert(livenessBlockCount === 1, `liveness block should be idempotent, got ${livenessBlockCount}`);
+  assert(livenessBlockCount === 0, `fixme-task should still omit generated liveness blocks after reinstall, got ${livenessBlockCount}`);
   const reinstalledSettings = readJson(path.join(claudeDir, 'settings.json'));
   const hookConfig = JSON.stringify(reinstalledSettings.hooks.UserPromptSubmit);
   const hookCount = (hookConfig.match(/usage claude-hook/g) || []).length;
@@ -8220,13 +8476,15 @@ test('documentation: README and fixme-tools skill mention usage reporting', () =
   assert(toolsSkill.includes('run ping` refuses non-terminal updates that would replace an active `currentCommand: attention:<attentionId>`'), 'fixme-tools skill should document that pings cannot hide pending attention');
   assert(toolsSkill.includes('run status --fixme-dir'), 'fixme-tools skill should document run status');
   assert(toolsSkill.includes('`run status` reads the current JSON file and rejects stored status files with unsupported top-level fields'), 'fixme-tools skill should document persisted run status shape checks');
-  assert(toolsSkill.includes('task save --data'), 'fixme-tools skill should document task save');
+  assert(toolsSkill.includes('task save --data-file'), 'fixme-tools skill should document task save via data-file');
   assert(toolsSkill.includes('task save` rejects skeletal inputs that are not self-contained handoffs'), 'fixme-tools skill should document task save handoff validation');
+  assert(toolsSkill.includes('It also rejects non-empty `openQuestions`'), 'fixme-tools skill should document open question rejection');
   assert(toolsSkill.includes('task init --ticket'), 'fixme-tools skill should document task init for tickets');
   assert(toolsSkill.includes('`task save` and `task init` both require the caller to pass a resolved `pipelineResolution`'), 'fixme-tools skill should document resolved pipeline requirement');
   assert(toolsSkill.includes('task checkpoint --state'), 'fixme-tools skill should document task checkpoint');
   assert(toolsSkill.includes('`task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, `pendingDecision`, and `producerContinuations` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth'), 'fixme-tools skill should document checkpoint shape and forbidden field validation');
   assert(toolsSkill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'fixme-tools skill should document task resolve');
+  assert(toolsSkill.includes('task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>'), 'fixme-tools skill should document durable task supersession');
   assert(toolsSkill.includes('run attention set --fixme-dir'), 'fixme-tools skill should document run attention set');
   assert(toolsSkill.includes('run attention answer --fixme-dir'), 'fixme-tools skill should document run attention answer');
   assert(toolsSkill.includes('`run attention set` requires non-empty `ownerSkill`, `kind`, and `promptMarkdown`'), 'fixme-tools skill should document required attention prompt fields');
@@ -8379,6 +8637,14 @@ test('resumable producer skills document durable artifact precedence on continua
       skill.includes('PRODUCER_CONTINUATION_REJECTED'),
       `${skillName} should expose a deterministic rejection directive`,
     );
+    assert(
+      skill.includes('Producer skills must never call `lifecycle dispatch prepare`'),
+      `${skillName} should forbid child dispatch from producer skills`,
+    );
+    assert(
+      skill.includes('Do not load or execute `fixme-task` orchestration workflow instructions'),
+      `${skillName} should forbid acting as the fixme-task orchestrator`,
+    );
   }
 
   const executor = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-execute-plan/SKILL.md'), 'utf8');
@@ -8396,8 +8662,55 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('Before every Agent dispatch wait, ping the current fixme-task invocation'), 'fixme-task should refresh its inherited liveness before waiting on child agents');
-  assert(skill.includes('--current-command "waiting for <agent-name>"'), 'fixme-task should report the child agent it is waiting on');
+  assert(skill.includes('--current-command waiting-for:<agent-name>'), 'fixme-task should report the child agent it is waiting on with a shell-safe marker');
+  assert(!skill.includes('--current-command "waiting for <agent-name>"'), 'fixme-task should not use a quoted spaced liveness wait marker');
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
+});
+
+test('fixme-task skill: documents dispatch prepare payload contract without response-only inputs', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Dispatch prepare request payload has exactly these required fields:'), 'fixme-task should define the dispatch prepare request contract');
+  assert(skill.includes('Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.'), 'fixme-task should list the exact required dispatch prepare inputs');
+  assert(skill.includes('Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`'), 'fixme-task should identify response-only dispatch prepare fields');
+  assert(skill.includes('Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload.'), 'fixme-task should forbid response-only fields as inputs');
+});
+
+test('fixme-task skill: keeps dispatch idempotency stable across validation retries', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('A CLI validation failure does not create a new logical dispatch attempt. Fix the payload and retry with the same idempotency key.'), 'validation retries should reuse the same dispatch key');
+  assert(skill.includes('Use a new idempotency key only after a recorded dispatch conflict, bad continuation, completed prior dispatch, or intentional fresh fallback.'), 'new keys should be limited to recorded fresh attempts');
+});
+
+test('fixme-task skill: requires a complete terminal child lifecycle before final directives', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Before emitting `TASK_EVENT_RECORDED` or any final directive, verify exactly one terminal child handoff sequence has completed'), 'fixme-task should gate final directives on a complete terminal handoff');
+  for (const command of [
+    'lifecycle dispatch complete',
+    'task checkpoint',
+    'task result write',
+    'lifecycle task-event record',
+    'lifecycle invocation finish',
+  ]) {
+    assert(skill.includes(command), `terminal lifecycle checklist should include ${command}`);
+  }
+  assert(skill.includes('Emit the usage report line and terminal task-event directive exactly once.'), 'fixme-task should forbid duplicate terminal usage/directive output');
+});
+
+test('fixme-task skill: uses data-file payloads for nested workflow JSON', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Inline `--data` JSON is allowed only for tiny flat examples; workflow payloads with nested objects or arrays must be written to an absolute JSON file and passed with `--data-file`.'), 'fixme-task should require data-file payloads for nested workflow JSON');
+  assert(skill.includes('task save --data-file <task-save.json>'), 'save mode should use data-file for nested save payloads');
+  assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'checkpoint examples should use data-file for nested patches');
+  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>'), 'dispatch prepare should use data-file for nested prompt payloads');
+  assert(skill.includes('task init --state <activeChild.taskStatePath>'), 'parent-driven init should still use the reserved active child state path');
 });
 
 test('fixme-task skill separates saved handoff task init from reserved state init', () => {
@@ -8418,6 +8731,36 @@ test('fixme-task skill separates saved handoff task init from reserved state ini
   const savedIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`');
   const reservedIndex = skill.indexOf('Otherwise, initialize the reserved state path');
   assert(savedIndex !== -1 && reservedIndex !== -1 && savedIndex < reservedIndex, 'saved handoff branch should be documented before reserved-state fallback');
+});
+
+test('review synthesize-clean-handler emits deterministic clean routing blocks', () => {
+  const plan = run('review synthesize-clean-handler --kind plan');
+  assert(plan.ok, `plan clean handler synthesis should succeed: ${JSON.stringify(plan.data)}`);
+  assert(plan.data.handlerResult === 'CLEAN', `plan handlerResult should be CLEAN, got ${plan.data.handlerResult}`);
+  assert(plan.data.nextAction === 'DONE', `plan nextAction should be DONE, got ${plan.data.nextAction}`);
+  assert(plan.data.routingBlock.includes('HANDLER_RESULT: CLEAN'), 'plan routing block should include CLEAN directive');
+  assert(plan.data.routingBlock.includes('PLAN_REQUIRED_COUNT: 0'), 'plan routing block should include plan-required count');
+  assert(plan.data.routingBlock.includes('IMPLEMENT_ONLY_COUNT: 0'), 'plan routing block should include implement-only count');
+  assertNoSnakeCaseKeys(plan.data, 'plan clean handler synthesis output');
+
+  const code = run('review synthesize-clean-handler --kind code');
+  assert(code.ok, `code clean handler synthesis should succeed: ${JSON.stringify(code.data)}`);
+  assert(code.data.routingBlock.includes('PLAN_REQUIRED_COUNT: 0'), 'code routing block should include plan-required count');
+  assert(code.data.routingBlock.includes('IMPLEMENT_ONLY_COUNT: 0'), 'code routing block should include implement-only count');
+  assertNoSnakeCaseKeys(code.data, 'code clean handler synthesis output');
+
+  const specification = run('review synthesize-clean-handler --kind specification');
+  assert(specification.ok, `spec clean handler synthesis should succeed: ${JSON.stringify(specification.data)}`);
+  assert(specification.data.routingBlock.includes('HANDLER_RESULT: CLEAN'), 'spec routing block should include CLEAN directive');
+  assert(!specification.data.routingBlock.includes('PLAN_REQUIRED_COUNT'), 'spec routing block should not include plan-required count');
+  assert(!specification.data.routingBlock.includes('IMPLEMENT_ONLY_COUNT'), 'spec routing block should not include implement-only count');
+  assertNoSnakeCaseKeys(specification.data, 'spec clean handler synthesis output');
+});
+
+test('review synthesize-clean-handler rejects unsupported kinds', () => {
+  const result = run('review synthesize-clean-handler --kind nonsense');
+  assert(!result.ok, 'unsupported review kind should fail');
+  assert(cliErrorMessage(result).includes('--kind must be one of: plan, code, specification'), `unsupported kind error should name allowed kinds, got ${cliErrorMessage(result)}`);
 });
 
 test('review validate-plan-readiness validates route consistency and camelCase JSON', () => {
@@ -8522,6 +8865,22 @@ test('review validate-plan-readiness validates route consistency and camelCase J
   assert(fullReview.data.result === 'FULL_PLAN_REVIEW', `result should be FULL_PLAN_REVIEW, got ${fullReview.data.result}`);
 });
 
+test('fixme reviewers emit machine-readable review result footer for clean fast path', () => {
+  const reviewerPaths = [
+    path.resolve(__dirname, '..', '..', 'fixme-review-spec', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-review-plan', 'SKILL.md'),
+    path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md'),
+  ];
+
+  for (const skillPath of reviewerPaths) {
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    assert(skill.includes('REVIEW_RESULT: CLEAN | HAS_ITEMS'), `${skillPath} should emit a machine-readable review result`);
+    assert(skill.includes('FINDING_COUNT: <number>'), `${skillPath} should emit a finding count`);
+    assert(skill.includes('QUESTION_COUNT: <number>'), `${skillPath} should emit a question count`);
+    assert(skill.includes('Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`.'), `${skillPath} should gate clean result on zero findings and questions`);
+  }
+});
+
 test('plan readiness skill and agent define compact independent triage contract', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-plan-readiness', 'SKILL.md');
   const agentPath = path.resolve(__dirname, '..', '..', '..', 'agents', 'fixme-plan-readiness.md');
@@ -8550,6 +8909,20 @@ test('plan readiness skill and agent define compact independent triage contract'
   assert(agent.includes('Never modify files'), 'agent should forbid file modifications');
 });
 
+test('fixme-task synthesizes clean handler output only for machine-clean reviews', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('## Synthetic Clean Handler Fast Path'), 'fixme-task should document the synthetic clean handler fast path');
+  assert(skill.includes('REVIEW_RESULT: CLEAN'), 'fixme-task should require reviewer clean footer before synthesis');
+  assert(skill.includes('FINDING_COUNT: 0'), 'fixme-task should require zero findings before synthesis');
+  assert(skill.includes('QUESTION_COUNT: 0'), 'fixme-task should require zero questions before synthesis');
+  assert(skill.includes('review synthesize-clean-handler --kind <plan|code|specification>'), 'fixme-task should use deterministic helper for synthetic handler output');
+  assert(skill.includes('dispatchMode: "syntheticClean"'), 'fixme-task should checkpoint synthetic handler steps distinctly');
+  assert(skill.includes('Do not synthesize a handler result from prose such as "no issues" or "looks clean".'), 'fixme-task should forbid prose-parsed clean synthesis');
+  assert(skill.includes('A valid `REVIEW_RESULT: HAS_ITEMS` footer, non-zero count footer, or custom review output without an exact clean footer dispatches the configured handler normally.'), 'fixme-task should fail closed to normal handler dispatch');
+});
+
 test('fixme-task skill routes plan readiness before optional full plan review', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -8570,6 +8943,16 @@ test('fixme-task skill routes plan readiness before optional full plan review', 
   assert(includesNormalized('Step 2 [plan/readiness] Dispatch fixme-plan-readiness'), 'default manifest should include readiness before full plan review');
   assert(includesNormalized('Step 3 [plan/readiness] Route on READINESS_RESULT'), 'default manifest should include readiness route');
   assert(includesNormalized('Step 4 [plan/review] Dispatch fixme-review-plan'), 'default manifest should keep full plan review after readiness');
+});
+
+test('fixme-task scopes reviewer footer validation to built-in reviewers', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  assert(skill.includes('Built-in reviewer (`fixme-review-spec`, `fixme-review-plan`, `fixme-review-code`)'), 'directive validation should scope reviewer footer requirements to built-in reviewers');
+  assert(skill.includes('This built-in reviewer row does not apply to custom review skills.'), 'custom review skills should not inherit the hard built-in reviewer footer contract');
+  assert(skill.includes('For custom or unknown review skills, a missing or malformed footer only disables synthetic clean routing and the next configured handler runs normally.'), 'custom review skills without a footer should fall through to their configured handler');
+  assert(skill.includes('For built-in reviewers, a missing or malformed footer follows the missing-directive recovery procedure.'), 'built-in reviewers should still fail closed when their required footer is absent');
 });
 
 test('source skills document prepare-child handoff and safe JSON contracts', () => {
@@ -8638,6 +9021,8 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
     assert(content.includes('--data-stdin'), `${name} should document --data-stdin`);
     assert(content.includes('lifecycle parent prepare-child'), `${name} should document prepare-child`);
     assert(content.includes('lifecycle parent abandon'), `${name} should document abandon`);
+    assert(content.includes('lifecycle attention broker resume'), `${name} should document broker resume`);
+    assert(content.includes('lifecycle attention broker acknowledge-resume'), `${name} should document broker acknowledge-resume`);
   }
 });
 
@@ -8723,9 +9108,9 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('Parent brokers do not hand-compose the message'), 'fixme-task should forbid hand-composed resume messages');
   assert(!skill.includes('Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should not keep the old Claude inline hand-composed resume assertion');
   assert(!skill.includes('--nested'), 'fixme-task should no longer reference --nested');
-  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'fixme-task should document the Codex installed-skill resume shape');
-  assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'fixme-task should document the Claude background agent resume shape');
-  assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'fixme-task should document the Codex background agent resume shape');
+  assert(!skill.includes('Legacy installed-skill resume references may mention `$HOME/.codex/skills/fixme-task/SKILL.md`; parent-driven Codex execution now uses the registered agent transport.'), 'fixme-task should not keep the old Codex installed-skill hand-composed resume assertion');
+  assert(!skill.includes('Agent(subagent_type="fixme-task", ...)'), 'fixme-task should not keep the old Claude background hand-composed resume assertion');
+  assert(!skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'fixme-task should not keep the old Codex background hand-composed resume assertion');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'fixme-task should clarify how liveness status is carried on resume');
   const ticketModeSentences = skill.match(/^Ticket mode\. The orchestrator tracks pipeline progress via ticket state transitions\.$/gm) || [];
   assert(ticketModeSentences.length === 1, `ticket mode intro should appear once, got ${ticketModeSentences.length}`);
@@ -8769,16 +9154,12 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId>'), 'PR comments should acknowledge launched resume messages');
   assert(skill.includes('Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand'), 'PR comments should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments must not expect broker show to return resumeRef');
-  assert(skill.includes('Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
-  assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the installed Codex skill source copy');
+  assert(!skill.includes('call `lifecycle attention broker answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should not document manual broker answer as the normal path');
   assert(!skill.includes('--nested'), 'PR comments should no longer reference --nested');
-  assert(skill.includes('reuse the same `<liveness>` `statusId: <fixmeTaskStatusId>`'), 'PR comments should reuse the same task run status when resuming');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'PR comments should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a decision answer, call `lifecycle attention broker answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should scope decision answers at the answer-write step');
   assert(skill.includes('If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.'), 'PR comments should scope clarification requests at the answer-write step');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'PR comments should broker clarification requests without answering them');
-  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again'), 'PR comments should resume already answered attention instead of re-prompting');
-  assert(skill.includes('Resume the child `fixme-task` immediately with `--resume <activeChild.resumeRef> --answer-attention <attention-id>`'), 'PR comments should resume already answered attention');
+  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again.'), 'PR comments should resume already answered attention instead of re-prompting');
   assert(skill.includes('If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'PR comments should broker clarification follow-up attention prompts');
   assert(skill.includes('Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself.'), 'PR comments should not own child task decisions');
 });
@@ -8914,6 +9295,8 @@ test('documentation: durable attention broker and owner boundaries are consisten
     ['fixme-task', taskSkill],
   ]) {
     assert(content.includes(brokerProhibition), `${name} should include the parent broker prohibition`);
+    assert(content.includes(brokerResumeCommand), `${name} should name lifecycle attention broker resume`);
+    assert(content.includes(brokerAckCommand), `${name} should name lifecycle attention broker acknowledge-resume`);
   }
   assert(taskSkill.includes(ownerConsumeRule), 'fixme-task skill should require lifecycle attention consume before resume work');
   assert(taskAgent.includes(ownerConsumeRule), 'fixme-task agent role should require lifecycle attention consume before resume work');
@@ -8958,16 +9341,40 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId>'), 'session should acknowledge launched resume messages');
   assert(skill.includes('Do not compose `--resume <active_task> --answer-attention <attention-id>` by hand'), 'session should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session must not expect broker show to return resumeRef');
-  assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'session should document Claude background task resume');
-  assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'session should document Codex background task resume');
-  assert(skill.includes('reuse the same `<liveness>` `statusId: <activeRunStatusId>`'), 'session should reuse the same background run status when resuming');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'session should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`.'), 'session should scope decision answers at the answer-write step');
   assert(skill.includes('If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command.'), 'session should scope clarification requests at the answer-write step');
+  assert(!skill.includes('write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`.'), 'session should not document manual broker answer as the normal path');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'session should broker clarification requests without answering them');
-  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again'), 'session should resume already answered attention instead of re-prompting');
+  assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again.'), 'session should resume already answered attention instead of re-prompting');
   assert(skill.includes('If the resumed background `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'session should broker clarification follow-up attention prompts');
   assert(skill.includes('Do not persist any task-owned decision; the background `fixme-task` resumes and writes decisions itself.'), 'session should not own background task decisions');
+});
+
+test('fixme-session skill: dispatches background fixme-task with returned prompt blocks', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const dispatchSection = skill.slice(
+    skill.indexOf('6. **Dispatch fixme-task in background:**'),
+    skill.indexOf('7. **Return to conversation loop:**')
+  );
+  assert(dispatchSection.length > 0, 'session background dispatch section should be found');
+  for (const fragment of [
+    'launch.promptBlocks.taskStateOwner',
+    'launch.promptBlocks.parentContinuation',
+    'launch.promptBlocks.activeChild',
+    'launch.promptBlocks.project',
+    'launch.promptBlocks.liveness',
+    'launch.promptBlocks.taskInput',
+    'launch.usageContext',
+  ]) {
+    assert(dispatchSection.includes(fragment), `session dispatch should include ${fragment}`);
+  }
+  assert(dispatchSection.includes('Render the child prompt from the returned `launch.promptBlocks` plus `launch.usageContext`'), 'session dispatch should render returned prompt blocks and usage context');
+  assert(dispatchSection.includes('Do not reconstruct these blocks manually'), 'session dispatch should forbid manual prompt reconstruction');
+  assert(!dispatchSection.includes('<task>\n       Execute this task:'), 'session dispatch should not hand-render the task prompt block');
+  assert(!dispatchSection.includes('<project>\n       Fixme dir: <fixme-dir>'), 'session dispatch should not hand-render the project prompt block');
+  assert(!dispatchSection.includes('<liveness>\n       statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not hand-render the liveness prompt block');
+  assert(!dispatchSection.includes('statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not reference lifecycle dispatch prepare status placeholders');
 });
 
 test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () => {
@@ -9037,8 +9444,6 @@ test('fixme child skills: task-bound non-user-facing prompts return child attent
     'fixme-write-technical-spec',
     'fixme-write-plan',
     'fixme-execute-plan',
-    assert(content.includes('lifecycle attention broker resume'), `${name} should document broker resume`);
-    assert(content.includes('lifecycle attention broker acknowledge-resume'), `${name} should document broker acknowledge-resume`);
     'fixme-browser-verify',
   ]) {
     const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
@@ -9219,19 +9624,21 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('## Save Mode'), 'fixme-task should document save mode');
   assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
   assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`'), 'saved tasks should include the FIXME label in the filename');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'save mode should delegate saved task writes to fixme-tools');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>'), 'save mode should delegate saved task writes to fixme-tools with a data-file');
   assert(skill.includes('### Save Mode Lossless Handoff Gate'), 'save mode should define the lossless handoff gate');
+  assert(skill.includes('### Save Mode Question Resolution Gate'), 'save mode should define question resolution before saving');
   assert(skill.includes('A future run must be able to plan and execute from the task file alone, with no chat history.'), 'save mode should state the task file is the context boundary');
   assert(skill.includes('Do not compress a rich discussion into only a title and one-sentence goal.'), 'save mode should forbid lossy save summaries');
-  assert(skill.includes('The CLI rejects skeletal handoffs that omit concrete `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`.'), 'save mode should document the CLI fail-closed guard');
-  assert(skill.includes("task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>"), 'ticket mode should initialize task state through fixme-tools');
-  assert(skill.includes('task checkpoint --state <task-state-path> --data'), 'fixme-task should checkpoint resumable state through fixme-tools');
+  assert(skill.includes('The CLI rejects skeletal handoffs that omit concrete `settledSolutionShape`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`.'), 'save mode should document the CLI fail-closed guard');
+  assert(skill.includes('It also rejects non-empty `openQuestions`.'), 'save mode should document unresolved question rejection');
+  assert(skill.includes('task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root>'), 'ticket mode should initialize task state through fixme-tools with a data-file');
+  assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'fixme-task should checkpoint resumable state through fixme-tools with a data-file');
   assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');
   assert(skill.includes('camelCase JSON keys only'), 'task state JSON requirement should be explicit');
   assert(skill.includes('Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`'), 'task state should exclude derived aliases and numbered manifest data');
   assert(skill.includes('The title is always auto-generated from the resolved task context.'), 'title generation should be automatic');
   assert(skill.includes('Do not ask the user for a title.'), 'save mode should not prompt for titles');
-  assert(skill.includes('If no task, issue, solution approach, or agreed shape exists in arguments, IDE selection, or conversation context, abort'), 'save mode should abort when there is no task context');
+  assert(skill.includes('If no task, issue, solution approach, agreed shape, or explicit artifact exists in arguments, IDE selection, or conversation context, abort'), 'save mode should abort when there is no task context');
   assert(skill.includes('Save intent can be terminal or non-terminal depending on the rest of the instruction.'), 'save mode should not be unconditionally terminal');
   assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
@@ -9247,8 +9654,8 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the counter file is missing, the CLI uses `1` as the next number.'), 'save mode should initialize missing counters');
   assert(skill.includes('If the counter file exists but is not a positive integer, the CLI aborts'), 'save mode should not guess on corrupt counters');
   assert(skill.includes('Saved [FIXME-<number>](<absolute path to saved task brief>)'), 'save mode should print a clickable label link');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data'), 'orchestrator allowlist should permit task save');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data'), 'orchestrator allowlist should permit task checkpoint');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>'), 'orchestrator allowlist should permit task save through data-file');
+  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'orchestrator allowlist should permit task checkpoint through data-file');
 });
 
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
@@ -9301,8 +9708,6 @@ test('fixme-rebase skill: positional argument is the branch to rebase and --base
   assert(skill.includes('the branch to rebase defaults to the current branch'), 'missing positional should default the rebased branch to current');
 
   // The four documented interpretations.
-    assert(content.includes(brokerResumeCommand), `${name} should name lifecycle attention broker resume`);
-    assert(content.includes(brokerAckCommand), `${name} should name lifecycle attention broker acknowledge-resume`);
   assert(skill.includes('`/fixme-rebase` -> rebase current branch onto auto-detected base.'), 'no-arg interpretation documented');
   assert(skill.includes('`/fixme-rebase feat/x` -> rebase `feat/x` onto auto-detected base.'), 'positional-only interpretation documented');
   assert(skill.includes('`/fixme-rebase --base develop` -> rebase current branch onto `develop`.'), '--base-only interpretation documented');
@@ -9350,33 +9755,6 @@ test('fixme-rebase skill: dirty tree stops and asks with stash/discard/abort and
 });
 
 test('fixme-rebase skill: same-or-worse merge fallback continues rebase without route prompt', () => {
-test('fixme-session skill: dispatches background fixme-task with returned prompt blocks', () => {
-  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
-  const skill = fs.readFileSync(skillPath, 'utf8');
-  const dispatchSection = skill.slice(
-    skill.indexOf('6. **Dispatch fixme-task in background:**'),
-    skill.indexOf('7. **Return to conversation loop:**')
-  );
-  assert(dispatchSection.length > 0, 'session background dispatch section should be found');
-  for (const fragment of [
-    'launch.promptBlocks.taskStateOwner',
-    'launch.promptBlocks.parentContinuation',
-    'launch.promptBlocks.activeChild',
-    'launch.promptBlocks.project',
-    'launch.promptBlocks.liveness',
-    'launch.promptBlocks.taskInput',
-    'launch.usageContext',
-  ]) {
-    assert(dispatchSection.includes(fragment), `session dispatch should include ${fragment}`);
-  }
-  assert(dispatchSection.includes('Render the child prompt from the returned `launch.promptBlocks` plus `launch.usageContext`'), 'session dispatch should render returned prompt blocks and usage context');
-  assert(dispatchSection.includes('Do not reconstruct these blocks manually'), 'session dispatch should forbid manual prompt reconstruction');
-  assert(!dispatchSection.includes('<task>\n       Execute this task:'), 'session dispatch should not hand-render the task prompt block');
-  assert(!dispatchSection.includes('<project>\n       Fixme dir: <fixme-dir>'), 'session dispatch should not hand-render the project prompt block');
-  assert(!dispatchSection.includes('<liveness>\n       statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not hand-render the liveness prompt block');
-  assert(!dispatchSection.includes('statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not reference lifecycle dispatch prepare status placeholders');
-});
-
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
@@ -9446,6 +9824,23 @@ test('fixme-pr-comments skill: zero current fixes proceeds to reply resolution w
   assert(skill.includes('When zero `CURRENT_PR_FIX` groups remain and replies are needed, Step 14 runs in the same turn as the Step 4 presentation.'), 'zero-fix route should run Step 14 immediately');
   assert(skill.includes('Do not ask whether to proceed with replies, thread resolution, or hand-picked fixes.'), 'zero-fix route should forbid reply confirmation prompts');
   assert(skill.includes('The Step 14 reply/resolve execution is the closing action - not a prompt to the user.'), 'Step 14 should close with action, not confirmation');
+});
+
+test('fixme-pr-comments skill: late-thread recheck runs only after reply and resolve', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const manifest = skill.slice(skill.indexOf('### The Manifest'), skill.indexOf('### Routing Rules'));
+  const step14 = manifest.indexOf('Step 14  [resolve]');
+  const step15 = manifest.indexOf('Step 15  [final-check]');
+  const step16 = manifest.indexOf('Step 16  [done]');
+
+  assert(step14 !== -1, 'manifest should keep Step 14 as reply/resolve');
+  assert(step15 !== -1, 'manifest should include final late-comment check after resolve');
+  assert(step16 !== -1, 'manifest should move run summary to Step 16');
+  assert(step14 < step15 && step15 < step16, 'final late-comment check should be ordered after reply/resolve and before done');
+  assert(skill.includes('Do not run the final unresolved-thread check until Step 14 has posted every required reply, completed every allowed `resolveReviewThread` mutation, and verified those target thread states.'), 'final check should be blocked until reply/resolve work is complete');
+  assert(skill.includes('If late unresolved threads are found, restart the fetch/analyze path from Step 1 using all three GitHub surfaces; do not handle them as ad hoc one-offs.'), 'late threads should restart the normal fetch/analyze path');
+  assert(skill.includes('Step 13 (resolve/route)**: If `--skip-resolve` is set, jump to Step 16.'), 'skip-resolve should bypass the final unresolved-thread loop');
 });
 
 test('fixme-pr-comments skill: future-phase handling is follow-up, not rejection', () => {
@@ -10886,9 +11281,10 @@ function loadNodeSqliteDatabaseSyncForTests() {
   }
 }
 
-function writeCodexStateThread(ctx, threadId, rolloutPath) {
+function writeCodexStateThread(ctx, threadId, rolloutPath, options = {}) {
   const DatabaseSync = loadNodeSqliteDatabaseSyncForTests();
-  const dbPath = path.join(ctx.homeDir, '.codex', 'state_5.sqlite');
+  const dbRoot = options.sqliteHome || path.join(ctx.homeDir, '.codex');
+  const dbPath = path.join(dbRoot, 'state_5.sqlite');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -11179,6 +11575,48 @@ test('runtime adapter: Codex binds source from CODEX_THREAD_ID rollout path at s
   assert(row.status === 'measured', `expected measured, got ${row.status}`);
   assert(row.tokens.totalTokens === 25, `expected rollout-path total 25, got ${row.tokens && row.tokens.totalTokens}`);
   assert(row.source.path === sourcePath, 'finish should use the CODEX_THREAD_ID-bound rollout path');
+});
+
+test('runtime adapter: Codex binds source from CODEX_THREAD_ID in CODEX_SQLITE_HOME state database', () => {
+  const ctx = createUsageWorkspace();
+  const threadId = 'thread_20260616_codex_sqlite_home';
+  const sqliteHome = path.join(ctx.homeDir, '.codex', 'sqlite');
+  const sourcePath = codexSessionPath(ctx, 'rollout-thread-sqlite-home');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 },
+      { input_tokens: 30, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 39 }
+    ),
+  ]);
+  writeCodexStateThread(ctx, threadId, sourcePath, { sqliteHome });
+
+  const started = runInDirWithEnv(
+    'usage start --skill fixme-research --runtime codex',
+    ctx.projectRoot,
+    { ...ctx.env, CODEX_THREAD_ID: threadId, CODEX_SQLITE_HOME: sqliteHome }
+  );
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+  const pending = readJson(started.data.pendingPath);
+  assert(pending.sourceSnapshot.source.path === sourcePath, `start should bind source path from CODEX_SQLITE_HOME, got ${JSON.stringify(pending.sourceSnapshot)}`);
+  assert(pending.sourceSnapshot.source.discovery === 'codexThreadId', `discovery should stay codexThreadId, got ${pending.sourceSnapshot.source.discovery}`);
+
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 45, cached_input_tokens: 5, output_tokens: 9, reasoning_output_tokens: 5, total_tokens: 64 },
+      { input_tokens: 15, cached_input_tokens: 2, output_tokens: 5, reasoning_output_tokens: 3, total_tokens: 25 }
+    ),
+  ]);
+
+  const finished = runInDirWithEnv(
+    `usage finish --invocation-id ${started.data.invocationId} --outcome complete`,
+    ctx.projectRoot,
+    { ...ctx.env, CODEX_THREAD_ID: threadId, CODEX_SQLITE_HOME: sqliteHome }
+  );
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `expected measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 25, `expected sqlite-home total 25, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.source.path === sourcePath, 'finish should use the CODEX_SQLITE_HOME-bound rollout path');
 });
 
 test('runtime adapter: Codex does not infer source from HOME sessions without thread binding', () => {

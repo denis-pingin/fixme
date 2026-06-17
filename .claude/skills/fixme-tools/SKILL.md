@@ -25,7 +25,8 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs
 - Enforce markdown ticket and session state transitions for `fixme-tickets-md`
 - Build dynamic state transitions from workflow config
 - Resolve workflow pipeline selection from eligible user and artifact candidates
-- Validate compact plan-readiness routing blocks before fixme-task routes plan-phase readiness results.
+- Synthesize deterministic clean review-handler routing blocks for zero-finding reviewer outputs
+- Validate compact plan-readiness routing blocks before `fixme-task` routes around full plan review
 - Record dispatched-agent liveness under `<fixme-dir>/runs/<statusId>/status.json`
 - Save standalone task briefs and maintain low-level resumable task state
 - Record usage start and finish events with pending state, runtime counter extraction, and append-only project/global usage JSONL
@@ -40,7 +41,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config set <key.path> 
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config workflow configure <workflow> --data '<json-object>'
 ```
 
-`config migrate` creates missing config, backfills final standard workflows, validates final review-level fields, and preserves custom workflows and unknown keys. It rejects obsolete `pipelines`, `workflowControls`, removed workflow aliases, and old review filters instead of translating them. Workflow writes must use `config workflow configure` so phase shapes and cycle limits are validated before JSON is saved.
+`config migrate` creates missing config, backfills final standard workflows, upgrades recognized legacy standard workflow shapes, validates final review-level fields, and preserves custom workflows and unknown keys. It rejects obsolete `pipelines`, `workflowControls`, removed workflow aliases, and old review filters instead of translating them. Workflow writes must use `config workflow configure` so phase shapes and cycle limits are validated before JSON is saved.
 
 ## Review Commands
 
@@ -73,7 +74,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage report --scope p
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs usage claude-hook
 ```
 
-`usage start` creates pending invocation state and captures the runtime counter source at start only. Codex source binding uses an explicit `--source-path`, `FIXME_USAGE_SOURCE_PATH`, `CODEX_SESSION_FILE`, or `CODEX_THREAD_ID` to read `threads.rollout_path` from `~/.codex/state_5.sqlite`; Claude source binding uses the managed hook's `session_id` to read the hook-recorded `transcript_path`. `usage claude-hook` is run by Claude Code's `UserPromptSubmit` hook and records only session metadata and transcript path, never transcript contents. `usage finish` extracts runtime counters only from the start-captured source, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
+`usage start` creates pending invocation state and captures the runtime counter source at start only. Codex source binding uses an explicit `--source-path`, `FIXME_USAGE_SOURCE_PATH`, `CODEX_SESSION_FILE`, or `CODEX_THREAD_ID` to read `threads.rollout_path` from `CODEX_SQLITE_HOME/state_5.sqlite` first and legacy `~/.codex/state_5.sqlite` second; Claude source binding uses the managed hook's `session_id` to read the hook-recorded `transcript_path`. `usage claude-hook` is run by Claude Code's `UserPromptSubmit` hook and records only session metadata and transcript path, never transcript contents. `usage finish` extracts runtime counters only from the start-captured source, finalizes one immutable event, and appends it to both project and global usage JSONL. `usage report` reads those JSONL files and returns token-only totals, unmeasured-row counts, warning summaries, by-skill breakdowns, and pipeline totals.
 
 ## Run Liveness Commands
 
@@ -87,9 +88,9 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention answer -
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run attention clear --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker answer --fixme-dir <absolute-fixme-dir> --status-id <status-id> --attention-id <attention-id> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention consume --fixme-dir <absolute-fixme-dir> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <absolute-fixme-dir> --parent-run-id <parent-run-id> --status-id <status-id> --attention-id <attention-id> --data '<json-object>'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker acknowledge-resume --fixme-dir <absolute-fixme-dir> --parent-run-id <parent-run-id> --status-id <status-id> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention consume --fixme-dir <absolute-fixme-dir> --data '<json-object>'
 ```
 
 Parent-facing brokers use `lifecycle attention broker show` to render prompts, `lifecycle attention broker resume` to answer prompts and obtain the existing-task resume launch, and `lifecycle attention broker acknowledge-resume` immediately after launching the returned message. `lifecycle attention broker answer` is the lower-level raw-answer primitive; normal parent skills should not call it and then compose their own task resume. `run attention answer` and `run attention clear` are owner/internal APIs.
@@ -98,11 +99,11 @@ Parent-facing brokers use `lifecycle attention broker show` to render prompts, `
 
 `lifecycle attention consume` is the owner-only helper for `fixme-task` attention resumes. It validates the answered attention, appends supplied decision records when `mode` is `resolvedDecision`, checkpoints `pendingDecision` for `clarificationRequest` and `partialDecision`, clears the consumed run attention, and treats equivalent replay states as success.
 
-## Task Resume Commands
 Parent brokers answer child `fixme-task` attention with `lifecycle attention broker resume`. The helper validates the parent run's `activeChild`, verifies the child run is still waiting on `attention:<attentionId>`, records or reuses the raw answer, checkpoints the parent into `brokerChildAttention`, and returns `resume.message` plus `resume.liveness`. Parent brokers answer attention through `lifecycle attention broker resume`, launch the returned `resume.message`, then call `lifecycle attention broker acknowledge-resume` to persist resume-dispatch evidence. The helper does not expose task-owned decision state and does not call `lifecycle dispatch prepare`.
 
 After the runtime launch succeeds, parent brokers call `lifecycle attention broker acknowledge-resume` with `{ "resumeMessage": "<returned resume.message>", "transport": "<transport>", "runtime": "<runtime>", "runtimeHandle": <optional handle> }`. The acknowledgement records `activeChild.resumeDispatch` and checkpoints the parent from `brokerChildAttention` to `waitingForChild` / `awaitFixmeTask`. Repeating the same acknowledgement is a no-op; changing the resume-dispatch evidence returns `conflictingDuplicate`.
 
+## Task Resume Commands
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs pipeline resolve --data-file <absolute-json-file>
@@ -114,18 +115,27 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <tas
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state.json> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task producer-continuation mark-bad --state <task-state.json> --agent-name <resumable-producer> --runtime <claude|codex> --reason <reason>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task attach-artifact --task <FIXME-N|task.md|state.json|ticket.md|ticket-folder> --data-file <absolute-json-file>
 ```
 
 JSON-bearing inputs accept exactly one direct/file/stdin source per logical argument: `--data`, `--data-file`, or `--data-stdin`; `--pipeline-resolution`, `--pipeline-resolution-file`, or `--pipeline-resolution-stdin`; and `--parent-continuation`, `--parent-continuation-file`, or `--parent-continuation-stdin`. File paths must be absolute. Only one logical JSON argument may use stdin in a single command.
 
-`pipeline resolve` selects one pipeline from eligible user/artifact candidates and returns a camelCase `pipelineResolution` object. Assistant-authored candidates are ignored. `task save` creates a standalone task brief at `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`, creates its sibling `.state.json`, and returns `taskRef`, `taskPath`, and `statePath`. `task save` rejects skeletal inputs that are not self-contained handoffs with concrete approach, behavior, scope, and planning notes. `task save` and `task init` both require the caller to pass a resolved `pipelineResolution`; they do not infer a default workflow. `task init` creates resumable state for an existing saved task or ticket. `task init --task` is idempotent for existing saved task state: it validates compatible `projectRoot`, `pipeline`, and `pipelineResolution`, merges a provided `parentContinuation` only when the existing value is null, rejects conflicting parent continuation, and preserves existing cursor, artifacts, handoff, loops, decisions, producer continuations, and terminal result. Task state may include `producerContinuations`, an exact-handle, task-local, producer-only cache of runtime handles. `task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, `pendingDecision`, and `producerContinuations` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth. `task producer-continuation mark-bad` updates one exact `agentName` plus `runtime` continuation entry to bad while preserving sibling entries. `task resolve` converts a user-facing ref or path into canonical `taskPath`, `ticketPath`, and `statePath` values. `task attach-artifact` indexes a generated preparation artifact on the resolved task markdown under `Preparation Artifacts` and mirrors it into task state as `artifacts.preparationArtifacts`.
+`pipeline resolve` selects one pipeline from eligible user/artifact candidates and returns a camelCase `pipelineResolution` object. Assistant-authored candidates are ignored. `task save` creates a standalone task brief at `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`, creates its sibling `.state.json`, and returns `taskRef`, `taskPath`, and `statePath`. `task save` rejects skeletal inputs that are not self-contained handoffs with concrete settled solution shape, approach, behavior, scope, and planning notes. It also rejects non-empty `openQuestions`; callers must resolve questions, integrate the answers into the task payload, and retry with `openQuestions` omitted or empty. `task save` and `task init` both require the caller to pass a resolved `pipelineResolution`; they do not infer a default workflow. `task init` creates resumable state for an existing saved task or ticket and rejects superseded saved tasks. `task init --task` is idempotent for existing saved task state: it validates compatible `projectRoot`, `pipeline`, and `pipelineResolution`, merges a provided `parentContinuation` only when the existing value is null, rejects conflicting parent continuation, and preserves existing cursor, artifacts, handoff, loops, decisions, producer continuations, and terminal result. Task state may include `producerContinuations`, an exact-handle, task-local, producer-only cache of runtime handles. `task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, `pendingDecision`, and `producerContinuations` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth. `task producer-continuation mark-bad` updates one exact `agentName` plus `runtime` continuation entry to bad while preserving sibling entries. `task resolve` converts a user-facing ref or path into canonical `taskPath`, `ticketPath`, and `statePath` values. `task supersede` durably marks a standalone saved task as replaced in both markdown frontmatter and sibling state JSON so stale saved tasks do not resume as active work. `task attach-artifact` indexes a generated preparation artifact on the resolved task markdown under `Preparation Artifacts` and mirrors it into task state as `artifacts.preparationArtifacts`.
+
+## Review Helper Commands
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review synthesize-clean-handler --kind <plan|code|specification>
+```
+
+`review synthesize-clean-handler` returns a camelCase JSON object containing a validated clean handler result and `routingBlock`. `fixme-task` uses it only after a reviewer machine footer proves `REVIEW_RESULT: CLEAN`, `FINDING_COUNT: 0`, and `QUESTION_COUNT: 0`; all non-empty or malformed review outputs still dispatch the configured handler.
 
 ## Lifecycle Dispatch Commands
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <absolute-fixme-dir> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <absolute-fixme-dir> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent abandon --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 ```

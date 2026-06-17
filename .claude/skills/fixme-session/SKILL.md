@@ -335,9 +335,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    )
    ```
 
-       <project>
-       Fixme dir: <fixme-dir>
-       </project>
+   If the resolver returned `null` for `model` or `reasoning_effort`, omit that Agent field.
 
    In Codex, launch the registered `fixme-task` agent with the rendered prompt and returned runtime settings:
 

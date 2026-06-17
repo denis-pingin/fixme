@@ -577,6 +577,16 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 3. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then TEST-QUALITY, STUB-DETECTION, and CORRECTNESS, then other categories.
 4. **Verified OK**: brief receipts for every changed file with no finding and every high-risk dimension with no finding. Each receipt names what was checked and why it passed; empty phrases like "looks good" are invalid.
 5. **Questions**: things that couldn't be determined and need clarification
+6. **Machine footer**: end with the exact footer below so `fixme-task` can route zero-finding reviews without a no-op handler dispatch. This is a reviewer result, not a handler classification.
+
+```text
+---
+REVIEW_RESULT: CLEAN | HAS_ITEMS
+FINDING_COUNT: <number>
+QUESTION_COUNT: <number>
+```
+
+Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`. Use `REVIEW_RESULT: HAS_ITEMS` whenever any finding, question, uncertainty, follow-up, or note needs handler classification or user-visible accounting.
 
 ## Rules
 

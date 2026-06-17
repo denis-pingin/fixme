@@ -37,7 +37,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config migrate
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs config get
 ```
 
-`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, backfills newly added standard workflows, validates final config fields, rejects obsolete config keys, and preserves existing custom workflows and unknown keys.
+`config migrate` is required on every `/fixme-config` run. It creates `<fixme-dir>/config.json` when missing, backfills newly added standard workflows, upgrades recognized legacy standard workflow shapes, validates final config fields, rejects obsolete config keys, and preserves existing custom workflows and unknown keys.
 
 Use the `config` object from `config get` as the current config. Do not read and rewrite `config.json` manually.
 

@@ -1398,7 +1398,10 @@ function loadPipelineWorkflow(pipelineName, fixmeRoot) {
   if (!isPlainObject(config)) {
     throw new Error('Invalid config.json: top-level value must be an object');
   }
-  assertNoObsoleteConfigKeys(config, configPath);
+  const migration = applyConfigMigration(config, configPath);
+  if (migration.migrated) {
+    writeConfigAtomic(configPath, config);
+  }
   let workflow = getWorkflowDefinition(config, normalizedName);
   if (!workflow && STANDARD_PIPELINES[normalizedName]) {
     workflow = makeStandardWorkflow(normalizedName);
@@ -1587,6 +1590,11 @@ const FINAL_FULL_WORKFLOW_TUPLES = [
   ['verify', 'fixme-browser-verify'],
 ];
 
+const LEGACY_STANDARD_WORKFLOW_TUPLES = [
+  ['plan', 'fixme-write-plan'],
+  ['implement', 'fixme-execute-plan'],
+];
+
 function workflowPrimarySkillTuples(workflow) {
   return workflow.phases.map(phase => [
     phase && phase.name,
@@ -1638,6 +1646,20 @@ function ensureFinalFullWorkflow(config, result) {
       reason: 'reserved_workflow_shape_mismatch',
     });
   }
+}
+
+function ensureStandardPlanReadiness(config, result) {
+  const workflow = config.workflows && config.workflows.standard;
+  if (!workflowMatchesTuples(workflow, LEGACY_STANDARD_WORKFLOW_TUPLES)) return;
+
+  const planPhase = workflow.phases.find(phase => phase && phase.name === 'plan');
+  const standardPlanReview = STANDARD_PIPELINES.standard[0].review;
+  if (!isPlainObject(planPhase) || planPhase.enabled === false || !isPlainObject(planPhase.review)) return;
+  if (Object.prototype.hasOwnProperty.call(planPhase.review, 'readiness')) return;
+  if (!jsonEqual(planPhase.review.skills, standardPlanReview.skills)) return;
+
+  planPhase.review.readiness = standardPlanReview.readiness;
+  result.migrated = true;
 }
 
 function validateFinalReviewLevels(config, configFilePath) {
@@ -1723,6 +1745,7 @@ function applyConfigMigration(config, configPath = null) {
   assertNoObsoleteConfigKeys(config, configPath);
 
   ensureFinalFullWorkflow(config, result);
+  ensureStandardPlanReadiness(config, result);
 
   if (!isPlainObject(config.review)) {
     config.review = {};
@@ -2365,6 +2388,63 @@ function configReviewLevelResolve(flags, fixmeRoot) {
 // Subcommands: review
 // ============================================================================
 
+const REVIEW_HANDLER_KINDS = Object.freeze(['plan', 'code', 'specification']);
+
+function synthesizeCleanHandlerRoutingBlock(kind) {
+  const commonLines = [
+    '---',
+    'HANDLER_RESULT: CLEAN',
+    'FIX_COUNT: 0',
+    'FIX_UNCLEAR_COUNT: 0',
+    'ASK_USER_COUNT: 0',
+    'FIX_FAIL_FAST_COUNT: 0',
+    'ASK_USER_VALIDITY_COUNT: 0',
+    'REJECT_IMPOSSIBLE_COUNT: 0',
+    'REJECT_UNSUPPORTED_COUNT: 0',
+    'BLOCKING_FIX_COUNT: 0',
+    'NONBLOCKING_COUNT: 0',
+    'DISMISSED_COUNT: 0',
+  ];
+  const routeScopeLines = kind === 'specification'
+    ? []
+    : [
+        'PLAN_REQUIRED_COUNT: 0',
+        'IMPLEMENT_ONLY_COUNT: 0',
+      ];
+  return commonLines.concat(routeScopeLines, 'NEXT_ACTION: DONE').join('\n');
+}
+
+function reviewSynthesizeCleanHandler(flags) {
+  const kind = flags.kind;
+  if (!REVIEW_HANDLER_KINDS.includes(kind)) {
+    return error(`--kind must be one of: ${REVIEW_HANDLER_KINDS.join(', ')}`);
+  }
+  const counts = {
+    fixCount: 0,
+    fixUnclearCount: 0,
+    askUserCount: 0,
+    fixFailFastCount: 0,
+    askUserValidityCount: 0,
+    rejectImpossibleCount: 0,
+    rejectUnsupportedCount: 0,
+    blockingFixCount: 0,
+    nonblockingCount: 0,
+    dismissedCount: 0,
+  };
+  if (kind !== 'specification') {
+    counts.planRequiredCount = 0;
+    counts.implementOnlyCount = 0;
+  }
+  return output({
+    schemaVersion: 1,
+    kind,
+    handlerResult: 'CLEAN',
+    nextAction: 'DONE',
+    counts,
+    routingBlock: synthesizeCleanHandlerRoutingBlock(kind),
+  });
+}
+
 function parseReadinessRoutingBlock(outputText) {
   const delimiterIndex = outputText.lastIndexOf('\n---');
   const block = delimiterIndex === -1
@@ -2508,7 +2588,6 @@ function reviewValidatePlanReadiness(flags) {
     routingBlock: parsedBlock.routingBlock,
   });
 }
-
 
 function configSet(keyPath, rawValue, fixmeRoot) {
   const parts = splitConfigKey(keyPath);
@@ -3072,6 +3151,12 @@ function markdownList(items, fallback) {
   return normalized.map(item => `- ${item}`).join('\n');
 }
 
+function markdownBlock(value, fallback) {
+  const normalized = normalizeTaskTextArray(value);
+  if (normalized.length === 0) return fallback;
+  return normalized.join('\n');
+}
+
 function hasTaskDetail(value) {
   return normalizeTaskTextArray(value).some(item => item.trim().length > 0);
 }
@@ -3080,6 +3165,7 @@ function validateTaskSaveHandoffData(data) {
   const scope = isPlainObject(data.scope) ? data.scope : {};
   const missing = [];
   if (String(data.taskGoal || '').trim().length === 0) missing.push('taskGoal');
+  if (!hasTaskDetail(data.settledSolutionShape)) missing.push('settledSolutionShape');
   if (!hasTaskDetail(data.agreedApproach)) missing.push('agreedApproach');
   if (!hasTaskDetail(data.userVisibleBehavior)) missing.push('userVisibleBehavior');
   if (!hasTaskDetail(scope.inScope)) missing.push('scope.inScope');
@@ -3087,6 +3173,9 @@ function validateTaskSaveHandoffData(data) {
 
   if (missing.length > 0) {
     throw new Error(`task save requires a self-contained handoff; missing concrete ${missing.join(', ')}. Include the settled solution shape, observable behavior, scope, and planning notes before saving.`);
+  }
+  if (hasTaskDetail(data.openQuestions)) {
+    throw new Error('task save requires callers to resolve openQuestions before saving; ask the user all unanswered questions at once, integrate the answers across the task payload, and retry with openQuestions omitted or empty.');
   }
 }
 
@@ -3121,11 +3210,21 @@ function buildTaskMarkdown(data, taskRef, slug, date) {
   };
 
   const scope = isPlainObject(data.scope) ? data.scope : {};
+  const openQuestions = normalizeTaskTextArray(data.openQuestions).filter(item => item.trim().length > 0);
+  const openQuestionsSection = openQuestions.length > 0 ? `## Open Questions
+
+${markdownList(openQuestions, 'None.')}
+
+` : '';
   const body = `# ${taskRef}: ${title}
 
 ## Task Goal
 
 ${data.taskGoal || 'Saved fixme task.'}
+
+## Settled Solution Shape
+
+${markdownBlock(data.settledSolutionShape, 'No settled solution shape recorded.')}
 
 ## Agreed Approach
 
@@ -3157,10 +3256,7 @@ ${markdownList(data.constraints, 'Follow project instructions.')}
 
 ${markdownList(data.knownContext, 'No extra context recorded.')}
 
-## Open Questions
-
-${markdownList(data.openQuestions, 'None.')}
-
+${openQuestionsSection}
 ## Suggested Pipeline
 
 \`${pipeline}\`
@@ -3731,6 +3827,13 @@ function taskInit(flags, fixmeRoot) {
     if (!fs.existsSync(taskPath)) {
       throw new Error(`Task file not found: ${taskPath}`);
     }
+    const content = fs.readFileSync(taskPath, 'utf8');
+    const { frontmatter } = parseFrontmatter(content);
+    if (frontmatter.status === 'superseded') {
+      const replacement = frontmatter.supersededBy || '<unknown replacement>';
+      const reason = frontmatter.supersedeReason ? `: ${frontmatter.supersedeReason}` : '';
+      throw new Error(`Task ${parseTaskRefFromMarkdown(taskPath) || taskPath} is superseded by ${replacement}${reason}`);
+    }
     const statePath = taskStatePathForTask(taskPath);
     const nextState = parentContinuation === undefined
       ? state
@@ -3891,6 +3994,64 @@ function resolveTask(input, fixmeRoot) {
 
 function taskResolve(input, fixmeRoot) {
   return output(resolveTask(input, fixmeRoot));
+}
+
+function taskSupersede(flags, fixmeRoot) {
+  const taskRef = flags.task && flags.task !== true ? String(flags.task).trim() : '';
+  const supersededBy = flags.by && flags.by !== true ? String(flags.by).trim() : '';
+  const reason = flags.reason && flags.reason !== true ? String(flags.reason).trim() : '';
+  if (!taskRef) {
+    throw new Error('task supersede requires --task <FIXME-N|task.md|state.json>');
+  }
+  if (!supersededBy) {
+    throw new Error('task supersede requires --by <replacement-ref>');
+  }
+  if (!reason) {
+    throw new Error('task supersede requires --reason <reason>');
+  }
+
+  const resolved = resolveTask(taskRef, fixmeRoot);
+  if (resolved.mode !== 'standalone' || !resolved.taskPath) {
+    throw new Error('task supersede supports saved task markdown/state refs only; use ticket transition for ticket-backed tasks');
+  }
+
+  const now = new Date().toISOString();
+  const content = fs.readFileSync(resolved.taskPath, 'utf8');
+  const { frontmatter, body, rawFields } = parseFrontmatter(content);
+  const nextFrontmatter = {
+    ...frontmatter,
+    status: 'superseded',
+    supersededBy,
+    supersededAt: now,
+    supersedeReason: reason,
+    updated: now,
+  };
+
+  let stateUpdated = false;
+  if (resolved.statePath && fs.existsSync(resolved.statePath)) {
+    const state = readJsonFileStrict(resolved.statePath);
+    const nextState = {
+      ...state,
+      status: 'superseded',
+      supersededBy,
+      supersededAt: now,
+      supersedeReason: reason,
+      updatedAt: now,
+    };
+    assertCamelCaseJsonKeys(nextState, 'task state');
+    writeJsonAtomic(resolved.statePath, nextState);
+    stateUpdated = true;
+  }
+
+  fs.writeFileSync(resolved.taskPath, buildContent(nextFrontmatter, body, rawFields));
+  return output({
+    ...resolved,
+    status: 'superseded',
+    supersededBy,
+    supersededAt: now,
+    supersedeReason: reason,
+    stateUpdated,
+  });
 }
 
 function singleLine(value, fallback = '') {
@@ -5337,7 +5498,7 @@ function getUsageTrackingBlock(skillName, runtime) {
     'Use only these checkpoints: `dispatched`, `started`, `working`, `waiting`, `finalizing`, `done`.',
     '',
     'Ping `running/working` before main work. Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
-    'Before waiting on any Agent, Skill, or child dispatch, ping `running/working` with `--current-command "waiting for <child-name>"`; after the child returns, ping again with `--current-command null`.',
+    'Before waiting on any Agent, Skill, or child dispatch, ping `running/working` with `--current-command waiting-for:<child-name>`; after the child returns, ping again with `--current-command null`.',
     '',
     'If `run status` shows `currentCommand` starting with `attention:`, do not send ordinary `run ping` until the owning skill consumes the answer with `run attention clear`. Attention records own their waiting status; after `run attention set` succeeds, return or broker the attention directive directly.',
     '',
@@ -5352,6 +5513,14 @@ function getUsageTrackingBlock(skillName, runtime) {
     '```',
     FIXME_USAGE_TRACKING_CLOSE,
   ].join('\n');
+}
+
+const SKILLS_WITH_NATIVE_USAGE_INVOCATION = new Set([
+  'fixme-task',
+]);
+
+function shouldInjectUsageTrackingBlock(skillName) {
+  return !SKILLS_WITH_NATIVE_USAGE_INVOCATION.has(skillName);
 }
 
 function injectUsageTrackingBlock(content, skillName, runtime, afterCodexAdapter) {
@@ -5383,12 +5552,16 @@ function convertCodexSkillMarkdown(content, skillName, isSkillEntry) {
   const withAdapter = frontmatter
     ? `${frontmatter}\n\n${adapter}\n\n${body.trimStart()}`
     : `${adapter}\n\n${converted.trimStart()}`;
+  if (!shouldInjectUsageTrackingBlock(skillName)) {
+    return withAdapter;
+  }
   return injectUsageTrackingBlock(withAdapter, skillName, 'codex', true);
 }
 
 function convertClaudeSkillMarkdown(content, skillName, isSkillEntry) {
   const converted = stripGeneratedUsageTrackingBlock(content);
   if (!isSkillEntry) return converted;
+  if (!shouldInjectUsageTrackingBlock(skillName)) return converted;
   return injectUsageTrackingBlock(converted, skillName, 'claude', false);
 }
 
@@ -6662,25 +6835,44 @@ function readClaudeHookSourceRef() {
   }
 }
 
+function codexStateDatabasePaths() {
+  const paths = [];
+  if (process.env.CODEX_SQLITE_HOME) {
+    paths.push(path.join(expandHomePath(process.env.CODEX_SQLITE_HOME), 'state_5.sqlite'));
+  }
+  paths.push(path.join(os.homedir(), '.codex', 'state_5.sqlite'));
+
+  const seen = new Set();
+  return paths
+    .filter(Boolean)
+    .map(candidate => path.resolve(candidate))
+    .filter(candidate => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      return true;
+    });
+}
+
 function readCodexThreadSourceRef() {
   const threadId = process.env.CODEX_THREAD_ID;
   if (!threadId) return null;
-  const dbPath = path.join(os.homedir(), '.codex', 'state_5.sqlite');
-  if (!fs.existsSync(dbPath)) return null;
   const DatabaseSync = loadNodeSqliteDatabaseSync();
   if (!DatabaseSync) return null;
-  let db;
-  try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-    const row = db.prepare('SELECT rollout_path FROM threads WHERE id = ?').get(threadId);
-    const rolloutPath = row && typeof row.rollout_path === 'string' ? expandHomePath(row.rollout_path) : null;
-    if (!rolloutPath) return null;
-    return { path: path.resolve(rolloutPath), discovery: 'codexThreadId' };
-  } catch (_) {
-    return null;
-  } finally {
-    if (db) db.close();
+  for (const dbPath of codexStateDatabasePaths()) {
+    if (!fs.existsSync(dbPath)) continue;
+    let db;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const row = db.prepare('SELECT rollout_path FROM threads WHERE id = ?').get(threadId);
+      const rolloutPath = row && typeof row.rollout_path === 'string' ? expandHomePath(row.rollout_path) : null;
+      if (rolloutPath) return { path: path.resolve(rolloutPath), discovery: 'codexThreadId' };
+    } catch (_) {
+      // Try the next known state database path; older installs may keep stale schemas around.
+    } finally {
+      if (db) db.close();
+    }
   }
+  return null;
 }
 
 function explicitUsageSourceRef(runtime, explicitPath) {
@@ -8222,6 +8414,24 @@ function dispatchRuntimeSettingsForOutput(settings) {
   return outputSettings;
 }
 
+function assertNoSameAgentParentDispatch(fixmeDir, data) {
+  if (!isNonEmptyString(data.parentStatusId)) {
+    return;
+  }
+  const parentPath = runStatusPath(fixmeDir, data.parentStatusId);
+  if (!fs.existsSync(parentPath)) {
+    return;
+  }
+  const parentStatus = readRunStatusFile(parentPath, data.parentStatusId);
+  if (parentStatus.agent === data.agentName) {
+    lifecycleError(
+      'invalidInput',
+      `cannot dispatch child agent ${data.agentName} from parent agent ${parentStatus.agent}`,
+      { parentStatusId: data.parentStatusId },
+    );
+  }
+}
+
 function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   try {
     assertKnownJsonFields(data, 'dispatch prepare', LIFECYCLE_DISPATCH_PREPARE_FIELDS);
@@ -8242,6 +8452,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   if (!KNOWN_FIXME_AGENTS.has(data.agentName)) {
     lifecycleError('invalidInput', `Unknown agent: ${data.agentName}`);
   }
+  assertNoSameAgentParentDispatch(fixmeDir, data);
   const runtime = resolveLifecycleDispatchRuntime(data, flags);
 
   const durableInputs = {
@@ -8543,6 +8754,7 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
 
 const LIFECYCLE_ATTENTION_OPEN_FIELDS = new Set(['statusId', 'taskStatePath', 'checkpointData', 'attention']);
 const LIFECYCLE_BROKER_ANSWER_FIELDS = new Set(['answer', 'answeredBy', 'answerKind']);
+const LIFECYCLE_BROKER_RESUME_DISPATCH_FIELDS = new Set(['resumeMessage', 'transport', 'runtime', 'runtimeHandle']);
 const LIFECYCLE_ATTENTION_CONSUME_FIELDS = new Set(['statusId', 'taskStatePath', 'attentionId', 'mode', 'decisionRecords', 'checkpointData']);
 const LIFECYCLE_ATTENTION_CONSUME_MODES = Object.freeze(['resolvedDecision', 'clarificationRequest', 'partialDecision']);
 
@@ -8754,7 +8966,6 @@ function lifecycleAttentionBrokerProjection(record) {
   // replay compare, never via broker show or answer.
   const projection = {
     attentionId: record.attentionId,
-const LIFECYCLE_BROKER_RESUME_DISPATCH_FIELDS = new Set(['resumeMessage', 'transport', 'runtime', 'runtimeHandle']);
     statusId: record.statusId,
     status: record.status,
     promptMarkdown: record.promptMarkdown,
@@ -8798,8 +9009,8 @@ function lifecycleAttentionBrokerAnswerCore(fixmeDir, statusId, attentionId, dat
   try {
     existingRecord = runAttentionShowCore({
       'fixme-dir': fixmeDir,
-      'status-id': flags['status-id'],
-      'attention-id': flags['attention-id'],
+      'status-id': statusId,
+      'attention-id': attentionId,
     });
   } catch (e) {
     if (/not found/i.test(e.message)) {
@@ -8810,234 +9021,23 @@ function lifecycleAttentionBrokerAnswerCore(fixmeDir, statusId, attentionId, dat
   if (existingRecord.status === 'answered') {
     const prior = existingRecord.answer || {};
     if (prior.answer === data.answer && prior.answeredBy === data.answeredBy && prior.answerKind === data.answerKind) {
-      return lifecycleOk(lifecycleAttentionBrokerProjection(existingRecord));
+      return existingRecord;
     }
-    lifecycleError('conflictingDuplicate', `attention ${flags['attention-id']} already answered with different answer`);
+    lifecycleError('conflictingDuplicate', `attention ${attentionId} already answered with different answer`);
   }
 
   try {
-    const answered = runAttentionAnswerCore({
-      'fixme-dir': fixmeDir,
-      'status-id': flags['status-id'],
-      'attention-id': flags['attention-id'],
-      data: JSON.stringify(data),
-    });
-    return lifecycleOk(lifecycleAttentionBrokerProjection(answered));
-  } catch (e) {
-    lifecycleError('invalidInput', e.message);
-  }
-}
-
-function lifecycleAttentionConsume(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const { statusId, statePath, attentionId, mode, decisionRecords, checkpointData } = normalizeLifecycleAttentionConsumeData(flags);
-  const state = readJsonFileStrict(statePath);
-  const alreadyApplied = taskStateReflectsConsume(state, checkpointData, decisionRecords);
-  const attentionPath = runAttentionPath(fixmeDir, statusId, attentionId);
-
-  if (!fs.existsSync(attentionPath)) {
-    if (alreadyApplied) {
-      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
-    }
-    lifecycleError('stateNotFound', `Run attention not found: ${attentionId}`);
-  }
-
-  let attentionRecord;
-  let runStatus;
-  try {
-    const read = readAttentionRecord(fixmeDir, statusId, attentionId);
-    attentionRecord = read.record;
-    runStatus = read.runStatus;
-  } catch (e) {
-    if (/not found/i.test(e.message)) {
-      if (alreadyApplied) {
-        return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
-      }
-      lifecycleError('stateNotFound', e.message);
-    }
-    lifecycleError('invalidInput', e.message);
-  }
-
-  if (attentionRecord.taskStatePath !== statePath) {
-    lifecycleError('invalidInput', `attention taskStatePath does not match requested taskStatePath: ${attentionRecord.taskStatePath}`);
-  }
-  if (attentionRecord.status !== 'answered') {
-    lifecycleError('invalidInput', `Run attention must be answered before consume: ${attentionId}`);
-  }
-  const expectedCommand = `attention:${attentionId}`;
-  if (runStatus.currentCommand !== expectedCommand) {
-    if (alreadyApplied) {
-      let staleRecordRemoved = false;
-      try {
-        fs.rmSync(attentionPath, { force: true });
-        staleRecordRemoved = true;
-      } catch (_) {}
-      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: staleRecordRemoved });
-    }
-    lifecycleError('staleState', `Run is not waiting on attention ${attentionId}`);
-  }
-
-  const pendingDecision = isPlainObject(state.pendingDecision) ? state.pendingDecision : null;
-  if (!alreadyApplied) {
-    if (!pendingDecision || pendingDecision.attentionId !== attentionId) {
-      lifecycleError('staleState', `Task state pendingDecision does not match attention ${attentionId}`);
-    }
-    if (isNonEmptyString(pendingDecision.attentionStatusId) && pendingDecision.attentionStatusId !== statusId) {
-      lifecycleError('staleState', `Task state pendingDecision.attentionStatusId does not match run status ${statusId}`);
-    }
-  }
-
-  if (mode === 'clarificationRequest' && attentionRecord.answer && attentionRecord.answer.answerKind !== 'clarificationRequest') {
-    lifecycleError('invalidInput', 'clarificationRequest consume requires an answered clarificationRequest attention');
-  }
-  if ((mode === 'resolvedDecision' || mode === 'partialDecision') && attentionRecord.answer && attentionRecord.answer.answerKind !== 'decision') {
-    lifecycleError('invalidInput', `${mode} consume requires an answered decision attention`);
-  }
-
-  let nextState = state;
-  const consumedDecisions = [];
-  for (const record of decisionRecords) {
-    const result = appendTaskDecisionRecordToState(nextState, fixmeDir, record);
-    nextState = result.state;
-    consumedDecisions.push(result.decision);
-  }
-
-  let checkpointed;
-  try {
-    checkpointed = mergeTaskState(nextState, checkpointData);
-    assertCamelCaseJsonKeys(checkpointed, 'task state');
-  } catch (e) {
-    lifecycleError('invalidInput', e.message);
-  }
-  writeJsonAtomic(statePath, checkpointed);
-
-  let clearResult;
-  try {
-    clearResult = runAttentionClearCore({
+    return runAttentionAnswerCore({
       'fixme-dir': fixmeDir,
       'status-id': statusId,
       'attention-id': attentionId,
+      data: JSON.stringify(data),
     });
   } catch (e) {
-    const currentState = readJsonFileStrict(statePath);
-    if (taskStateReflectsConsume(currentState, checkpointData, decisionRecords) && /not found|not waiting/i.test(e.message)) {
-      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { clearWarning: e.message });
-    }
     lifecycleError('invalidInput', e.message);
   }
-
-  return lifecycleOk({
-    statusId,
-    taskStatePath: statePath,
-    attentionId,
-    mode,
-    decisionCount: consumedDecisions.length,
-    decisions: consumedDecisions.map(record => ({ id: record.id, attentionId: record.attentionId, status: record.status })),
-    consumed: true,
-    cleared: clearResult.cleared,
-    recordRemoved: clearResult.recordRemoved,
-    warnings: clearResult.warnings,
-  });
 }
 
-// ============================================================================
-// Subcommands: lifecycle wait
-// ============================================================================
-
-function readLifecycleRunStatusForWait(fixmeDir, statusId) {
-  const statusPath = runStatusPath(fixmeDir, statusId);
-  if (!fs.existsSync(statusPath)) {
-    lifecycleError('stateNotFound', `Run status not found: ${statusId}`);
-  }
-  return { statusPath, status: readRunStatusFile(statusPath, statusId) };
-}
-
-function lifecycleWaitBegin(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const statusId = flags['status-id'];
-  if (!isNonEmptyString(statusId)) {
-    lifecycleError('invalidInput', '--status-id is required');
-  }
-  const label = flags.label;
-  if (!isNonEmptyString(label) || label === true) {
-    lifecycleError('invalidInput', '--label is required');
-  }
-  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
-  if (isRunAttentionCommand(status.currentCommand)) {
-    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
-  }
-  if (status.currentCommand !== null && status.currentCommand !== label) {
-    lifecycleError('staleState', `Run already waiting on a different command: ${status.currentCommand}`);
-  }
-  const next = writeRunStatus(statusPath, {
-    schemaVersion: 1,
-    statusId,
-    agent: validateRunAgent(status.agent),
-    state: 'running',
-    checkpoint: 'working',
-    currentCommand: String(label),
-    updatedAt: new Date().toISOString(),
-  });
-  return lifecycleOk(next);
-}
-
-function lifecycleWaitEnd(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const statusId = flags['status-id'];
-  if (!isNonEmptyString(statusId)) {
-    lifecycleError('invalidInput', '--status-id is required');
-  }
-  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
-  if (isRunAttentionCommand(status.currentCommand)) {
-    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
-  }
-  const next = writeRunStatus(statusPath, {
-    schemaVersion: 1,
-    statusId,
-    agent: validateRunAgent(status.agent),
-    state: 'running',
-    checkpoint: 'working',
-    currentCommand: null,
-    updatedAt: new Date().toISOString(),
-  });
-  return lifecycleOk(next);
-}
-
-// ============================================================================
-// Subcommands: lifecycle parent
-// ============================================================================
-
-const PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
-
-const PR_PARENT_STATUSES = new Set(['running', 'waitingForUser', 'waitingForChild', 'completed', 'failed']);
-const PR_TERMINAL_STATUSES = new Set(['completed', 'failed']);
-
-const PR_PARENT_CURSORS = new Set([
-  'fetchReviewItems', 'analyzeReviewItems', 'consultUser', 'presentAnalysis', 'confirmExecution',
-  'dispatchFixmeTask', 'awaitFixmeTask', 'brokerChildAttention', 'consumeTaskEvent', 'verify',
-  'commit', 'push', 'replyComments', 'resolveThreads', 'summarize',
-]);
-
-const PR_PARENT_CURSOR_SPECS = Object.freeze({
-  fetchReviewItems: { required: ['flags', 'pullRequestRef'], next: ['analyzeReviewItems', 'summarize'] },
-  analyzeReviewItems: { required: ['flags', 'reviewItems'], next: ['consultUser', 'presentAnalysis'] },
-  consultUser: { required: ['reviewItems', 'analysis', 'pendingConsultation'], next: ['presentAnalysis'] },
-  presentAnalysis: { required: ['reviewItems', 'analysis', 'routedGroups', 'flags'], next: ['confirmExecution', 'dispatchFixmeTask', 'replyComments', 'summarize'] },
-  confirmExecution: { required: ['analysis', 'routedGroups', 'flags', 'pendingConfirmation'], next: ['presentAnalysis', 'dispatchFixmeTask', 'summarize'] },
-  dispatchFixmeTask: { required: ['fixBatches', 'activeBatchIndex', 'parentContinuation'], next: ['awaitFixmeTask'] },
-  awaitFixmeTask: {
-    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.taskRunId', 'activeChild.taskStatePath', 'activeChild.resumeRef'],
-    next: ['brokerChildAttention', 'consumeTaskEvent'],
-  },
-  brokerChildAttention: {
-    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.attentionId', 'activeChild.resumeRef'],
-    next: ['awaitFixmeTask'],
-  },
-  consumeTaskEvent: {
-    required: ['fixBatches', 'activeBatchIndex', 'activeChild.taskRunId', 'taskEvent.eventId', 'taskEvent.resultSummaryPath'],
-    next: ['dispatchFixmeTask', 'verify', 'summarize'],
-  },
-  verify: { required: ['childResultSummaryPaths', 'routedGroups', 'flags'], next: ['commit', 'replyComments', 'summarize'] },
 function lifecycleAttentionBrokerAnswer(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
@@ -9302,6 +9302,216 @@ function lifecycleAttentionBrokerAcknowledgeResume(flags) {
   });
 }
 
+function lifecycleAttentionConsume(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const { statusId, statePath, attentionId, mode, decisionRecords, checkpointData } = normalizeLifecycleAttentionConsumeData(flags);
+  const state = readJsonFileStrict(statePath);
+  const alreadyApplied = taskStateReflectsConsume(state, checkpointData, decisionRecords);
+  const attentionPath = runAttentionPath(fixmeDir, statusId, attentionId);
+
+  if (!fs.existsSync(attentionPath)) {
+    if (alreadyApplied) {
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
+    }
+    lifecycleError('stateNotFound', `Run attention not found: ${attentionId}`);
+  }
+
+  let attentionRecord;
+  let runStatus;
+  try {
+    const read = readAttentionRecord(fixmeDir, statusId, attentionId);
+    attentionRecord = read.record;
+    runStatus = read.runStatus;
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      if (alreadyApplied) {
+        return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: true });
+      }
+      lifecycleError('stateNotFound', e.message);
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+
+  if (attentionRecord.taskStatePath !== statePath) {
+    lifecycleError('invalidInput', `attention taskStatePath does not match requested taskStatePath: ${attentionRecord.taskStatePath}`);
+  }
+  if (attentionRecord.status !== 'answered') {
+    lifecycleError('invalidInput', `Run attention must be answered before consume: ${attentionId}`);
+  }
+  const expectedCommand = `attention:${attentionId}`;
+  if (runStatus.currentCommand !== expectedCommand) {
+    if (alreadyApplied) {
+      let staleRecordRemoved = false;
+      try {
+        fs.rmSync(attentionPath, { force: true });
+        staleRecordRemoved = true;
+      } catch (_) {}
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { recordRemoved: staleRecordRemoved });
+    }
+    lifecycleError('staleState', `Run is not waiting on attention ${attentionId}`);
+  }
+
+  const pendingDecision = isPlainObject(state.pendingDecision) ? state.pendingDecision : null;
+  if (!alreadyApplied) {
+    if (!pendingDecision || pendingDecision.attentionId !== attentionId) {
+      lifecycleError('staleState', `Task state pendingDecision does not match attention ${attentionId}`);
+    }
+    if (isNonEmptyString(pendingDecision.attentionStatusId) && pendingDecision.attentionStatusId !== statusId) {
+      lifecycleError('staleState', `Task state pendingDecision.attentionStatusId does not match run status ${statusId}`);
+    }
+  }
+
+  if (mode === 'clarificationRequest' && attentionRecord.answer && attentionRecord.answer.answerKind !== 'clarificationRequest') {
+    lifecycleError('invalidInput', 'clarificationRequest consume requires an answered clarificationRequest attention');
+  }
+  if ((mode === 'resolvedDecision' || mode === 'partialDecision') && attentionRecord.answer && attentionRecord.answer.answerKind !== 'decision') {
+    lifecycleError('invalidInput', `${mode} consume requires an answered decision attention`);
+  }
+
+  let nextState = state;
+  const consumedDecisions = [];
+  for (const record of decisionRecords) {
+    const result = appendTaskDecisionRecordToState(nextState, fixmeDir, record);
+    nextState = result.state;
+    consumedDecisions.push(result.decision);
+  }
+
+  let checkpointed;
+  try {
+    checkpointed = mergeTaskState(nextState, checkpointData);
+    assertCamelCaseJsonKeys(checkpointed, 'task state');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  writeJsonAtomic(statePath, checkpointed);
+
+  let clearResult;
+  try {
+    clearResult = runAttentionClearCore({
+      'fixme-dir': fixmeDir,
+      'status-id': statusId,
+      'attention-id': attentionId,
+    });
+  } catch (e) {
+    const currentState = readJsonFileStrict(statePath);
+    if (taskStateReflectsConsume(currentState, checkpointData, decisionRecords) && /not found|not waiting/i.test(e.message)) {
+      return lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId, mode, decisionRecords, { clearWarning: e.message });
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+
+  return lifecycleOk({
+    statusId,
+    taskStatePath: statePath,
+    attentionId,
+    mode,
+    decisionCount: consumedDecisions.length,
+    decisions: consumedDecisions.map(record => ({ id: record.id, attentionId: record.attentionId, status: record.status })),
+    consumed: true,
+    cleared: clearResult.cleared,
+    recordRemoved: clearResult.recordRemoved,
+    warnings: clearResult.warnings,
+  });
+}
+
+// ============================================================================
+// Subcommands: lifecycle wait
+// ============================================================================
+
+function readLifecycleRunStatusForWait(fixmeDir, statusId) {
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    lifecycleError('stateNotFound', `Run status not found: ${statusId}`);
+  }
+  return { statusPath, status: readRunStatusFile(statusPath, statusId) };
+}
+
+function lifecycleWaitBegin(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const label = flags.label;
+  if (!isNonEmptyString(label) || label === true) {
+    lifecycleError('invalidInput', '--label is required');
+  }
+  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
+  if (isRunAttentionCommand(status.currentCommand)) {
+    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
+  }
+  if (status.currentCommand !== null && status.currentCommand !== label) {
+    lifecycleError('staleState', `Run already waiting on a different command: ${status.currentCommand}`);
+  }
+  const next = writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(status.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: String(label),
+    updatedAt: new Date().toISOString(),
+  });
+  return lifecycleOk(next);
+}
+
+function lifecycleWaitEnd(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const { statusPath, status } = readLifecycleRunStatusForWait(fixmeDir, statusId);
+  if (isRunAttentionCommand(status.currentCommand)) {
+    lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
+  }
+  const next = writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(status.agent),
+    state: 'running',
+    checkpoint: 'working',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
+  return lifecycleOk(next);
+}
+
+// ============================================================================
+// Subcommands: lifecycle parent
+// ============================================================================
+
+const PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
+
+const PR_PARENT_STATUSES = new Set(['running', 'waitingForUser', 'waitingForChild', 'completed', 'failed']);
+const PR_TERMINAL_STATUSES = new Set(['completed', 'failed']);
+
+const PR_PARENT_CURSORS = new Set([
+  'fetchReviewItems', 'analyzeReviewItems', 'consultUser', 'presentAnalysis', 'confirmExecution',
+  'dispatchFixmeTask', 'awaitFixmeTask', 'brokerChildAttention', 'consumeTaskEvent', 'verify',
+  'commit', 'push', 'replyComments', 'resolveThreads', 'summarize',
+]);
+
+const PR_PARENT_CURSOR_SPECS = Object.freeze({
+  fetchReviewItems: { required: ['flags', 'pullRequestRef'], next: ['analyzeReviewItems', 'summarize'] },
+  analyzeReviewItems: { required: ['flags', 'reviewItems'], next: ['consultUser', 'presentAnalysis'] },
+  consultUser: { required: ['reviewItems', 'analysis', 'pendingConsultation'], next: ['presentAnalysis'] },
+  presentAnalysis: { required: ['reviewItems', 'analysis', 'routedGroups', 'flags'], next: ['confirmExecution', 'dispatchFixmeTask', 'replyComments', 'summarize'] },
+  confirmExecution: { required: ['analysis', 'routedGroups', 'flags', 'pendingConfirmation'], next: ['presentAnalysis', 'dispatchFixmeTask', 'summarize'] },
+  dispatchFixmeTask: { required: ['fixBatches', 'activeBatchIndex', 'parentContinuation'], next: ['awaitFixmeTask'] },
+  awaitFixmeTask: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.taskRunId', 'activeChild.taskStatePath', 'activeChild.resumeRef'],
+    next: ['brokerChildAttention', 'consumeTaskEvent'],
+  },
+  brokerChildAttention: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.statusId', 'activeChild.attentionId', 'activeChild.resumeRef'],
+    next: ['awaitFixmeTask'],
+  },
+  consumeTaskEvent: {
+    required: ['fixBatches', 'activeBatchIndex', 'activeChild.taskRunId', 'taskEvent.eventId', 'taskEvent.resultSummaryPath'],
+    next: ['dispatchFixmeTask', 'verify', 'summarize'],
+  },
+  verify: { required: ['childResultSummaryPaths', 'routedGroups', 'flags'], next: ['commit', 'replyComments', 'summarize'] },
   commit: { required: ['verificationResults', 'changedFiles', 'expectedHeadSha', 'changedFilesDigest', 'flags'], next: ['push', 'replyComments', 'summarize'] },
   push: { required: ['commitSha', 'pushRemote', 'pushRef', 'pushTarget', 'flags'], next: ['replyComments', 'summarize'] },
   replyComments: { required: ['analysis', 'routedGroups', 'replyExecutionTable', 'flags'], next: ['resolveThreads', 'summarize'] },
@@ -10946,6 +11156,22 @@ function commandHelpSchema(command, subcommand, args) {
       guidance: 'Creates a liveness record for explicit agent dispatches. Parent prepare-child creates child liveness itself.',
     });
   }
+  if (command === 'task' && subcommand === 'supersede') {
+    return commandHelpPayload({
+      command: 'task supersede',
+      requiredFlags: ['task', 'by', 'reason'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: {
+        flags: {
+          task: 'FIXME-47',
+          by: 'FIXME-48',
+          reason: 'Replaced by corrected saved task',
+        },
+      },
+      guidance: 'Marks a standalone saved task as superseded in markdown frontmatter and sibling task state so it cannot be reinitialized as active work.',
+    });
+  }
   if (command === 'task' && subcommand === 'decision' && args[0] === 'append') {
     return commandHelpPayload({
       command: 'task decision append',
@@ -11010,6 +11236,42 @@ function commandHelpSchema(command, subcommand, args) {
       },
       audience: 'parent-facing',
       guidance: 'Parent-facing brokers record raw user answers only; fixme-task interprets and consumes them.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'resume') {
+    return commandHelpPayload({
+      command: 'lifecycle attention broker resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
+      optionalDataFields: [],
+      enumValues: {
+        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
+        answeredBy: ['user'],
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing brokers record or reuse raw user answers and receive a launch object that returns only the fixme-task resume message plus existing liveness context.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'acknowledge-resume') {
+    return commandHelpPayload({
+      command: 'lifecycle attention broker acknowledge-resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
+      optionalDataFields: ['runtimeHandle'],
+      enumValues: {
+        transport: setValues(DISPATCH_TRANSPORTS),
+        runtime: setValues(VALID_RUNTIME_VALUES),
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { resumeMessage: '--resume FIXME-1 --answer-attention attn_...', transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing brokers call this only after launching the returned resume message. It records resume-dispatch evidence and returns the parent to waitingForChild.',
     });
   }
   if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'open') {
@@ -11238,42 +11500,6 @@ function main() {
           case 'checkpoint':
             return taskCheckpoint(flags);
           case 'producer-continuation':
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'resume') {
-    return commandHelpPayload({
-      command: 'lifecycle attention broker resume',
-      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
-      requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
-      optionalDataFields: [],
-      enumValues: {
-        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
-        answeredBy: ['user'],
-      },
-      example: {
-        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
-        data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
-      },
-      audience: 'parent-facing',
-      guidance: 'Parent-facing brokers record or reuse raw user answers and receive a launch object that returns only the fixme-task resume message plus existing liveness context.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'acknowledge-resume') {
-    return commandHelpPayload({
-      command: 'lifecycle attention broker acknowledge-resume',
-      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
-      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
-      optionalDataFields: ['runtimeHandle'],
-      enumValues: {
-        transport: setValues(DISPATCH_TRANSPORTS),
-        runtime: setValues(VALID_RUNTIME_VALUES),
-      },
-      example: {
-        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
-        data: { resumeMessage: '--resume FIXME-1 --answer-attention attn_...', transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
-      },
-      audience: 'parent-facing',
-      guidance: 'Parent-facing brokers call this only after launching the returned resume message. It records resume-dispatch evidence and returns the parent to waitingForChild.',
-    });
-  }
             switch (args[0]) {
               case 'mark-bad':
                 return taskProducerContinuationMarkBad(flags);
@@ -11282,6 +11508,8 @@ function main() {
             }
           case 'resolve':
             return taskResolve(args[0], getFixmeRoot());
+          case 'supersede':
+            return taskSupersede(flags, getFixmeRoot());
           case 'attach-artifact':
             return taskAttachArtifact(flags, getFixmeRoot());
           case 'decision':
@@ -11301,7 +11529,7 @@ function main() {
                 return error(`Unknown task result subcommand: '${args[0] || ''}'. Valid: write`);
             }
           default:
-            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, producer-continuation, resolve, attach-artifact, decision, result`);
+            return error(`Unknown task subcommand: '${subcommand}'. Valid: save, init, checkpoint, producer-continuation, resolve, supersede, attach-artifact, decision, result`);
         }
 
       case 'lifecycle':
@@ -11336,6 +11564,10 @@ function main() {
                     return lifecycleAttentionBrokerShow(flags);
                   case 'answer':
                     return lifecycleAttentionBrokerAnswer(flags);
+                  case 'resume':
+                    return lifecycleAttentionBrokerResume(flags);
+                  case 'acknowledge-resume':
+                    return lifecycleAttentionBrokerAcknowledgeResume(flags);
                   default:
                     return lifecycleError('unsupportedCommand', `Unknown lifecycle attention broker action: '${args[1] || ''}'`);
                 }
@@ -11389,10 +11621,12 @@ function main() {
 
       case 'review':
         switch (subcommand) {
+          case 'synthesize-clean-handler':
+            return reviewSynthesizeCleanHandler(flags);
           case 'validate-plan-readiness':
             return reviewValidatePlanReadiness(flags);
           default:
-            return error(`Unknown review subcommand: '${subcommand}'. Valid: validate-plan-readiness`);
+            return error(`Unknown review subcommand: '${subcommand}'. Valid: synthesize-clean-handler, validate-plan-readiness`);
         }
 
       case 'session':
@@ -11564,10 +11798,6 @@ module.exports = {
   resolveModel,
   resolveAlert,
   MODEL_PROFILES,
-                  case 'resume':
-                    return lifecycleAttentionBrokerResume(flags);
-                  case 'acknowledge-resume':
-                    return lifecycleAttentionBrokerAcknowledgeResume(flags);
   STANDARD_PIPELINES,
   applyConfigMigration,
   generateCodexAgentToml,

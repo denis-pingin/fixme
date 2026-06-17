@@ -124,6 +124,16 @@ Return the report in this structure:
 3. **Findings**: one block per finding using the required finding format from `fixme-howto-review-spec`.
 4. **Verdict**: `PASS`, `BLOCK`, `FLAG`, or `NOTE`, following the shared verdict rules.
 5. **Decisions**: only include unresolved questions that are needed to complete review, formatted as decision cards from `fixme-howto-present-decisions`.
+6. **Machine footer**: end with the exact footer below so `fixme-task` can route zero-finding reviews without a no-op handler dispatch. This is a reviewer result, not a handler classification.
+
+```text
+---
+REVIEW_RESULT: CLEAN | HAS_ITEMS
+FINDING_COUNT: <number>
+QUESTION_COUNT: <number>
+```
+
+Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`. Use `REVIEW_RESULT: HAS_ITEMS` whenever any finding, decision, question, uncertainty, follow-up, or note needs handler classification or user-visible accounting.
 
 Every finding must include the `Review assessment:` field from `fixme-howto-review-spec`. Reviewers do not assign handler classification, level route, numeric scores, or suppression.
 

@@ -32,6 +32,10 @@ Live context is an optimization cache only. Re-read the current authoritative ar
 
 Durable artifacts, source files, task state, current review findings, current decisions, and current prompt inputs override remembered context. If remembered context conflicts with current artifacts and the conflict cannot be reconciled safely, do not proceed from memory.
 
+Producer skills must never call `lifecycle dispatch prepare`, spawn agents, resume agents, message agents, or wait for child agents. `fixme-task` owns producer dispatch, liveness parentage, review routing, and continuation fallback.
+
+Do not load or execute `fixme-task` orchestration workflow instructions. A task-bound producer only reads authoritative artifacts, writes its own allowed artifacts, and returns directives for `fixme-task` to route.
+
 Output this directive before any normal completion directive:
 
 ```text
