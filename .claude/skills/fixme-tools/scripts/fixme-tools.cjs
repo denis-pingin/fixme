@@ -247,6 +247,11 @@ const KNOWN_FIXME_AGENTS = new Set([
   'fixme-write-technical-spec',
 ]);
 
+// Run liveness "agent" is a backward-compatible JSON field name whose semantic
+// meaning is "run owner". Parent/orchestrator skills legitimately own liveness.
+const RUN_OWNER_PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
+const KNOWN_RUN_OWNERS = new Set([...KNOWN_FIXME_AGENTS, ...RUN_OWNER_PARENT_SKILLS]);
+
 const RESUMABLE_PRODUCER_AGENTS = new Set([
   'fixme-write-product-spec',
   'fixme-write-technical-spec',
@@ -6120,8 +6125,8 @@ function validateRunAgent(agent) {
   if (!agent || agent === true) {
     throw new Error('--agent is required');
   }
-  if (!KNOWN_FIXME_AGENTS.has(agent)) {
-    throw new Error(`Unsupported run agent: ${agent}`);
+  if (!KNOWN_RUN_OWNERS.has(agent)) {
+    throw new Error(`Unsupported run owner: ${agent}`);
   }
   return agent;
 }

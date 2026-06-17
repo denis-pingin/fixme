@@ -54,7 +54,10 @@ function run(args) {
       encoding: 'utf8',
       timeout: 5000,
     });
-    return { ok: true, data: JSON.parse(result.trim()) };
+    const stdout = result;
+    let data = null;
+    try { data = JSON.parse(result.trim()); } catch (_) {}
+    return { ok: true, data, stdout };
   } catch (e) {
     const stdout = e.stdout ? e.stdout.trim() : '';
     let data = null;
@@ -1027,7 +1030,7 @@ test('run ping: accepts null current command and terminal state', () => {
 test('run start: rejects non-agent skills and invalid fixme-dir paths', () => {
   const invalidAgent = run('run start --fixme-dir "/tmp/fixme-test" --agent fixme-usage');
   assert(!invalidAgent.ok, 'fixme-usage should not be accepted as a run agent');
-  assert(invalidAgent.data.error.includes('Unsupported run agent'), `error should mention unsupported agent, got ${invalidAgent.data.error}`);
+  assert(invalidAgent.data.error.includes('Unsupported run owner'), `error should mention unsupported run owner, got ${invalidAgent.data.error}`);
 
   const relativeDir = run('run start --fixme-dir ".fixme" --agent fixme-task');
   assert(!relativeDir.ok, 'relative fixme-dir should be rejected');
@@ -11834,6 +11837,27 @@ test('runtime adapter: no inferred runtime source appends unmeasured row', () =>
   assert(row.status === 'unmeasured', 'missing runtime source should be unmeasured');
   assert(row.tokens === null, 'unmeasured tokens null');
   assert(row.warnings.some(w => w.code === 'COUNTERS_UNAVAILABLE'), 'COUNTERS_UNAVAILABLE warning expected');
+});
+
+// ============================================================================
+// FIXME-10: Lifecycle handoff and producer release semantics
+// ============================================================================
+
+test('run start accepts parent/orchestrator run owners while preserving the agent field name', () => {
+  const fixmeDir = makeFixmeDir();
+  for (const owner of ['fixme-pr-comments', 'fixme-session']) {
+    const started = run(`run start --fixme-dir "${fixmeDir}" --agent ${owner}`);
+    assert(started.ok, `run start should accept owner ${owner}, got ${JSON.stringify(started.data)}`);
+    assert(started.data.agent === owner, `status agent should remain ${owner}, got ${started.data.agent}`);
+    const status = readJson(started.data.statusPath);
+    assert(status.agent === owner, `status.json agent field name preserved as ${owner}`);
+    const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command null`);
+    assert(pinged.ok, `run ping should accept owner ${owner}, got ${JSON.stringify(pinged.data)}`);
+  }
+  const bad = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-not-a-real-owner`);
+  assert(!bad.ok, 'unknown run owner is still rejected');
+  const generated = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-write-plan`);
+  assert(generated.ok, 'existing generated agents still accepted as run owners');
 });
 
 // ============================================================================
