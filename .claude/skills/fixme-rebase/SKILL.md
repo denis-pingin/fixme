@@ -888,6 +888,8 @@ If no backup is needed (simple, clean, few commits, not pushed): skip this step.
 
 ### Phase 5: Pre-Rebase Verification Baseline
 
+**Quiet command output:** for long or noisy build/lint/test/install/maintenance commands run anywhere in this rebase workflow, capture full combined output to a deterministic generated log under `<fixme-dir>/runs/<statusId>/logs/<timestamp>-<slug>.log` (or `<fixme-dir>/logs/<timestamp>-<slug>.log` when no statusId is available). On success report only the command, exit status, and log path after the existing pass/fail and warning criteria are satisfied. On failure show the command, exit status, log path, and at least the last 150 lines of combined output. Never hide errors, warnings, prompts, or explicitly requested output, and preserve full output for product-output commands. These logs are generated artifacts and are not committed.
+
 Run the project's full verification suite BEFORE the rebase. This establishes what "working" looks like.
 
 1. **Load project verification commands and install command:**

@@ -12477,6 +12477,49 @@ test('fixme-task instructions document release, attach, watchdog wait, owner att
   assert(skill.includes('300000') || skill.includes('5-minute watchdog'), 'fixme-task SKILL.md should document the watchdog timeout');
 });
 
+test('pr-comments prepare-child sample includes settledSolutionShape and passes task save', () => {
+  const prComments = fs.readFileSync(path.join(repoRoot, '.claude', 'skills', 'fixme-pr-comments', 'SKILL.md'), 'utf8');
+  assert(prComments.includes('"settledSolutionShape"'), 'pr-comments sample taskSaveData should include settledSolutionShape');
+
+  // The documented sample taskSaveData, run through task save, must be self-contained.
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const taskSaveData = {
+    title: 'Address current PR review fixes',
+    taskGoal: 'Apply the current PR review fixes from the durable child handoff payload.',
+    settledSolutionShape: 'Apply the routed current PR review fixes using the durable child handoff payload as the authoritative saved solution shape; routedFixGroups remains the heavy sidecar for full comment detail.',
+    agreedApproach: ['Read the child-handoff-payload preparation artifact before planning.'],
+    userVisibleBehavior: ['The child task resumes from a saved task reference.'],
+    scope: { inScope: ['current PR review fixes from the child handoff payload'], outOfScope: ['unrelated PR changes'] },
+    laterPlanningNotes: ['Use the sidecar payload as the authoritative PR-comment scope.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'userProseIntent',
+      evidence: 'Parent PR-comments workflow selected standard before save-first child handoff.',
+      reason: 'The parent-provided PR-comment handoff is the user-visible intent for this saved child task.',
+    },
+    source: 'fixme-pr-comments',
+    tags: ['fixme-pr-comments', 'parent-driven'],
+  };
+  const dataPath = writeJsonFixture(projectRoot, 'pr-comments-sample-task-save.json', taskSaveData);
+  const result = runInDir(`task save --data-file "${dataPath}"`, projectRoot);
+  assert(result.ok, `pr-comments sample taskSaveData should pass task save, got ${JSON.stringify(result.data)}`);
+});
+
+test('orchestrators document watchdog waits and quiet command output', () => {
+  const skillPath = name => path.join(repoRoot, '.claude', 'skills', name, 'SKILL.md');
+  const watchdogSkills = ['fixme-pr-comments', 'fixme-session', 'fixme', 'fixme-brainstorm'];
+  for (const name of watchdogSkills) {
+    const content = fs.readFileSync(skillPath(name), 'utf8');
+    assert(content.includes('5-minute watchdog') || content.includes('300000'), `${name} should document the watchdog wait`);
+  }
+  const quietSkills = ['fixme-pr-comments', 'fixme-session', 'fixme', 'fixme-brainstorm', 'fixme-rebase'];
+  for (const name of quietSkills) {
+    const content = fs.readFileSync(skillPath(name), 'utf8');
+    assert(content.includes('runs/<statusId>/logs') || content.includes('last 150 lines'), `${name} should document quiet command output`);
+  }
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

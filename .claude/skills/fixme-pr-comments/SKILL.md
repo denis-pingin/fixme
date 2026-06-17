@@ -937,6 +937,7 @@ For `fixme-pr-comments`, `await.ledger` MUST be `{}` at launch. Do not put `curr
         "title": "Address current PR review fixes",
         "slug": "pr-comments-current-fixes",
         "taskGoal": "Apply the current PR review fixes from the durable child handoff payload.",
+        "settledSolutionShape": "Apply the routed current PR review fixes using the durable child handoff payload as the authoritative saved solution shape; routedFixGroups remains the heavy sidecar for full comment detail.",
         "agreedApproach": ["Read the child-handoff-payload preparation artifact before planning."],
         "userVisibleBehavior": ["The child task resumes from a saved task reference."],
         "scope": {
@@ -1051,7 +1052,11 @@ fixme-task runs the default pipeline (plan with review loop -> execute with revi
 
 The returned launch transport decides the execution path. Claude may use the `inline-skill` branch above. Codex must use the `agent` branch above, launching the registered `fixme-task` agent; that child task then owns its plan, execute, review, handler, research, investigation, and browser verification sub-agent dispatches.
 
-When waiting or reporting status while the child pipeline is active, read liveness instead of inferring progress from git or CI. `awaitFixmeTask` polls child liveness and advances to `brokerChildAttention` on a pending attention or to `consumeTaskEvent` when a durable task event exists for the active batch:
+The sample `child.handoff.taskSaveData` includes a concrete `settledSolutionShape` that preserves the current PR-fix solution at the saved-task boundary. `child.handoff.payload.routedFixGroups` remains the authoritative heavy sidecar for full comment detail. A missing `settledSolutionShape` is a caller payload bug, not a runtime workaround. `prepare-child` no longer requires the caller to supply `child.parentStatusId` when direct parent liveness is missing; the CLI creates the parent liveness and returns its canonical `parentStatusId`.
+
+Launch and wait by the documented sequence: `lifecycle parent prepare-child` -> spawn or resume the child `fixme-task` -> when the child is running, call `lifecycle dispatch attach-runtime-handle` with the returned wait payload before waiting -> block on the runtime wait primitive -> terminal `lifecycle dispatch complete` only after the child returns. The parent never calls `lifecycle dispatch complete` with `status: "running"`.
+
+When waiting, write one durable wait marker and block silently on the runtime wait primitive with a 5-minute watchdog (`wait_agent({ targets: [id], timeout_ms: 300000 })` for Codex agents). Use status reads only for watchdog-timeout fallback, resume recovery, attention brokering, and explicit user status requests; do not poll routinely. `awaitFixmeTask` is the watchdog fallback / resume recovery / attention brokering / explicit status path, not a routine polling loop; on the fallback path it advances to `brokerChildAttention` on a pending attention or to `consumeTaskEvent` when a durable task event exists for the active batch:
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
@@ -1078,6 +1083,10 @@ yarn test
 **IMPORTANT**: Do NOT proceed if any verification step fails. Fix issues first.
 
 **NOTE**: The fixme-task pipeline already runs verification as its final gate (via fixme-execute-plan). This step is a safety net - if the pipeline completed successfully, verification should already pass. If it doesn't, something went wrong during execution that needs investigation.
+
+#### Quiet command output
+
+For long or noisy build/lint/test/install/maintenance commands, capture full combined output to a deterministic generated log under `<fixme-dir>/runs/<statusId>/logs/<timestamp>-<slug>.log` (or `<fixme-dir>/logs/<timestamp>-<slug>.log` when no statusId is available). On success report only the command, exit status, and log path after the existing pass/fail and warning criteria are satisfied. On failure show the command, exit status, log path, and at least the last 150 lines of combined output. Never hide errors, warnings, prompts, or explicitly requested output, and preserve full output for product-output commands (usage reports, status, PR inventories). These logs are generated artifacts and are not committed.
 
 ### 5. Commit and Push
 

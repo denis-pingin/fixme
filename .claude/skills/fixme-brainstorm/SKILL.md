@@ -184,7 +184,7 @@ This touches on <specific question>. Want me to run a quick fixme-research pass 
 [Yes, research it] / [No, keep going]
 ```
 
-If yes, dispatch `fixme-research` via the Agent tool. Pass the specific question and the resolved `<fixme-dir>` in the prompt. Wait for the report, summarize the 3-5 most relevant findings into the conversation, and continue the loop.
+If yes, dispatch `fixme-research` via the Agent tool. Pass the specific question and the resolved `<fixme-dir>` in the prompt. Wait by transport: for an `agent`/`background` dispatch, block silently on the runtime wait primitive with a 5-minute watchdog (`wait_agent({ targets: [id], timeout_ms: 300000 })` for Codex agents); for an `inline-skill` dispatch, take the synchronous return without a synthetic polling loop. Then summarize the 3-5 most relevant findings into the conversation, and continue the loop. For any long or noisy command this skill runs directly, capture full combined output to a deterministic generated log under `<fixme-dir>/runs/<statusId>/logs/<timestamp>-<slug>.log` (or `<fixme-dir>/logs/<timestamp>-<slug>.log` when no statusId is available), report command/exit/log path on success, and show at least the last 150 lines on failure; never hide errors, warnings, prompts, or product output. These logs are generated artifacts and are not committed.
 
 If no, skip and continue. Do not force research. If the topic is purely product or experiential, skip the offer entirely.
 
