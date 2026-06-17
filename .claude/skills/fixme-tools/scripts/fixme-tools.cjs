@@ -8286,6 +8286,7 @@ const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
 ]);
 
 const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure', 'runtimeHandle']);
+const LIFECYCLE_DISPATCH_ATTACH_FIELDS = new Set(['dispatchId', 'statusId', 'parentStatusId', 'runtime', 'transport', 'runtimeHandle']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
@@ -8752,6 +8753,16 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     if (!jsonEqual(existing.durableInputs, durableInputs)) {
       lifecycleError('conflictingDuplicate', `dispatch idempotencyKey '${data.idempotencyKey}' already used with different inputs`);
     }
+    // Merge the latest attached active runtime handle into the replayed launch so
+    // replay never returns a stale handle-less launch payload after attach.
+    if (existing.activeRuntime !== undefined && existing.output) {
+      if (isPlainObject(existing.output.activeChild)) {
+        existing.output.activeChild.activeRuntime = existing.activeRuntime;
+      }
+      if (existing.output.promptBlocks && isPlainObject(existing.output.promptBlocks.activeChild)) {
+        existing.output.promptBlocks.activeChild.activeRuntime = existing.activeRuntime;
+      }
+    }
     return existing.output;
   }
 
@@ -9019,6 +9030,137 @@ function lifecycleDispatchComplete(flags) {
   };
   writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
   return lifecycleOk(outputData);
+}
+
+// Record the canonical active child runtime handle on a prepared dispatch
+// without marking it terminal. The dispatch record's `activeRuntime` is
+// canonical; run status, prompt-block activeChild, and parent activeChild are
+// mirrors. `lifecycle dispatch complete` stays terminal-only.
+function lifecycleDispatchAttachRuntimeHandle(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch attach-runtime-handle', LIFECYCLE_DISPATCH_ATTACH_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['dispatchId', 'statusId', 'runtime', 'transport']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (data.runtimeHandle === undefined) {
+    lifecycleError('missingRequiredField', 'runtimeHandle is required');
+  }
+  if (!VALID_RUNTIME_VALUES.has(data.runtime)) {
+    lifecycleError('invalidInput', `Unsupported runtime: ${data.runtime}`);
+  }
+  if (!DISPATCH_TRANSPORTS.has(data.transport)) {
+    lifecycleError('invalidInput', `transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
+  }
+  try {
+    validateRuntimeHandle(data.runtime, data.runtimeHandle, 'dispatch attach-runtime-handle');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+
+  const dispatchRecord = findDispatchRecordById(fixmeDir, data.dispatchId);
+  if (!dispatchRecord) {
+    lifecycleError('stateNotFound', `Prepared dispatch not found: ${data.dispatchId}`);
+  }
+  if (dispatchRecord.record.statusId !== data.statusId) {
+    lifecycleError('invalidInput', `statusId ${data.statusId} does not match prepared dispatch ${data.dispatchId}`);
+  }
+  if (dispatchRecord.record.completion !== undefined) {
+    lifecycleError('invalidInput', 'dispatch is already terminal; use lifecycle dispatch complete');
+  }
+
+  const activeRuntime = { dispatchId: data.dispatchId, kind: data.runtimeHandle.kind, id: data.runtimeHandle.id };
+  const childAgent = (dispatchRecord.record.durableInputs && dispatchRecord.record.durableInputs.agentName) || null;
+  const waitPayload = {
+    dispatchId: data.dispatchId,
+    statusId: data.statusId,
+    parentStatusId: data.parentStatusId || null,
+    runtime: data.runtime,
+    transport: data.transport,
+    runtimeHandle: data.runtimeHandle,
+    childAgent,
+  };
+
+  if (dispatchRecord.record.activeRuntime !== undefined) {
+    if (jsonEqual(dispatchRecord.record.activeRuntime, activeRuntime)) {
+      return lifecycleOk({ ...waitPayload, activeRuntime, waitPayload });
+    }
+    lifecycleError('conflictingDuplicate', 'a different runtime handle is already attached for this dispatch');
+  }
+
+  // Persist canonical handle on the dispatch record and mirror into the record's
+  // output blocks so a later prepare replay returns the live handle.
+  dispatchRecord.record.activeRuntime = activeRuntime;
+  if (dispatchRecord.record.output) {
+    if (isPlainObject(dispatchRecord.record.output.activeChild)) {
+      dispatchRecord.record.output.activeChild.activeRuntime = activeRuntime;
+    }
+    if (dispatchRecord.record.output.promptBlocks && isPlainObject(dispatchRecord.record.output.promptBlocks.activeChild)) {
+      dispatchRecord.record.output.promptBlocks.activeChild.activeRuntime = activeRuntime;
+    }
+  }
+  writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
+
+  // Mirror onto the child run status.
+  const statusPath = runStatusPath(fixmeDir, data.statusId);
+  if (fs.existsSync(statusPath)) {
+    const childStatus = readRunStatusFile(statusPath, data.statusId);
+    writeRunStatus(statusPath, { ...childStatus, activeRuntime, updatedAt: new Date().toISOString() });
+  }
+
+  // Mirror onto the parent active child when a parent state exists.
+  if (isNonEmptyString(data.parentStatusId)) {
+    try {
+      const parentState = lifecycleResolveParentForActiveChildMirror(fixmeDir, data.statusId);
+      if (parentState && isPlainObject(parentState.payload && parentState.payload.activeChild)) {
+        parentCheckpointCore(fixmeDir, parentState.parentRunId, {
+          idempotencyKey: `attach-runtime-handle:${data.dispatchId}:${activeRuntime.id}`,
+          expectedRevision: parentState.revision,
+          status: parentState.status,
+          cursor: parentState.cursor,
+          payload: {
+            ...parentState.payload,
+            activeChild: { ...parentState.payload.activeChild, activeRuntime },
+          },
+          ledger: parentState.ledger || {},
+        });
+      }
+    } catch (_) {
+      // Parent mirror is best-effort; the canonical handle lives on the dispatch record.
+    }
+  }
+
+  return lifecycleOk({ ...waitPayload, activeRuntime, waitPayload });
+}
+
+// Best-effort lookup of the parent state whose activeChild matches a child status
+// id, used only to mirror the active runtime handle. Returns null when no such
+// parent exists.
+function lifecycleResolveParentForActiveChildMirror(fixmeDir, childStatusId) {
+  const parentsDir = path.join(fixmeDir, 'parents');
+  if (!fs.existsSync(parentsDir)) return null;
+  for (const entry of fs.readdirSync(parentsDir)) {
+    const statePath = path.join(parentsDir, entry, 'state.json');
+    if (!fs.existsSync(statePath)) continue;
+    let candidate;
+    try {
+      candidate = readJsonFileStrict(statePath);
+    } catch (_) {
+      continue;
+    }
+    if (PR_TERMINAL_STATUSES.has(candidate.status)) continue;
+    const activeChild = candidate.payload && candidate.payload.activeChild;
+    if (isPlainObject(activeChild) && activeChild.statusId === childStatusId) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 // Reset a parent's "dispatching <agent>" wait marker back to a working idle
@@ -11756,6 +11898,19 @@ function commandHelpSchema(command, subcommand, args) {
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed' } },
     });
   }
+  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'attach-runtime-handle') {
+    return commandHelpPayload({
+      command: 'lifecycle dispatch attach-runtime-handle',
+      requiredFlags: ['fixme-dir'],
+      requiredDataFields: ['dispatchId', 'statusId', 'runtime', 'transport', 'runtimeHandle'],
+      optionalDataFields: ['parentStatusId'],
+      enumValues: { transport: setValues(DISPATCH_TRANSPORTS), runtime: setValues(VALID_RUNTIME_VALUES) },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme' },
+        data: { dispatchId: 'dispatch_...', statusId: 'run_...', parentStatusId: 'run_parent', runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
+      },
+    });
+  }
   if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'create') {
     return commandHelpPayload({
       command: 'lifecycle parent create',
@@ -11948,6 +12103,8 @@ function main() {
                 return lifecycleDispatchPrepare(flags, getFixmeRoot());
               case 'complete':
                 return lifecycleDispatchComplete(flags);
+              case 'attach-runtime-handle':
+                return lifecycleDispatchAttachRuntimeHandle(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle dispatch action: '${args[0] || ''}'`);
             }

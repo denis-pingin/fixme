@@ -12368,6 +12368,107 @@ test('run status accepts and preserves an optional activeRuntime mirror across p
   assert(plainStatus.data.activeRuntime === undefined, `status without activeRuntime omits the field, got ${JSON.stringify(plainStatus.data.activeRuntime)}`);
 });
 
+function prepareTaskDispatchForAttach(fixmeDir, idempotencyKey) {
+  const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-pr-comments`);
+  assert(parent.ok, `parent run should start, got ${JSON.stringify(parent.data)}`);
+  const prepData = JSON.stringify({
+    idempotencyKey, agentName: 'fixme-task', transport: 'agent', runtime: 'codex',
+    parentStatusId: parent.data.statusId,
+    parentContinuation: { parentSkill: 'fixme-pr-comments', parentRunId: 'parent_attach', transport: 'agent', resumeStep: 'awaitFixmeTaskResult' },
+    promptInputs: { phase: 'task' },
+  });
+  const prep = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepData}'`);
+  assert(prep.ok, `prepare should succeed, got ${JSON.stringify(prep.data)}`);
+  return { parentStatusId: parent.data.statusId, prep };
+}
+
+test('attach-runtime-handle records active child handle without terminal completion', () => {
+  const fixmeDir = makeFixmeDir();
+  const { parentStatusId, prep } = prepareTaskDispatchForAttach(fixmeDir, 'attach-records');
+  const attachData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_attach_1' } });
+  const attached = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${attachData}'`);
+  assert(attached.ok, `attach should succeed, got ${JSON.stringify(attached.data)}`);
+  assert(attached.data.activeRuntime && attached.data.activeRuntime.id === 'agent_attach_1', `attach returns activeRuntime, got ${JSON.stringify(attached.data.activeRuntime)}`);
+  const waitPayload = attached.data.waitPayload;
+  for (const field of ['dispatchId', 'statusId', 'parentStatusId', 'runtime', 'transport', 'runtimeHandle', 'childAgent']) {
+    assert(Object.prototype.hasOwnProperty.call(waitPayload, field), `waitPayload should carry ${field}, got ${JSON.stringify(waitPayload)}`);
+  }
+  const childStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${prep.data.statusId}`);
+  assert(childStatus.data.activeRuntime && childStatus.data.activeRuntime.id === 'agent_attach_1', `child run status mirrors activeRuntime, got ${JSON.stringify(childStatus.data.activeRuntime)}`);
+  assertNoSnakeCaseKeys(attached.data, 'attach output');
+});
+
+test('attach-runtime-handle is idempotent for the same handle', () => {
+  const fixmeDir = makeFixmeDir();
+  const { parentStatusId, prep } = prepareTaskDispatchForAttach(fixmeDir, 'attach-idempotent');
+  const attachData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_attach_idem' } });
+  const first = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${attachData}'`);
+  assert(first.ok, `first attach should succeed, got ${JSON.stringify(first.data)}`);
+  const replay = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${attachData}'`);
+  assert(replay.ok, `replay attach should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(replay.data.waitPayload) === JSON.stringify(first.data.waitPayload), 'idempotent attach returns the same wait payload');
+});
+
+test('attach-runtime-handle rejects a conflicting handle', () => {
+  const fixmeDir = makeFixmeDir();
+  const { parentStatusId, prep } = prepareTaskDispatchForAttach(fixmeDir, 'attach-conflict');
+  const first = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_first' } })}'`);
+  assert(first.ok, `first attach should succeed, got ${JSON.stringify(first.data)}`);
+  const conflict = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_second' } })}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `different handle should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('prepare replay returns the attached active runtime handle', () => {
+  const fixmeDir = makeFixmeDir();
+  const { parentStatusId, prep } = prepareTaskDispatchForAttach(fixmeDir, 'attach-prepare-replay');
+  const attachData = JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_prepare_replay' } });
+  const attached = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${attachData}'`);
+  assert(attached.ok, `attach should succeed, got ${JSON.stringify(attached.data)}`);
+  const prepData = JSON.stringify({
+    idempotencyKey: 'attach-prepare-replay', agentName: 'fixme-task', transport: 'agent', runtime: 'codex',
+    parentStatusId,
+    parentContinuation: { parentSkill: 'fixme-pr-comments', parentRunId: 'parent_attach', transport: 'agent', resumeStep: 'awaitFixmeTaskResult' },
+    promptInputs: { phase: 'task' },
+  });
+  const replay = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${prepData}'`);
+  assert(replay.ok, `prepare replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.activeChild && replay.data.activeChild.activeRuntime && replay.data.activeChild.activeRuntime.id === 'agent_prepare_replay', `prepare replay returns attached handle on activeChild, got ${JSON.stringify(replay.data.activeChild)}`);
+  assert(replay.data.promptBlocks.activeChild.activeRuntime.id === 'agent_prepare_replay', `prepare replay mirrors handle on promptBlocks.activeChild, got ${JSON.stringify(replay.data.promptBlocks.activeChild)}`);
+});
+
+test('dispatch complete still rejects running status for active child handles', () => {
+  const fixmeDir = makeFixmeDir();
+  const { parentStatusId, prep } = prepareTaskDispatchForAttach(fixmeDir, 'attach-complete-running');
+  const complete = run(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ dispatchId: prep.data.dispatchId, statusId: prep.data.statusId, parentStatusId, status: 'running' })}'`);
+  assert(!complete.ok, `complete with running must fail, got ${JSON.stringify(complete.data)}`);
+  assert(cliErrorMessage(complete).includes('completed, failed'), `complete should reject running, got ${cliErrorMessage(complete)}`);
+});
+
+test('attach-runtime-handle help is registered', () => {
+  const help = run('lifecycle dispatch attach-runtime-handle --help');
+  assert(help.ok, `attach help should succeed, got ${JSON.stringify(help.data)}`);
+  assert(help.data.command === 'lifecycle dispatch attach-runtime-handle', `help command name, got ${help.data.command}`);
+  assert(help.data.requiredDataFields.includes('runtimeHandle'), `help names runtimeHandle, got ${JSON.stringify(help.data.requiredDataFields)}`);
+});
+
+test('broker acknowledge-resume shares the runtime-handle validation helper', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'attach-shared-handle-validation' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-attach-shared.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = prepared.data.activeChild;
+  const attentionId = 'attn_attach_shared';
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, { attention: { resumeRef: activeChild.resumeRef, taskStatePath: activeChild.taskStatePath } })}'`);
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  // Wrong runtimeHandle.kind for the declared runtime must be rejected by the shared validator.
+  const badAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ resumeMessage: resume.data.resume.message, transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'claudeAgentId', id: 'agent_wrong_kind' } })}'`);
+  assert(!badAck.ok, `wrong runtimeHandle kind must fail, got ${JSON.stringify(badAck.data)}`);
+  assert(cliErrorMessage(badAck).includes('runtimeHandle.kind must be codexAgentId'), `should fail with shared kind-by-runtime message, got ${cliErrorMessage(badAck)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
