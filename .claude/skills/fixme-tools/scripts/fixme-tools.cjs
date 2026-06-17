@@ -278,6 +278,7 @@ const RUN_STATUS_FIELDS = new Set([
   'checkpoint',
   'currentCommand',
   'failure',
+  'activeRuntime',
   'updatedAt',
 ]);
 const RUN_ATTENTION_RECORD_FIELDS = new Set([
@@ -6328,6 +6329,15 @@ function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
   if (typeof rawStatus.updatedAt !== 'string' || Number.isNaN(Date.parse(rawStatus.updatedAt))) {
     throw new Error('run status updatedAt must be an ISO timestamp');
   }
+  let activeRuntime;
+  if (rawStatus.activeRuntime !== undefined) {
+    const ar = rawStatus.activeRuntime;
+    const validKinds = new Set(Object.values(RUNTIME_HANDLE_KINDS_BY_RUNTIME));
+    if (!isPlainObject(ar) || !isNonEmptyString(ar.dispatchId) || !validKinds.has(ar.kind) || !isNonEmptyString(ar.id)) {
+      throw new Error('run status activeRuntime must be an object with dispatchId, a valid kind, and id');
+    }
+    activeRuntime = { dispatchId: ar.dispatchId, kind: ar.kind, id: ar.id };
+  }
   const normalized = {
     schemaVersion: rawStatus.schemaVersion,
     statusId: rawStatus.statusId,
@@ -6339,6 +6349,9 @@ function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
   };
   if (failure !== undefined) {
     normalized.failure = failure;
+  }
+  if (activeRuntime !== undefined) {
+    normalized.activeRuntime = activeRuntime;
   }
   return normalized;
 }
@@ -6573,6 +6586,9 @@ function runPing(flags) {
     currentCommand,
     updatedAt: new Date().toISOString(),
   };
+  if (previous.activeRuntime !== undefined) {
+    next.activeRuntime = previous.activeRuntime;
+  }
   return outputMaybeQuiet(writeRunStatus(statusPath, next), flags);
 }
 
@@ -9014,7 +9030,7 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
   if (!fs.existsSync(parentPath)) return;
   const parentStatus = readRunStatusFile(parentPath, parentStatusId);
   if (isRunAttentionCommand(parentStatus.currentCommand)) return;
-  writeRunStatus(parentPath, {
+  const cleared = {
     schemaVersion: 1,
     statusId: parentStatusId,
     agent: validateRunAgent(parentStatus.agent),
@@ -9022,7 +9038,11 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
     checkpoint: 'working',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  });
+  };
+  if (parentStatus.activeRuntime !== undefined) {
+    cleared.activeRuntime = parentStatus.activeRuntime;
+  }
+  writeRunStatus(parentPath, cleared);
 }
 
 // ============================================================================
@@ -9720,7 +9740,7 @@ function lifecycleWaitBegin(flags) {
   if (status.currentCommand !== null && status.currentCommand !== label) {
     lifecycleError('staleState', `Run already waiting on a different command: ${status.currentCommand}`);
   }
-  const next = writeRunStatus(statusPath, {
+  const beginStatus = {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(status.agent),
@@ -9728,7 +9748,11 @@ function lifecycleWaitBegin(flags) {
     checkpoint: 'working',
     currentCommand: String(label),
     updatedAt: new Date().toISOString(),
-  });
+  };
+  if (status.activeRuntime !== undefined) {
+    beginStatus.activeRuntime = status.activeRuntime;
+  }
+  const next = writeRunStatus(statusPath, beginStatus);
   if (flags.quiet === true || flags.quiet === '') {
     process.exit(0);
   }
@@ -9745,7 +9769,7 @@ function lifecycleWaitEnd(flags) {
   if (isRunAttentionCommand(status.currentCommand)) {
     lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
   }
-  const next = writeRunStatus(statusPath, {
+  const endStatus = {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(status.agent),
@@ -9753,7 +9777,11 @@ function lifecycleWaitEnd(flags) {
     checkpoint: 'working',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  });
+  };
+  if (status.activeRuntime !== undefined) {
+    endStatus.activeRuntime = status.activeRuntime;
+  }
+  const next = writeRunStatus(statusPath, endStatus);
   if (flags.quiet === true || flags.quiet === '') {
     process.exit(0);
   }

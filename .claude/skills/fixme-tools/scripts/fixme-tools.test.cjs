@@ -12346,6 +12346,28 @@ test('run ping --quiet still refuses to overwrite active attention', () => {
   assert(after.currentCommand === beforeRaw.currentCommand, `quiet ping must not change the attention marker, got ${after.currentCommand}`);
 });
 
+test('run status accepts and preserves an optional activeRuntime mirror across ping', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const statusPath = started.data.statusPath;
+  const withMirror = { ...readJson(statusPath), activeRuntime: { dispatchId: 'dispatch_mirror_1', kind: 'codexAgentId', id: 'agent_mirror_1' } };
+  fs.writeFileSync(statusPath, JSON.stringify(withMirror), 'utf8');
+
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+  assert(status.ok, `run status should accept activeRuntime, got ${JSON.stringify(status.data)}`);
+  assert(status.data.activeRuntime && status.data.activeRuntime.id === 'agent_mirror_1', `run status returns activeRuntime, got ${JSON.stringify(status.data.activeRuntime)}`);
+
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command null`);
+  assert(pinged.ok, `ping should succeed, got ${JSON.stringify(pinged.data)}`);
+  const after = readJson(statusPath);
+  assert(after.activeRuntime && after.activeRuntime.id === 'agent_mirror_1', `ping preserves activeRuntime, got ${JSON.stringify(after.activeRuntime)}`);
+
+  const plain = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const plainStatus = run(`run status --fixme-dir "${fixmeDir}" --status-id ${plain.data.statusId}`);
+  assert(plainStatus.ok, `status without activeRuntime still validates, got ${JSON.stringify(plainStatus.data)}`);
+  assert(plainStatus.data.activeRuntime === undefined, `status without activeRuntime omits the field, got ${JSON.stringify(plainStatus.data.activeRuntime)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
