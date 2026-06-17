@@ -11880,6 +11880,94 @@ test('prepare-child without child.parentStatusId creates parent liveness owned b
   assert(replay.data.statusId === prepared.data.statusId, 'replay reuses the child run status');
 });
 
+test('prepare-child auto-recovers a consumed-terminal-child parent for a distinct new attempt', () => {
+  const fixmeDir = makeFixmeDir();
+  const staleCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    idempotencyKey: 'auto-recover-consumed-child',
+    extra: {
+      cursor: 'presentAnalysis',
+      payload: {
+        flags: {},
+        reviewItems: { currentPrFix: [{ id: 'old' }] },
+        analysis: { currentPrFixCount: 1 },
+        routedGroups: [{ groupId: 'old', route: 'currentPrFix', sourceIds: ['old'] }],
+      },
+    },
+  })}'`);
+  assert(staleCreate.ok, `seed parent should create, got ${JSON.stringify(staleCreate.data)}`);
+  const staleState = parentState(fixmeDir, staleCreate.data.parentRunId);
+  staleState.status = 'waitingForChild';
+  staleState.cursor = 'awaitFixmeTask';
+  staleState.payload = {
+    fixBatches: [{ id: 'old-batch' }],
+    activeBatchIndex: 0,
+    activeChild: {
+      statusId: 'run_old_child',
+      taskRunId: 'taskRun_old_child',
+      taskStatePath: path.join(fixmeDir, 'tasks', 'old.state.json'),
+      resumeRef: path.join(fixmeDir, 'tasks', 'old.md'),
+    },
+    consumedTaskEvent: {
+      eventId: 'taskEvent_old_child',
+      terminalResultId: 'terminalResult_old_child',
+      resultSummaryPath: path.join(fixmeDir, 'tasks', 'old.result.json'),
+      status: 'completed',
+    },
+  };
+  staleState.updatedAt = new Date().toISOString();
+  writeParentState(fixmeDir, staleCreate.data.parentRunId, staleState);
+
+  const payload = prepareChildPayload({ suffix: 'auto-recover-consumed' });
+  delete payload.recoverStaleParent;
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-auto-recover-consumed.json', payload);
+  const repaired = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(repaired.ok, `auto recovery should succeed without recoverStaleParent, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.parentRunId !== staleCreate.data.parentRunId, 'auto recovery creates a distinct new parent run');
+  const abandoned = parentState(fixmeDir, staleCreate.data.parentRunId);
+  assert(abandoned.status === 'failed', `consumed-child stale parent should be auto-abandoned, got ${JSON.stringify(abandoned)}`);
+  assert(abandoned.failure.reason === 'staleParentConsumedTaskEvent', `stale reason should persist, got ${JSON.stringify(abandoned.failure)}`);
+});
+
+test('prepare-child still blocks recovery over live unconsumed child work', () => {
+  const fixmeDir = makeFixmeDir();
+  const liveCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
+    idempotencyKey: 'live-unconsumed-child',
+    extra: {
+      cursor: 'presentAnalysis',
+      payload: {
+        flags: {},
+        reviewItems: { currentPrFix: [{ id: 'live' }] },
+        analysis: { currentPrFixCount: 1 },
+        routedGroups: [{ groupId: 'live', route: 'currentPrFix', sourceIds: ['live'] }],
+      },
+    },
+  })}'`);
+  assert(liveCreate.ok, `seed live parent should create, got ${JSON.stringify(liveCreate.data)}`);
+  const liveState = parentState(fixmeDir, liveCreate.data.parentRunId);
+  liveState.status = 'waitingForChild';
+  liveState.cursor = 'awaitFixmeTask';
+  liveState.payload = {
+    fixBatches: [{ id: 'live-batch' }],
+    activeBatchIndex: 0,
+    activeChild: {
+      statusId: 'run_live_child',
+      taskRunId: 'taskRun_live_child',
+      taskStatePath: path.join(fixmeDir, 'tasks', 'live.state.json'),
+      resumeRef: path.join(fixmeDir, 'tasks', 'live.md'),
+    },
+  };
+  liveState.updatedAt = new Date().toISOString();
+  writeParentState(fixmeDir, liveCreate.data.parentRunId, liveState);
+
+  const payload = prepareChildPayload({ suffix: 'live-unconsumed' });
+  delete payload.recoverStaleParent;
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-live-unconsumed.json', payload);
+  const repaired = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(!repaired.ok, `live unconsumed child work must block recovery, got ${JSON.stringify(repaired.data)}`);
+  const stillLive = parentState(fixmeDir, liveCreate.data.parentRunId);
+  assert(stillLive.status !== 'failed', `live parent must not be auto-abandoned, got ${JSON.stringify(stillLive.status)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

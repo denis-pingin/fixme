@@ -10113,11 +10113,14 @@ function recoverStaleParentBeforeCreate(fixmeDir, data) {
       staleReason = 'staleParentConsumedTaskEvent';
       staleMessage = 'Recovered stale parent with already-consumed terminal child event during prepare-child';
     } else {
+      // Live/unconsumed child work is NOT an unambiguous stale shape; leave it
+      // untouched so create-time natural-key conflict handling can block it.
       continue;
     }
-    if (data.recoverStaleParent !== true) {
-      parentStaleStateError(candidate, { message: staleMessage });
-    }
+    // Both predicates above (missing activeChild, consumed terminal child event)
+    // are unambiguous stale shapes and are recovered automatically. The legacy
+    // recoverStaleParent flag remains accepted for backward compatibility but is
+    // no longer required for these two cases.
     parentAbandonCore(fixmeDir, {
       parentRunId: candidate.parentRunId,
       idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${candidate.parentRunId}`,
@@ -10365,9 +10368,8 @@ function lifecycleParentPrepareChild(flags) {
 
   let parentState = parentCreateCore(fixmeDir, parentCreateData);
   if (parentIsMissingActiveChild(parentState)) {
-    if (data.recoverStaleParent !== true) {
-      parentStaleStateError(parentState, { message: 'Parent is waiting for child without activeChild' });
-    }
+    // Missing activeChild is an unambiguous stale shape: recover automatically
+    // without requiring the legacy recoverStaleParent flag.
     parentAbandonCore(fixmeDir, {
       parentRunId: parentState.parentRunId,
       idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${parentState.parentRunId}`,
