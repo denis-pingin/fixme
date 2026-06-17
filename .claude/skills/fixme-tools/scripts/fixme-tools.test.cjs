@@ -12149,6 +12149,36 @@ test('valid explicit Codex source remains measured', () => {
   assert(row && row.status === 'measured', `valid explicit source with a countable row after start should be measured, got ${JSON.stringify(row)}`);
 });
 
+test('usage report qualifies zero measured total with not-included unmeasured invocations', () => {
+  const ctx = createUsageWorkspace();
+  const pipelineRunId = 'usage_zero_total_pipeline';
+  for (const skill of ['fixme-write-plan', 'fixme-review-plan']) {
+    const started = runInDirWithEnv(`usage start --skill ${skill} --runtime codex --pipeline-run-id ${pipelineRunId}`, ctx.projectRoot, ctx.env);
+    assert(started.ok, `start should succeed, got ${JSON.stringify(started.data)}`);
+    const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+    assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  }
+  const report = runInDirWithEnv('usage report --scope project --format text', ctx.projectRoot, ctx.env);
+  assert(report.ok, `report should succeed, got ${JSON.stringify(report.data)}`);
+  const text = typeof report.data === 'string' ? report.data : report.stdout;
+  assert(text.includes('Total usage: 0 tokens'), `report should show zero total, got ${text}`);
+  assert(/partially unmeasured|fully unmeasured/.test(text), `report should qualify zero total as unmeasured, got ${text}`);
+  assert(text.includes('Not included in total: 2 invocations'), `report should show not-included count, got ${text}`);
+});
+
+test('compact report line near zero total shows not-included count', () => {
+  const ctx = createUsageWorkspace();
+  const pipelineRunId = 'usage_compact_zero_pipeline';
+  const first = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --pipeline-run-id ${pipelineRunId}`, ctx.projectRoot, ctx.env);
+  runInDirWithEnv(`usage finish --invocation-id ${first.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  const second = runInDirWithEnv(`usage start --skill fixme-review-plan --runtime codex --pipeline-run-id ${pipelineRunId}`, ctx.projectRoot, ctx.env);
+  const finishedSecond = runInDirWithEnv(`usage finish --invocation-id ${second.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finishedSecond.ok, `finish should succeed, got ${JSON.stringify(finishedSecond.data)}`);
+  const reportLine = finishedSecond.data.reportLine;
+  assert(typeof reportLine === 'string', `finish should return a reportLine, got ${JSON.stringify(finishedSecond.data)}`);
+  assert(/not included: 2 invocation\(s\)/.test(reportLine), `compact line should show not-included count, got ${reportLine}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

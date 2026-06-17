@@ -11150,6 +11150,12 @@ function formatUsageReportText(report) {
     `Cached input: ${formatTokenCount(report.totalUsage.cachedTokens)} tokens`,
     `Total usage: ${formatTokenCount(report.totalUsage.totalTokens)} tokens`,
   ];
+  // A zero measured total alongside not-included invocations is not "no usage";
+  // it means usage could not be measured. Qualify it directly under the total so
+  // the operator never reads a bare zero as free work.
+  if (report.totalUsage.totalTokens === 0 && report.notIncludedInTotal.invocationCount > 0) {
+    lines.push('Measured usage is zero; usage is partially or fully unmeasured.');
+  }
   if (report.notIncludedInTotal.invocationCount > 0) {
     const plural = report.notIncludedInTotal.invocationCount === 1 ? 'invocation' : 'invocations';
     const warningCodes = report.warningSummary.map(warning => warning.code);
@@ -11236,10 +11242,20 @@ function buildCompactUsageReportLine(event, projectEventPath) {
   }) : null;
   if (isMeasuredUsageRow(event)) {
     const base = formatUsageBucketSummary(`Usage: ${event.skill}`, event.tokens);
+    const measuredNotIncluded = pipelineReport
+      ? pipelineReport.notIncludedInTotal.invocationCount
+      : projectReport.notIncludedInTotal.invocationCount;
+    const bucketTotal = pipelineReport
+      ? pipelineReport.totalUsage.totalTokens
+      : projectReport.totalUsage.totalTokens;
+    // Never show a zero measured rollup alone when some invocations were excluded.
+    const notIncludedSuffix = (bucketTotal === 0 && measuredNotIncluded > 0)
+      ? ` | not included: ${measuredNotIncluded} invocation(s)`
+      : '';
     if (pipelineReport) {
-      return `${base} | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}`;
+      return `${base} | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}${notIncludedSuffix}`;
     }
-    return `${base} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}`;
+    return `${base} | ${formatUsageBucketSummary('project', projectReport.totalUsage)}${notIncludedSuffix}`;
   }
   const notIncluded = pipelineReport
     ? pipelineReport.notIncludedInTotal.invocationCount
