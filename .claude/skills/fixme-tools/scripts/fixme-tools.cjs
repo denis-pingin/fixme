@@ -4546,6 +4546,44 @@ function mergeTaskState(previous, patch) {
   };
 }
 
+// Resolve the fixme directory that owns a task state file by walking up to the
+// nearest ancestor named ".fixme". Returns null when none is found.
+function fixmeDirForStatePath(statePath) {
+  let dir = path.dirname(path.resolve(String(statePath)));
+  const root = path.parse(dir).root;
+  while (dir && dir !== root) {
+    if (path.basename(dir) === '.fixme') return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+// Read-only check: does a task state's pendingDecision still point at a run that
+// is actively waiting on the matching attention marker, with the attention
+// record still present? Tolerant of missing files/fields (returns false).
+function taskOwnedAttentionStillLive(fixmeDir, statePath, state) {
+  const pendingDecision = state && isPlainObject(state.pendingDecision) ? state.pendingDecision : null;
+  if (!pendingDecision || !isNonEmptyString(pendingDecision.attentionId)) return false;
+  const resolvedFixmeDir = fixmeDir || fixmeDirForStatePath(statePath);
+  if (!resolvedFixmeDir) return false;
+  const statusId = isNonEmptyString(pendingDecision.attentionStatusId) ? pendingDecision.attentionStatusId : null;
+  if (!statusId) return false;
+  try {
+    const statusPath = runStatusPath(resolvedFixmeDir, statusId);
+    if (!fs.existsSync(statusPath)) return false;
+    const runStatus = readRunStatusFile(statusPath, statusId);
+    if (runStatus.currentCommand !== `attention:${pendingDecision.attentionId}`) return false;
+    const attentionPath = runAttentionPath(resolvedFixmeDir, statusId, pendingDecision.attentionId);
+    return fs.existsSync(attentionPath);
+  } catch (_) {
+    return false;
+  }
+}
+
+const TASK_CHECKPOINT_OWNER_GUARDED_FIELDS = ['pendingDecision', 'status', 'cursor', 'loops', 'decisions'];
+
 function taskCheckpoint(flags) {
   const statePath = flags.state && flags.state !== true ? path.resolve(String(flags.state)) : null;
   if (!statePath) {
@@ -4558,6 +4596,19 @@ function taskCheckpoint(flags) {
   const patch = resolveJsonArgument(flags, 'data');
   assertCamelCaseJsonKeys(patch, 'task checkpoint data');
   const previous = readJsonFileStrict(statePath);
+  // Owner-side attention is completed only through `lifecycle attention consume`.
+  // A direct checkpoint that mutates decision-bearing fields while the run still
+  // waits on the matching attention would bypass that contract. This guard lives
+  // on the CLI command handler only; lifecycleAttentionConsume calls mergeTaskState
+  // directly, so the sanctioned consume path is never blocked for any mode.
+  const touchesGuardedField = TASK_CHECKPOINT_OWNER_GUARDED_FIELDS.some(field =>
+    Object.prototype.hasOwnProperty.call(patch, field));
+  if (touchesGuardedField) {
+    const fixmeDirForState = fixmeDirForStatePath(statePath);
+    if (taskOwnedAttentionStillLive(fixmeDirForState, statePath, previous)) {
+      throw new Error(`Cannot checkpoint past task-owned attention ${previous.pendingDecision.attentionId} while the run still waits on it; complete it through lifecycle attention consume`);
+    }
+  }
   const next = mergeTaskState(previous, patch);
   assertCamelCaseJsonKeys(next, 'task state');
   writeJsonAtomic(statePath, next);
@@ -6776,6 +6827,37 @@ function runAttentionClearCore(flags) {
 }
 
 function runAttentionClear(flags) {
+  // Owner-side guard on the CLI command handler only. A task-owned answered
+  // attention must be completed through `lifecycle attention consume`, which
+  // calls runAttentionClearCore directly and is therefore never blocked here.
+  const fixmeDir = validateRunFixmeDir(flags['fixme-dir']);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  let guardRecord = null;
+  try {
+    guardRecord = readAttentionRecord(fixmeDir, statusId, flags['attention-id']).record;
+  } catch (_) {
+    guardRecord = null;
+  }
+  if (
+    guardRecord &&
+    guardRecord.ownerSkill === 'fixme-task' &&
+    isNonEmptyString(guardRecord.taskStatePath) &&
+    fs.existsSync(guardRecord.taskStatePath)
+  ) {
+    let ownerState = null;
+    try {
+      ownerState = readJsonFileStrict(guardRecord.taskStatePath);
+    } catch (_) {
+      ownerState = null;
+    }
+    if (
+      ownerState &&
+      isPlainObject(ownerState.pendingDecision) &&
+      ownerState.pendingDecision.attentionId === guardRecord.attentionId
+    ) {
+      throw new Error(`Cannot clear task-owned attention ${guardRecord.attentionId} directly; complete it through lifecycle attention consume`);
+    }
+  }
   return output(runAttentionClearCore(flags));
 }
 

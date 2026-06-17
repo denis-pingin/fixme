@@ -4933,6 +4933,13 @@ function ownerAttentionOpenData(statusId, statePath, attentionId, options = {}) 
   });
 }
 
+function clearMatchingPendingDecisionForTest(statePath) {
+  if (!fs.existsSync(statePath)) return;
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  state.pendingDecision = null;
+  fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+}
+
 function consumeAttentionData(statusId, statePath, attentionId, mode, checkpointData, decisionRecords) {
   const data = {
     statusId,
@@ -5174,6 +5181,10 @@ test('attention broker resume replaces prior resume dispatch for second attentio
   assert(afterFirstAck.status === 'waitingForChild' && afterFirstAck.cursor === 'awaitFixmeTask', `parent should wait for child after first ack, got ${JSON.stringify(afterFirstAck)}`);
   assert(afterFirstAck.payload.activeChild.resumeDispatch.attentionId === firstAttentionId, `first resumeDispatch should record first attention, got ${JSON.stringify(afterFirstAck.payload.activeChild.resumeDispatch)}`);
 
+  // The resumed child has moved past the first attention; drop its matching
+  // pendingDecision (test-only state manipulation) so the owner-side direct-clear
+  // guard does not treat this broker cleanup as a bypass.
+  clearMatchingPendingDecisionForTest(activeChild.taskStatePath);
   const firstClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${activeChild.statusId} --attention-id ${firstAttentionId}`);
   assert(firstClear.ok, `owner-side clear should allow replacement attention, got ${JSON.stringify(firstClear.data)}`);
 
@@ -5257,6 +5268,7 @@ test('attention broker resume is idempotent and fails closed for stale child sta
   const wrongStatus = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${wrongRun.data.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
   assert(!wrongStatus.ok && wrongStatus.data.error.code === 'staleState', `wrong status id should fail staleState, got ${JSON.stringify(wrongStatus.data)}`);
 
+  clearMatchingPendingDecisionForTest(activeChild.taskStatePath);
   const mismatchClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${activeChild.statusId} --attention-id ${attentionId}`);
   assert(mismatchClear.ok, `owner-side clear should allow mismatch attention setup, got ${JSON.stringify(mismatchClear.data)}`);
   const mismatchAttentionId = 'attn_broker_resume_mismatch';
@@ -5346,8 +5358,12 @@ test('attention consume accepts equivalent checkpoint replay and clears consumed
       },
     },
   };
-  const checkpointed = runInDir(`task checkpoint --state "${statePath}" --data '${JSON.stringify(checkpointData)}'`, projectRoot);
-  assert(checkpointed.ok, `partial checkpoint should succeed, got: ${JSON.stringify(checkpointed.data)}`);
+  // Simulate a prior partial write of the consume checkpoint by writing the merged
+  // state directly. Direct `task checkpoint` of a live matching pendingDecision is
+  // now forbidden by the owner guard, so this models the internal partial-write
+  // state that consume must accept on replay.
+  const priorState = readJson(statePath);
+  fs.writeFileSync(statePath, JSON.stringify({ ...priorState, ...checkpointData }), 'utf8');
   const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_consume_checkpoint', 'clarificationRequest', checkpointData, [])}'`);
   assert(consume.ok, `consume after checkpoint should succeed, got: ${JSON.stringify(consume.data)}`);
   const state = readJson(statePath);
@@ -12177,6 +12193,60 @@ test('compact report line near zero total shows not-included count', () => {
   const reportLine = finishedSecond.data.reportLine;
   assert(typeof reportLine === 'string', `finish should return a reportLine, got ${JSON.stringify(finishedSecond.data)}`);
   assert(/not included: 2 invocation\(s\)/.test(reportLine), `compact line should show not-included count, got ${reportLine}`);
+});
+
+function setupTaskOwnedAnsweredAttention(slug, attentionId) {
+  const { fixmeDir, statePath, statusId, projectRoot } = initTaskWithRunStatus(slug);
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(statusId, statePath, attentionId)}'`);
+  assert(open.ok, `setup attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id ${attentionId} --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok, `setup attention answer should succeed, got ${JSON.stringify(answer.data)}`);
+  return { fixmeDir, statePath, statusId, projectRoot, attentionPath: open.data.attentionPath };
+}
+
+test('task checkpoint cannot clear a live task-owned pendingDecision', () => {
+  const { statePath, projectRoot } = setupTaskOwnedAnsweredAttention('guard-checkpoint-clear', 'attn_guard_checkpoint');
+  const clearAttempt = runInDir(`task checkpoint --state "${statePath}" --data '{"pendingDecision":null}'`, projectRoot);
+  assert(!clearAttempt.ok, `clearing live task-owned pendingDecision must fail, got ${JSON.stringify(clearAttempt.data)}`);
+  assert(cliErrorMessage(clearAttempt).includes('lifecycle attention consume'), `error should point at consume, got ${cliErrorMessage(clearAttempt)}`);
+  const statusAttempt = runInDir(`task checkpoint --state "${statePath}" --data '{"status":"plan"}'`, projectRoot);
+  assert(!statusAttempt.ok, `mutating status past live attention must fail, got ${JSON.stringify(statusAttempt.data)}`);
+  assert(cliErrorMessage(statusAttempt).includes('lifecycle attention consume'), `status guard should point at consume, got ${cliErrorMessage(statusAttempt)}`);
+});
+
+test('run attention clear is blocked for live task-owned fixme-task attention', () => {
+  const { fixmeDir, statusId } = setupTaskOwnedAnsweredAttention('guard-attention-clear', 'attn_guard_clear');
+  const clearAttempt = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_guard_clear`);
+  assert(!clearAttempt.ok, `direct clear of task-owned attention must fail, got ${JSON.stringify(clearAttempt.data)}`);
+  assert(cliErrorMessage(clearAttempt).includes('lifecycle attention consume'), `clear guard should point at consume, got ${cliErrorMessage(clearAttempt)}`);
+});
+
+test('lifecycle attention consume (resolvedDecision) clears the same fixture and replays idempotently', () => {
+  const { fixmeDir, statePath, statusId, attentionPath } = setupTaskOwnedAnsweredAttention('guard-consume-resolved', 'attn_guard_consume_resolved');
+  const decision = completeDecisionObject('decision_guard_resolved', { attentionId: 'attn_guard_consume_resolved', answer: 'A', interpretation: 'Use option A.' });
+  const checkpointData = { status: 'running', pendingDecision: null };
+  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_guard_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
+  assert(consume.ok, `resolvedDecision consume should succeed, got ${JSON.stringify(consume.data)}`);
+  assert(!fs.existsSync(attentionPath), 'consume removes the attention record');
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${statusId}`);
+  assert(status.data.currentCommand === null, `consume clears the attention marker, got ${status.data.currentCommand}`);
+  const replay = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_guard_consume_resolved', 'resolvedDecision', checkpointData, [decision])}'`);
+  assert(replay.ok, `consume replay should succeed, got ${JSON.stringify(replay.data)}`);
+});
+
+test('lifecycle attention consume (partialDecision) clears successfully while retaining a matching pendingDecision', () => {
+  const { fixmeDir, statePath, statusId, attentionPath } = setupTaskOwnedAnsweredAttention('guard-consume-partial', 'attn_guard_consume_partial');
+  // checkpointData intentionally does NOT clear pendingDecision: the matching
+  // pending decision is retained across the consume. The command-path-only guard
+  // must not block this internal consume call.
+  const checkpointData = { status: 'running' };
+  const consume = run(`lifecycle attention consume --fixme-dir "${fixmeDir}" --data '${consumeAttentionData(statusId, statePath, 'attn_guard_consume_partial', 'partialDecision', checkpointData, [])}'`);
+  assert(consume.ok, `partialDecision consume should succeed while retaining pendingDecision, got ${JSON.stringify(consume.data)}`);
+  const state = readJson(statePath);
+  assert(state.pendingDecision && state.pendingDecision.attentionId === 'attn_guard_consume_partial', `pendingDecision is intentionally retained, got ${JSON.stringify(state.pendingDecision)}`);
+  assert(!fs.existsSync(attentionPath), 'partialDecision consume still removes the attention record');
+  const status = run(`run status --fixme-dir "${fixmeDir}" --status-id ${statusId}`);
+  assert(status.data.currentCommand === null, `partialDecision consume clears the attention marker, got ${status.data.currentCommand}`);
 });
 
 // ============================================================================
