@@ -11860,6 +11860,26 @@ test('run start accepts parent/orchestrator run owners while preserving the agen
   assert(generated.ok, 'existing generated agents still accepted as run owners');
 });
 
+test('prepare-child without child.parentStatusId creates parent liveness owned by fixme-pr-comments', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'no-parent-status' });
+  delete payload.child.parentStatusId;
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-no-parent-status.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed without child.parentStatusId, got ${JSON.stringify(prepared.data)}`);
+  const continuationStatusId = prepared.data.launch.promptBlocks.parentContinuation.parentStatusId;
+  assert(typeof continuationStatusId === 'string' && continuationStatusId.startsWith('run_'), `continuation carries a CLI-created parentStatusId, got ${continuationStatusId}`);
+  const parentStatus = readJson(path.join(fixmeDir, 'runs', continuationStatusId, 'status.json'));
+  assert(parentStatus.agent === 'fixme-pr-comments', `created parent liveness owner is fixme-pr-comments, got ${parentStatus.agent}`);
+  assert(prepared.data.activeChild.parentStatusId === undefined || prepared.data.launch.promptBlocks.activeChild, 'launch carries activeChild');
+  assertNoSnakeCaseKeys(prepared.data, 'prepare-child output');
+
+  const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(replay.ok, `replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.launch.promptBlocks.parentContinuation.parentStatusId === continuationStatusId, 'replay reuses the same created parentStatusId');
+  assert(replay.data.statusId === prepared.data.statusId, 'replay reuses the child run status');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

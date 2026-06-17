@@ -9930,6 +9930,11 @@ function parentCheckpointCore(fixmeDir, parentRunId, data) {
     lastCheckpointKey: data.idempotencyKey,
     lastCheckpointDigest: appliedDigest,
   };
+  if (isNonEmptyString(current.parentLivenessStatusId)) {
+    // Preserve the CLI-owned parent liveness id across checkpoints so prepare-child
+    // replay reuses it instead of creating a second liveness.
+    next.parentLivenessStatusId = current.parentLivenessStatusId;
+  }
   if (data.failure !== undefined) {
     next.failure = data.failure;
   }
@@ -10210,7 +10215,9 @@ function validatePrepareChildData(data) {
     lifecycleError('invalidInput', 'Codex fixme-pr-comments prepare-child must use child.transport agent');
   }
   if (data.parent.parentSkill === 'fixme-pr-comments') {
-    for (const field of ['parentInvocationId', 'pipelineRunId', 'parentStatusId']) {
+    // parentStatusId is now optional: prepare-child creates/recovers parent
+    // liveness when it is absent. parentInvocationId and pipelineRunId stay required.
+    for (const field of ['parentInvocationId', 'pipelineRunId']) {
       if (!isNonEmptyString(data.child[field])) lifecycleError('missingRequiredField', `child.${field} is required`);
     }
   }
@@ -10274,6 +10281,57 @@ function validatePrepareChildGroupedPayload(parent) {
   }
 }
 
+// Resolve the canonical parent-liveness status id for a prepare-child request.
+// The CLI owns the id: agents do not fabricate liveness. The resolved id is
+// persisted on the parent state (`parentLivenessStatusId`) so replays of the
+// same prepare-child payload reuse it instead of creating a second liveness.
+function resolvePrepareChildParentStatusId(fixmeDir, data, parentState) {
+  const statePath = parentStatePath(fixmeDir, parentState.parentRunId);
+  const persisted = readJsonFileStrict(statePath);
+  if (isNonEmptyString(persisted.parentLivenessStatusId)) {
+    return persisted.parentLivenessStatusId;
+  }
+
+  const parentOwner = validateRunAgent(data.parent.parentSkill);
+  let resolvedStatusId;
+  const providedId = data.child.parentStatusId;
+  if (isNonEmptyString(providedId)) {
+    const providedPath = runStatusPath(fixmeDir, providedId);
+    if (fs.existsSync(providedPath)) {
+      const existingStatus = readRunStatusFile(providedPath, providedId);
+      if (!KNOWN_RUN_OWNERS.has(existingStatus.agent)) {
+        lifecycleError('invalidInput', `child.parentStatusId is owned by an unsupported run owner: ${existingStatus.agent}`);
+      }
+      if (existingStatus.agent !== parentOwner) {
+        lifecycleError('invalidInput', 'child.parentStatusId is owned by a different run owner than the resolved parent');
+      }
+      resolvedStatusId = providedId;
+    } else {
+      // A provided-but-missing id is created with the resolved parent owner so
+      // the canonical liveness exists and downstream completion can clear it.
+      writeRunStatus(providedPath, {
+        schemaVersion: 1,
+        statusId: providedId,
+        agent: parentOwner,
+        state: 'running',
+        checkpoint: 'working',
+        currentCommand: null,
+        updatedAt: new Date().toISOString(),
+      });
+      resolvedStatusId = providedId;
+    }
+  } else {
+    const created = runStartCore({ 'fixme-dir': fixmeDir, agent: parentOwner });
+    resolvedStatusId = created.statusId;
+  }
+
+  persisted.parentLivenessStatusId = resolvedStatusId;
+  persisted.updatedAt = new Date().toISOString();
+  assertCamelCaseJsonKeys(persisted, 'parent state');
+  writeJsonAtomic(statePath, persisted);
+  return resolvedStatusId;
+}
+
 function lifecycleParentPrepareChild(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
@@ -10319,13 +10377,15 @@ function lifecycleParentPrepareChild(flags) {
     parentState = parentCreateCore(fixmeDir, parentCreateData);
   }
 
+  const canonicalParentStatusId = resolvePrepareChildParentStatusId(fixmeDir, data, parentState);
+
   const childTask = saveOrReuseChildHandoff(fixmeDir, data.child, childPreflight);
   const parentContinuation = {
     parentSkill: data.parent.parentSkill,
     parentRunId: parentState.parentRunId,
     transport: data.child.transport,
     resumeStep: (data.parentContinuation && data.parentContinuation.resumeStep) || 'awaitFixmeTaskResult',
-    parentStatusId: data.child.parentStatusId || null,
+    parentStatusId: canonicalParentStatusId,
   };
   const lightweightPromptInputs = {
     ...sanitizePrepareChildPromptInputs(data.child.promptInputs),
@@ -10341,7 +10401,7 @@ function lifecycleParentPrepareChild(flags) {
     transport: data.child.transport,
     parentInvocationId: data.child.parentInvocationId,
     pipelineRunId: data.child.pipelineRunId,
-    parentStatusId: data.child.parentStatusId,
+    parentStatusId: canonicalParentStatusId,
     taskStatePath: childTask.statePath,
     parentContinuation,
     promptInputs: lightweightPromptInputs,
