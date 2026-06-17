@@ -73,10 +73,13 @@ Path: `<session-dir>/session.md`
 | `active_intakes[]` | `fixme-session` | `fixme-session` | Intake agents still in flight across context compaction. |
 | `active_task` | `fixme-session` | `fixme-session` | The one background `fixme-task` ticket path currently running. |
 | `activeRunStatusId` | `fixme-session` | `fixme-session` | The active background `fixme-task` run status id used for liveness and attention brokering. |
+| `activeParentRunId` | `fixme-session` | `fixme-session`, `lifecycle attention broker resume` | The parent run id used by `lifecycle attention broker resume` to validate the active background child. |
 | `tickets_done`, `tickets_failed`, `tickets_skipped`, `tickets_total` | `session summary` | Status/report flows | Session-level ticket counts. |
 | `duration_seconds` | `session summary` | Status/report flows | Session duration. |
 
-The broker records only the raw answer; `fixme-task` consumes the answered attention and resumes task state.
+| `activeChild.resumeDispatch` | `lifecycle attention broker acknowledge-resume` | `fixme-session`, `lifecycle attention broker acknowledge-resume` replay | Durable evidence that the parent launched the returned child resume message before returning to `awaitFixmeTask` and before later task-event consumption. |
+
+The broker answer path is `lifecycle attention broker resume` followed by `lifecycle attention broker acknowledge-resume`: the first helper records or reuses the raw answer, validates the active child from parent state, and returns only the existing-task `resume.message` and liveness context. After the parent launches that message, the acknowledgement records `activeChild.resumeDispatch`, checkpoints the parent back to `waitingForChild` / `awaitFixmeTask`, and leaves decision persistence to `fixme-task`.
 
 ### Project Config
 
@@ -115,7 +118,7 @@ Review level is resolved with `config review-level resolve`. Standard workflows 
 4. `intake-agent` fills the original report and structured fields, then returns the ticket to the queued pool.
 5. `fixme-session` loads project config and prepares the browser when a dev server is configured.
 6. For bug-fix sessions, `fixme-session` may run a synchronous investigation before background task dispatch. Investigation output is written under the ticket folder and can also be appended to the ticket.
-7. `fixme-session` records `active_task` and `activeRunStatusId`, then dispatches `fixme-task` in the background with `--ticket <ticket.md>` and the selected pipeline name.
+7. `fixme-session` records `active_task`, `activeParentRunId`, and `activeRunStatusId`, then dispatches `fixme-task` in the background with the returned launch prompt blocks and selected pipeline context.
 8. `fixme-task` resolves the workflow, builds a dispatch manifest, transitions ticket phase state at boundaries, dispatches each phase skill, runs review loops, and writes artifact paths into its own context.
 9. On background task completion, `fixme-session` clears `active_task` and `activeRunStatusId`, inspects ticket state and task output, runs terminal cleanup, and transitions the ticket to `done`, `failed`, or `skipped`.
 

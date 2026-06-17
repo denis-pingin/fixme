@@ -189,12 +189,13 @@ Parent brokers must not run `task decision append`, `task checkpoint`, `run atte
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'
 ```
 
-Print the returned `promptMarkdown` exactly, then wait for the user's answer. If the user response is a decision answer, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`. If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command. Use the session-owned `active_task` reference as the resume target and resume the background `fixme-task` with `--resume <active_task> --answer-attention <attention-id>`. `lifecycle attention broker show` returns display fields only and does not return task-owned resume metadata. In Claude, resume by dispatching `Agent(subagent_type="fixme-task", ...)` with those arguments in the prompt. In Codex, resume with `spawn_agent(agent_type="fixme-task", message=...)` and those same arguments after resolving runtime settings. When resuming, reuse the same `<liveness>` `statusId: <activeRunStatusId>` so `fixme-task` can consume the original attention status. The status id is context, not a command-line flag. Do not persist any task-owned decision; the background `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
+Print the returned `promptMarkdown` exactly, then wait for the user's answer. If the user response is a decision answer, call `lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId> --attention-id <attention-id>` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`. If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command. Launch the background `fixme-task` with the returned `resume.message` only. After the launch call succeeds, call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId> --attention-id <attention-id>` with `{ "resumeMessage": "<returned resume.message>", "transport": "<resume launch transport>", "runtime": "<runtime>", "runtimeHandle": <optional runtime handle> }`. Use the actual runtime transport and runtime used for the launch. Include `runtimeHandle` only when the launch returned one. Do not compose `--resume <active_task> --answer-attention <attention-id>` by hand. The status id is context, not a command-line flag. Do not persist any task-owned decision; the background `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
 
-If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt or call `lifecycle attention broker answer` again. Resume the background `fixme-task` immediately with `--resume <active_task> --answer-attention <attention-id>` and the same `<liveness>` `statusId: <activeRunStatusId>` so an interrupted broker does not duplicate a user decision.
+If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again. Call `lifecycle attention broker resume` with the returned `answer` object, launch the background `fixme-task` with the returned `resume.message` only, then call `lifecycle attention broker acknowledge-resume` with the same post-launch evidence shape.
 
 If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"` and resume the background `fixme-task` exactly the same way. Do not answer the clarification in this session skill. If the resumed background `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way.
 
@@ -295,7 +296,7 @@ This is the core execution cycle. Repeat until the user stops the session or the
    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
    ```
 
-   The payload uses `parentSkill: "fixme-session"` with `sessionTaskRef: { "sessionPath": "<absolute-session-path>", "ticketPath": "<absolute-ticket-path>" }`, `"transport":"background"` on the child, `child.handoff.taskSaveData`, `child.handoff.payload`, and lightweight `child.promptInputs`. Store the returned `launch.statusId` in session.md frontmatter as `activeRunStatusId`, and use `launch.transport`, `launch.runtimeSettings`, `launch.bannerMarkdown`, and `launch.promptBlocks` for the runtime launch. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
+   The payload uses `parentSkill: "fixme-session"` with `sessionTaskRef: { "sessionPath": "<absolute-session-path>", "ticketPath": "<absolute-ticket-path>" }`, `"transport":"background"` on the child, `child.handoff.taskSaveData`, `child.handoff.payload`, and lightweight `child.promptInputs`. Store the returned `parentRunId` in session.md frontmatter as `activeParentRunId`, store `launch.statusId` as `activeRunStatusId`, and use `launch.transport`, `launch.runtimeSettings`, `launch.bannerMarkdown`, and `launch.promptBlocks` for the runtime launch. If this command fails, clear `active_task`, report the JSON error, transition the ticket to failed, and do not dispatch the background agent.
 
    The runtime adapter launches the child from the returned `launch` block. The helper does not invoke the agent itself.
 
@@ -305,41 +306,46 @@ This is the core execution cycle. Repeat until the user stops the session or the
    → dispatching fixme-task in background (runtime: {launch.runtimeSettings.runtime}, model: {launch.runtimeSettings.model}, reasoning: {launch.runtimeSettings.reasoningEffort}, profile: {launch.runtimeSettings.profile}, source: {launch.runtimeSettings.source})
    ```
 
-   Then dispatch:
+   Render the child prompt from the returned `launch.promptBlocks` plus `launch.usageContext`. Do not reconstruct these blocks manually from `<task>`, `<project>`, `<liveness>`, ticket fields, session fields, or liveness ids. Pass these returned blocks through verbatim, in this order:
 
+   ```text
+   <launch.promptBlocks.taskStateOwner>
+   <launch.promptBlocks.parentContinuation>
+   <launch.promptBlocks.activeChild>
+   <launch.promptBlocks.project>
+   <launch.promptBlocks.liveness>
+   <launch.promptBlocks.taskInput>
+   <launch.usageContext>
    ```
+
+   Compatibility names for the returned prompt block members are `<promptBlocks.taskStateOwner>`, `<promptBlocks.parentContinuation>`, `<promptBlocks.activeChild>`, `<promptBlocks.project>`, `<promptBlocks.liveness>`, and `<promptBlocks.taskInput>` under `launch.promptBlocks`.
+
+   `launch.promptBlocks.taskStateOwner` identifies `fixme-task` as the task-state owner. `launch.promptBlocks.parentContinuation` carries the session parent continuation. `launch.promptBlocks.activeChild` carries the exact child handle persisted by `lifecycle parent prepare-child`. `launch.promptBlocks.project`, `launch.promptBlocks.liveness`, and `launch.promptBlocks.taskInput` carry the resolved project, child liveness, and saved task handoff context. `launch.usageContext` carries the returned pipeline and parent invocation context.
+
+   When `launch.transport == "background"`, use the runtime's background-agent dispatch mechanism with the rendered prompt and returned runtime settings. In Claude, the launch shape is:
+
+   ```text
    Agent(
      description: "Execute pipeline for ticket #NNNN",
      run_in_background: true,
      subagent_type: "fixme-task",
-     model: "{resolved-model}",
-     reasoning_effort: "{resolved-reasoning-effort}",
-     prompt: |
-       <task>
-       Execute this task:
-       - Task: <task description from ticket title + investigation findings summary>
-       - Pipeline: <pipeline name from step 4>
-       - Ticket: <ticket-folder>/ticket.md
-       - Config: <fixme-dir>/config.json
-
-       When complete, write a summary to <ticket-folder>/task-result.md with:
-       - status: "completed" or "failed"
-       - files_changed: [list of files]
-       - summary: <one-line description of what was done>
-       - failure_reason: <if failed, why>
-       </task>
+     model: launch.runtimeSettings.model,
+     reasoning_effort: launch.runtimeSettings.reasoningEffort,
+     prompt: "<rendered launch.promptBlocks plus launch.usageContext>"
+   )
+   ```
 
        <project>
        Fixme dir: <fixme-dir>
        </project>
 
-       <liveness>
-       statusId: <statusId from lifecycle dispatch prepare>
-       </liveness>
-   )
+   In Codex, launch the registered `fixme-task` agent with the rendered prompt and returned runtime settings:
+
+   ```text
+   spawn_agent(agent_type="fixme-task", reasoning_effort=launch.runtimeSettings.reasoningEffort, message="<rendered launch.promptBlocks plus launch.usageContext>")
    ```
 
-   If the resolver returns `null` for `model` or `reasoning_effort`, omit that Agent field.
+   If `launch.runtimeSettings.reasoningEffort` is `null`, omit `reasoning_effort`. Always omit a Codex model argument.
 
 7. **Return to conversation loop:**
    After dispatching fixme-task in background, the session is immediately responsive. It can:

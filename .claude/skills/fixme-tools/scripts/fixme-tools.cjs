@@ -5245,8 +5245,10 @@ function getCodexSkillAdapterHeader(skillName) {
     '',
     '## Attention Brokers',
     '',
-    '- When acting as a Fixme attention broker, record only the raw answer with `lifecycle attention broker answer`; do not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare`.',
-    '- Resume the existing `fixme-task` with `--resume <ref> --answer-attention <attention-id>` and let `fixme-task` consume the answer.',
+    '- When acting as a Fixme attention broker, call `lifecycle attention broker resume` to record or reuse the raw answer, launch the returned `fixme-task` resume message, then call `lifecycle attention broker acknowledge-resume`.',
+    '- Do not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` from the parent broker after an attention answer.',
+    '- Launch the existing `fixme-task` only with the returned `resume.message`; do not synthesize a fresh task prompt, original task description, prior artifacts, or selected answer prose.',
+    '- After the launch call succeeds, acknowledge it with `resumeMessage`, `transport`, `runtime`, and any runtime handle so parent state records `activeChild.resumeDispatch` before returning to child-waiting.',
     '',
     '## Workflow Manifests',
     '',
@@ -8752,6 +8754,7 @@ function lifecycleAttentionBrokerProjection(record) {
   // replay compare, never via broker show or answer.
   const projection = {
     attentionId: record.attentionId,
+const LIFECYCLE_BROKER_RESUME_DISPATCH_FIELDS = new Set(['resumeMessage', 'transport', 'runtime', 'runtimeHandle']);
     statusId: record.statusId,
     status: record.status,
     promptMarkdown: record.promptMarkdown,
@@ -8783,9 +8786,7 @@ function lifecycleAttentionBrokerShow(flags) {
   }
 }
 
-function lifecycleAttentionBrokerAnswer(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const data = resolveLifecycleData(flags);
+function lifecycleAttentionBrokerAnswerCore(fixmeDir, statusId, attentionId, data) {
   try {
     assertKnownJsonFields(data, 'attention broker answer', LIFECYCLE_BROKER_ANSWER_FIELDS);
   } catch (e) {
@@ -9037,6 +9038,270 @@ const PR_PARENT_CURSOR_SPECS = Object.freeze({
     next: ['dispatchFixmeTask', 'verify', 'summarize'],
   },
   verify: { required: ['childResultSummaryPaths', 'routedGroups', 'flags'], next: ['commit', 'replyComments', 'summarize'] },
+function lifecycleAttentionBrokerAnswer(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  const answered = lifecycleAttentionBrokerAnswerCore(fixmeDir, flags['status-id'], flags['attention-id'], data);
+  return lifecycleOk(lifecycleAttentionBrokerProjection(answered));
+}
+
+function readParentForBrokerResume(fixmeDir, parentRunId) {
+  if (!isNonEmptyString(parentRunId)) {
+    lifecycleError('invalidInput', '--parent-run-id is required');
+  }
+  const statePath = parentStatePath(fixmeDir, parentRunId);
+  if (!fs.existsSync(statePath)) {
+    lifecycleError('stateNotFound', `Parent run not found: ${parentRunId}`);
+  }
+  const parent = readJsonFileStrict(statePath);
+  if (PR_TERMINAL_STATUSES.has(parent.status)) {
+    lifecycleError('staleState', `Parent run is already terminal: ${parentRunId}`);
+  }
+  if (!['awaitFixmeTask', 'brokerChildAttention'].includes(parent.cursor)) {
+    lifecycleError('staleState', `Parent cursor is not waiting on child attention: ${parent.cursor}`);
+  }
+  if (!isPlainObject(parent.payload) || !isPlainObject(parent.payload.activeChild)) {
+    lifecycleError('staleState', 'Parent payload is missing activeChild');
+  }
+  return { parent, statePath };
+}
+
+function validateBrokerResumeActiveChild(activeChild, statusId) {
+  if (activeChild.statusId !== statusId) {
+    lifecycleError('staleState', `activeChild.statusId does not match requested statusId: ${activeChild.statusId}`);
+  }
+}
+
+function validateBrokerResumeBoundary(parent, activeChild, attentionId, attentionRecord, runStatus) {
+  if (!isNonEmptyString(activeChild.resumeRef)) {
+    lifecycleError('staleState', 'activeChild.resumeRef is required for attention resume');
+  }
+  if (parent.cursor === 'brokerChildAttention' && activeChild.attentionId !== attentionId) {
+    lifecycleError('staleState', `activeChild.attentionId does not match requested attentionId: ${activeChild.attentionId}`);
+  }
+  if (runStatus.currentCommand !== `attention:${attentionId}`) {
+    lifecycleError('staleState', `Run is not waiting on attention ${attentionId}`);
+  }
+  if (attentionRecord.ownerSkill !== 'fixme-task') {
+    lifecycleError('invalidInput', `attention ownerSkill must be fixme-task, got ${attentionRecord.ownerSkill}`);
+  }
+  if (attentionRecord.resumeRef !== activeChild.resumeRef) {
+    lifecycleError('staleState', `attention resumeRef does not match activeChild.resumeRef: ${attentionRecord.resumeRef}`);
+  }
+  if (isNonEmptyString(activeChild.taskStatePath) && attentionRecord.taskStatePath !== activeChild.taskStatePath) {
+    lifecycleError('staleState', `attention taskStatePath does not match activeChild.taskStatePath: ${attentionRecord.taskStatePath}`);
+  }
+}
+
+function brokerAttentionActiveChildFor(parent, attentionId) {
+  const previous = parent.payload.activeChild;
+  const activeChild = {
+    ...previous,
+    attentionId,
+  };
+  if (isPlainObject(previous.resumeDispatch) && previous.resumeDispatch.attentionId !== attentionId) {
+    delete activeChild.resumeDispatch;
+  }
+  return activeChild;
+}
+
+function checkpointBrokerChildAttention(fixmeDir, parent, attentionId) {
+  const activeChild = brokerAttentionActiveChildFor(parent, attentionId);
+  if (parent.cursor === 'awaitFixmeTask' &&
+      isPlainObject(parent.payload.activeChild.resumeDispatch) &&
+      parent.payload.activeChild.resumeDispatch.attentionId === attentionId) {
+    return parent;
+  }
+  const payload = {
+    ...parent.payload,
+    activeChild,
+  };
+  if (parent.cursor === 'brokerChildAttention' && jsonEqual(parent.payload, payload)) {
+    return parent;
+  }
+  return parentCheckpointCore(fixmeDir, parent.parentRunId, {
+    idempotencyKey: `broker-attention:${parent.parentRunId}:${attentionId}`,
+    expectedRevision: parent.revision,
+    status: 'waitingForUser',
+    cursor: 'brokerChildAttention',
+    payload,
+    ledger: parent.ledger || {},
+  });
+}
+
+function brokerResumeOutput(fixmeDir, parent, activeChild, attentionId) {
+  const statusId = activeChild.statusId;
+  return lifecycleOk({
+    parentRunId: parent.parentRunId,
+    statusId,
+    attentionId,
+    resume: {
+      agentName: 'fixme-task',
+      message: `--resume ${activeChild.resumeRef} --answer-attention ${attentionId}`,
+      liveness: {
+        statusId,
+        statusPath: runStatusPath(fixmeDir, statusId),
+      },
+    },
+  });
+}
+
+function lifecycleAttentionBrokerResume(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const attentionId = validateAttentionId(flags['attention-id']);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'attention broker resume', LIFECYCLE_BROKER_ANSWER_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+
+  const { parent } = readParentForBrokerResume(fixmeDir, flags['parent-run-id']);
+  const activeChild = parent.payload.activeChild;
+  validateBrokerResumeActiveChild(activeChild, statusId);
+  let read;
+  try {
+    read = readAttentionRecord(fixmeDir, statusId, attentionId);
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      lifecycleError('stateNotFound', e.message);
+    }
+    lifecycleError('invalidInput', e.message);
+  }
+  validateBrokerResumeBoundary(parent, activeChild, attentionId, read.record, read.runStatus);
+  lifecycleAttentionBrokerAnswerCore(fixmeDir, statusId, attentionId, data);
+  const nextParent = checkpointBrokerChildAttention(fixmeDir, parent, attentionId);
+  return brokerResumeOutput(fixmeDir, nextParent, nextParent.payload.activeChild, attentionId);
+}
+
+function validateBrokerResumeDispatchData(data) {
+  try {
+    assertKnownJsonFields(data, 'attention broker acknowledge-resume', LIFECYCLE_BROKER_RESUME_DISPATCH_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(data.resumeMessage)) {
+    lifecycleError('missingRequiredField', 'resumeMessage is required');
+  }
+  if (!DISPATCH_TRANSPORTS.has(data.transport)) {
+    lifecycleError('invalidInput', `transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
+  }
+  if (!VALID_RUNTIME_VALUES.has(data.runtime)) {
+    lifecycleError('invalidInput', 'runtime must be one of: claude, codex');
+  }
+  if (data.runtimeHandle !== undefined) {
+    try {
+      validateRuntimeHandle(data.runtime, data.runtimeHandle, 'attention broker acknowledge-resume');
+    } catch (e) {
+      lifecycleError('invalidInput', e.message);
+    }
+  }
+}
+
+function brokerResumeDispatchCandidate(data, statusId, attentionId) {
+  const evidence = {
+    statusId,
+    attentionId,
+    resumeMessage: data.resumeMessage,
+    transport: data.transport,
+    runtime: data.runtime,
+  };
+  if (data.runtimeHandle !== undefined) {
+    evidence.runtimeHandle = data.runtimeHandle;
+  }
+  return evidence;
+}
+
+function runtimeHandlesMatch(existing, candidate) {
+  if (existing === undefined && candidate === undefined) return true;
+  if (existing === undefined || candidate === undefined) return false;
+  if (!isPlainObject(existing) || !isPlainObject(candidate)) return false;
+  return existing.kind === candidate.kind && existing.id === candidate.id;
+}
+
+function brokerResumeDispatchMatches(existing, candidate) {
+  if (!isPlainObject(existing)) return false;
+  return existing.statusId === candidate.statusId &&
+    existing.attentionId === candidate.attentionId &&
+    existing.resumeMessage === candidate.resumeMessage &&
+    existing.transport === candidate.transport &&
+    existing.runtime === candidate.runtime &&
+    runtimeHandlesMatch(existing.runtimeHandle, candidate.runtimeHandle);
+}
+
+function lifecycleAttentionBrokerAcknowledgeResume(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statusId = validateRequiredRunId(flags['status-id']);
+  const attentionId = validateAttentionId(flags['attention-id']);
+  const data = resolveLifecycleData(flags);
+  validateBrokerResumeDispatchData(data);
+
+  const { parent } = readParentForBrokerResume(fixmeDir, flags['parent-run-id']);
+  const activeChild = parent.payload.activeChild;
+  validateBrokerResumeActiveChild(activeChild, statusId);
+  if (activeChild.attentionId !== attentionId) {
+    lifecycleError('staleState', `activeChild.attentionId does not match requested attentionId: ${activeChild.attentionId}`);
+  }
+  const candidate = brokerResumeDispatchCandidate(data, statusId, attentionId);
+  const existingDispatch = activeChild.resumeDispatch;
+  const matchingDispatch = isPlainObject(existingDispatch) && existingDispatch.attentionId === attentionId
+    ? existingDispatch
+    : null;
+  if (matchingDispatch) {
+    if (!brokerResumeDispatchMatches(matchingDispatch, candidate)) {
+      lifecycleError('conflictingDuplicate', `resume dispatch for attention ${attentionId} was already acknowledged with different data`);
+    }
+    if (parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask') {
+      return lifecycleOk({
+        parentRunId: parent.parentRunId,
+        statusId,
+        attentionId,
+        parent: { status: parent.status, cursor: parent.cursor, revision: parent.revision },
+        resumeDispatch: matchingDispatch,
+      });
+    }
+  } else if (existingDispatch !== undefined && parent.cursor === 'brokerChildAttention') {
+    lifecycleError('staleState', `brokerChildAttention retained resumeDispatch for different attention ${existingDispatch.attentionId || '<unknown>'}`);
+  }
+
+  const expectedResumeMessage = `--resume ${activeChild.resumeRef} --answer-attention ${attentionId}`;
+  if (data.resumeMessage !== expectedResumeMessage) {
+    lifecycleError('staleState', `resumeMessage does not match activeChild resume request: ${data.resumeMessage}`);
+  }
+
+  if (!(parent.status === 'waitingForUser' && parent.cursor === 'brokerChildAttention')) {
+    lifecycleError('staleState', `Parent is not awaiting resume launch acknowledgement: ${parent.status}/${parent.cursor}`);
+  }
+
+  const resumeDispatch = matchingDispatch || {
+    ...candidate,
+    acknowledgedAt: new Date().toISOString(),
+  };
+  const payload = {
+    ...parent.payload,
+    activeChild: {
+      ...activeChild,
+      resumeDispatch,
+    },
+  };
+  const nextParent = parentCheckpointCore(fixmeDir, parent.parentRunId, {
+    idempotencyKey: `broker-resume-dispatch:${parent.parentRunId}:${attentionId}`,
+    expectedRevision: parent.revision,
+    status: 'waitingForChild',
+    cursor: 'awaitFixmeTask',
+    payload,
+    ledger: parent.ledger || {},
+  });
+  return lifecycleOk({
+    parentRunId: nextParent.parentRunId,
+    statusId,
+    attentionId,
+    parent: { status: nextParent.status, cursor: nextParent.cursor, revision: nextParent.revision },
+    resumeDispatch: nextParent.payload.activeChild.resumeDispatch,
+  });
+}
+
   commit: { required: ['verificationResults', 'changedFiles', 'expectedHeadSha', 'changedFilesDigest', 'flags'], next: ['push', 'replyComments', 'summarize'] },
   push: { required: ['commitSha', 'pushRemote', 'pushRef', 'pushTarget', 'flags'], next: ['replyComments', 'summarize'] },
   replyComments: { required: ['analysis', 'routedGroups', 'replyExecutionTable', 'flags'], next: ['resolveThreads', 'summarize'] },
@@ -10973,6 +11238,42 @@ function main() {
           case 'checkpoint':
             return taskCheckpoint(flags);
           case 'producer-continuation':
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'resume') {
+    return commandHelpPayload({
+      command: 'lifecycle attention broker resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
+      optionalDataFields: [],
+      enumValues: {
+        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
+        answeredBy: ['user'],
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing brokers record or reuse raw user answers and receive a launch object that returns only the fixme-task resume message plus existing liveness context.',
+    });
+  }
+  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'acknowledge-resume') {
+    return commandHelpPayload({
+      command: 'lifecycle attention broker acknowledge-resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
+      optionalDataFields: ['runtimeHandle'],
+      enumValues: {
+        transport: setValues(DISPATCH_TRANSPORTS),
+        runtime: setValues(VALID_RUNTIME_VALUES),
+      },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
+        data: { resumeMessage: '--resume FIXME-1 --answer-attention attn_...', transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing brokers call this only after launching the returned resume message. It records resume-dispatch evidence and returns the parent to waitingForChild.',
+    });
+  }
             switch (args[0]) {
               case 'mark-bad':
                 return taskProducerContinuationMarkBad(flags);
@@ -11263,6 +11564,10 @@ module.exports = {
   resolveModel,
   resolveAlert,
   MODEL_PROFILES,
+                  case 'resume':
+                    return lifecycleAttentionBrokerResume(flags);
+                  case 'acknowledge-resume':
+                    return lifecycleAttentionBrokerAcknowledgeResume(flags);
   STANDARD_PIPELINES,
   applyConfigMigration,
   generateCodexAgentToml,

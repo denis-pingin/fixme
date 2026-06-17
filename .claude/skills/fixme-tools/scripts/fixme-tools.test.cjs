@@ -3402,6 +3402,29 @@ test('every lifecycle/task-decision helper named in any installed skill exists i
     'task decision append', 'task decision list',
     'task result write',
   ]);
+    {
+      args: 'lifecycle attention broker resume --help',
+      command: 'lifecycle attention broker resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['answer', 'answeredBy', 'answerKind'],
+      optionalDataFields: [],
+      enumChecks: [['answerKind', ['decision', 'clarificationRequest']]],
+      audience: 'parent-facing',
+      guidanceIncludes: 'returns only the fixme-task resume message',
+    },
+    {
+      args: 'lifecycle attention broker acknowledge-resume --help',
+      command: 'lifecycle attention broker acknowledge-resume',
+      requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
+      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
+      optionalDataFields: ['runtimeHandle'],
+      enumChecks: [
+        ['transport', ['agent', 'inline-skill', 'background', 'direct']],
+        ['runtime', ['claude', 'codex']],
+      ],
+      audience: 'parent-facing',
+      guidanceIncludes: 'records resume-dispatch evidence and returns the parent to waitingForChild',
+    },
   const skillsRoot = path.resolve(__dirname, '..', '..');
   const skillDirs = fs.readdirSync(skillsRoot).filter(name => name.startsWith('fixme-'));
   // Match `fixme-tools.cjs <namespace> <verb> [<action>]` for lifecycle/task decision/task result.
@@ -3536,6 +3559,8 @@ test('invocation start binds explicit usageSourcePath for parent-driven Codex ta
     usageSourcePath: sourcePath,
   });
   const started = runInDirWithEnv(`lifecycle invocation start --fixme-dir "${w.fixmeDir}" --data '${data}'`, w.projectRoot, { ...w.env, CODEX_THREAD_ID: '', CODEX_SESSION_FILE: '', FIXME_USAGE_SOURCE_PATH: '' });
+    'lifecycle attention broker resume',
+    'lifecycle attention broker acknowledge-resume',
   assert(started.ok, `invocation start with usageSourcePath should succeed, got: ${JSON.stringify(started.data)}`);
   assert(started.data.usageSourcePath === sourcePath, `start output should echo usageSourcePath, got ${JSON.stringify(started.data)}`);
   const pending = readJson(path.join(w.fixmeDir, 'usage', 'pending', `${started.data.invocationId}.json`));
@@ -5044,6 +5069,210 @@ test('wait end after cleared returns current status idempotently', () => {
   run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label "cmd"`);
   run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
   const again = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId}`);
+test('attention broker resume records raw answer and returns minimal existing-task launch', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'broker-resume-success' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-broker-resume.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+
+  const activeChild = prepared.data.activeChild;
+  const attentionId = 'attn_broker_resume_success';
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
+    attention: {
+      resumeRef: activeChild.resumeRef,
+      taskStatePath: activeChild.taskStatePath,
+      promptMarkdown: '## Decision\n\nChoose A or B.',
+    },
+  })}'`);
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const answerPayload = { answer: 'A', answeredBy: 'user', answerKind: 'decision' };
+  const resume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.resume.agentName === 'fixme-task', `resume should target fixme-task, got ${JSON.stringify(resume.data.resume)}`);
+  assert(resume.data.resume.message === `--resume ${activeChild.resumeRef} --answer-attention ${attentionId}`, `resume message should be minimal, got ${resume.data.resume.message}`);
+  assert(resume.data.resume.liveness.statusId === activeChild.statusId, `resume liveness should reuse active child status, got ${JSON.stringify(resume.data.resume.liveness)}`);
+  assert(fs.existsSync(resume.data.resume.liveness.statusPath), 'resume liveness statusPath should exist');
+
+  const serializedResume = JSON.stringify(resume.data.resume);
+  for (const forbidden of [
+    'Full review body lives in durable payload',
+    'Detailed implementation instructions live only',
+    'Choose A or B',
+    'pendingDecision',
+    'openCheckpointData',
+    'promptMarkdown',
+    'taskStatePath',
+    'handoffPayloadPath',
+    '"answer":"A"',
+  ]) {
+    assert(!serializedResume.includes(forbidden), `resume output must not contain ${forbidden}, got ${serializedResume}`);
+  }
+
+  const durableAttention = readJson(open.data.attentionPath);
+  assert(durableAttention.status === 'answered', `attention should be answered, got ${durableAttention.status}`);
+  assert(durableAttention.answer.answer === 'A', `raw answer should be stored durably, got ${JSON.stringify(durableAttention.answer)}`);
+  const childState = readJson(activeChild.taskStatePath);
+  assert(childState.status === 'waitingForUser', `broker must not consume task state, got ${childState.status}`);
+  assert(Array.isArray(childState.decisions) && childState.decisions.length === 0, `broker must not append decisions, got ${JSON.stringify(childState.decisions)}`);
+  const parent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(parent.status === 'waitingForUser' && parent.cursor === 'brokerChildAttention', `parent should checkpoint brokerChildAttention, got ${JSON.stringify(parent)}`);
+  assert(parent.payload.activeChild.attentionId === attentionId, `parent activeChild should record attention id, got ${JSON.stringify(parent.payload.activeChild)}`);
+
+  const acknowledgementPayload = {
+    resumeMessage: resume.data.resume.message,
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_success' },
+  };
+  const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(acknowledgementPayload)}'`);
+  assert(acknowledged.ok, `acknowledge-resume should succeed after launch, got ${JSON.stringify(acknowledged.data)}`);
+  const acknowledgedParent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(acknowledgedParent.status === 'waitingForChild' && acknowledgedParent.cursor === 'awaitFixmeTask', `parent should return to child wait after acknowledgement, got ${JSON.stringify(acknowledgedParent)}`);
+  assert(acknowledgedParent.payload.activeChild.attentionId === attentionId, `acknowledged activeChild should retain attention id, got ${JSON.stringify(acknowledgedParent.payload.activeChild)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.resumeMessage === resume.data.resume.message, `resumeDispatch should record resume message, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.statusId === activeChild.statusId, `resumeDispatch should record status id, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.attentionId === attentionId, `resumeDispatch should record attention id, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.transport === 'agent', `resumeDispatch should record transport, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtime === 'codex', `resumeDispatch should record runtime, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_success', `resumeDispatch should record runtime handle, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+});
+
+test('attention broker resume replaces prior resume dispatch for second attention on same active child', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'broker-resume-second-attention' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-broker-resume-second-attention.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+
+  const activeChild = prepared.data.activeChild;
+  const firstAttentionId = 'attn_broker_resume_first';
+  const firstOpen = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, firstAttentionId, {
+    attention: {
+      resumeRef: activeChild.resumeRef,
+      taskStatePath: activeChild.taskStatePath,
+    },
+  })}'`);
+  assert(firstOpen.ok, `first attention should open, got ${JSON.stringify(firstOpen.data)}`);
+
+  const firstAnswerPayload = { answer: 'Need more context', answeredBy: 'user', answerKind: 'clarificationRequest' };
+  const firstResume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${firstAttentionId} --data '${JSON.stringify(firstAnswerPayload)}'`);
+  assert(firstResume.ok, `first broker resume should succeed, got ${JSON.stringify(firstResume.data)}`);
+  const firstAckPayload = {
+    resumeMessage: firstResume.data.resume.message,
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_first' },
+  };
+  const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${firstAttentionId} --data '${JSON.stringify(firstAckPayload)}'`);
+  assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
+  const afterFirstAck = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(afterFirstAck.status === 'waitingForChild' && afterFirstAck.cursor === 'awaitFixmeTask', `parent should wait for child after first ack, got ${JSON.stringify(afterFirstAck)}`);
+  assert(afterFirstAck.payload.activeChild.resumeDispatch.attentionId === firstAttentionId, `first resumeDispatch should record first attention, got ${JSON.stringify(afterFirstAck.payload.activeChild.resumeDispatch)}`);
+
+  const firstClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${activeChild.statusId} --attention-id ${firstAttentionId}`);
+  assert(firstClear.ok, `owner-side clear should allow replacement attention, got ${JSON.stringify(firstClear.data)}`);
+
+  const secondAttentionId = 'attn_broker_resume_second';
+  const secondOpen = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, secondAttentionId, {
+    attention: {
+      resumeRef: activeChild.resumeRef,
+      taskStatePath: activeChild.taskStatePath,
+      promptMarkdown: '## Follow-up\n\nChoose C or D.',
+    },
+  })}'`);
+  assert(secondOpen.ok, `second attention should open for same active child, got ${JSON.stringify(secondOpen.data)}`);
+
+  const secondAnswerPayload = { answer: 'C', answeredBy: 'user', answerKind: 'decision' };
+  const secondResume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${secondAttentionId} --data '${JSON.stringify(secondAnswerPayload)}'`);
+  assert(secondResume.ok, `second broker resume should succeed, got ${JSON.stringify(secondResume.data)}`);
+  const brokerParent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(brokerParent.status === 'waitingForUser' && brokerParent.cursor === 'brokerChildAttention', `second broker resume should move parent to brokerChildAttention, got ${JSON.stringify(brokerParent)}`);
+  assert(brokerParent.payload.activeChild.attentionId === secondAttentionId, `activeChild should point at second attention, got ${JSON.stringify(brokerParent.payload.activeChild)}`);
+  assert(!Object.prototype.hasOwnProperty.call(brokerParent.payload.activeChild, 'resumeDispatch'), `brokerChildAttention payload should not retain stale resumeDispatch, got ${JSON.stringify(brokerParent.payload.activeChild)}`);
+
+  const secondAckPayload = {
+    resumeMessage: secondResume.data.resume.message,
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_second' },
+  };
+  const secondAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${secondAttentionId} --data '${JSON.stringify(secondAckPayload)}'`);
+  assert(secondAck.ok, `second acknowledgement should replace prior dispatch evidence, got ${JSON.stringify(secondAck.data)}`);
+  const afterSecondAck = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(afterSecondAck.status === 'waitingForChild' && afterSecondAck.cursor === 'awaitFixmeTask', `parent should return to awaitFixmeTask after second ack, got ${JSON.stringify(afterSecondAck)}`);
+  assert(afterSecondAck.payload.activeChild.resumeDispatch.attentionId === secondAttentionId, `resumeDispatch should record second attention id, got ${JSON.stringify(afterSecondAck.payload.activeChild.resumeDispatch)}`);
+  assert(afterSecondAck.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_second', `resumeDispatch should record second runtime handle, got ${JSON.stringify(afterSecondAck.payload.activeChild.resumeDispatch)}`);
+});
+
+test('attention broker resume is idempotent and fails closed for stale child state', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'broker-resume-idempotent' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-broker-resume-idempotent.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+
+  const activeChild = prepared.data.activeChild;
+  const attentionId = 'attn_broker_resume_idempotent';
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
+    attention: {
+      resumeRef: activeChild.resumeRef,
+      taskStatePath: activeChild.taskStatePath,
+    },
+  })}'`);
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const answerPayload = { answer: 'A', answeredBy: 'user', answerKind: 'decision' };
+  const first = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(first.ok, `first broker resume should succeed, got ${JSON.stringify(first.data)}`);
+  const replay = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(replay.ok, `replayed broker resume should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(replay.data.resume) === JSON.stringify(first.data.resume), `replay should return same resume launch, got ${JSON.stringify(replay.data.resume)} vs ${JSON.stringify(first.data.resume)}`);
+
+  const ackPayload = { resumeMessage: first.data.resume.message, transport: 'background', runtime: 'claude', runtimeHandle: { kind: 'claudeAgentId', id: 'agent_broker_resume_idempotent' } };
+  const malformedFirstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, resumeMessage: '--resume FIXME-wrong --answer-attention attn_wrong' })}'`);
+  assert(!malformedFirstAck.ok && malformedFirstAck.data.error.code === 'staleState', `malformed first acknowledgement should fail staleState, got ${JSON.stringify(malformedFirstAck.data)}`);
+  const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(ackPayload)}'`);
+  assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
+  const replayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(ackPayload)}'`);
+  assert(replayAck.ok, `replayed acknowledgement should succeed, got ${JSON.stringify(replayAck.data)}`);
+  const reorderedHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, runtimeHandle: { id: 'agent_broker_resume_idempotent', kind: 'claudeAgentId' } })}'`);
+  assert(reorderedHandleReplayAck.ok, `replayed acknowledgement should accept semantically identical runtimeHandle with reordered keys, got ${JSON.stringify(reorderedHandleReplayAck.data)}`);
+  const missingHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ resumeMessage: first.data.resume.message, transport: 'background', runtime: 'claude' })}'`);
+  assert(!missingHandleReplayAck.ok && missingHandleReplayAck.data.error.code === 'conflictingDuplicate', `omitting a previously recorded runtimeHandle should conflict, got ${JSON.stringify(missingHandleReplayAck.data)}`);
+  const replayedParent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(replayedParent.status === 'waitingForChild' && replayedParent.cursor === 'awaitFixmeTask', `replayed ack should leave parent waiting for child, got ${JSON.stringify(replayedParent)}`);
+  const badAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, resumeMessage: '--resume FIXME-wrong --answer-attention attn_wrong' })}'`);
+  assert(!badAck.ok && badAck.data.error.code === 'conflictingDuplicate', `different acknowledged resume message should conflict, got ${JSON.stringify(badAck.data)}`);
+
+  const conflict = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ answer: 'B', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `different answer should conflict, got ${JSON.stringify(conflict.data)}`);
+
+  const wrongRun = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  assert(wrongRun.ok, `stray run should start, got ${JSON.stringify(wrongRun.data)}`);
+  const wrongStatus = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${wrongRun.data.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(!wrongStatus.ok && wrongStatus.data.error.code === 'staleState', `wrong status id should fail staleState, got ${JSON.stringify(wrongStatus.data)}`);
+
+  const mismatchClear = run(`run attention clear --fixme-dir "${fixmeDir}" --status-id ${activeChild.statusId} --attention-id ${attentionId}`);
+  assert(mismatchClear.ok, `owner-side clear should allow mismatch attention setup, got ${JSON.stringify(mismatchClear.data)}`);
+  const mismatchAttentionId = 'attn_broker_resume_mismatch';
+  const mismatchOpen = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, mismatchAttentionId, {
+    attention: {
+      resumeRef: 'FIXME-wrong',
+      taskStatePath: activeChild.taskStatePath,
+    },
+  })}'`);
+  assert(mismatchOpen.ok, `mismatched attention should open before helper validation, got ${JSON.stringify(mismatchOpen.data)}`);
+  const persistedParent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(persistedParent.payload.activeChild.statusId === activeChild.statusId, `mismatch setup should use the persisted active child status, got ${JSON.stringify(persistedParent.payload.activeChild)}`);
+  assert(persistedParent.payload.activeChild.taskStatePath === activeChild.taskStatePath, `mismatch setup should use the persisted active child task state, got ${JSON.stringify(persistedParent.payload.activeChild)}`);
+  const mismatch = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${mismatchAttentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(!mismatch.ok && mismatch.data.error.code === 'staleState', `resumeRef mismatch should fail staleState, got ${JSON.stringify(mismatch.data)}`);
+  const mismatchRecord = readJson(mismatchOpen.data.attentionPath);
+  assert(mismatchRecord.status === 'waiting', `mismatched helper must not store answer, got ${JSON.stringify(mismatchRecord)}`);
+});
+
   assert(again.ok, `repeated wait end should be idempotent, got: ${JSON.stringify(again.data)}`);
   assert(again.data.currentCommand === null, 'currentCommand stays null');
 });
@@ -8486,7 +8715,13 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('Attention Resume Examples'), 'fixme-task should include concrete attention resume examples');
   assert(skill.includes('Attention examples use the same checkpoint-first order'), 'fixme-task examples should explicitly preserve checkpoint-first ordering');
   assert(!skill.includes('Then it checkpoints `pendingDecision.attentionId` and returns:'), 'fixme-task examples should not checkpoint after exposing attention');
-  assert(skill.includes('Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should document the Claude inline resume shape');
+  assert(skill.includes('lifecycle attention broker resume'), 'fixme-task should document broker resume as the parent answer path');
+  assert(skill.includes('returns `resume.message`'), 'fixme-task should say the broker helper returns resume.message');
+  assert(skill.includes('with the returned `resume.message` only'), 'fixme-task should launch only the helper-returned resume message');
+  assert(skill.includes('lifecycle attention broker acknowledge-resume'), 'fixme-task should document post-launch acknowledgement');
+  assert(skill.includes('activeChild.resumeDispatch'), 'fixme-task should document resume-dispatch evidence');
+  assert(skill.includes('Parent brokers do not hand-compose the message'), 'fixme-task should forbid hand-composed resume messages');
+  assert(!skill.includes('Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should not keep the old Claude inline hand-composed resume assertion');
   assert(!skill.includes('--nested'), 'fixme-task should no longer reference --nested');
   assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'fixme-task should document the Codex installed-skill resume shape');
   assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'fixme-task should document the Claude background agent resume shape');
@@ -8529,8 +8764,10 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect child task attention directives');
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through the lifecycle broker');
-  assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should record user answers through the lifecycle broker');
-  assert(skill.includes('Use `activeChild.resumeRef` from parent state'), 'PR comments should resume from parent-owned activeChild.resumeRef');
+  assert(skill.includes('lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId>'), 'PR comments should answer and resume through broker resume');
+  assert(skill.includes('Launch `fixme-task` with the returned `resume.message` only'), 'PR comments should launch only the helper-returned resume message');
+  assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId>'), 'PR comments should acknowledge launched resume messages');
+  assert(skill.includes('Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand'), 'PR comments should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments must not expect broker show to return resumeRef');
   assert(skill.includes('Skill("fixme-task", "--resume <activeChild.resumeRef> --answer-attention <attention-id>")'), 'PR comments should document the Claude inline resume invocation');
   assert(skill.includes('$HOME/.codex/skills/fixme-task/SKILL.md'), 'PR comments should document the installed Codex skill source copy');
@@ -8655,9 +8892,11 @@ test('lifecycle durable create/checkpoint helpers honor the retry contract', () 
 test('documentation: durable attention broker and owner boundaries are consistent', () => {
   const brokerProhibition = 'Parent brokers must not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` after recording an attention answer.';
   const ownerConsumeRule = '`fixme-task` must consume answered attention with `lifecycle attention consume` before any liveness ping, status reset, or child dispatch.';
-  const toolsBoundary = 'Parent-facing brokers use `lifecycle attention broker show` and `lifecycle attention broker answer`; `run attention answer` and `run attention clear` are owner/internal APIs.';
-  const dataFlowBoundary = 'The broker records only the raw answer; `fixme-task` consumes the answered attention and resumes task state.';
-  const codexBrokerRule = 'When acting as a Fixme attention broker, record only the raw answer with `lifecycle attention broker answer`; do not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare`.';
+  const brokerResumeCommand = 'lifecycle attention broker resume';
+  const brokerAckCommand = 'lifecycle attention broker acknowledge-resume';
+  const brokerResumeRule = 'Parent brokers answer attention through `lifecycle attention broker resume`, launch the returned `resume.message`, then call `lifecycle attention broker acknowledge-resume` to persist resume-dispatch evidence.';
+  const dataFlowBoundary = 'The broker answer path is `lifecycle attention broker resume` followed by `lifecycle attention broker acknowledge-resume`';
+  const codexBrokerRule = 'When acting as a Fixme attention broker, call `lifecycle attention broker resume` to record or reuse the raw answer, launch the returned `fixme-task` resume message, then call `lifecycle attention broker acknowledge-resume`.';
 
   const fixmeSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md'), 'utf8');
   const sessionSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md'), 'utf8');
@@ -8678,7 +8917,7 @@ test('documentation: durable attention broker and owner boundaries are consisten
   }
   assert(taskSkill.includes(ownerConsumeRule), 'fixme-task skill should require lifecycle attention consume before resume work');
   assert(taskAgent.includes(ownerConsumeRule), 'fixme-task agent role should require lifecycle attention consume before resume work');
-  assert(toolsSkill.includes(toolsBoundary), 'fixme-tools docs should separate parent-facing broker APIs from owner/internal run attention APIs');
+  assert(toolsSkill.includes(brokerResumeRule), 'fixme-tools docs should define the broker resume launch boundary');
   assert(toolsSkill.includes('lifecycle attention consume --fixme-dir'), 'fixme-tools docs should document lifecycle attention consume');
   assert(dataFlow.includes(dataFlowBoundary), 'session data-flow should document raw broker answer and task-owned consume/resume');
   assert(toolsSource.includes(codexBrokerRule), 'Codex adapter generation should include the broker safety rule');
@@ -8698,7 +8937,10 @@ test('fixme-session data flow: documents background liveness state', () => {
   const dataFlow = fs.readFileSync(dataFlowPath, 'utf8');
   assert(dataFlow.includes('`activeRunStatusId`'), 'session data-flow doc should name activeRunStatusId');
   assert(dataFlow.includes('The active background `fixme-task` run status id used for liveness and attention brokering.'), 'session data-flow doc should describe activeRunStatusId ownership');
-  assert(dataFlow.includes('records `active_task` and `activeRunStatusId`'), 'session dispatch flow should record both active task fields');
+  assert(dataFlow.includes('`activeParentRunId`'), 'session data-flow doc should name activeParentRunId');
+  assert(dataFlow.includes('The parent run id used by `lifecycle attention broker resume` to validate the active background child.'), 'session data-flow doc should describe activeParentRunId ownership');
+  assert(dataFlow.includes('`activeChild.resumeDispatch`'), 'session data-flow doc should describe resumeDispatch evidence');
+  assert(dataFlow.includes('records `active_task`, `activeParentRunId`, and `activeRunStatusId`'), 'session dispatch flow should record all active task fields');
   assert(dataFlow.includes('clears `active_task` and `activeRunStatusId`'), 'session completion flow should clear both active task fields');
   assert(dataFlow.includes('Session file, ticket list, task output, run status'), 'session refresh points should include run status reads');
   assert(!dataFlow.includes('Legacy fallback states'), 'session data-flow doc must not document removed legacy fallback states');
@@ -8710,8 +8952,11 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('If `run status` reports `currentCommand` in the form `attention:<attention-id>`'), 'session should detect background task attention');
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through the lifecycle broker');
-  assert(skill.includes('lifecycle attention broker answer --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should record user answers through the lifecycle broker');
-  assert(skill.includes('Use the session-owned `active_task` reference as the resume target'), 'session should resume from its owned active_task reference');
+  assert(skill.includes('activeParentRunId'), 'session should persist the parent run id returned by prepare-child');
+  assert(skill.includes('lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId>'), 'session should answer and resume through broker resume');
+  assert(skill.includes('Launch the background `fixme-task` with the returned `resume.message` only'), 'session should launch only the helper-returned resume message');
+  assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId>'), 'session should acknowledge launched resume messages');
+  assert(skill.includes('Do not compose `--resume <active_task> --answer-attention <attention-id>` by hand'), 'session should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session must not expect broker show to return resumeRef');
   assert(skill.includes('Agent(subagent_type="fixme-task", ...)'), 'session should document Claude background task resume');
   assert(skill.includes('spawn_agent(agent_type="fixme-task", message=...)'), 'session should document Codex background task resume');
@@ -8792,6 +9037,8 @@ test('fixme child skills: task-bound non-user-facing prompts return child attent
     'fixme-write-technical-spec',
     'fixme-write-plan',
     'fixme-execute-plan',
+    assert(content.includes('lifecycle attention broker resume'), `${name} should document broker resume`);
+    assert(content.includes('lifecycle attention broker acknowledge-resume'), `${name} should document broker acknowledge-resume`);
     'fixme-browser-verify',
   ]) {
     const skillPath = path.resolve(__dirname, '..', '..', name, 'SKILL.md');
@@ -9054,6 +9301,8 @@ test('fixme-rebase skill: positional argument is the branch to rebase and --base
   assert(skill.includes('the branch to rebase defaults to the current branch'), 'missing positional should default the rebased branch to current');
 
   // The four documented interpretations.
+    assert(content.includes(brokerResumeCommand), `${name} should name lifecycle attention broker resume`);
+    assert(content.includes(brokerAckCommand), `${name} should name lifecycle attention broker acknowledge-resume`);
   assert(skill.includes('`/fixme-rebase` -> rebase current branch onto auto-detected base.'), 'no-arg interpretation documented');
   assert(skill.includes('`/fixme-rebase feat/x` -> rebase `feat/x` onto auto-detected base.'), 'positional-only interpretation documented');
   assert(skill.includes('`/fixme-rebase --base develop` -> rebase current branch onto `develop`.'), '--base-only interpretation documented');
@@ -9101,6 +9350,33 @@ test('fixme-rebase skill: dirty tree stops and asks with stash/discard/abort and
 });
 
 test('fixme-rebase skill: same-or-worse merge fallback continues rebase without route prompt', () => {
+test('fixme-session skill: dispatches background fixme-task with returned prompt blocks', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const dispatchSection = skill.slice(
+    skill.indexOf('6. **Dispatch fixme-task in background:**'),
+    skill.indexOf('7. **Return to conversation loop:**')
+  );
+  assert(dispatchSection.length > 0, 'session background dispatch section should be found');
+  for (const fragment of [
+    'launch.promptBlocks.taskStateOwner',
+    'launch.promptBlocks.parentContinuation',
+    'launch.promptBlocks.activeChild',
+    'launch.promptBlocks.project',
+    'launch.promptBlocks.liveness',
+    'launch.promptBlocks.taskInput',
+    'launch.usageContext',
+  ]) {
+    assert(dispatchSection.includes(fragment), `session dispatch should include ${fragment}`);
+  }
+  assert(dispatchSection.includes('Render the child prompt from the returned `launch.promptBlocks` plus `launch.usageContext`'), 'session dispatch should render returned prompt blocks and usage context');
+  assert(dispatchSection.includes('Do not reconstruct these blocks manually'), 'session dispatch should forbid manual prompt reconstruction');
+  assert(!dispatchSection.includes('<task>\n       Execute this task:'), 'session dispatch should not hand-render the task prompt block');
+  assert(!dispatchSection.includes('<project>\n       Fixme dir: <fixme-dir>'), 'session dispatch should not hand-render the project prompt block');
+  assert(!dispatchSection.includes('<liveness>\n       statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not hand-render the liveness prompt block');
+  assert(!dispatchSection.includes('statusId: <statusId from lifecycle dispatch prepare>'), 'session dispatch should not reference lifecycle dispatch prepare status placeholders');
+});
+
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-rebase', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 

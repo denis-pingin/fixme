@@ -866,25 +866,15 @@ RESUME_REF: FIXME-13
 
 **Inside `fixme-task`, child skill asks for input:** If `fixme-write-plan`, `fixme-execute-plan`, or another child returns `FIXME_CHILD_ATTENTION_REQUIRED`, `fixme-task` creates the same `lifecycle attention open` record with `ownerSkill: "fixme-task"` and `sourceSkill` copied from the child directive. Parent brokers do not need to know whether the prompt came from native review routing or from `fixme-handle-plan-review`; both resume the same way.
 
-**Claude parent broker, inline task transport:** After `lifecycle attention broker show` and `lifecycle attention broker answer`, resume the existing inline-transport task:
-
-```text
-Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")
-```
-
-The parent supplied `transport=inline-skill` and `parentContinuation` via `lifecycle dispatch prepare`; transport is launch metadata, not a `fixme-task` flag. If the parent has the current `fixmeTaskStatusId`, keep that same liveness status in the resumed invocation context. The status id is context, not a command-line flag.
-
-**Codex parent broker, agent task transport:** Resume the registered `fixme-task` agent with the same workflow arguments:
+**Parent broker answer path:** After `lifecycle attention broker show`, the parent broker calls `lifecycle attention broker resume`. That helper records or reuses the raw answer, validates `activeChild`, and returns `resume.message`:
 
 ```text
 spawn_agent(agent_type="fixme-task", message="--resume FIXME-13 --answer-attention attn_review_123")
 ```
 
-Legacy installed-skill resume references may mention `$HOME/.codex/skills/fixme-task/SKILL.md`; parent-driven Codex execution now uses the registered agent transport.
+Claude inline, Claude background, and Codex agent transports all launch `fixme-task` with the returned `resume.message` only. Parent brokers do not hand-compose the message and do not include original task text, prior artifacts, or selected answer prose. If the parent has the current task status id, keep the returned `resume.liveness` in the resumed invocation context. The status id is context, not a command-line flag.
 
-Use `$HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs` for the preceding `lifecycle attention broker show` and `lifecycle attention broker answer` calls.
-
-**Background task broker:** A session broker resumes the `fixme-task` agent with the same `--resume FIXME-13 --answer-attention attn_review_123` arguments. In Claude this is an `Agent(subagent_type="fixme-task", ...)` resume prompt; in Codex this is `spawn_agent(agent_type="fixme-task", message=...)` with the resolved reasoning effort. In both runtimes, the broker only renders and records the user's answer; the resumed `fixme-task` consumes the answer, writes decisions, clears attention, and continues.
+After the runtime launch succeeds, parent brokers call `lifecycle attention broker acknowledge-resume` with the returned `resume.message`, actual transport, actual runtime, and optional runtime handle. That acknowledgement records `activeChild.resumeDispatch` and moves the parent from `brokerChildAttention` back to `awaitFixmeTask`.
 
 ## Ticket Integration (Optional)
 
