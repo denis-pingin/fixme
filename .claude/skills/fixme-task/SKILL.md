@@ -856,7 +856,7 @@ When `fixme-task` needs user input in attention mode, it must:
 
 The parent runner, if any, is only a broker. It renders the attention prompt and records the answer through `lifecycle attention broker answer`; it never decides what the answer means. Parent brokers must not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` after recording an attention answer. Only `fixme-task` interprets the answer and consumes it through `lifecycle attention consume` after an attention answer, then re-dispatches the same handler or child step when needed.
 
-`fixme-task` must consume answered attention with `lifecycle attention consume` before any liveness ping, status reset, or child dispatch.
+`fixme-task` must consume answered attention with `lifecycle attention consume` before any liveness ping, status reset, or child dispatch. This also applies before any producer resume or manual checkpoint. `lifecycle attention consume` applies the checkpoint and clears the attention as one operation. `run attention answer` records only the raw answer (`answer`, `answeredBy`, `answerKind`); `run attention clear` and ordinary `task checkpoint` are low-level primitives that must not be used to complete task-owned attention. The CLI now rejects clearing or replacing a live task-owned `pendingDecision` (and `status`/`cursor`/`loops`/`decisions`) through `task checkpoint`, and rejects a direct `run attention clear`, while the run still waits on the matching attention; use `lifecycle attention consume`.
 
 When invoked with `--resume <ref> --answer-attention <attention-id>`:
 
@@ -1261,6 +1261,26 @@ Codex runtime mechanics:
 - Resume path calls `resume_agent({ id })` with the exact stored id, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.
 - After a resumed producer reaches a normal final result, call `lifecycle dispatch complete` with `runtimeHandle: { "kind": "codexAgentId", "id": "<id>" }`, then call `close_agent({ target: id })` again.
 - If `close_agent` fails after a successful dispatch, log a warning with agent name, runtime, and handle id. Do not mark the handle bad unless a later resume attempt fails.
+
+#### Release a completed resumable producer
+
+Closing a completed producer releases a completed resumable producer; it does not discard the continuation. After `lifecycle dispatch complete` stores the `runtimeHandle`, emit a one-line explanation such as `Releasing completed producer; continuation handle is stored for resume.`, then call `close_agent`. The stored handle remains available for a later resume. A failed close logs a warning with the agent name, runtime, and handle id and does not mark the continuation bad.
+
+#### Build dispatch complete from the completion template
+
+`lifecycle dispatch prepare` returns a `completionTemplate` object `{dispatchId, statusId, parentStatusId, currentCommand}`. Build `lifecycle dispatch complete` by spreading that `completionTemplate` and adding only `status` and the result-specific `runtimeHandle` (on success) or `failure` (on failure). Do not send a separate `run ping --current-command null` after child completion: completion carries `parentStatusId` and clears the parent wait marker itself.
+
+#### Active child launch sequence
+
+For a running child, follow: `lifecycle dispatch prepare` -> spawn or resume the child -> when the child is running, call `lifecycle dispatch attach-runtime-handle` with the returned wait payload before waiting -> wait through the runtime wait primitive -> terminal `lifecycle dispatch complete` only after the child returns completed or failed. `lifecycle dispatch complete` stays terminal-only and never records a running handle. If spawn succeeds but `attach-runtime-handle` fails, report a dispatch lifecycle failure with the child handle id, parent status id, and the attach error, then use the failure/recovery path; do not enter an untracked wait.
+
+#### Watchdog wait policy
+
+Replace routine polling with one durable wait marker (prefer `lifecycle dispatch prepare` or one quiet `run ping --quiet --current-command waiting-for:<child-name>`), then block silently on the runtime wait primitive with a 5-minute watchdog. For Codex agents use `wait_agent({ targets: [id], timeout_ms: 300000 })`. On watchdog timeout do one bounded `run status` plus durable event/attention check; re-enter the wait silently if there is progress; emit one compact status line only after two unchanged intervals. No repeated "still running" prose, no repeated identical `run ping`, no `run status` polling during a live wait. Explicit user status requests read liveness once.
+
+#### Codex child usage source
+
+Codex child `agent`/`background` dispatches must not pass the parent `usageSourcePath` through `lifecycle dispatch prepare` or the child `<usage>` block; the child captures its own runtime source at `usage start`. Claude and inline-skill dispatches keep the current usage-source pass-through.
 
 Claude runtime mechanics:
 

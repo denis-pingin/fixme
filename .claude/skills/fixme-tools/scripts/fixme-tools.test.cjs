@@ -12469,6 +12469,14 @@ test('broker acknowledge-resume shares the runtime-handle validation helper', ()
   assert(cliErrorMessage(badAck).includes('runtimeHandle.kind must be codexAgentId'), `should fail with shared kind-by-runtime message, got ${cliErrorMessage(badAck)}`);
 });
 
+test('fixme-task instructions document release, attach, watchdog wait, owner attention consume, and Codex child usage source', () => {
+  const skill = fs.readFileSync(path.join(repoRoot, '.claude', 'skills', 'fixme-task', 'SKILL.md'), 'utf8').toLowerCase();
+  for (const phrase of ['releasing completed producer', 'attach-runtime-handle', 'completiontemplate', 'lifecycle attention consume', 'wait_agent', 'must not pass the parent']) {
+    assert(skill.includes(phrase), `fixme-task SKILL.md should document "${phrase}"`);
+  }
+  assert(skill.includes('300000') || skill.includes('5-minute watchdog'), 'fixme-task SKILL.md should document the watchdog timeout');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
