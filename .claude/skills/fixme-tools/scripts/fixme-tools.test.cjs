@@ -11968,6 +11968,85 @@ test('prepare-child still blocks recovery over live unconsumed child work', () =
   assert(stillLive.status !== 'failed', `live parent must not be auto-abandoned, got ${JSON.stringify(stillLive.status)}`);
 });
 
+test('dispatch prepare exposes structured banner context for producer continuation modes', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('banner-context-modes');
+
+  const checkpoint = runInDir(
+    `task checkpoint --state "${statePath}" --data '${JSON.stringify({
+      producerContinuations: [
+        {
+          agentName: 'fixme-write-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_banner' },
+          status: 'available',
+          lastDispatchId: 'dispatch_plan_banner',
+          badReason: null,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+        {
+          agentName: 'fixme-execute-plan',
+          runtime: 'codex',
+          runtimeHandle: { kind: 'codexAgentId', id: 'agent_exec_bad' },
+          status: 'bad',
+          lastDispatchId: 'dispatch_exec_bad',
+          badReason: 'resumeFailed',
+          updatedAt: '2026-06-12T00:00:00.000Z',
+        },
+      ],
+    })}'`,
+    projectRoot,
+  );
+  assert(checkpoint.ok, `banner-context checkpoint setup should pass: ${checkpoint.stderr || checkpoint.stdout}`);
+
+  const resume = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'banner-resume', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'codex',
+      taskStatePath: statePath, allowProducerContinuation: true, promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(resume.ok, `resume prepare should pass: ${resume.stderr || resume.stdout}`);
+  assert(resume.data.bannerContext.continuationMode === 'resume', `resume bannerContext mode, got ${JSON.stringify(resume.data.bannerContext)}`);
+  assert(resume.data.bannerContext.storedHandleStatus === 'available', `resume storedHandleStatus available, got ${resume.data.bannerContext.storedHandleStatus}`);
+  assert(resume.data.bannerMarkdown.includes('resume existing producer'), `resume banner labels mode, got ${resume.data.bannerMarkdown}`);
+  assert(resume.data.bannerMarkdown.includes('stored resumable producer handle'), `resume banner labels handle, got ${resume.data.bannerMarkdown}`);
+  assertNoSnakeCaseKeys(resume.data.bannerContext, 'bannerContext');
+
+  const forced = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'banner-forced', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'codex',
+      taskStatePath: statePath, allowProducerContinuation: true, forceFreshReason: 'userRequestedFresh', promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(forced.ok, `forced-fresh prepare should pass: ${forced.stderr || forced.stdout}`);
+  assert(forced.data.bannerContext.continuationReason === 'forcedFresh', `forced reason, got ${forced.data.bannerContext.continuationReason}`);
+  assert(forced.data.bannerMarkdown.includes('fresh producer'), `forced banner says fresh, got ${forced.data.bannerMarkdown}`);
+  assert(forced.data.bannerMarkdown.includes('forced fresh'), `forced banner labels forced fresh, got ${forced.data.bannerMarkdown}`);
+
+  const bad = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'banner-bad', agentName: 'fixme-execute-plan', transport: 'agent', runtime: 'codex',
+      taskStatePath: statePath, allowProducerContinuation: true, promptInputs: { mode: 'execute' },
+    })}'`,
+    projectRoot,
+  );
+  assert(bad.ok, `bad-handle prepare should pass: ${bad.stderr || bad.stdout}`);
+  assert(bad.data.bannerContext.continuationReason === 'storedHandleBad', `bad reason, got ${bad.data.bannerContext.continuationReason}`);
+  assert(bad.data.bannerMarkdown.includes('bad stored handle'), `bad banner labels bad handle, got ${bad.data.bannerMarkdown}`);
+
+  const notResumable = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'banner-not-resumable', agentName: 'fixme-task', transport: 'agent', runtime: 'codex',
+      taskStatePath: statePath, promptInputs: { mode: 'task' },
+    })}'`,
+    projectRoot,
+  );
+  assert(notResumable.ok, `not-resumable prepare should pass: ${notResumable.stderr || notResumable.stdout}`);
+  assert(notResumable.data.bannerContext.continuationReason === 'agentNotResumable', `not-resumable reason, got ${notResumable.data.bannerContext.continuationReason}`);
+  assert(!notResumable.data.bannerMarkdown.includes('stored resumable producer handle'), `not-resumable banner must not claim a producer handle, got ${notResumable.data.bannerMarkdown}`);
+});
+
 test('dispatch prepare returns a completion template carrying dispatchId, statusId, parentStatusId and currentCommand null', () => {
   const fixmeDir = makeFixmeDir();
   const parent = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);

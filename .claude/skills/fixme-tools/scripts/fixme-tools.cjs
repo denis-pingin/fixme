@@ -8274,6 +8274,86 @@ function buildDispatchBannerMarkdown(agentName, runtimeSettings) {
   ].join('\n');
 }
 
+// Derive a structured banner context that names the parent, child, producer
+// continuation mode, and stored-handle status so a producer banner can identify
+// resume / forced-fresh / bad-handle / no-handle cases from one place.
+function buildDispatchBannerContext({ data, fixmeDir, agentName, childStatusId, continuation }) {
+  let parentAgent = null;
+  if (isNonEmptyString(data.parentStatusId)) {
+    const parentPath = runStatusPath(fixmeDir, data.parentStatusId);
+    if (fs.existsSync(parentPath)) {
+      try {
+        parentAgent = readRunStatusFile(parentPath, data.parentStatusId).agent;
+      } catch (_) {
+        parentAgent = null;
+      }
+    }
+  }
+  if (!parentAgent && isPlainObject(data.parentContinuation) && isNonEmptyString(data.parentContinuation.parentSkill)) {
+    parentAgent = data.parentContinuation.parentSkill;
+  }
+
+  let storedHandleStatus = null;
+  if (continuation.mode === 'resume') {
+    storedHandleStatus = 'available';
+  } else if (continuation.reason === 'storedHandleBad') {
+    storedHandleStatus = 'bad';
+  }
+
+  const storedHandleLastDispatchId = isNonEmptyString(continuation.lastDispatchId)
+    ? continuation.lastDispatchId
+    : null;
+
+  return {
+    parentAgent: parentAgent || null,
+    parentStatusId: data.parentStatusId || null,
+    childAgent: agentName,
+    childStatusId,
+    continuationMode: continuation.mode,
+    continuationReason: continuation.reason,
+    storedHandleStatus,
+    storedHandleLastDispatchId,
+    forceFreshReason: continuation.forceFreshReason || null,
+    badReason: continuation.badReason || null,
+  };
+}
+
+function buildDispatchBannerMarkdownFromContext(bannerContext, runtimeSettings) {
+  const lines = [
+    `## Dispatch: ${bannerContext.childAgent}`,
+    `- Runtime: ${runtimeSettings.runtime}`,
+    `- Model: ${formatDispatchBannerModel(runtimeSettings)}`,
+    `- Reasoning effort: ${formatDispatchBannerReasoning(runtimeSettings)}`,
+    `- Profile: ${runtimeSettings.profile}`,
+    `- Config source: ${runtimeSettings.source}`,
+    `- Parent: ${bannerContext.parentAgent || 'none'}`,
+    `- Parent status: ${bannerContext.parentStatusId || 'none'}`,
+    `- Child: ${bannerContext.childAgent}`,
+    `- Child status: ${bannerContext.childStatusId}`,
+  ];
+
+  if (bannerContext.continuationMode === 'resume' && bannerContext.storedHandleStatus === 'available') {
+    lines.push('- Continuation: resume existing producer');
+    lines.push('- Handle status: stored resumable producer handle');
+  } else if (bannerContext.continuationReason === 'forcedFresh') {
+    lines.push('- Continuation: fresh producer');
+    lines.push('- Handle status: forced fresh');
+  } else if (bannerContext.continuationReason === 'storedHandleBad') {
+    lines.push('- Continuation: fresh producer');
+    lines.push('- Handle status: bad stored handle');
+  } else if (bannerContext.continuationReason === 'noStoredHandle') {
+    lines.push('- Continuation: fresh producer');
+    lines.push('- Handle status: no stored handle');
+  } else if (bannerContext.continuationReason === 'agentNotResumable' || bannerContext.continuationReason === 'disabledForDispatch') {
+    lines.push(`- Continuation: no producer continuation (${bannerContext.continuationReason})`);
+  } else {
+    lines.push('- Continuation: fresh producer');
+    lines.push(`- Handle status: fresh (${bannerContext.continuationReason})`);
+  }
+
+  return lines.join('\n');
+}
+
 function resolveLifecycleDispatchRuntime(data, flags) {
   const rawRuntime = isNonEmptyString(data.runtime)
     ? data.runtime
@@ -8550,6 +8630,14 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     taskInput: data.promptInputs,
   };
 
+  const bannerContext = buildDispatchBannerContext({
+    data,
+    fixmeDir,
+    agentName: data.agentName,
+    childStatusId: child.statusId,
+    continuation,
+  });
+
   const out = {
     dispatchId,
     fixmeDir,
@@ -8558,7 +8646,8 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     statusId: child.statusId,
     statusPath: child.statusPath,
     runtimeSettings,
-    bannerMarkdown: buildDispatchBannerMarkdown(data.agentName, runtimeSettings),
+    bannerContext,
+    bannerMarkdown: buildDispatchBannerMarkdownFromContext(bannerContext, runtimeSettings),
     continuation,
     usageContext,
     activeChild,
