@@ -12105,6 +12105,50 @@ test('dispatch prepare returns a completion template carrying dispatchId, status
   assert(cleared.data.currentCommand === null, `parent wait marker cleared, got ${cleared.data.currentCommand}`);
 });
 
+test('stale explicit Codex source finalizes unmeasured with STALE_COUNTER_SOURCE', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-stale-source.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 },
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 }
+    ),
+  ]);
+  // Start AFTER the only row exists: the bounded scan from the start cursor finds
+  // no token counters at or after start, making this explicit source stale.
+  const started = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(started.ok, `usage start should succeed, got ${JSON.stringify(started.data)}`);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `usage finish should append a row, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === started.data.invocationId);
+  assert(row && row.status === 'unmeasured', `stale explicit source should be unmeasured, got ${JSON.stringify(row)}`);
+  assert(row.warnings.length === 1 && row.warnings[0].code === 'STALE_COUNTER_SOURCE', `warning code should be STALE_COUNTER_SOURCE, got ${JSON.stringify(row.warnings)}`);
+  assert(row.warnings[0].message.includes(sourcePath), `stale warning should name the source path, got ${row.warnings[0].message}`);
+});
+
+test('valid explicit Codex source remains measured', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-valid-source.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 },
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 }
+    ),
+  ]);
+  const started = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(started.ok, `usage start should succeed, got ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 40, cached_input_tokens: 5, output_tokens: 12, reasoning_output_tokens: 7, total_tokens: 64 },
+      { input_tokens: 30, cached_input_tokens: 4, output_tokens: 10, reasoning_output_tokens: 6, total_tokens: 51 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `usage finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === started.data.invocationId);
+  assert(row && row.status === 'measured', `valid explicit source with a countable row after start should be measured, got ${JSON.stringify(row)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

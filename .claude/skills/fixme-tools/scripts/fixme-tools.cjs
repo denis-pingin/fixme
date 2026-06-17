@@ -321,6 +321,7 @@ const USAGE_REASON_VALUES = Object.freeze([
 ]);
 const USAGE_WARNING_CODES = Object.freeze({
   COUNTERS_UNAVAILABLE: 'COUNTERS_UNAVAILABLE',
+  STALE_COUNTER_SOURCE: 'STALE_COUNTER_SOURCE',
   NO_NEW_USAGE: 'NO_NEW_USAGE',
   NEGATIVE_DELTA: 'NEGATIVE_DELTA',
   COUNTER_CONFLICT: 'COUNTER_CONFLICT',
@@ -7736,7 +7737,28 @@ function resolveUsageCounters(pending) {
         : candidate.codexCumulativeStartTokens
           ? candidate.codexCumulativeStartTokens
         : null;
-      return extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source, startTokens);
+      const codexResult = extractCodexCountersFromJsonl(candidate.path, startCursor, pending.skill, source, startTokens);
+      // An EXPLICIT source whose present file yields no usable token counters at
+      // or after invocation start is stale, not merely unavailable. Surface a
+      // clearer warning that names the stale source path so the operator can
+      // distinguish a stale pinned source from a genuinely missing one. Inferred
+      // sources and the no-source case keep COUNTERS_UNAVAILABLE.
+      if (
+        persistedSource &&
+        persistedSource.discovery === 'explicit' &&
+        codexResult.status === USAGE_STATUS.UNMEASURED &&
+        Array.isArray(codexResult.warnings) &&
+        codexResult.warnings.length === 1 &&
+        codexResult.warnings[0].code === USAGE_WARNING_CODES.COUNTERS_UNAVAILABLE
+      ) {
+        return counterUnmeasured(
+          pending,
+          USAGE_WARNING_CODES.STALE_COUNTER_SOURCE,
+          `Explicit Codex usage source had no token counters at or after invocation start: ${candidate.path}`,
+          source
+        );
+      }
+      return codexResult;
     }
     if (pending.runtime === 'claude') {
       return extractClaudeCountersFromJsonl(candidate.path, startCursor, source);
