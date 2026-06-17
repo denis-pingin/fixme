@@ -12313,6 +12313,39 @@ test('lifecycle attention consume (partialDecision) clears successfully while re
   assert(status.data.currentCommand === null, `partialDecision consume clears the attention marker, got ${status.data.currentCommand}`);
 });
 
+test('run ping --quiet writes durable state with no stdout', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command waiting-for:child --quiet`);
+  assert(pinged.ok, `quiet ping should exit 0, got ${JSON.stringify(pinged)}`);
+  assert((pinged.stdout || '').trim() === '', `quiet ping should write no stdout, got ${JSON.stringify(pinged.stdout)}`);
+  const status = readJson(started.data.statusPath);
+  assert(status.currentCommand === 'waiting-for:child', `quiet ping still updates the status file, got ${status.currentCommand}`);
+});
+
+test('lifecycle wait begin/end --quiet are silent', () => {
+  const fixmeDir = makeFixmeDir();
+  const started = run(`run start --fixme-dir "${fixmeDir}" --agent fixme-task`);
+  const begin = run(`lifecycle wait begin --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --label waiting-for:child --quiet`);
+  assert(begin.ok, `quiet wait begin should exit 0, got ${JSON.stringify(begin)}`);
+  assert((begin.stdout || '').trim() === '', `quiet wait begin should be silent, got ${JSON.stringify(begin.stdout)}`);
+  assert(readJson(started.data.statusPath).currentCommand === 'waiting-for:child', 'quiet wait begin updates status');
+  const end = run(`lifecycle wait end --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --quiet`);
+  assert(end.ok, `quiet wait end should exit 0, got ${JSON.stringify(end)}`);
+  assert((end.stdout || '').trim() === '', `quiet wait end should be silent, got ${JSON.stringify(end.stdout)}`);
+  assert(readJson(started.data.statusPath).currentCommand === null, 'quiet wait end clears the marker');
+});
+
+test('run ping --quiet still refuses to overwrite active attention', () => {
+  const { fixmeDir, statusId } = setupTaskOwnedAnsweredAttention('quiet-ping-attention', 'attn_quiet_ping');
+  const statusPath = path.join(fixmeDir, 'runs', statusId, 'status.json');
+  const beforeRaw = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+  const pinged = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${statusId} --state running --checkpoint working --current-command null --quiet`);
+  assert(!pinged.ok, `quiet ping must refuse to overwrite attention, got ${JSON.stringify(pinged)}`);
+  const after = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+  assert(after.currentCommand === beforeRaw.currentCommand, `quiet ping must not change the attention marker, got ${after.currentCommand}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

@@ -6573,7 +6573,7 @@ function runPing(flags) {
     currentCommand,
     updatedAt: new Date().toISOString(),
   };
-  return output(writeRunStatus(statusPath, next));
+  return outputMaybeQuiet(writeRunStatus(statusPath, next), flags);
 }
 
 function runStatus(flags) {
@@ -9729,6 +9729,9 @@ function lifecycleWaitBegin(flags) {
     currentCommand: String(label),
     updatedAt: new Date().toISOString(),
   });
+  if (flags.quiet === true || flags.quiet === '') {
+    process.exit(0);
+  }
   return lifecycleOk(next);
 }
 
@@ -9751,6 +9754,9 @@ function lifecycleWaitEnd(flags) {
     currentCommand: null,
     updatedAt: new Date().toISOString(),
   });
+  if (flags.quiet === true || flags.quiet === '') {
+    process.exit(0);
+  }
   return lifecycleOk(next);
 }
 
@@ -11443,6 +11449,16 @@ function output(data) {
 function error(message) {
   process.stdout.write(JSON.stringify({ error: message }) + '\n');
   process.exit(1);
+}
+
+// Write durable state without success stdout when --quiet is set. Errors still
+// print through error()/lifecycleError. Used for routine wait markers so live
+// child waits stay quiet.
+function outputMaybeQuiet(data, flags) {
+  if (flags && (flags.quiet === true || flags.quiet === '')) {
+    process.exit(0);
+  }
+  return output(data);
 }
 
 const LIFECYCLE_ERROR_CODES = Object.freeze(new Set([
