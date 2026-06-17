@@ -3639,6 +3639,25 @@ function parseParentContinuationFlag(flags) {
   return parentContinuation;
 }
 
+function mergeParentContinuationForInit(existing, parentContinuation, statePath, label) {
+  if (parentContinuation === undefined) return existing;
+  if (existing.parentContinuation !== null && !jsonEqual(existing.parentContinuation, parentContinuation)) {
+    throw new Error(`${label} has a different parentContinuation: ${statePath}`);
+  }
+  if (existing.parentContinuation === null) {
+    return mergeTaskState(existing, { parentContinuation });
+  }
+  return existing;
+}
+
+function sameExistingProjectRoot(existingProjectRoot, requestedProjectRoot) {
+  try {
+    return fs.realpathSync(existingProjectRoot) === fs.realpathSync(requestedProjectRoot);
+  } catch (_) {
+    return existingProjectRoot === requestedProjectRoot;
+  }
+}
+
 function taskInit(flags, fixmeRoot) {
   const pipelineResolution = pipelineResolutionForTaskInitFlags(flags, fixmeRoot);
   const pipeline = pipelineResolution.pipeline;
@@ -3653,28 +3672,23 @@ function taskInit(flags, fixmeRoot) {
     fixmeRoot,
     now,
   });
+  const parentContinuation = parseParentContinuationFlag(flags);
 
   if (flags.state && flags.state !== true) {
     const statePath = resolveReservedTaskStatePath(flags.state, fixmeRoot);
-    const parentContinuation = parseParentContinuationFlag(flags);
     const nextState = parentContinuation === undefined
       ? state
       : mergeTaskState(state, { parentContinuation });
 
     if (fs.existsSync(statePath)) {
       const existing = readJsonFileStrict(statePath);
-      if (existing.projectRoot !== projectRoot || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
         throw new Error(`Reserved task state conflicts with requested task initialization: ${statePath}`);
       }
-      if (parentContinuation !== undefined) {
-        if (existing.parentContinuation !== null && !jsonEqual(existing.parentContinuation, parentContinuation)) {
-          throw new Error(`Reserved task state has a different parentContinuation: ${statePath}`);
-        }
-        if (existing.parentContinuation === null) {
-          const updated = mergeTaskState(existing, { parentContinuation });
-          assertCamelCaseJsonKeys(updated, 'task state');
-          writeJsonAtomic(statePath, updated);
-        }
+      const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Reserved task state');
+      if (updated !== existing) {
+        assertCamelCaseJsonKeys(updated, 'task state');
+        writeJsonAtomic(statePath, updated);
       }
       return output({
         mode: 'reserved-state',
@@ -3718,7 +3732,23 @@ function taskInit(flags, fixmeRoot) {
       throw new Error(`Task file not found: ${taskPath}`);
     }
     const statePath = taskStatePathForTask(taskPath);
-    writeJsonAtomic(statePath, state);
+    const nextState = parentContinuation === undefined
+      ? state
+      : mergeTaskState(state, { parentContinuation });
+    if (fs.existsSync(statePath)) {
+      const existing = readJsonFileStrict(statePath);
+      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+        throw new Error(`Saved task state conflicts with requested task initialization: ${statePath}`);
+      }
+      const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Saved task state');
+      if (updated !== existing) {
+        assertCamelCaseJsonKeys(updated, 'task state');
+        writeJsonAtomic(statePath, updated);
+      }
+    } else {
+      assertCamelCaseJsonKeys(nextState, 'task state');
+      writeJsonAtomic(statePath, nextState);
+    }
     return output({
       mode: 'standalone',
       taskRef: parseTaskRefFromMarkdown(taskPath),
@@ -6903,6 +6933,22 @@ function normalizeCodexUsage(raw) {
   return tokens;
 }
 
+function normalizedUsageSignature(usage) {
+  if (!usage) return null;
+  const normalized = {};
+  for (const key of USAGE_TOKEN_BUCKETS) {
+    normalized[key] = usage[key] === undefined ? null : usage[key];
+  }
+  return JSON.stringify(normalized);
+}
+
+function codexTokenCountSignature(totalUsage, lastUsage) {
+  return JSON.stringify({
+    total: normalizedUsageSignature(totalUsage),
+    last: normalizedUsageSignature(lastUsage),
+  });
+}
+
 function normalizeClaudeUsage(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const cacheCreationInputTokens = tokenValue(raw.cache_creation_input_tokens);
@@ -6999,14 +7045,29 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
   const afterStartRows = readJsonlSlice(sourcePath, startByte, null);
   const cumulativeAfter = [];
   const afterStartUsages = [];
+  const dedupedAfterStartUsages = [];
   const execUsages = [];
+  let priorTokenCountSignature = null;
   for (const row of afterStartRows) {
     if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info) {
-      if (row.payload.info.total_token_usage) cumulativeAfter.push(normalizeCodexUsage(row.payload.info.total_token_usage));
-      if (row.payload.info.last_token_usage) afterStartUsages.push(normalizeCodexUsage(row.payload.info.last_token_usage));
+      const totalUsage = row.payload.info.total_token_usage ? normalizeCodexUsage(row.payload.info.total_token_usage) : null;
+      const lastUsage = row.payload.info.last_token_usage ? normalizeCodexUsage(row.payload.info.last_token_usage) : null;
+      if (totalUsage) cumulativeAfter.push(totalUsage);
+      if (lastUsage) {
+        const signature = codexTokenCountSignature(totalUsage, lastUsage);
+        afterStartUsages.push(lastUsage);
+        if (signature !== priorTokenCountSignature) {
+          dedupedAfterStartUsages.push(lastUsage);
+        }
+        priorTokenCountSignature = signature;
+      }
     }
-    if (row.type === 'turn.completed' && row.usage) afterStartUsages.push(normalizeCodexUsage(row.usage));
-    if (row.type === 'turn.completed' && row.usage) execUsages.push(normalizeCodexUsage(row.usage));
+    if (row.type === 'turn.completed' && row.usage) {
+      const usage = normalizeCodexUsage(row.usage);
+      afterStartUsages.push(usage);
+      dedupedAfterStartUsages.push(usage);
+      execUsages.push(usage);
+    }
   }
 
   if (execUsages.length > 0) {
@@ -7015,6 +7076,7 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
   }
 
   const summedLast = sumTokenUsageFromList(afterStartUsages);
+  const summedLastForCumulativeComparison = sumTokenUsageFromList(dedupedAfterStartUsages);
   if (cumulativeAfter.length > 0) {
     const finishSnapshot = cumulativeAfter[cumulativeAfter.length - 1];
     const startSnapshot = cumulativeStartTokens || null;
@@ -7034,10 +7096,10 @@ function extractCodexCountersFromJsonl(sourcePath, startCursor, skill, source, c
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NEGATIVE_DELTA, message: 'Cumulative runtime counters decreased during this invocation.' }] };
     }
     const modelWork = !String(skill || '').startsWith('fixme-howto-');
-    if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLast)) {
+    if (modelWork && !hasPositiveToken(delta.result) && !hasPositiveToken(summedLastForCumulativeComparison)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.NO_NEW_USAGE, message: 'No new runtime usage was recorded for this model-work invocation.' }] };
     }
-    if (summedLast && hasPositiveToken(summedLast) && !primaryTokenBucketsCompatible(delta.result, summedLast)) {
+    if (summedLastForCumulativeComparison && hasPositiveToken(summedLastForCumulativeComparison) && !primaryTokenBucketsCompatible(delta.result, summedLastForCumulativeComparison)) {
       return { status: USAGE_STATUS.UNMEASURED, tokens: null, source, warnings: [{ code: USAGE_WARNING_CODES.COUNTER_CONFLICT, message: 'Cumulative and per-turn runtime counters disagree.' }] };
     }
     return measuredCounterResult(delta.result, source);
@@ -10114,6 +10176,11 @@ function formatUsageBucketSummary(label, tokens) {
   return `${label} non-cached ${formatTokenCount(usage.nonCachedTokens)} tokens, cached input ${formatTokenCount(usage.cachedTokens)} tokens, total ${formatTokenCount(usage.totalTokens)} tokens`;
 }
 
+function formatUsageWarningCodes(warnings) {
+  const codes = [...new Set((warnings || []).map(warning => warning && warning.code).filter(Boolean))].sort();
+  return codes.length > 0 ? ` (${codes.join(',')})` : '';
+}
+
 function isMeasuredUsageRow(row) {
   return row.status === USAGE_STATUS.MEASURED && !!row.tokens;
 }
@@ -10512,10 +10579,11 @@ function buildCompactUsageReportLine(event, projectEventPath) {
   const notIncluded = pipelineReport
     ? pipelineReport.notIncludedInTotal.invocationCount
     : projectReport.notIncludedInTotal.invocationCount;
+  const unmeasuredLabel = `Usage: ${event.skill} unmeasured${formatUsageWarningCodes(event.warnings)}`;
   if (pipelineReport) {
-    return `Usage: ${event.skill} unavailable | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
+    return `${unmeasuredLabel} | ${formatUsageBucketSummary('pipeline', pipelineReport.totalUsage)} | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
   }
-  return `Usage: ${event.skill} unavailable | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
+  return `${unmeasuredLabel} | ${formatUsageBucketSummary('project', projectReport.totalUsage)} | not included: ${notIncluded} invocation(s)`;
 }
 
 // ============================================================================

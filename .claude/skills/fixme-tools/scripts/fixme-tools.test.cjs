@@ -3920,6 +3920,7 @@ function prepareChildPayload(overrides = {}) {
           title: 'Address current PR review fixes',
           slug: `prepare-child-${suffix}`,
           taskGoal: 'Apply the current PR review fixes from the durable child handoff payload.',
+          settledSolutionShape: 'Use the durable child handoff payload as the authoritative saved solution shape for the current PR review fixes.',
           agreedApproach: ['Read the child-handoff-payload preparation artifact before planning.'],
           userVisibleBehavior: ['The child task resumes from a saved task reference.'],
           scope: { inScope: ['current PR review fixes from the child handoff payload'], outOfScope: ['unrelated PR changes'] },
@@ -3998,6 +3999,110 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.dispatchId === first.data.dispatchId, 'replay reuses dispatch');
   assert(replay.data.statusId === first.data.statusId, 'replay reuses child run status');
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
+});
+
+test('parent prepare-child saved task init preserves handoff artifact and parentContinuation', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const payload = prepareChildPayload({ suffix: 'saved-task-init' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-saved-task-init.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+
+  const beforeState = readJson(prepared.data.childTask.statePath);
+  assert(
+    beforeState.artifacts.preparationArtifacts.some(a => a.artifactType === 'child-handoff-payload' && a.artifactPath === prepared.data.childTask.handoffPayloadPath),
+    'state should register child handoff artifact before init'
+  );
+  assert(beforeState.parentContinuation === null, 'prepare-child saved task state starts without parentContinuation');
+
+  const parentContinuation = prepared.data.launch.promptBlocks.parentContinuation;
+  const init = runInDir(
+    `task init --task "${prepared.data.childTask.taskPath}" --pipeline-resolution '${JSON.stringify(beforeState.pipelineResolution)}' --project-root "${projectRoot}" --parent-continuation '${JSON.stringify(parentContinuation)}'`,
+    projectRoot
+  );
+
+  assert(init.ok, `saved task init should succeed, got ${JSON.stringify(init.data)}`);
+  assert(init.data.mode === 'standalone', `saved handoff init mode should be standalone, got ${init.data.mode}`);
+  assert(init.data.taskPath === prepared.data.childTask.taskPath, 'init should use saved task path');
+  assert(init.data.statePath === prepared.data.childTask.statePath, 'init should reuse saved task state path');
+
+  const afterState = readJson(prepared.data.childTask.statePath);
+  assert(
+    afterState.artifacts.preparationArtifacts.some(a => a.artifactType === 'child-handoff-payload' && a.artifactPath === prepared.data.childTask.handoffPayloadPath),
+    'task init --task should preserve child handoff artifact'
+  );
+  assert(JSON.stringify(afterState.parentContinuation) === JSON.stringify(parentContinuation), 'task init --task should persist parentContinuation');
+  assert(afterState.cursor.phase === beforeState.cursor.phase, 'task init --task should preserve cursor');
+  assert(afterState.pipelineResolution.source === beforeState.pipelineResolution.source, 'task init --task should preserve saved pipelineResolution');
+});
+
+test('task init --task is idempotent for existing saved state and rejects conflicts', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const saveData = prepareChildPayload({ suffix: 'task-init-idempotent' }).child.handoff.taskSaveData;
+  const saved = runInDir(`task save --data '${JSON.stringify(saveData)}'`, projectRoot);
+  assert(saved.ok, `task save should succeed, got ${JSON.stringify(saved.data)}`);
+
+  const original = readJson(saved.data.statePath);
+  const durablePatch = {
+    cursor: { phase: 'implement', stage: 'review', skill: 'fixme-review-code', dispatchMode: 'repair' },
+    artifacts: {
+      preparationArtifacts: [{
+        artifactType: 'child-handoff-payload',
+        artifactPath: saved.data.taskPath.replace(/\.md$/, '.handoff.json'),
+        title: 'Preserved handoff',
+        summary: ['Must survive task init.'],
+        sourceSkill: 'fixme-pr-comments',
+        status: 'current',
+      }],
+    },
+    loops: { phaseReviewCycles: [{ phase: 'implement', cycles: 2 }], outerCycles: 1 },
+    decisions: [{ id: 'decision_preserve', status: 'active' }],
+    terminalResult: { terminalResultId: 'terminal_preserve', status: 'completed' },
+  };
+  const checkpoint = runInDir(`task checkpoint --state "${saved.data.statePath}" --data '${JSON.stringify(durablePatch)}'`, projectRoot);
+  assert(checkpoint.ok, `checkpoint should seed durable state, got ${JSON.stringify(checkpoint.data)}`);
+
+  const parentContinuation = {
+    parentSkill: 'fixme-pr-comments',
+    parentRunId: 'parent_preserve',
+    transport: 'agent',
+    resumeStep: 'awaitFixmeTaskResult',
+    parentStatusId: 'run_preserve',
+  };
+  const init = runInDir(
+    `task init --task "${saved.data.taskPath}" --pipeline-resolution '${JSON.stringify(original.pipelineResolution)}' --project-root "${projectRoot}" --parent-continuation '${JSON.stringify(parentContinuation)}'`,
+    projectRoot
+  );
+  assert(init.ok, `existing saved task init should succeed, got ${JSON.stringify(init.data)}`);
+  assert(init.data.statePath === saved.data.statePath, 'existing saved task init should reuse state path');
+
+  const state = readJson(saved.data.statePath);
+  assert(JSON.stringify(state.parentContinuation) === JSON.stringify(parentContinuation), 'parentContinuation should be merged');
+  assert(JSON.stringify(state.cursor) === JSON.stringify(durablePatch.cursor), 'cursor should be preserved');
+  assert(JSON.stringify(state.loops) === JSON.stringify(durablePatch.loops), 'loops should be preserved');
+  assert(JSON.stringify(state.decisions) === JSON.stringify(durablePatch.decisions), 'decisions should be preserved');
+  assert(JSON.stringify(state.terminalResult) === JSON.stringify(durablePatch.terminalResult), 'terminalResult should be preserved');
+  assert(state.artifacts.preparationArtifacts[0].artifactType === 'child-handoff-payload', 'preparation artifact should be preserved');
+
+  const replay = runInDir(
+    `task init --task "${saved.data.taskPath}" --pipeline-resolution '${JSON.stringify(original.pipelineResolution)}' --project-root "${projectRoot}" --parent-continuation '${JSON.stringify(parentContinuation)}'`,
+    projectRoot
+  );
+  assert(replay.ok, `equivalent saved task init replay should succeed, got ${JSON.stringify(replay.data)}`);
+
+  const conflictingParent = { ...parentContinuation, parentRunId: 'parent_conflict' };
+  const conflict = runInDir(
+    `task init --task "${saved.data.taskPath}" --pipeline-resolution '${JSON.stringify(original.pipelineResolution)}' --project-root "${projectRoot}" --parent-continuation '${JSON.stringify(conflictingParent)}'`,
+    projectRoot
+  );
+  assert(!conflict.ok, 'conflicting parentContinuation should fail');
+  assert(cliErrorMessage(conflict).includes('Saved task state has a different parentContinuation'), `conflict error should mention parentContinuation, got ${JSON.stringify(conflict.data)}`);
+
+  const pipelineConflict = runInDir(`task init --task "${saved.data.taskPath}" ${pipelineResolutionFlag('bugfix')} --project-root "${projectRoot}"`, projectRoot);
+  assert(!pipelineConflict.ok, 'conflicting pipelineResolution should fail');
+  assert(cliErrorMessage(pipelineConflict).includes('Saved task state conflicts with requested task initialization'), `pipeline conflict error should mention saved task state conflict, got ${JSON.stringify(pipelineConflict.data)}`);
 });
 
 test('parent prepare-child rejects malformed PR-comments launch payloads before state mutation', () => {
@@ -8066,6 +8171,26 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
   assert(skill.includes('After the dispatched agent returns, ping the current fixme-task invocation again'), 'fixme-task should refresh its inherited liveness after child agents return');
 });
 
+test('fixme-task skill separates saved handoff task init from reserved state init', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+
+  for (const required of [
+    'If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`',
+    'task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'Otherwise, initialize the reserved state path',
+    'task init --state <activeChild.taskStatePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'Saved handoff children must not be initialized through `--state` because the reserved state path may collide with saved task markdown.',
+    'Reserved-state children must not call `task init --task` because no saved task markdown is the boundary.',
+  ]) {
+    assert(skill.includes(required), `fixme-task should document boundary: ${required}`);
+  }
+
+  const savedIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`');
+  const reservedIndex = skill.indexOf('Otherwise, initialize the reserved state path');
+  assert(savedIndex !== -1 && reservedIndex !== -1 && savedIndex < reservedIndex, 'saved handoff branch should be documented before reserved-state fallback');
+});
+
 test('review validate-plan-readiness validates route consistency and camelCase JSON', () => {
   const validOutput = [
     '## Plan Readiness Triage',
@@ -9097,6 +9222,63 @@ test('fixme review workflows require evidence before accepting reviewer claim pr
   assert(planReviewer.includes('Lexical similarity is not evidence of duplication.'), 'plan reviewer should reject surface similarity as evidence');
 });
 
+test('fixme-review-code skill requires inventory-driven first-pass completeness checks', () => {
+  const reviewPath = path.resolve(__dirname, '..', '..', 'fixme-review-code', 'SKILL.md');
+  const review = fs.readFileSync(reviewPath, 'utf8');
+
+  for (const required of [
+    '### First-Pass Completeness Protocol',
+    'Build a compact review inventory before identifying findings.',
+    'changed source files',
+    'changed test files',
+    'plan steps',
+    'critical invariants',
+    'touched side effects',
+    'new helpers, types, config keys, generated artifacts, public surfaces, and external contracts',
+    'Risk-rank every inventory item before reviewing it.',
+    'Deep review is mandatory for lifecycle and state transitions, retries, auth, deletion, generated artifacts, config or schema changes, tests, duplicated helpers, public APIs, and behavior with side effects or broad blast radius.',
+    'Run fixed-order dimension passes over the inventory:',
+    'lifecycle and critical invariants',
+    'plan compliance',
+    'artifact wiring and data flow',
+    'test quality',
+    'stub detection',
+    'correctness',
+    'duplication and simplicity',
+    'conventions and anti-patterns',
+    'Every changed file with no finding must have a terse Verified OK note naming what was checked.',
+    'Every high-risk dimension with no finding must have a terse Verified OK note naming why it passed.',
+    'The phrase "looks good" is not a valid Verified OK note.',
+    '### Mandatory Pre-Output Self-Challenge',
+    'Which touched file produced no findings?',
+    'Which high-risk dimension produced no findings?',
+    'Which plan step changed behavior but produced no finding or Verified OK note?',
+    'Which test could be wrong even if production code is right?',
+    'Which finding category was not exercised at all?',
+  ]) {
+    assert(review.includes(required), `review code skill should require: ${required}`);
+  }
+
+  for (const uniqueHeading of [
+    '### Pass 1: Investigation',
+    '### Mandatory Pre-Output Self-Challenge',
+    '### Pass 2: Report',
+  ]) {
+    const firstIndex = review.indexOf(uniqueHeading);
+    assert(firstIndex !== -1, `${uniqueHeading} should exist`);
+    assert(firstIndex === review.lastIndexOf(uniqueHeading), `${uniqueHeading} should appear exactly once`);
+  }
+
+  const processIndex = review.indexOf('## Two-Pass Review Process');
+  const pass1Index = review.indexOf('### Pass 1: Investigation');
+  const challengeIndex = review.indexOf('### Mandatory Pre-Output Self-Challenge');
+  const pass2Index = review.indexOf('### Pass 2: Report');
+  const reviewAssessmentIndex = review.indexOf('## Review assessment');
+  assert(processIndex !== -1 && reviewAssessmentIndex !== -1, 'process and review assessment headings should exist');
+  assert(pass1Index < challengeIndex && challengeIndex < pass2Index, 'self-challenge should run after Pass 1 investigation and before Pass 2 report');
+  assert(processIndex < pass1Index && pass2Index < reviewAssessmentIndex, 'Review assessment should remain after the single new process block');
+});
+
 test('fixme decision presentation skill: uses visually scannable cards', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-howto-present-decisions', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -9904,7 +10086,8 @@ test('usage finish: missing counters appends one unmeasured row to project and g
   assert(result.ok, `usage finish should succeed, got: ${JSON.stringify(result.data)}`);
   assert(result.data.status === 'unmeasured', `expected unmeasured, got ${result.data.status}`);
   assert(result.data.outcomeReason === null, 'complete outcomeReason should be null');
-  assert(result.data.reportLine && result.data.reportLine.includes('Usage: fixme-write-plan unavailable'), 'unmeasured report line should be present');
+  assert(result.data.reportLine && result.data.reportLine.includes('Usage: fixme-write-plan unmeasured (COUNTERS_UNAVAILABLE)'), `unmeasured report line should include warning code, got ${result.data.reportLine}`);
+  assert(!result.data.reportLine.includes('fixme-write-plan unavailable'), `unmeasured report line should not hide the warning behind unavailable wording: ${result.data.reportLine}`);
   assert(result.data.reportLineSuppressed === false, 'report line should not be suppressed by default');
   assert(!fs.existsSync(started.pendingPath), 'pending file should be removed after both appends complete');
 
@@ -10786,6 +10969,52 @@ test('usage finish: unmeasured pipeline compact line uses pipeline not-included 
   assert(finished.data.reportLine.includes('not included: 1 invocation(s)'), `pipeline compact line should use pipeline exclusion count: ${finished.data.reportLine}`);
 });
 
+test('runtime adapter: Codex dedupes repeated token_count snapshots before comparing summed last usage', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-duplicate-token-count.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
+      { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 }
+    ),
+  ]);
+  const started = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+
+  const repeated = codexTokenCount(
+    { input_tokens: 100, cached_input_tokens: 10, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 125 },
+    { input_tokens: 100, cached_input_tokens: 10, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 125 }
+  );
+  appendJsonl(sourcePath, [repeated, repeated]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `duplicate token_count snapshots should be measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 125, `expected cumulative total delta 125, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.tokens.inputTokens === 100, `expected cumulative input delta 100, got ${row.tokens && row.tokens.inputTokens}`);
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'duplicate token_count replay should not create COUNTER_CONFLICT');
+});
+
+test('runtime adapter: Codex keeps identical last-only token_count rows when cumulative snapshots are absent', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-session-last-only-identical.jsonl');
+  fs.writeFileSync(sourcePath, '');
+  const started = runInDirWithEnv('usage start --skill fixme-review-code --runtime codex', ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(started.ok, `start failed: ${JSON.stringify(started.data)}`);
+
+  const lastOnly = { type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3, reasoning_output_tokens: 1, total_tokens: 14 } } } };
+  appendJsonl(sourcePath, [lastOnly, lastOnly]);
+
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, { ...ctx.env, FIXME_USAGE_SOURCE_PATH: sourcePath });
+  assert(finished.ok, `finish failed: ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents)[0];
+  assert(row.status === 'measured', `last-only duplicate rows should remain measured, got ${row.status}`);
+  assert(row.tokens.totalTokens === 28, `expected both last-only rows to count for total 28, got ${row.tokens && row.tokens.totalTokens}`);
+  assert(row.tokens.inputTokens === 20, `expected both last-only rows to count for input 20, got ${row.tokens && row.tokens.inputTokens}`);
+  assert(!row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'last-only fallback should not create COUNTER_CONFLICT');
+});
+
 test('runtime adapter: Codex cumulative and summed last usage conflicts create unmeasured row', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-session-conflict.jsonl');
@@ -10803,6 +11032,8 @@ test('runtime adapter: Codex cumulative and summed last usage conflicts create u
   const row = readJsonl(ctx.projectEvents)[0];
   assert(row.status === 'unmeasured', 'conflicting counters should be unmeasured');
   assert(row.warnings.some(w => w.code === 'COUNTER_CONFLICT'), 'COUNTER_CONFLICT warning expected');
+  assert(finished.data.reportLine.includes('Usage: fixme-write-plan unmeasured (COUNTER_CONFLICT)'), `compact report line should show COUNTER_CONFLICT, got ${finished.data.reportLine}`);
+  assert(!finished.data.reportLine.includes('fixme-write-plan unavailable'), `compact report line should not use generic unavailable wording: ${finished.data.reportLine}`);
 });
 
 test('runtime adapter: Codex exec turn.completed.usage maps normalized tokens', () => {

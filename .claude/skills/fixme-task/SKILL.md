@@ -918,11 +918,23 @@ Backward transitions (review retry) require `--reason`. Forward transitions do n
 
 No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`background` with `parentContinuation`), must still create or reuse durable task state before the first phase dispatch. Execute the pipeline identically but skip all ticket transition dispatches.
 
-- **Parent-driven with `activeChild`:** materialize or reuse the reserved child task state before any child work. Parent-driven transports include `inline-skill`, `agent`, and `background`; transport is parent launch metadata, not a task flag.
+- **Parent-driven with `activeChild`:** create or reuse durable child task state before any child work. Parent-driven transports include `inline-skill`, `agent`, and `background`; transport is parent launch metadata, not a task flag.
+
+  If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`, initialize through the saved task boundary:
+
+  ```bash
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
+  ```
+
+  Use `<taskPath>` from `launch.promptBlocks.taskInput.taskPath`. Store the returned `statePath` as `taskStatePath`; it must equal `launch.promptBlocks.taskInput.statePath`. Use `launch.promptBlocks.taskInput.resumeRef` for later `--answer-attention` resumes. Saved handoff children must not be initialized through `--state` because the reserved state path may collide with saved task markdown.
+
+  Otherwise, initialize the reserved state path:
+
   ```bash
   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <activeChild.taskStatePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
   ```
-  Store the returned `statePath` as `taskStatePath`. It must equal `activeChild.taskStatePath`; if it does not, stop. Use `activeChild.resumeRef` for later `--answer-attention` resumes. When a saved task reference is available from `launch.promptBlocks.taskInput`, prefer that saved task boundary and keep heavy parent payloads out of prompt blocks. Parent-driven dispatches persist `parentContinuation` into task state through this init command before child work. Do not call `task save` for this parent-driven reserved-state path unless the parent already saved a child handoff and provided it through `launch.promptBlocks.taskInput`.
+
+  Store the returned `statePath` as `taskStatePath`; it must equal `activeChild.taskStatePath`. Use `activeChild.resumeRef` for later `--answer-attention` resumes. Reserved-state children must not call `task init --task` because no saved task markdown is the boundary.
 - **Direct no-ticket without `--resume`:** first create a saved task with `task save --data '<json-object>'` and use the returned `taskPath` and `statePath`. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
 
 No-ticket task state is mandatory so another session can resume without chat history.
@@ -954,7 +966,8 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data '<json-object>'`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline-resolution '<pipeline-resolution-json>' --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <task-state-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data '<json-object>'`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task decision append --state <task-state-path> --data '<decision-record-json>'`

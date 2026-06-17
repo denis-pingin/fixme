@@ -439,6 +439,55 @@ The Suggestion must classify which case applies based on the plan's intent. When
 
 **The review is a two-pass process. Do not emit findings as you discover them.**
 
+### First-Pass Completeness Protocol
+
+Run this protocol inside Pass 1 before emitting findings:
+
+1. **Build a compact review inventory before identifying findings.**
+   Include changed source files, changed test files, plan steps, critical invariants, touched side effects, and new helpers, types, config keys, generated artifacts, public surfaces, and external contracts.
+
+2. **Risk-rank every inventory item before reviewing it.**
+   Deep review is mandatory for lifecycle and state transitions, retries, auth, deletion, generated artifacts, config or schema changes, tests, duplicated helpers, public APIs, and behavior with side effects or broad blast radius. Low-risk mechanical changes still need an explicit disposition.
+
+3. **Run fixed-order dimension passes over the inventory:**
+   - lifecycle and critical invariants
+   - plan compliance
+   - artifact wiring and data flow
+   - test quality
+   - stub detection
+   - correctness
+   - duplication and simplicity
+   - conventions and anti-patterns
+
+   DRY and simplicity remains the first principle for any duplicated or unjustified code discovered during these passes.
+
+4. **Write zero-finding receipts while investigating.**
+   Every changed file with no finding must have a terse Verified OK note naming what was checked. Every high-risk dimension with no finding must have a terse Verified OK note naming why it passed. The phrase "looks good" is not a valid Verified OK note.
+
+### Pass 1: Investigation (internal, not in output)
+
+Run the First-Pass Completeness Protocol. Read all changed files, the plan, and the spec. Identify candidate issues. For each candidate, run it through the Pre-Finding Gate below. This is your thinking process - none of it appears in the final report.
+
+- If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the report.
+- If gate-checking reveals uncertainty, move it to Questions.
+- If the candidate survives all gates, promote it to a confirmed finding.
+
+### Mandatory Pre-Output Self-Challenge
+
+Before Pass 2, answer these questions against the inventory:
+
+- Which touched file produced no findings?
+- Which high-risk dimension produced no findings?
+- Which plan step changed behavior but produced no finding or Verified OK note?
+- Which test could be wrong even if production code is right?
+- Which finding category was not exercised at all?
+
+If any answer is suspicious, inspect that area before writing the report.
+
+### Pass 2: Report (the actual output)
+
+Write ONLY confirmed findings that survived Pass 1. Include the Verified OK receipts required by the First-Pass Completeness Protocol. The report should contain zero artifacts of your investigation process - no retracted findings, no findings where Evidence or Confidence is "N/A".
+
 ## Review assessment
 
 Use the shared `fixme-howto-importance` rubric for every finding. Every finding must include:
@@ -451,18 +500,6 @@ Use the shared `fixme-howto-importance` rubric for every finding. Every finding 
 - ``
 
 Assign axes from verified implementation, plan, specification, test, and codebase evidence. Do not assign a numeric assessment route; the handler computes that deterministically from these axes.
-
-### Pass 1: Investigation (internal, not in output)
-
-Read all changed files, the plan, and the spec. Identify candidate issues. For each candidate, run it through the Pre-Finding Gate below. This is your thinking process - none of it appears in the final report.
-
-- If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the report.
-- If gate-checking reveals uncertainty, move it to Questions.
-- If the candidate survives all gates, promote it to a confirmed finding.
-
-### Pass 2: Report (the actual output)
-
-Write ONLY confirmed findings that survived Pass 1. The report should contain zero artifacts of your investigation process - no retracted findings, no findings where Evidence or Confidence is "N/A".
 
 ## Pre-Finding Gate
 
@@ -538,7 +575,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 1. **Summary**: 1-2 sentences. Is this implementation solid, or does it need revision? Be direct.
 2. **Scope**: list of files reviewed, plan referenced, code map used if provided, base branch compared against, and review context packet used if provided
 3. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then TEST-QUALITY, STUB-DETECTION, and CORRECTNESS, then other categories.
-4. **Verified OK**: brief list of things that were checked and found correct - this builds trust in the review's thoroughness and helps the handler skip re-checking these areas
+4. **Verified OK**: brief receipts for every changed file with no finding and every high-risk dimension with no finding. Each receipt names what was checked and why it passed; empty phrases like "looks good" are invalid.
 5. **Questions**: things that couldn't be determined and need clarification
 
 ## Rules
@@ -549,5 +586,5 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 - DRY-AND-SIMPLICITY findings where the patch introduces duplication, unjustified complexity, repeated logic, repeated literals, unjustified wrappers, or two names for one rule are BLOCKER severity. Behavior-correct code that should not exist is still wrong. Identical logic at two sites is one bug waiting to diverge. The only exception is MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later. "Tests pass and behavior is unchanged" is never a justification - that is exactly how this defect ships.
 - TEST-QUALITY findings about reimplemented business logic are always BLOCKER severity. There are no exceptions. A test that doesn't exercise production code is not a test.
 - STUB-DETECTION findings for artifacts that the plan claimed to fully implement are BLOCKER severity. A stub masquerading as a complete implementation is a missed deliverable.
-- The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough.
+- The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough. Missing per-file or high-risk-dimension receipts mean the review is incomplete.
 - When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
