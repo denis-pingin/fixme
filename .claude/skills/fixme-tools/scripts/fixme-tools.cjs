@@ -9110,6 +9110,15 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
       parentStatusId: data.parentStatusId || null,
       currentCommand: null,
     },
+    // Copy-ready attach payload: the caller adds only runtimeHandle (and never
+    // currentCommand, which is not known before runtime launch).
+    attachRuntimeHandleTemplate: {
+      dispatchId,
+      statusId: child.statusId,
+      parentStatusId: data.parentStatusId || null,
+      runtime,
+      transport: data.transport,
+    },
     promptBlocks,
   };
 
@@ -9130,6 +9139,49 @@ function lifecycleDispatchPrepare(flags, fixmeRoot) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
   return lifecycleOk(dispatchPrepareCore(fixmeDir, data, flags));
+}
+
+// Resolve the runtime handle that lifecycle dispatch complete may persist as a
+// producer continuation. Returns undefined when no continuation handle should be
+// recorded. Fails closed before any mutation when a supplied handle does not
+// match the dispatch-owned activeRuntime, or when a resumable producer supplies a
+// handle with no prior attach-runtime-handle (no canonical activeRuntime).
+function resolveVerifiedCompletionRuntimeHandle(dispatchRecord, data) {
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const agentName = durableInputs.agentName || null;
+  const isResumableProducer = RESUMABLE_PRODUCER_AGENTS.has(agentName);
+  const activeRuntime = dispatchRecord.record.activeRuntime;
+  const attachedHandle = isPlainObject(activeRuntime)
+    ? { kind: activeRuntime.kind, id: activeRuntime.id }
+    : undefined;
+
+  if (data.runtimeHandle !== undefined) {
+    if (attachedHandle !== undefined) {
+      if (!runtimeHandlesMatch(attachedHandle, data.runtimeHandle)) {
+        lifecycleError(
+          'invalidInput',
+          `completion runtimeHandle does not match attached activeRuntime for dispatch ${data.dispatchId}: agent ${agentName}, attached id ${attachedHandle.id}, supplied id ${data.runtimeHandle && data.runtimeHandle.id}`,
+        );
+      }
+      return data.runtimeHandle;
+    }
+    // Supplied handle with no attached activeRuntime.
+    if (isResumableProducer) {
+      lifecycleError(
+        'invalidInput',
+        `completion runtimeHandle for resumable producer ${agentName} requires a prior lifecycle dispatch attach-runtime-handle for dispatch ${data.dispatchId}`,
+      );
+    }
+    // Non-resumable agent: pass through so the existing producer-continuation
+    // preflight rejects it with the resumable-producer-only error.
+    return data.runtimeHandle;
+  }
+
+  // Omitted handle: derive from attached activeRuntime only for resumable producers.
+  if (attachedHandle !== undefined && isResumableProducer) {
+    return attachedHandle;
+  }
+  return undefined;
 }
 
 function lifecycleDispatchComplete(flags) {
@@ -9171,11 +9223,18 @@ function lifecycleDispatchComplete(flags) {
     lifecycleError('invalidInput', 'runtimeHandle is only allowed when status is completed');
   }
 
+  // Runtime-handle gate (sibling of the finalizer single terminal gate): a
+  // producer continuation handle may only be persisted when it matches the
+  // dispatch-owned activeRuntime attached via lifecycle dispatch attach-runtime-handle.
+  // This must run before any mutation (run status, completion record, checkpoint,
+  // producer continuation). A mismatch fails closed.
+  const verifiedRuntimeHandle = resolveVerifiedCompletionRuntimeHandle(dispatchRecord, data);
+
   const completionInputs = {
     status: data.status,
     currentCommand: data.currentCommand === undefined ? null : data.currentCommand,
     failure: data.failure === undefined ? null : data.failure,
-    runtimeHandle: data.runtimeHandle === undefined ? null : data.runtimeHandle,
+    runtimeHandle: verifiedRuntimeHandle === undefined ? null : verifiedRuntimeHandle,
   };
   if (dispatchRecord.record.completion !== undefined) {
     if (!jsonEqual(dispatchRecord.record.completion.inputs, completionInputs)) {
@@ -9203,14 +9262,14 @@ function lifecycleDispatchComplete(flags) {
         status: previous.state,
         currentCommand: previous.currentCommand === undefined ? null : previous.currentCommand,
         failure: previous.failure === undefined ? null : previous.failure,
-        runtimeHandle: data.runtimeHandle === undefined ? null : data.runtimeHandle,
+        runtimeHandle: verifiedRuntimeHandle === undefined ? null : verifiedRuntimeHandle,
       };
       if (!jsonEqual(persistedCompletionInputs, completionInputs)) {
         lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
       }
       const producerContinuationPreflight = preflightProducerContinuationFromCompletion(
         dispatchRecord,
-        data.runtimeHandle,
+        verifiedRuntimeHandle,
         new Date().toISOString(),
       );
       const producerContinuationResult = recordProducerContinuationFromCompletion(producerContinuationPreflight);
@@ -9253,7 +9312,7 @@ function lifecycleDispatchComplete(flags) {
   }
   const producerContinuationPreflight = preflightProducerContinuationFromCompletion(
     dispatchRecord,
-    data.runtimeHandle,
+    verifiedRuntimeHandle,
     new Date().toISOString(),
   );
   const next = writeRunStatus(statusPath, nextStatus);

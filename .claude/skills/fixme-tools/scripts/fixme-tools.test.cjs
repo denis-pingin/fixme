@@ -3023,6 +3023,21 @@ test('dispatch complete stores runtime handles for resumable producers only', ()
   );
   assert(prepare.ok, `expected prepare to pass: ${prepare.stderr || prepare.stdout}`);
 
+  // Fail-closed behavior: a producer continuation is only stored when the
+  // completion handle matches the dispatch-owned activeRuntime. Attach first.
+  const attach = runInDir(
+    `lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      parentStatusId: prepare.data.completionTemplate.parentStatusId,
+      runtime: 'codex',
+      transport: 'agent',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_plan_after_success' },
+    })}'`,
+    projectRoot,
+  );
+  assert(attach.ok, `expected attach-runtime-handle to pass: ${attach.stderr || attach.stdout}`);
+
   const complete = runInDir(
     `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
       dispatchId: prepare.data.dispatchId,
@@ -3032,7 +3047,7 @@ test('dispatch complete stores runtime handles for resumable producers only', ()
     })}'`,
     projectRoot,
   );
-  assert(complete.ok, `expected complete with runtime handle to pass: ${complete.stderr || complete.stdout}`);
+  assert(complete.ok, `expected complete with attached runtime handle to pass: ${complete.stderr || complete.stdout}`);
 
   const state = readJson(statePath);
   assert(state.producerContinuations.length === 1, 'expected one producer continuation entry');
@@ -3093,6 +3108,156 @@ test('dispatch complete rejects runtime handles for non-resumable agents', () =>
   const rejectedStatus = readJson(prepare.data.statusPath);
   assert(rejectedStatus.state === 'running', 'rejected runtime handle should leave child status running');
   assert(rejectedStatus.checkpoint !== 'done', 'rejected runtime handle should not mark child checkpoint done');
+});
+
+function prepareResumableProducerDispatch(slug, idempotencyKey) {
+  const { projectRoot, fixmeDir, statePath } = initTaskState(slug);
+  const prepare = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey,
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(prepare.ok, `expected prepare to pass: ${prepare.stderr || prepare.stdout}`);
+  return { projectRoot, fixmeDir, statePath, prepare };
+}
+
+function attachResumableHandle(fixmeDir, prepare, projectRoot, handleId) {
+  const attach = runInDir(
+    `lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      parentStatusId: prepare.data.completionTemplate.parentStatusId,
+      runtime: 'codex',
+      transport: 'agent',
+      runtimeHandle: { kind: 'codexAgentId', id: handleId },
+    })}'`,
+    projectRoot,
+  );
+  assert(attach.ok, `expected attach to pass: ${attach.stderr || attach.stdout}`);
+  return attach;
+}
+
+test('dispatch prepare returns attach runtime handle template', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('attach-template', 'attach-template-prepare');
+  const template = prepare.data.attachRuntimeHandleTemplate;
+  assert(template, `expected attachRuntimeHandleTemplate, got ${JSON.stringify(prepare.data)}`);
+  assert(template.dispatchId === prepare.data.dispatchId, 'template carries dispatchId');
+  assert(template.statusId === prepare.data.statusId, 'template carries statusId');
+  assert(Object.prototype.hasOwnProperty.call(template, 'parentStatusId'), 'template carries parentStatusId');
+  assert(template.runtime === 'codex', 'template carries runtime');
+  assert(template.transport === 'agent', 'template carries transport');
+  assert(!Object.prototype.hasOwnProperty.call(template, 'runtimeHandle'), 'template omits runtimeHandle');
+  assert(!Object.prototype.hasOwnProperty.call(template, 'currentCommand'), 'template omits currentCommand');
+
+  const attach = runInDir(
+    `lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      ...template,
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_attach_template' },
+    })}'`,
+    projectRoot,
+  );
+  assert(attach.ok, `attach from template should succeed, got ${JSON.stringify(attach.data)}`);
+
+  const replay = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'attach-template-prepare',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan' },
+    })}'`,
+    projectRoot,
+  );
+  assert(replay.ok, `prepare replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(replay.data.attachRuntimeHandleTemplate) === JSON.stringify(template), 'replay returns identical attach template');
+});
+
+test('dispatch complete rejects mismatched runtime handle before mutation', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('handle-mismatch', 'handle-mismatch-prepare');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_correct');
+
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_wrong' },
+    })}'`,
+    projectRoot,
+  );
+  assert(!complete.ok, 'mismatched completion handle should fail closed');
+  const message = cliErrorMessage(complete);
+  assert(message.includes(prepare.data.dispatchId), 'error names dispatch id');
+  assert(message.includes('fixme-write-plan'), 'error names agent name');
+  assert(message.includes('agent_correct'), 'error names attached id');
+  assert(message.includes('agent_wrong'), 'error names supplied id');
+
+  const childStatus = readJson(prepare.data.statusPath);
+  assert(childStatus.state === 'running', 'child status not made terminal on mismatch');
+  const state = readJson(statePath);
+  assert(!state.producerContinuations || state.producerContinuations.length === 0, 'no producer continuation written on mismatch');
+});
+
+test('dispatch complete derives omitted runtime handle from activeRuntime', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('handle-derive', 'handle-derive-prepare');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_derived');
+
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+    })}'`,
+    projectRoot,
+  );
+  assert(complete.ok, `omitted-handle completion should succeed, got ${JSON.stringify(complete.data)}`);
+  const state = readJson(statePath);
+  assert(state.producerContinuations.length === 1, 'producer continuation stored from derived handle');
+  assert(state.producerContinuations[0].runtimeHandle.id === 'agent_derived', 'derived handle id matches attached activeRuntime');
+});
+
+test('current resumable producer cannot persist supplied handle without activeRuntime', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('handle-no-attach-supplied', 'handle-no-attach-supplied-prepare');
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_unattached' },
+    })}'`,
+    projectRoot,
+  );
+  assert(!complete.ok, 'supplied handle without attach should fail closed for resumable producer');
+  const childStatus = readJson(prepare.data.statusPath);
+  assert(childStatus.state === 'running', 'fail-closed leaves child status running');
+  const state = readJson(statePath);
+  assert(!state.producerContinuations || state.producerContinuations.length === 0, 'no continuation stored on fail-closed');
+});
+
+test('current resumable producer without activeRuntime and omitted handle completes terminal only', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('handle-no-attach-omitted', 'handle-no-attach-omitted-prepare');
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+    })}'`,
+    projectRoot,
+  );
+  assert(complete.ok, `terminal-only completion should succeed, got ${JSON.stringify(complete.data)}`);
+  const childStatus = readJson(prepare.data.statusPath);
+  assert(childStatus.state === 'completed', 'terminal completion sets child completed');
+  const state = readJson(statePath);
+  assert(!state.producerContinuations || state.producerContinuations.length === 0, 'no continuation created when no activeRuntime and omitted handle');
 });
 
 test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {
