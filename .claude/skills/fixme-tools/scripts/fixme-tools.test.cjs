@@ -4274,19 +4274,9 @@ test('lifecycle unknown subcommand returns unsupportedCommand envelope', () => {
   assert(r.data.error && r.data.error.code === 'unsupportedCommand', `code should be unsupportedCommand, got ${JSON.stringify(r.data)}`);
 });
 
-test('every lifecycle/task-decision helper named in any installed skill exists in the CLI', () => {
-  const SUPPORTED_HELPERS = new Set([
-    'lifecycle invocation start', 'lifecycle invocation finish',
-    'lifecycle dispatch prepare', 'lifecycle dispatch complete',
-    'lifecycle attention open', 'lifecycle attention consume', 'lifecycle attention broker show', 'lifecycle attention broker answer',
-    'lifecycle attention broker resume',
-    'lifecycle attention broker acknowledge-resume',
-    'lifecycle wait begin', 'lifecycle wait end',
-    'lifecycle parent create', 'lifecycle parent checkpoint', 'lifecycle parent resolve', 'lifecycle parent prepare-child', 'lifecycle parent abandon',
-    'lifecycle task-event record', 'lifecycle task-event consume',
-    'task decision append', 'task decision list',
-    'task result write',
-  ]);
+test('installed skill helper names are supported by registry', () => {
+  const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
+  const SUPPORTED_HELPERS = new Set(listRegisteredCommandsForTest().map(entry => entry.path));
   const skillsRoot = path.resolve(__dirname, '..', '..');
   const skillDirs = fs.readdirSync(skillsRoot).filter(name => name.startsWith('fixme-'));
   // Match `fixme-tools.cjs <namespace> <verb> [<action>]` for lifecycle/task decision/task result.
@@ -4315,6 +4305,66 @@ test('every lifecycle/task-decision helper named in any installed skill exists i
     }
   }
 });
+
+test('all registered commands have complete help', () => {
+  const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
+  const entries = listRegisteredCommandsForTest();
+  assert(entries.length > 0, 'registry should have entries');
+  const seen = new Set();
+  for (const entry of entries) {
+    assert(isNonEmptyTestString(entry.path), `entry has command path, got ${JSON.stringify(entry)}`);
+    assert(!seen.has(entry.path), `duplicate registry path ${entry.path}`);
+    seen.add(entry.path);
+    assert(entry.kind === 'flags' || entry.kind === 'json', `entry ${entry.path} has command kind, got ${entry.kind}`);
+    const help = entry.help;
+    assert(help && help.command === entry.path, `entry ${entry.path} help command matches path, got ${help && help.command}`);
+    assert(Array.isArray(help.requiredFlags), `entry ${entry.path} has requiredFlags`);
+    assert(Array.isArray(help.requiredDataFields), `entry ${entry.path} has requiredDataFields`);
+    assert(Array.isArray(help.optionalDataFields), `entry ${entry.path} has optionalDataFields`);
+    assert(help.example && typeof help.example === 'object', `entry ${entry.path} has at least one example`);
+    assert(Object.keys(help.example).length > 0, `entry ${entry.path} example is non-empty`);
+    if (entry.kind === 'json') {
+      // JSON-bearing commands must declare required or optional data fields.
+      assert(help.requiredDataFields.length + help.optionalDataFields.length > 0, `entry ${entry.path} declares data fields`);
+    }
+  }
+});
+
+test('cli help is registry backed', () => {
+  const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
+  for (const entry of listRegisteredCommandsForTest()) {
+    const result = run(`${entry.path} --help`);
+    assert(result.ok, `${entry.path} --help should succeed, got ${JSON.stringify(result.data)}`);
+    assert(result.data.command === entry.path, `${entry.path} --help command should equal registry path, got ${result.data.command}`);
+    assert(result.data.example && Object.keys(result.data.example).length > 0, `${entry.path} --help includes example`);
+  }
+});
+
+test('new lifecycle commands expose registry-backed help', () => {
+  const finalize = run('lifecycle child finalize --help');
+  assert(finalize.ok && finalize.data.command === 'lifecycle child finalize', `finalize help, got ${JSON.stringify(finalize.data)}`);
+
+  const reconcile = run('lifecycle dispatch reconcile-wait --help');
+  assert(reconcile.ok && reconcile.data.command === 'lifecycle dispatch reconcile-wait', `reconcile help, got ${JSON.stringify(reconcile.data)}`);
+
+  const prepare = run('lifecycle dispatch prepare --help');
+  assert(prepare.ok, `prepare help, got ${JSON.stringify(prepare.data)}`);
+  assert(prepare.data.optionalDataFields.includes('checkpointData'), 'prepare help lists checkpointData');
+  assert(typeof prepare.data.guidance === 'string' && prepare.data.guidance.includes('attachRuntimeHandleTemplate'), 'prepare help mentions attachRuntimeHandleTemplate');
+
+  const complete = run('lifecycle dispatch complete --help');
+  assert(complete.ok, `complete help, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.optionalDataFields.includes('checkpointData'), 'complete help lists checkpointData');
+  assert(typeof complete.data.guidance === 'string' && complete.data.guidance.includes('activeRuntime'), 'complete help mentions runtime-handle guard');
+
+  const brokerResume = run('lifecycle attention broker resume --help');
+  assert(brokerResume.ok, `broker resume help, got ${JSON.stringify(brokerResume.data)}`);
+  assert(typeof brokerResume.data.guidance === 'string' && brokerResume.data.guidance.includes('acknowledgeResumeTemplate'), 'broker resume help mentions acknowledgeResumeTemplate');
+});
+
+function isNonEmptyTestString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
 
 test('run start CLI stdout schema unchanged after core extraction', () => {
   const base = createTmpDir();

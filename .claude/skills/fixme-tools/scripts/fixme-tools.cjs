@@ -12540,9 +12540,14 @@ function commandHelpPayload({
   return payload;
 }
 
-function commandHelpSchema(command, subcommand, args) {
-  if (command === 'run' && subcommand === 'start') {
-    return commandHelpPayload({
+// Single command registry. Each entry declares a command path (space-joined),
+// command kind, and a help payload built from the same constants the handlers
+// validate against. Router dispatch is implemented separately in main() against
+// the same paths; help output and coverage tests both derive from this registry
+// so command schemas cannot drift. Adding a command requires one registry entry.
+function buildCommandRegistry() {
+  return [
+    { path: 'run start', kind: 'flags', help: commandHelpPayload({
       command: 'run start',
       requiredFlags: ['fixme-dir', 'agent'],
       requiredDataFields: [],
@@ -12550,26 +12555,16 @@ function commandHelpSchema(command, subcommand, args) {
       enumValues: { agent: setValues(KNOWN_FIXME_AGENTS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', agent: 'fixme-task' } },
       guidance: 'Creates a liveness record for explicit agent dispatches. Parent prepare-child creates child liveness itself.',
-    });
-  }
-  if (command === 'task' && subcommand === 'supersede') {
-    return commandHelpPayload({
+    }) },
+    { path: 'task supersede', kind: 'flags', help: commandHelpPayload({
       command: 'task supersede',
       requiredFlags: ['task', 'by', 'reason'],
       requiredDataFields: [],
       optionalDataFields: [],
-      example: {
-        flags: {
-          task: 'FIXME-47',
-          by: 'FIXME-48',
-          reason: 'Replaced by corrected saved task',
-        },
-      },
+      example: { flags: { task: 'FIXME-47', by: 'FIXME-48', reason: 'Replaced by corrected saved task' } },
       guidance: 'Marks a standalone saved task as superseded in markdown frontmatter and sibling task state so it cannot be reinitialized as active work.',
-    });
-  }
-  if (command === 'task' && subcommand === 'decision' && args[0] === 'append') {
-    return commandHelpPayload({
+    }) },
+    { path: 'task decision append', kind: 'json', help: commandHelpPayload({
       command: 'task decision append',
       requiredFlags: ['state'],
       requiredDataFields: [
@@ -12596,89 +12591,103 @@ function commandHelpSchema(command, subcommand, args) {
           createdAt: '2026-06-08T00:00:00.000Z',
         },
       },
-    });
-  }
-  if (command === 'run' && subcommand === 'attention' && args[0] === 'answer') {
-    return commandHelpPayload({
+    }) },
+    { path: 'run attention answer', kind: 'json', help: commandHelpPayload({
       command: 'run attention answer',
       requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
       requiredDataFields: setValues(RUN_ATTENTION_ANSWER_FIELDS),
       optionalDataFields: [],
-      enumValues: {
-        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
-        answeredBy: ['user'],
-      },
+      enumValues: { answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS), answeredBy: ['user'] },
       example: {
         flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' },
         data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
       },
       audience: 'owner/internal',
       guidance: 'Owner/internal API. Parent brokers should record raw user answers with lifecycle attention broker answer instead.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'answer') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle invocation start', kind: 'json', help: commandHelpPayload({
+      command: 'lifecycle invocation start',
+      requiredFlags: [],
+      requiredDataFields: ['idempotencyKey', 'skill'],
+      optionalDataFields: setValues(LIFECYCLE_INVOCATION_START_FIELDS).filter(f => !['idempotencyKey', 'skill'].includes(f)),
+      enumValues: { runtime: setValues(VALID_RUNTIME_VALUES) },
+      example: { flags: { fixmeDir: '/absolute/.fixme (optional; auto-resolves from cwd when omitted)' }, data: { skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'invocation-key', taskStatePath: '/absolute/task.state.json' } },
+      guidance: '--fixme-dir is optional and auto-resolves from the working directory root when omitted. When taskStatePath points at a parent-driven child state, the returned invocation id is persisted as parentContinuation.usageInvocationId for terminal finalization.',
+    }) },
+    { path: 'lifecycle invocation finish', kind: 'flags', help: commandHelpPayload({
+      command: 'lifecycle invocation finish',
+      requiredFlags: ['invocation-id'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { outcome: setValues(USAGE_OUTCOMES) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', invocationId: 'usage_...', outcome: 'complete' } },
+      guidance: 'Direct and granular usage finish. Parent-driven terminal runs finish usage through lifecycle child finalize instead.',
+    }) },
+    { path: 'lifecycle child finalize', kind: 'json', help: commandHelpPayload({
+      command: 'lifecycle child finalize',
+      requiredFlags: ['fixme-dir', 'state'],
+      requiredDataFields: ['status', 'summaryMarkdown', 'changedFiles', 'artifactPaths'],
+      optionalDataFields: ['failure'],
+      enumValues: { status: ['completed', 'failed'], 'failure.reason': setValues(TASK_RESULT_FAILURE_REASONS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', state: '/absolute/task.state.json', dataFile: '/absolute/finalize.json' }, data: { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [] } },
+      audience: 'parent-driven/internal',
+      guidance: 'Parent-driven-only single terminal command. It runs a parent-linkage gate before any terminal write, then writes the result, records the task event, closes child and parent liveness, fires the alert, and finishes usage. Do not supply terminalResultId; it is generated internally.',
+    }) },
+    { path: 'lifecycle dispatch reconcile-wait', kind: 'json', help: commandHelpPayload({
+      command: 'lifecycle dispatch reconcile-wait',
+      requiredFlags: ['fixme-dir', 'dispatch-id', 'status-id'],
+      requiredDataFields: ['parentStatePath'],
+      optionalDataFields: ['childTaskStatePath', 'childSummaryPath'],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', dataFile: '/absolute/reconcile.json' }, data: { parentStatePath: '/absolute/parent/state.json' } },
+      audience: 'parent-facing',
+      guidance: 'Read-only runtime-result-driven wait reconciliation. Call once after a runtime wait watchdog timeout and branch only on the returned transition (runtimeOwned, terminalEvent, attention, dispatchFailure). updatedAt is the last status write, not a heartbeat.',
+    }) },
+    { path: 'lifecycle attention broker answer', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention broker answer',
       requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
       requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
       optionalDataFields: [],
-      enumValues: {
-        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
-        answeredBy: ['user'],
-      },
+      enumValues: { answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS), answeredBy: ['user'] },
       example: {
         flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' },
         data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
       },
       audience: 'parent-facing',
       guidance: 'Parent-facing brokers record raw user answers only; fixme-task interprets and consumes them.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'resume') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle attention broker resume', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention broker resume',
       requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
       requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
       optionalDataFields: [],
-      enumValues: {
-        answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS),
-        answeredBy: ['user'],
-      },
+      enumValues: { answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS), answeredBy: ['user'] },
       example: {
         flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
         data: { answer: 'Raw user answer', answeredBy: 'user', answerKind: 'decision' },
       },
       audience: 'parent-facing',
-      guidance: 'Parent-facing brokers record or reuse raw user answers and receive a launch object that returns only the fixme-task resume message plus existing liveness context.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'broker' && args[1] === 'acknowledge-resume') {
-    return commandHelpPayload({
+      guidance: 'Parent-facing brokers record or reuse raw user answers and receive a launch object that returns only the fixme-task resume message plus existing liveness context. The output also includes acknowledgeResumeTemplate; copy its .data and add only runtime-derived launch evidence (transport, runtime, optional runtimeHandle) before calling acknowledge-resume.',
+    }) },
+    { path: 'lifecycle attention broker acknowledge-resume', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention broker acknowledge-resume',
       requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
       requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
       optionalDataFields: ['runtimeHandle'],
-      enumValues: {
-        transport: setValues(DISPATCH_TRANSPORTS),
-        runtime: setValues(VALID_RUNTIME_VALUES),
-      },
+      enumValues: { transport: setValues(DISPATCH_TRANSPORTS), runtime: setValues(VALID_RUNTIME_VALUES) },
       example: {
         flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
         data: { resumeMessage: '--resume FIXME-1 --answer-attention attn_...', transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
       },
       audience: 'parent-facing',
       guidance: 'Parent-facing brokers call this only after launching the returned resume message. It records resume-dispatch evidence and returns the parent to waitingForChild.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'open') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle attention open', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention open',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: setValues(LIFECYCLE_ATTENTION_OPEN_FIELDS),
       optionalDataFields: [],
-      enumValues: {
-        'attention.answerMode': setValues(RUN_ATTENTION_ANSWER_MODES),
-      },
+      enumValues: { 'attention.answerMode': setValues(RUN_ATTENTION_ANSWER_MODES) },
       example: {
         flags: { fixmeDir: '/absolute/.fixme' },
         data: {
@@ -12696,17 +12705,13 @@ function commandHelpSchema(command, subcommand, args) {
           },
         },
       },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'attention' && args[0] === 'consume') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle attention consume', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention consume',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['statusId', 'taskStatePath', 'attentionId', 'checkpointData'],
       optionalDataFields: ['decisionRecords', 'mode'],
-      enumValues: {
-        mode: setValues(LIFECYCLE_ATTENTION_CONSUME_MODES),
-      },
+      enumValues: { mode: setValues(LIFECYCLE_ATTENTION_CONSUME_MODES) },
       example: {
         flags: { fixmeDir: '/absolute/.fixme' },
         data: {
@@ -12720,41 +12725,30 @@ function commandHelpSchema(command, subcommand, args) {
       },
       audience: 'owner/internal',
       guidance: 'Owner-only helper for fixme-task. It consumes answered attention before liveness pings, status resets, or child dispatch.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'prepare') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle dispatch prepare', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch prepare',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['idempotencyKey', 'agentName', 'transport', 'promptInputs'],
       optionalDataFields: setValues(LIFECYCLE_DISPATCH_PREPARE_FIELDS)
         .filter(field => !['idempotencyKey', 'agentName', 'transport', 'promptInputs'].includes(field)),
-      enumValues: {
-        transport: setValues(DISPATCH_TRANSPORTS),
-      },
+      enumValues: { transport: setValues(DISPATCH_TRANSPORTS) },
       example: {
         flags: { fixmeDir: '/absolute/.fixme' },
-        data: {
-          idempotencyKey: 'dispatch-key',
-          agentName: 'fixme-task',
-          transport: 'inline-skill',
-          promptInputs: {},
-        },
+        data: { idempotencyKey: 'dispatch-key', agentName: 'fixme-task', transport: 'inline-skill', promptInputs: {}, checkpointData: { status: 'running' } },
       },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'complete') {
-    return commandHelpPayload({
+      guidance: 'Optional checkpointData applies a pre-dispatch task checkpoint patch before the dispatch record is created. The output includes attachRuntimeHandleTemplate; copy it and add only runtimeHandle to call attach-runtime-handle.',
+    }) },
+    { path: 'lifecycle dispatch complete', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch complete',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['dispatchId', 'statusId', 'status'],
-      optionalDataFields: ['parentStatusId', 'currentCommand', 'failure', 'runtimeHandle'],
+      optionalDataFields: ['parentStatusId', 'currentCommand', 'failure', 'runtimeHandle', 'checkpointData'],
       enumValues: { status: ['completed', 'failed'] },
-      example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed' } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'dispatch' && args[0] === 'attach-runtime-handle') {
-    return commandHelpPayload({
+      example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed', checkpointData: { status: 'reviewing' } } },
+      guidance: 'A completion runtimeHandle is persisted as a producer continuation only when it matches the dispatch-owned activeRuntime from attach-runtime-handle; omit it to derive the attached handle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
+    }) },
+    { path: 'lifecycle dispatch attach-runtime-handle', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch attach-runtime-handle',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['dispatchId', 'statusId', 'runtime', 'transport', 'runtimeHandle'],
@@ -12764,40 +12758,32 @@ function commandHelpSchema(command, subcommand, args) {
         flags: { fixmeDir: '/absolute/.fixme' },
         data: { dispatchId: 'dispatch_...', statusId: 'run_...', parentStatusId: 'run_parent', runtime: 'codex', transport: 'agent', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
       },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'create') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle parent create', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent create',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: setValues(PARENT_CREATE_FIELDS),
       optionalDataFields: [],
       enumValues: { status: setValues(PR_PARENT_STATUSES), cursor: setValues(PR_PARENT_CURSORS) },
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { parentSkill: 'fixme-pr-comments', idempotencyKey: 'parent-key', lookupInput: {}, status: 'running', cursor: 'fetchReviewItems', payload: {} } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'checkpoint') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle parent checkpoint', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent checkpoint',
       requiredFlags: ['fixme-dir', 'parent-run-id'],
       requiredDataFields: ['idempotencyKey', 'expectedRevision', 'status', 'cursor', 'payload', 'ledger'],
       optionalDataFields: ['failure'],
       enumValues: { status: setValues(PR_PARENT_STATUSES), cursor: setValues(PR_PARENT_CURSORS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...' }, data: { idempotencyKey: 'checkpoint-key', expectedRevision: 0, status: 'running', cursor: 'analyzeReviewItems', payload: {}, ledger: {} } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'resolve') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle parent resolve', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent resolve',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: [],
       optionalDataFields: ['parentSkill', 'lookupInput'],
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...' }, data: { parentSkill: 'fixme-pr-comments', lookupInput: {} } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'prepare-child') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle parent prepare-child', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent prepare-child',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['parent', 'child', 'await'],
@@ -12805,39 +12791,105 @@ function commandHelpSchema(command, subcommand, args) {
       enumValues: { 'child.transport': setValues(DISPATCH_TRANSPORTS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/prepare-child.json' }, data: { parent: {}, child: {}, await: {} } },
       guidance: 'Returns a launch block only; the runtime adapter performs the returned launch action.',
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'parent' && args[0] === 'abandon') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle parent abandon', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent abandon',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['parentRunId', 'idempotencyKey', 'reason', 'message'],
       optionalDataFields: ['preserveLedger'],
       enumValues: { reason: setValues(PARENT_FAILURE_REASONS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/abandon.json' }, data: { parentRunId: 'parent_...', idempotencyKey: 'abandon-key', reason: 'staleParentMissingActiveChild', message: 'Parent is stale' } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'task-event' && args[0] === 'record') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle task-event record', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle task-event record',
       requiredFlags: ['fixme-dir'],
       requiredDataFields: setValues(TASK_EVENT_RECORD_FIELDS),
       optionalDataFields: [],
       enumValues: { status: ['completed', 'failed'] },
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { parentRunId: 'parent_...', taskRunId: 'taskRun_...', taskStatePath: '/absolute/task.state.json', resultSummaryPath: '/absolute/result.json', terminalResultId: 'terminal_...', status: 'completed' } },
-    });
-  }
-  if (command === 'lifecycle' && subcommand === 'task-event' && args[0] === 'consume') {
-    return commandHelpPayload({
+    }) },
+    { path: 'lifecycle task-event consume', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle task-event consume',
       requiredFlags: ['fixme-dir', 'parent-run-id'],
       requiredDataFields: [],
       optionalDataFields: ['event-id', 'next'],
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', next: true } },
-    });
+    }) },
+    { path: 'lifecycle wait begin', kind: 'flags', help: commandHelpPayload({
+      command: 'lifecycle wait begin',
+      requiredFlags: ['fixme-dir', 'status-id', 'label'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', label: 'waiting-for:fixme-write-plan' } },
+      guidance: 'Brackets a wait window on a run status. It records the wait label as currentCommand; it is not a heartbeat and updatedAt is the last status write only.',
+    }) },
+    { path: 'lifecycle wait end', kind: 'flags', help: commandHelpPayload({
+      command: 'lifecycle wait end',
+      requiredFlags: ['fixme-dir', 'status-id'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...' } },
+      guidance: 'Clears a wait window opened by lifecycle wait begin.',
+    }) },
+    { path: 'lifecycle attention broker show', kind: 'flags', help: commandHelpPayload({
+      command: 'lifecycle attention broker show',
+      requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: {},
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' } },
+      audience: 'parent-facing',
+      guidance: 'Parent-facing read of a child attention record for brokering. It does not consume the attention.',
+    }) },
+    { path: 'task decision list', kind: 'flags', help: commandHelpPayload({
+      command: 'task decision list',
+      requiredFlags: ['state'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: {},
+      example: { flags: { state: '/absolute/task.state.json' } },
+      guidance: 'Lists task and project decisions for a task state.',
+    }) },
+    { path: 'task result write', kind: 'json', help: commandHelpPayload({
+      command: 'task result write',
+      requiredFlags: ['state'],
+      requiredDataFields: ['status', 'summaryMarkdown', 'changedFiles', 'artifactPaths'],
+      optionalDataFields: ['failure'],
+      enumValues: { status: ['completed', 'failed'], 'failure.reason': setValues(TASK_RESULT_FAILURE_REASONS) },
+      example: { flags: { state: '/absolute/task.state.json' }, data: { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [] } },
+      guidance: 'Direct/granular terminal result write. Parent-driven terminal runs use lifecycle child finalize instead.',
+    }) },
+  ];
+}
+
+const COMMANDS = buildCommandRegistry();
+
+// Test-only registry summary: command path, kind, and help metadata derived from
+// the single COMMANDS registry. Returns a deep copy so the registry is immutable.
+function listRegisteredCommandsForTest() {
+  return COMMANDS.map(entry => ({
+    path: entry.path,
+    kind: entry.kind,
+    help: JSON.parse(JSON.stringify(entry.help)),
+  }));
+}
+
+function commandHelpSchema(command, subcommand, args) {
+  const parts = [command, subcommand, ...args].filter(part => isNonEmptyString(part));
+  // Longest-path match so 'lifecycle attention broker resume' wins over shorter prefixes.
+  let best = null;
+  for (const entry of COMMANDS) {
+    const entryParts = entry.path.split(' ');
+    if (entryParts.length > parts.length) continue;
+    const matches = entryParts.every((value, index) => parts[index] === value);
+    if (matches && (!best || entry.path.length > best.path.length)) {
+      best = entry;
+    }
   }
-  return null;
+  return best ? best.help : null;
 }
 
 function maybeShowCommandHelp(command, subcommand, args, flags) {
@@ -13235,4 +13287,5 @@ module.exports = {
   KNOWN_FIXME_AGENTS,
   RUN_STATES,
   RUN_CHECKPOINTS,
+  listRegisteredCommandsForTest,
 };
