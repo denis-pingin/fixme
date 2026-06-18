@@ -4674,6 +4674,43 @@ function taskCheckpoint(flags) {
   return output({ statePath });
 }
 
+// Apply an optional dispatch-boundary checkpoint patch to a task state using the
+// same task checkpoint contract as the standalone `task checkpoint` command.
+// Validation happens via mergeTaskState (which runs assertTaskCheckpointShape and
+// assertSupportedTaskCheckpointFields). Callers must validate before any durable
+// dispatch record/completion write so a bad patch leaves no partial state.
+function validateCheckpointDataField(checkpointData, label) {
+  if (!isPlainObject(checkpointData)) {
+    lifecycleError('invalidInput', `${label}.checkpointData must be a JSON object`);
+  }
+  try {
+    assertSupportedTaskCheckpointFields(checkpointData);
+    assertTaskCheckpointShape(checkpointData);
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+}
+
+function applyCheckpointDataToTaskState(taskStatePath, checkpointData) {
+  if (!isNonEmptyString(taskStatePath)) {
+    lifecycleError('invalidInput', 'checkpointData requires taskStatePath on the prepared dispatch');
+  }
+  const resolved = path.resolve(String(taskStatePath));
+  if (!fs.existsSync(resolved)) {
+    lifecycleError('stateNotFound', `Task state file not found for checkpointData: ${resolved}`);
+  }
+  const previous = readJsonFileStrict(resolved);
+  let next;
+  try {
+    next = mergeTaskState(previous, checkpointData);
+    assertCamelCaseJsonKeys(next, 'task state');
+  } catch (e) {
+    lifecycleError('invalidInput', e.message);
+  }
+  writeJsonAtomic(resolved, next);
+  return next;
+}
+
 function taskProducerContinuationMarkBad(flags) {
   const statePath = flags.state && flags.state !== true ? path.resolve(String(flags.state)) : null;
   const agentName = flags['agent-name'] && flags['agent-name'] !== true ? String(flags['agent-name']) : null;
@@ -8384,10 +8421,10 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
 const LIFECYCLE_DISPATCH_PREPARE_FIELDS = new Set([
   'idempotencyKey', 'agentName', 'transport', 'parentStatusId', 'parentInvocationId',
   'pipelineRunId', 'taskStatePath', 'parentContinuation', 'promptInputs', 'runtime',
-  'allowProducerContinuation', 'forceFreshReason', 'usageSourcePath',
+  'allowProducerContinuation', 'forceFreshReason', 'usageSourcePath', 'checkpointData',
 ]);
 
-const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure', 'runtimeHandle']);
+const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 'status', 'parentStatusId', 'currentCommand', 'failure', 'runtimeHandle', 'checkpointData']);
 const LIFECYCLE_DISPATCH_ATTACH_FIELDS = new Set(['dispatchId', 'statusId', 'parentStatusId', 'runtime', 'transport', 'runtimeHandle']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
@@ -8983,6 +9020,12 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   assertNoSameAgentParentDispatch(fixmeDir, data);
   const runtime = resolveLifecycleDispatchRuntime(data, flags);
 
+  // Validate optional checkpointData before any durable dispatch write so a bad
+  // patch produces no dispatch record. checkpointData participates in idempotency.
+  if (data.checkpointData !== undefined) {
+    validateCheckpointDataField(data.checkpointData, 'dispatch prepare');
+  }
+
   const durableInputs = {
     agentName: data.agentName,
     runtime,
@@ -8994,6 +9037,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     allowProducerContinuation: data.allowProducerContinuation === true,
     forceFreshReason: data.forceFreshReason || null,
     promptInputs: data.promptInputs,
+    checkpointData: data.checkpointData === undefined ? null : data.checkpointData,
   };
   const keyHash = stableHash({ idempotencyKey: data.idempotencyKey });
   const recordPath = dispatchIdempotencyPath(fixmeDir, keyHash);
@@ -9013,6 +9057,13 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
       }
     }
     return existing.output;
+  }
+
+  // Pre-dispatch checkpoint: advance task state before creating durable dispatch
+  // inputs. Applied only on the fresh path after all validation; never on replay
+  // (replay returns the cached output above) and never on validation failure.
+  if (data.checkpointData !== undefined) {
+    applyCheckpointDataToTaskState(data.taskStatePath, data.checkpointData);
   }
 
   const runtimeSettings = dispatchRuntimeSettingsForOutput(resolveModel(data.agentName, path.dirname(fixmeDir), { runtime }));
@@ -9223,6 +9274,12 @@ function lifecycleDispatchComplete(flags) {
     lifecycleError('invalidInput', 'runtimeHandle is only allowed when status is completed');
   }
 
+  // Validate optional checkpointData before any mutation so a bad patch or a
+  // runtime-handle mismatch leaves the task state untouched.
+  if (data.checkpointData !== undefined) {
+    validateCheckpointDataField(data.checkpointData, 'dispatch complete');
+  }
+
   // Runtime-handle gate (sibling of the finalizer single terminal gate): a
   // producer continuation handle may only be persisted when it matches the
   // dispatch-owned activeRuntime attached via lifecycle dispatch attach-runtime-handle.
@@ -9235,6 +9292,7 @@ function lifecycleDispatchComplete(flags) {
     currentCommand: data.currentCommand === undefined ? null : data.currentCommand,
     failure: data.failure === undefined ? null : data.failure,
     runtimeHandle: verifiedRuntimeHandle === undefined ? null : verifiedRuntimeHandle,
+    checkpointData: data.checkpointData === undefined ? null : data.checkpointData,
   };
   if (dispatchRecord.record.completion !== undefined) {
     if (!jsonEqual(dispatchRecord.record.completion.inputs, completionInputs)) {
@@ -9263,9 +9321,13 @@ function lifecycleDispatchComplete(flags) {
         currentCommand: previous.currentCommand === undefined ? null : previous.currentCommand,
         failure: previous.failure === undefined ? null : previous.failure,
         runtimeHandle: verifiedRuntimeHandle === undefined ? null : verifiedRuntimeHandle,
+        checkpointData: data.checkpointData === undefined ? null : data.checkpointData,
       };
       if (!jsonEqual(persistedCompletionInputs, completionInputs)) {
         lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
+      }
+      if (data.checkpointData !== undefined) {
+        applyCheckpointDataToTaskState(dispatchRecord.record.durableInputs && dispatchRecord.record.durableInputs.taskStatePath, data.checkpointData);
       }
       const producerContinuationPreflight = preflightProducerContinuationFromCompletion(
         dispatchRecord,
@@ -9337,6 +9399,11 @@ function lifecycleDispatchComplete(flags) {
     completedAt: new Date().toISOString(),
   };
   writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
+  // Post-dispatch checkpoint: advance task state after the accepted terminal
+  // completion is recorded. Never reached on the mismatch/fail-closed path.
+  if (data.checkpointData !== undefined) {
+    applyCheckpointDataToTaskState(dispatchRecord.record.durableInputs && dispatchRecord.record.durableInputs.taskStatePath, data.checkpointData);
+  }
   return lifecycleOk(outputData);
 }
 

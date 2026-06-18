@@ -3260,6 +3260,94 @@ test('current resumable producer without activeRuntime and omitted handle comple
   assert(!state.producerContinuations || state.producerContinuations.length === 0, 'no continuation created when no activeRuntime and omitted handle');
 });
 
+test('dispatch prepare applies checkpointData before creating dispatch', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('prepare-checkpoint');
+  const prepareData = {
+    idempotencyKey: 'prepare-checkpoint-key',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: statePath,
+    allowProducerContinuation: true,
+    promptInputs: { mode: 'plan' },
+    checkpointData: { status: 'running', cursor: { phase: 'plan', stepIndex: 1 } },
+  };
+  const prepare = runInDir(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify(prepareData)}'`, projectRoot);
+  assert(prepare.ok, `prepare with checkpointData should succeed, got ${JSON.stringify(prepare.data)}`);
+  const state = readJson(statePath);
+  assert(state.status === 'running', `task state should be patched by checkpointData, got status ${state.status}`);
+  assert(state.cursor.phase === 'plan' && state.cursor.stepIndex === 1, `cursor should reflect checkpointData, got ${JSON.stringify(state.cursor)}`);
+
+  const replay = runInDir(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify(prepareData)}'`, projectRoot);
+  assert(replay.ok, `identical replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.dispatchId === prepare.data.dispatchId, 'replay reuses dispatch');
+
+  const conflictData = { ...prepareData, checkpointData: { status: 'running', cursor: { phase: 'plan', stepIndex: 2 } } };
+  const conflict = runInDir(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify(conflictData)}'`, projectRoot);
+  assert(!conflict.ok && conflict.data?.error?.code === 'conflictingDuplicate', `different checkpointData should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch prepare rejects invalid checkpointData without dispatch record', () => {
+  const { projectRoot, fixmeDir, statePath } = initTaskState('prepare-checkpoint-invalid');
+  const prepareData = {
+    idempotencyKey: 'prepare-checkpoint-invalid-key',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: statePath,
+    allowProducerContinuation: true,
+    promptInputs: { mode: 'plan' },
+    checkpointData: { manifest: { forbidden: true } },
+  };
+  const before = readJson(statePath);
+  const prepare = runInDir(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify(prepareData)}'`, projectRoot);
+  assert(!prepare.ok, 'forbidden checkpointData field should be rejected');
+  const after = readJson(statePath);
+  assert(JSON.stringify(before) === JSON.stringify(after), 'task state unchanged on invalid checkpointData');
+  const idempotencyDir = path.join(fixmeDir, 'dispatch', 'idempotency');
+  const records = fs.existsSync(idempotencyDir) ? fs.readdirSync(idempotencyDir) : [];
+  assert(records.length === 0, 'no dispatch idempotency record created on invalid checkpointData');
+});
+
+test('dispatch complete applies checkpointData after accepted completion', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('complete-checkpoint', 'complete-checkpoint-key');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_complete_checkpoint');
+  const completeData = {
+    dispatchId: prepare.data.dispatchId,
+    statusId: prepare.data.statusId,
+    status: 'completed',
+    checkpointData: { status: 'reviewing', cursor: { phase: 'review' } },
+  };
+  const complete = runInDir(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify(completeData)}'`, projectRoot);
+  assert(complete.ok, `complete with checkpointData should succeed, got ${JSON.stringify(complete.data)}`);
+  const state = readJson(statePath);
+  assert(state.status === 'reviewing', `task state should reflect checkpointData after completion, got ${state.status}`);
+  assert(state.cursor.phase === 'review', `cursor should reflect checkpointData, got ${JSON.stringify(state.cursor)}`);
+
+  const replay = runInDir(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify(completeData)}'`, projectRoot);
+  assert(replay.ok, `identical complete replay should succeed, got ${JSON.stringify(replay.data)}`);
+
+  const conflictData = { ...completeData, checkpointData: { status: 'reviewing', cursor: { phase: 'done' } } };
+  const conflict = runInDir(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify(conflictData)}'`, projectRoot);
+  assert(!conflict.ok && conflict.data?.error?.code === 'conflictingDuplicate', `different complete checkpointData should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch complete does not apply checkpointData when runtime preflight fails', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('complete-checkpoint-mismatch', 'complete-checkpoint-mismatch-key');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_correct');
+  const before = readJson(statePath);
+  const complete = runInDir(`lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+    dispatchId: prepare.data.dispatchId,
+    statusId: prepare.data.statusId,
+    status: 'completed',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_wrong' },
+    checkpointData: { status: 'reviewing' },
+  })}'`, projectRoot);
+  assert(!complete.ok, 'mismatched handle should fail closed');
+  const after = readJson(statePath);
+  assert(JSON.stringify(before) === JSON.stringify(after), 'task state unchanged when runtime preflight fails');
+});
+
 test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {
   const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-fallback');
 
