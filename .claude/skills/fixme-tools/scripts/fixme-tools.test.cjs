@@ -4345,10 +4345,17 @@ test('cli help is registry backed', () => {
 test('every registered command routes to a real handler', () => {
   const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
   // Run each registry command through main() with validation-only input (NO --help,
-  // no required flags/data). The router must resolve the top-level command to a real
-  // handler; the handler then fails on missing args. The only forbidden outcome is the
-  // top-level "Unknown command:" default branch, which would prove a registry entry is
-  // unroutable. Run in a temp dir with no .fixme/ so no command can touch real state.
+  // no required flags/data). The router must resolve the full command path to a real
+  // handler; the handler then fails on missing args. The forbidden outcome is any
+  // router "no handler" branch, which would prove a registry entry is unroutable. The
+  // router is a nested hand-written switch that emits a whole family of such errors:
+  // the top-level "Unknown command:", and deeper "Unknown <group> subcommand:" /
+  // "Unknown ... action:" branches for unrouted multi-token paths. A narrow check on
+  // only "Unknown command:" would let an unrouted multi-token entry (e.g.
+  // "lifecycle child finalize") pass green, which is exactly the drift this test
+  // guards. Reject the entire family while still accepting handler validation errors
+  // (invalidInput, missingRequiredField, stateNotFound, etc.) as "routed". Run in a
+  // temp dir with no .fixme/ so no command can touch real state.
   const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-route-'));
   try {
     for (const entry of listRegisteredCommandsForTest()) {
@@ -4358,8 +4365,8 @@ test('every registered command routes to a real handler', () => {
       const result = runInDir(entry.path, dir);
       const message = cliErrorMessage(result);
       assert(
-        !/^Unknown command:/.test(message),
-        `${entry.path} must route to a real handler, got unknown-command error: ${message}`
+        !/^Unknown\b.*\b(command|subcommand|action)\b/i.test(message),
+        `${entry.path} must route to a real handler, got router no-handler error: ${message}`
       );
     }
   } finally {
