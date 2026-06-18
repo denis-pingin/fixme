@@ -4282,6 +4282,86 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
 });
 
+test('task init persists parentContinuation taskRunId from parent active child', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const payload = prepareChildPayload({ suffix: 'identity-init' });
+  const payloadPath = writeJsonFixture(projectRoot, 'prepare-child-identity-init.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = prepared.data.launch.activeChild;
+  const continuation = prepared.data.launch.promptBlocks.parentContinuation;
+  assert(continuation.taskRunId === activeChild.taskRunId, `parentContinuation.taskRunId should match activeChild.taskRunId, got ${JSON.stringify(continuation)}`);
+  assert(continuation.childStatusId === activeChild.statusId, `parentContinuation.childStatusId should match activeChild.statusId, got ${JSON.stringify(continuation)}`);
+
+  const checkpointed = runInDir(`task checkpoint --state "${activeChild.taskStatePath}" --data '${JSON.stringify({ parentContinuation: continuation })}'`, projectRoot);
+  assert(checkpointed.ok, `child state should persist the linkage continuation, got ${JSON.stringify(checkpointed.data)}`);
+  const state = readJson(activeChild.taskStatePath);
+  assert(state.parentContinuation.taskRunId === activeChild.taskRunId, `persisted parentContinuation.taskRunId should equal activeChild.taskRunId, got ${JSON.stringify(state.parentContinuation)}`);
+  assert(state.parentContinuation.childStatusId === activeChild.statusId, `persisted parentContinuation.childStatusId should equal activeChild.statusId, got ${JSON.stringify(state.parentContinuation)}`);
+  assert(!Object.prototype.hasOwnProperty.call(state, 'taskRunId'), 'no top-level taskRunId may exist on child task state');
+  assert(!Object.prototype.hasOwnProperty.call(state, 'childStatusId'), 'no top-level childStatusId may exist on child task state');
+});
+
+test('task checkpoint accepts parentContinuation taskRunId childStatusId and usageInvocationId as closed fields', () => {
+  const { statePath, projectRoot } = initTaskState('parent-continuation-closed-fields');
+  const continuation = {
+    parentSkill: 'fixme-pr-comments',
+    parentRunId: 'parent_closed_fields',
+    transport: 'agent',
+    resumeStep: 'awaitFixmeTaskResult',
+    parentStatusId: 'run_parent_closed_fields',
+    taskRunId: 'taskRun_closed_fields',
+    childStatusId: 'run_child_closed_fields',
+    usageInvocationId: 'usage_closed_fields',
+  };
+  const accepted = runInDir(`task checkpoint --state "${statePath}" --data '${JSON.stringify({ parentContinuation: continuation })}'`, projectRoot);
+  assert(accepted.ok, `closed parentContinuation fields should persist, got ${JSON.stringify(accepted.data)}`);
+  const state = readJson(statePath);
+  assert(state.parentContinuation.taskRunId === 'taskRun_closed_fields', 'taskRunId persists');
+  assert(state.parentContinuation.childStatusId === 'run_child_closed_fields', 'childStatusId persists');
+  assert(state.parentContinuation.usageInvocationId === 'usage_closed_fields', 'usageInvocationId persists');
+
+  const unknown = runInDir(`task checkpoint --state "${statePath}" --data '${JSON.stringify({ parentContinuation: { ...continuation, mysteryField: 'x' } })}'`, projectRoot);
+  assert(!unknown.ok, 'unknown parentContinuation field should be rejected');
+  assert(cliErrorMessage(unknown).includes('mysteryField'), `rejection should name the unsupported field, got ${JSON.stringify(unknown.data)}`);
+});
+
+test('lifecycle invocation start persists usage invocation id for parent-driven task state', () => {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const payload = prepareChildPayload({ suffix: 'usage-id-init' });
+  const payloadPath = writeJsonFixture(projectRoot, 'prepare-child-usage-id.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = prepared.data.launch.activeChild;
+  const continuation = prepared.data.launch.promptBlocks.parentContinuation;
+  const checkpointed = runInDir(`task checkpoint --state "${activeChild.taskStatePath}" --data '${JSON.stringify({ parentContinuation: continuation })}'`, projectRoot);
+  assert(checkpointed.ok, `child state should accept the linkage continuation, got ${JSON.stringify(checkpointed.data)}`);
+
+  const startData = JSON.stringify({
+    skill: 'fixme-task',
+    runtime: 'claude',
+    role: 'orchestrator',
+    idempotencyKey: 'usage-id-init-start',
+    taskStatePath: activeChild.taskStatePath,
+    pipelineRunId: 'usage_pipeline_usage_id_init',
+    parentInvocationId: 'usage_parent_usage_id_init',
+  });
+  const started = run(`lifecycle invocation start --fixme-dir "${fixmeDir}" --data '${startData}'`);
+  assert(started.ok, `invocation start should succeed, got ${JSON.stringify(started.data)}`);
+  assert(typeof started.data.fixmeDir === 'string' && started.data.fixmeDir.length > 0, `output should include fixmeDir, got ${JSON.stringify(started.data)}`);
+  assert(typeof started.data.invocationId === 'string' && started.data.invocationId.length > 0, `output should include invocationId, got ${JSON.stringify(started.data)}`);
+  const state = readJson(activeChild.taskStatePath);
+  assert(state.parentContinuation.usageInvocationId === started.data.invocationId, `task state should carry usageInvocationId === invocationId, got ${JSON.stringify(state.parentContinuation)}`);
+
+  const replay = run(`lifecycle invocation start --fixme-dir "${fixmeDir}" --data '${startData}'`);
+  assert(replay.ok, `invocation start replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.invocationId === started.data.invocationId, 'replay reuses the same invocation id');
+  const replayedState = readJson(activeChild.taskStatePath);
+  assert(replayedState.parentContinuation.usageInvocationId === started.data.invocationId, 'replay leaves usageInvocationId unchanged');
+});
+
 function fixmeRouterPrepareChildPayload(overrides = {}) {
   const suffix = overrides.suffix || 'router';
   const payload = prepareChildPayload({

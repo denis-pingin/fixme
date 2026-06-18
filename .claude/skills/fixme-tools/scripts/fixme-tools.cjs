@@ -4263,7 +4263,17 @@ const PARENT_CONTINUATION_FIELDS = new Set([
   'transport',
   'resumeStep',
   'parentStatusId',
+  // Parent-driven linkage identity merged after dispatchPrepareCore returns the
+  // active child. taskRunId is the parent linkage, childStatusId is the durable
+  // child liveness id, usageInvocationId is set by lifecycle invocation start.
+  'taskRunId',
+  'childStatusId',
+  'usageInvocationId',
 ]);
+
+// Linkage identity fields are optional so legacy and direct (non-parent-driven)
+// states remain readable; when present each must be a non-empty string.
+const PARENT_CONTINUATION_OPTIONAL_STRING_FIELDS = ['taskRunId', 'childStatusId', 'usageInvocationId'];
 
 const PARENT_CONTINUATION_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
 
@@ -4533,6 +4543,11 @@ function assertTaskCheckpointShape(patch) {
       assertKnownJsonFields(patch.parentContinuation, 'parentContinuation', PARENT_CONTINUATION_FIELDS);
       for (const field of ['parentSkill', 'parentRunId', 'transport', 'resumeStep', 'parentStatusId']) {
         assertCheckpointString(patch.parentContinuation[field], `parentContinuation.${field}`);
+      }
+      for (const field of PARENT_CONTINUATION_OPTIONAL_STRING_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(patch.parentContinuation, field)) {
+          assertCheckpointString(patch.parentContinuation[field], `parentContinuation.${field}`);
+        }
       }
       if (!PARENT_CONTINUATION_TRANSPORTS.has(patch.parentContinuation.transport)) {
         throw new Error('parentContinuation.transport must be one of: agent, inline-skill, background, direct');
@@ -8141,6 +8156,43 @@ function usageIdempotencyPath(fixmeDir, keyHash) {
   return path.join(fixmeDir, 'usage', 'idempotency', `${keyHash}.json`);
 }
 
+// Persist the usage invocation id into a parent-driven child task state so the
+// terminal finalizer can finish usage without an extra terminal payload field.
+// Closed parent-driven linkage: parentContinuation.usageInvocationId. Replay is
+// idempotent; a different existing id is a conflict. State-write failure degrades
+// to a warning so usage finalization is best-effort, never blocking.
+function persistUsageInvocationIdForTaskState(taskStatePath, invocationId) {
+  if (!isNonEmptyString(taskStatePath)) return;
+  if (!fs.existsSync(taskStatePath)) return;
+  let existing;
+  try {
+    existing = readJsonFileStrict(taskStatePath);
+  } catch (e) {
+    process.stderr.write(`warning: unable to read task state to persist usage invocation id: taskStatePath=${taskStatePath} invocationId=${invocationId}; usage finalization unavailable from lifecycle child finalize\n`);
+    return;
+  }
+  if (!isPlainObject(existing.parentContinuation)) {
+    // Direct (non-parent-driven) state: nothing to link.
+    return;
+  }
+  const current = existing.parentContinuation.usageInvocationId;
+  if (isNonEmptyString(current)) {
+    if (current !== invocationId) {
+      lifecycleError('conflictingDuplicate', `task state already has a different usageInvocationId: taskStatePath=${taskStatePath}`);
+    }
+    return;
+  }
+  const nextContinuation = { ...existing.parentContinuation, usageInvocationId: invocationId };
+  try {
+    const updated = mergeTaskState(existing, { parentContinuation: nextContinuation });
+    assertCamelCaseJsonKeys(updated, 'task state');
+    writeJsonAtomic(taskStatePath, updated);
+  } catch (e) {
+    if (e instanceof CliJsonError) throw e;
+    process.stderr.write(`warning: unable to persist usage invocation id into task state: taskStatePath=${taskStatePath} invocationId=${invocationId}; usage finalization unavailable from lifecycle child finalize\n`);
+  }
+}
+
 function resolveLifecycleData(flags) {
   let data;
   try {
@@ -8211,6 +8263,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
       out.statusId = existing.statusId;
       out.statusPath = existing.statusPath;
     }
+    persistUsageInvocationIdForTaskState(data.taskStatePath, existing.invocationId);
     return lifecycleOk(out);
   }
 
@@ -8262,6 +8315,7 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
     out.statusId = statusId;
     out.statusPath = statusPath;
   }
+  persistUsageInvocationIdForTaskState(data.taskStatePath, startResult.invocationId);
   return lifecycleOk(out);
 }
 
@@ -11152,6 +11206,18 @@ function lifecycleParentPrepareChild(flags) {
   launch.activeChild = activeChild;
   launch.promptBlocks.activeChild = activeChild;
   launch.promptBlocks.taskStateOwner = { ownerSkill: 'fixme-task', taskStatePath: childTask.statePath };
+
+  // Linkage identity is only available after dispatchPrepareCore generates the
+  // child taskRunId/statusId. Merge taskRunId (parent linkage) and childStatusId
+  // (durable child liveness id) into parentContinuation here, then re-thread the
+  // augmented continuation into the child prompt blocks so the child receives it.
+  if (isNonEmptyString(activeChild.taskRunId)) {
+    parentContinuation.taskRunId = activeChild.taskRunId;
+  }
+  if (isNonEmptyString(activeChild.statusId)) {
+    parentContinuation.childStatusId = activeChild.statusId;
+  }
+  launch.promptBlocks.parentContinuation = parentContinuation;
 
   if (!(parentState.status === 'waitingForChild' && parentState.cursor === 'awaitFixmeTask')) {
     if (parentState.cursor !== 'dispatchFixmeTask') {
