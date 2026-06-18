@@ -3381,6 +3381,9 @@ function setupParentDrivenChild(suffix, idempotencyKey) {
     fixmeDir,
     projectRoot,
     parentRunId: prepared.data.parentRunId,
+    parentStatePath: prepared.data.parentStatePath,
+    dispatchId: prepared.data.dispatchId,
+    statusId: prepared.data.statusId,
     activeChild,
     continuation: readJson(activeChild.taskStatePath).parentContinuation,
     taskStatePath: activeChild.taskStatePath,
@@ -3629,6 +3632,102 @@ test('lifecycle child finalize rejects invalid terminal payloads', () => {
 function isNonEmptyTestStr(value) {
   return typeof value === 'string' && value.length > 0;
 }
+
+function attachChildRuntimeHandle(setup, handleId) {
+  const attach = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    dispatchId: setup.dispatchId,
+    statusId: setup.statusId,
+    parentStatusId: setup.continuation.parentStatusId,
+    runtime: 'codex',
+    transport: 'agent',
+    runtimeHandle: { kind: 'codexAgentId', id: handleId },
+  })}'`);
+  assert(attach.ok, `attach child runtime handle should succeed, got ${JSON.stringify(attach.data)}`);
+}
+
+function reconcileWait(setup, extraPayload = {}) {
+  const payload = { parentStatePath: setup.parentStatePath, ...extraPayload };
+  const payloadPath = writeJsonFixture(setup.projectRoot, `reconcile-${path.basename(setup.taskStatePath)}.json`, payload);
+  return run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${payloadPath}"`);
+}
+
+test('reconcile-wait returns runtimeOwned for active nonterminal runtime', () => {
+  const setup = setupParentDrivenChild('reconcile-owned', 'reconcile-owned-start');
+  attachChildRuntimeHandle(setup, 'agent_owned');
+  const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
+  assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
+  const result = reconcileWait(setup);
+  assert(result.ok && result.data.transition === 'runtimeOwned', `expected runtimeOwned, got ${JSON.stringify(result.data)}`);
+  assert(result.data.status.currentCommand === 'test command', 'returns status currentCommand');
+  assert(isNonEmptyTestStr(result.data.status.updatedAt), 'returns updatedAt as status data');
+  assert(result.data.activeRuntime && result.data.activeRuntime.id === 'agent_owned', 'returns activeRuntime');
+});
+
+test('reconcile-wait returns terminalEvent with consumeTemplate', () => {
+  const setup = setupParentDrivenChild('reconcile-terminal', 'reconcile-terminal-start');
+  attachChildRuntimeHandle(setup, 'agent_terminal');
+  const finalize = finalizeChild(setup, completedFinalizePayload());
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const result = reconcileWait(setup);
+  assert(result.ok && result.data.transition === 'terminalEvent', `expected terminalEvent, got ${JSON.stringify(result.data)}`);
+  assert(result.data.event.eventId === finalize.data.eventId, 'returns the terminal event id');
+  assert(result.data.event.taskRunId === setup.continuation.taskRunId, 'event scoped to parent active child');
+  assert(result.data.consumeTemplate.parentRunId === setup.parentRunId, 'consumeTemplate carries parentRunId');
+});
+
+test('reconcile-wait returns attention with brokerResumeTemplate', () => {
+  const setup = setupParentDrivenChild('reconcile-attention', 'reconcile-attention-start');
+  attachChildRuntimeHandle(setup, 'agent_attention');
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
+    resumeRef: 'FIXME-1', taskStatePath: setup.taskStatePath, promptMarkdown: '## D', answerMode: 'freeform',
+  });
+  const opened = run(`run attention set --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --data '${attentionData}'`);
+  assert(opened.ok, `attention set should succeed, got ${JSON.stringify(opened.data)}`);
+  const result = reconcileWait(setup);
+  assert(result.ok && result.data.transition === 'attention', `expected attention, got ${JSON.stringify(result.data)}`);
+  assert(result.data.brokerResumeTemplate.statusId === setup.statusId, 'brokerResumeTemplate carries statusId');
+  assert(result.data.brokerResumeTemplate.parentRunId === setup.parentRunId, 'brokerResumeTemplate carries parentRunId');
+  assert(isNonEmptyTestStr(result.data.brokerResumeTemplate.attentionId), 'brokerResumeTemplate carries attentionId');
+});
+
+test('reconcile-wait returns dispatchFailure for missing or conflicting runtime evidence', () => {
+  const setup = setupParentDrivenChild('reconcile-failure', 'reconcile-failure-start');
+  // No attach yet: activeRuntime is missing.
+  const missing = reconcileWait(setup);
+  assert(missing.ok && missing.data.transition === 'dispatchFailure', `expected dispatchFailure for missing activeRuntime, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.dispatchFailure.reason === 'activeRuntimeMissing', `expected activeRuntimeMissing, got ${missing.data.dispatchFailure.reason}`);
+
+  // Missing dispatch id.
+  const payloadPath = writeJsonFixture(setup.projectRoot, 'reconcile-missing-dispatch.json', { parentStatePath: setup.parentStatePath });
+  const noDispatch = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id dispatch_does_not_exist --status-id ${setup.statusId} --data-file "${payloadPath}"`);
+  assert(noDispatch.ok && noDispatch.data.dispatchFailure.reason === 'dispatchNotFound', `expected dispatchNotFound, got ${JSON.stringify(noDispatch.data)}`);
+
+  // Runtime identity conflict: attach one handle, then mutate the run-status mirror.
+  attachChildRuntimeHandle(setup, 'agent_correct');
+  const statusPath = path.join(setup.fixmeDir, 'runs', setup.statusId, 'status.json');
+  const status = readJson(statusPath);
+  status.activeRuntime = { dispatchId: setup.dispatchId, kind: 'codexAgentId', id: 'agent_wrong' };
+  fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+  const conflict = reconcileWait(setup);
+  assert(conflict.ok && conflict.data.dispatchFailure.reason === 'runtimeIdentityConflict', `expected runtimeIdentityConflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('reconcile-wait validates exact payload shape', () => {
+  const setup = setupParentDrivenChild('reconcile-shape', 'reconcile-shape-start');
+  const missingParent = writeJsonFixture(setup.projectRoot, 'reconcile-no-parent.json', { childTaskStatePath: setup.taskStatePath });
+  const noParent = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${missingParent}"`);
+  assert(!noParent.ok, 'missing parentStatePath should reject');
+
+  const unknownField = writeJsonFixture(setup.projectRoot, 'reconcile-unknown.json', { parentStatePath: setup.parentStatePath, mystery: 1 });
+  const unknown = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${unknownField}"`);
+  assert(!unknown.ok, 'unknown field should reject');
+
+  const optional = writeJsonFixture(setup.projectRoot, 'reconcile-optional.json', { parentStatePath: setup.parentStatePath, childTaskStatePath: setup.taskStatePath, childSummaryPath: '/tmp/summary.json' });
+  attachChildRuntimeHandle(setup, 'agent_shape');
+  const withOptional = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${optional}"`);
+  assert(withOptional.ok, `optional fields should be accepted, got ${JSON.stringify(withOptional.data)}`);
+});
 
 test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {
   const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-fallback');

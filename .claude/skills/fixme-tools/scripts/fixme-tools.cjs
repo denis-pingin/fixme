@@ -9549,6 +9549,146 @@ function lifecycleDispatchAttachRuntimeHandle(flags) {
   return lifecycleOk({ ...waitPayload, activeRuntime, waitPayload });
 }
 
+const LIFECYCLE_RECONCILE_WAIT_FIELDS = new Set(['parentStatePath', 'childTaskStatePath', 'childSummaryPath']);
+const RECONCILE_WAIT_DISPATCH_FAILURE_REASONS = new Set([
+  'dispatchNotFound', 'activeRuntimeMissing', 'runtimeIdentityConflict',
+  'unreadableState', 'invalidStatus', 'unknown',
+]);
+
+// Read-only runtime-result-driven wait reconciliation. The parent calls this once
+// after a runtime wait watchdog timeout and branches only on the returned
+// transition. It mutates nothing. updatedAt is reported as status data, never
+// treated as a heartbeat or age threshold.
+function lifecycleDispatchReconcileWait(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const dispatchId = flags['dispatch-id'];
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(dispatchId)) {
+    lifecycleError('invalidInput', '--dispatch-id is required');
+  }
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch reconcile-wait', LIFECYCLE_RECONCILE_WAIT_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(data.parentStatePath)) {
+    lifecycleError('missingRequiredField', 'parentStatePath is required');
+  }
+  for (const field of ['childTaskStatePath', 'childSummaryPath']) {
+    if (data[field] !== undefined && !isNonEmptyString(data[field])) {
+      lifecycleError('invalidInput', `${field} must be a non-empty string when present`);
+    }
+  }
+
+  const dispatchFailure = (reason, message) => {
+    const safeReason = RECONCILE_WAIT_DISPATCH_FAILURE_REASONS.has(reason) ? reason : 'unknown';
+    return lifecycleOk({
+      transition: 'dispatchFailure',
+      dispatchFailure: { reason: safeReason, message },
+    });
+  };
+
+  // Dispatch record and activeRuntime are preconditions for any non-failure transition.
+  const dispatchRecord = findDispatchRecordById(fixmeDir, dispatchId);
+  if (!dispatchRecord) {
+    return dispatchFailure('dispatchNotFound', `Prepared dispatch not found: ${dispatchId}`);
+  }
+  const activeRuntime = dispatchRecord.record.activeRuntime;
+  if (!isPlainObject(activeRuntime)) {
+    return dispatchFailure('activeRuntimeMissing', `Dispatch ${dispatchId} has no attached activeRuntime`);
+  }
+
+  // Read run status (required).
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) {
+    return dispatchFailure('unreadableState', `Run status not found: ${statusId}`);
+  }
+  let status;
+  try {
+    status = readRunStatusFile(statusPath, statusId);
+  } catch (e) {
+    return dispatchFailure('unreadableState', `Run status unreadable: ${statusId}`);
+  }
+
+  // Runtime identity conflict: the run status mirror, when present, must match the
+  // dispatch-owned activeRuntime id.
+  if (isPlainObject(status.activeRuntime) && status.activeRuntime.id !== activeRuntime.id) {
+    return dispatchFailure('runtimeIdentityConflict', `Run status activeRuntime id ${status.activeRuntime.id} does not match dispatch ${dispatchId} activeRuntime id ${activeRuntime.id}`);
+  }
+
+  // Read parent state (required) to scope the terminal event to the parent active child.
+  if (!fs.existsSync(data.parentStatePath)) {
+    return dispatchFailure('unreadableState', `Parent state not found: ${data.parentStatePath}`);
+  }
+  let parent;
+  try {
+    parent = readJsonFileStrict(path.resolve(String(data.parentStatePath)));
+  } catch (e) {
+    return dispatchFailure('unreadableState', `Parent state unreadable: ${data.parentStatePath}`);
+  }
+  const parentActiveChild = parent && parent.payload && parent.payload.activeChild;
+
+  // terminalEvent: a durable task event exists for the parent active child.
+  if (isPlainObject(parentActiveChild) && isNonEmptyString(parentActiveChild.taskRunId) && isNonEmptyString(parent.parentRunId)) {
+    const events = listTaskEvents(fixmeDir, parent.parentRunId)
+      .filter(e => e.taskRunId === parentActiveChild.taskRunId);
+    if (events.length > 0) {
+      const event = events[0];
+      return lifecycleOk({
+        transition: 'terminalEvent',
+        event: {
+          eventId: event.eventId,
+          parentRunId: event.parentRunId,
+          taskRunId: event.taskRunId,
+          status: event.status,
+          terminalResultId: event.terminalResultId,
+        },
+        consumeTemplate: {
+          parentRunId: parent.parentRunId,
+        },
+      });
+    }
+  }
+
+  // attention: currentCommand is attention:<id> and the attention record is pending.
+  if (isRunAttentionCommand(status.currentCommand)) {
+    const attentionId = String(status.currentCommand).slice('attention:'.length);
+    const attentionPath = runAttentionPath(fixmeDir, statusId, attentionId);
+    if (isNonEmptyString(attentionId) && fs.existsSync(attentionPath)) {
+      return lifecycleOk({
+        transition: 'attention',
+        attentionId,
+        brokerResumeTemplate: {
+          parentRunId: isNonEmptyString(parent.parentRunId) ? parent.parentRunId : null,
+          statusId,
+          attentionId,
+        },
+      });
+    }
+  }
+
+  // runtimeOwned: active runtime attached, status nonterminal, identity matches,
+  // and no terminal/attention evidence. updatedAt is status data, not a heartbeat.
+  if (status.state === 'completed' || status.state === 'failed') {
+    return dispatchFailure('invalidStatus', `Run ${statusId} is terminal (${status.state}) with no durable task event for the parent active child`);
+  }
+  return lifecycleOk({
+    transition: 'runtimeOwned',
+    status: {
+      state: status.state,
+      checkpoint: status.checkpoint,
+      currentCommand: status.currentCommand,
+      updatedAt: status.updatedAt,
+    },
+    activeRuntime,
+    statusDataNote: 'updatedAt is the last status write, not a heartbeat',
+  });
+}
+
 // Best-effort lookup of the parent state whose activeChild matches a child status
 // id, used only to mirror the active runtime handle. Returns null when no such
 // parent exists.
@@ -12807,6 +12947,8 @@ function main() {
                 return lifecycleDispatchComplete(flags);
               case 'attach-runtime-handle':
                 return lifecycleDispatchAttachRuntimeHandle(flags);
+              case 'reconcile-wait':
+                return lifecycleDispatchReconcileWait(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle dispatch action: '${args[0] || ''}'`);
             }
