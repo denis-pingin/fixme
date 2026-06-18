@@ -81,7 +81,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation s
 
 Direct runs pass `createRunStatusForAgent: "fixme-task"` to get a self-owned run status (`statusId`/`statusPath`) for durable attention. Store the returned `invocationId` as `usageInvocationId`, the returned `pipelineRunId` as `pipelineRunId`, the returned `usageSourcePath` as `usageSourcePath` when non-empty, and the returned `statusId` as the self-owned liveness status.
 
-Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pipelineRunId === usageInvocationId`. Parent-driven `fixme-task` receives `pipelineRunId` and, when available, `usageSourcePath` from its parent's `lifecycle dispatch prepare` `usageContext` and passes them in; the returned `pipelineRunId` reuses the parent value and the returned `usageSourcePath` preserves the runtime counter source for nested child agents.
+Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pipelineRunId === usageInvocationId`. Parent-driven `fixme-task` receives `pipelineRunId` and, when available, `usageSourcePath` from its parent's `lifecycle dispatch prepare` `usageContext` and passes them in; the returned `pipelineRunId` reuses the parent value. The returned `usageSourcePath` is eligible only for Claude and `inline-skill` child dispatches that share the same runtime counter source. Fresh Codex `agent` and `background` children bind their own runtime source at `usage start` and must not receive the parent `usageSourcePath`.
 
 On completion run:
 
@@ -953,6 +953,26 @@ No-ticket mode, including parent-driven dispatches (transport `inline-skill`/`ba
 
   Use `<taskPath>` from `launch.promptBlocks.taskInput.taskPath`. Store the returned `statePath` as `taskStatePath`; it must equal `launch.promptBlocks.taskInput.statePath`. Use `launch.promptBlocks.taskInput.resumeRef` for later `--answer-attention` resumes. Saved handoff children must not be initialized through `--state` because the reserved state path may collide with saved task markdown.
 
+  If `launch.promptBlocks.taskInput.source === "existingTask"`, initialize the resolved existing task boundary according to `resolvedMode`:
+
+  - If `launch.promptBlocks.taskInput.resolvedMode === "standalone"`, initialize the saved task markdown path:
+    ```bash
+    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
+    ```
+    Use `<taskPath>` from `launch.promptBlocks.taskInput.taskPath`. Store the returned `statePath` as `taskStatePath`; it must equal `launch.promptBlocks.taskInput.statePath`.
+  - If `launch.promptBlocks.taskInput.resolvedMode === "ticket"`, initialize the ticket-backed task state:
+    ```bash
+    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticketPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
+    ```
+    Use `<ticketPath>` from `launch.promptBlocks.taskInput.ticketPath`. Store the returned `statePath` as `taskStatePath`; it must equal `launch.promptBlocks.taskInput.statePath`. Ticket existingTask initialization must be idempotent: it preserves the existing ticket-backed task state, merges only a matching parentContinuation, and rejects project, pipeline, or parentContinuation conflicts.
+  - If `launch.promptBlocks.taskInput.resolvedMode === "reserved-state"`, initialize the reserved state path:
+    ```bash
+    node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <statePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>
+    ```
+    Use `<statePath>` from `launch.promptBlocks.taskInput.statePath`. Store the returned `statePath` as `taskStatePath`; it must equal `launch.promptBlocks.taskInput.statePath`.
+
+  Use `launch.promptBlocks.taskInput.resumeRef` for later `--answer-attention` resumes in all three existingTask modes.
+
   Otherwise, initialize the reserved state path:
 
   ```bash
@@ -991,7 +1011,7 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root` (the FIRST command, always)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <task-state-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-file <checkpoint.json>`
@@ -1264,6 +1284,8 @@ Dispatch prepare request payload has exactly these required fields:
 - Optional: `parentStatusId`, `parentInvocationId`, `pipelineRunId`, `taskStatePath`, `parentContinuation`, `runtime`, `allowProducerContinuation`, `forceFreshReason`, and `usageSourcePath`.
 - Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, and `bannerMarkdown`.
 
+Only send request `usageSourcePath` for Claude or `inline-skill` dispatches with a validated same-runtime counter source. Codex `agent` and `background` dispatches reject request `usageSourcePath` and bind their own runtime source at `usage start`.
+
 Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload. They are response values built by the lifecycle helper after it accepts the request.
 
 Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings.reasoningEffort` contains the runtime-specific reasoning setting; do not hardcode models, reasoning effort, or runtime behavior. Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` tool parameters when `runtimeSettings.reasoningEffort` is non-null. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
@@ -1312,7 +1334,7 @@ Replace routine polling with one durable wait marker (prefer `lifecycle dispatch
 
 #### Codex child usage source
 
-Codex child `agent`/`background` dispatches must not pass the parent `usageSourcePath` through `lifecycle dispatch prepare` or the child `<usage>` block; the child captures its own runtime source at `usage start`. Claude and inline-skill dispatches keep the current usage-source pass-through.
+Codex child `agent`/`background` dispatches must not pass the parent or explicit `usageSourcePath` through `lifecycle dispatch prepare` or the child `<usage>` block; the child captures its own runtime source at `usage start`. The CLI rejects `usageSourcePath` for Codex `agent` and `background` dispatches. Claude and `inline-skill` dispatches keep usage-source pass-through only when the source is a validated same-runtime counter source.
 
 Claude runtime mechanics:
 
@@ -1356,7 +1378,7 @@ After the dispatched agent returns, ping the current fixme-task invocation again
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run ping --fixme-dir <fixme-dir> --status-id <current-fixme-task-status-id> --state running --checkpoint working --current-command null
 ```
 
-If the current fixme-task invocation did not receive its own `<liveness>` `statusId`, skip only these parent heartbeat pings and continue the normal dispatch path while no user-input prompt is pending. The child agent still receives its own liveness status id from Step 4. If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`.
+Missing parent liveness only skips parent heartbeat pings while no user-input prompt is pending. The child agent still receives its own liveness status id from Step 4. If a later user-input prompt needs attention and no fixme-task liveness status id exists, return the full `FIXME_USER_PROMPT` envelope.
 
 Step 3 - Print the banner as a single line of user-visible text before the Agent tool call:
 
@@ -1386,7 +1408,6 @@ Agent(
     <usage>
     pipelineRunId: <pipelineRunId>
     parentInvocationId: <usageInvocationId>
-    usageSourcePath: <usageSourcePath>
     </usage>
 
     <task-state-owner>
@@ -1404,7 +1425,7 @@ Agent(
 
 When `model` or `reasoning_effort` is `null`, omit that field from the Agent dispatch instead of passing a string value.
 
-Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipelineRunId` and the dispatching `fixme-task` `parentInvocationId`; when `usageSourcePath` is known, pass it through both the child prompt `<usage>` block and the child `lifecycle dispatch prepare` JSON as `usageSourcePath`. Non-pipeline direct skill invocations omit these fields.
+Include the `<usage>` block only when both `pipelineRunId` and `usageInvocationId` are known. Child skill dispatches inside `fixme-task` must receive the same `pipelineRunId` and the dispatching `fixme-task` `parentInvocationId`. For Codex `agent` and `background` dispatches, omit `usageSourcePath` from both the child prompt `<usage>` block and the `lifecycle dispatch prepare` JSON, even when the parent invocation has one. For Claude and `inline-skill` dispatches, include `usageSourcePath: <usageSourcePath>` in the child prompt and `usageSourcePath` in the child `lifecycle dispatch prepare` JSON only when the lifecycle usage context has a non-empty validated same-runtime source. Non-pipeline direct skill invocations omit these fields.
 
 Include the `<task-state-owner>` block only when this dispatch is part of a resumable `fixme-task` run with a known task state. It tells child skills that user-facing pauses must return `FIXME_CHILD_ATTENTION_REQUIRED` to `fixme-task` instead of calling AskUserQuestion or waiting directly.
 

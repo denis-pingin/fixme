@@ -3819,7 +3819,31 @@ function taskInit(flags, fixmeRoot) {
       throw new Error(`Ticket file not found: ${ticketPath}`);
     }
     const statePath = taskStatePathForTicket(ticketPath);
-    writeJsonAtomic(statePath, state);
+    const nextState = parentContinuation === undefined
+      ? state
+      : mergeTaskState(state, { parentContinuation });
+
+    if (fs.existsSync(statePath)) {
+      const existing = readJsonFileStrict(statePath);
+      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+        throw new Error(`Ticket task state conflicts with requested task initialization: ${statePath}`);
+      }
+      const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Ticket task state');
+      if (updated !== existing) {
+        assertCamelCaseJsonKeys(updated, 'task state');
+        writeJsonAtomic(statePath, updated);
+      }
+      return output({
+        mode: 'ticket',
+        taskRef: null,
+        taskPath: null,
+        ticketPath,
+        statePath,
+      });
+    }
+
+    assertCamelCaseJsonKeys(nextState, 'task state');
+    writeJsonAtomic(statePath, nextState);
     return output({
       mode: 'ticket',
       taskRef: null,
@@ -7126,13 +7150,18 @@ function usageSourcePathFromInvocation(fixmeDir, invocationId) {
 
 function resolveDispatchUsageSourcePath(fixmeDir, runtime, data) {
   const explicitPath = normalizeUsageSourcePathField(data.usageSourcePath, 'usageSourcePath');
-  if (explicitPath) return explicitPath;
   // A parent session file is parent-scoped. For Codex child agent/background
   // dispatches it cannot observe the child agent's token counters, so do not
   // propagate it. The child captures its own runtime source at usage start.
   if (runtime === 'codex' && (data.transport === 'agent' || data.transport === 'background')) {
+    if (explicitPath) {
+      const err = new Error('usageSourcePath is not supported for Codex agent/background dispatches; the child captures its own runtime source at usage start');
+      err.code = 'INVALID_USAGE_SOURCE_PATH';
+      throw err;
+    }
     return null;
   }
+  if (explicitPath) return explicitPath;
   const parentPath = usageSourcePathFromInvocation(fixmeDir, data.parentInvocationId);
   if (parentPath) return parentPath;
   return explicitUsageSourcePath(runtime, null);

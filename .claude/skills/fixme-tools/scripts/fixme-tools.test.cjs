@@ -2433,6 +2433,52 @@ test('task init: creates ticket-backed task state and resolves ticket folder', (
   assert(resolved.data.statePath === initialized.data.statePath, 'resolved statePath should match initialized state path');
 });
 
+test('task init: ticket-backed task state is idempotent and preserves existing state', () => {
+  const projectRoot = createTmpDir();
+  fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
+  const sessionDir = path.join(projectRoot, '.fixme', 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'idempotent-ticket', 'queued');
+  const parentContinuation = {
+    parentRunId: 'parent_ticket_init_1',
+    parentSkill: 'fixme',
+    transport: 'agent',
+    resumeStep: 'awaitFixmeTaskResult',
+    parentStatusId: 'run_parent_ticket_init_1',
+  };
+  const parentContinuationPath = path.join(projectRoot, 'parent-continuation.json');
+  fs.writeFileSync(parentContinuationPath, JSON.stringify(parentContinuation, null, 2));
+
+  const first = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}" --parent-continuation-file "${parentContinuationPath}"`, projectRoot);
+  assert(first.ok, `first ticket init should succeed, got: ${JSON.stringify(first.data)}`);
+
+  const checkpoint = runInDir(`task checkpoint --state "${first.data.statePath}" --data '${JSON.stringify({ cursor: { phase: 'implement', stage: 'review', skill: 'fixme-review-code', dispatchMode: 'normal' } })}'`, projectRoot);
+  assert(checkpoint.ok, `checkpoint should succeed, got: ${JSON.stringify(checkpoint.data)}`);
+
+  const second = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}" --parent-continuation-file "${parentContinuationPath}"`, projectRoot);
+  assert(second.ok, `second ticket init should be idempotent, got: ${JSON.stringify(second.data)}`);
+  assert(second.data.statePath === first.data.statePath, 'idempotent ticket init should reuse the same state path');
+
+  const preserved = readJson(first.data.statePath);
+  assert(preserved.cursor.phase === 'implement', `idempotent ticket init should preserve cursor.phase, got ${preserved.cursor.phase}`);
+  assert(preserved.cursor.skill === 'fixme-review-code', `idempotent ticket init should preserve cursor.skill, got ${preserved.cursor.skill}`);
+  assert(JSON.stringify(preserved.parentContinuation) === JSON.stringify(parentContinuation), `parentContinuation should be preserved, got ${JSON.stringify(preserved.parentContinuation)}`);
+
+  const conflictingParentPath = path.join(projectRoot, 'conflicting-parent-continuation.json');
+  fs.writeFileSync(conflictingParentPath, JSON.stringify({ ...parentContinuation, parentRunId: 'parent_ticket_init_conflict' }, null, 2));
+  const conflictingParent = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}" --parent-continuation-file "${conflictingParentPath}"`, projectRoot);
+  assert(!conflictingParent.ok, 'ticket init should reject a conflicting parentContinuation');
+  assert(cliErrorMessage(conflictingParent).includes('Ticket task state has a different parentContinuation'), `parentContinuation conflict should use strict ticket conflict error, got ${cliErrorMessage(conflictingParent)}`);
+
+  const conflictingProjectRoot = createTmpDir();
+  const conflictingProject = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${conflictingProjectRoot}" --parent-continuation-file "${parentContinuationPath}"`, projectRoot);
+  assert(!conflictingProject.ok, 'ticket init should reject a conflicting project root');
+  assert(cliErrorMessage(conflictingProject).includes('Ticket task state conflicts with requested task initialization'), `project conflict should use strict ticket conflict error, got ${cliErrorMessage(conflictingProject)}`);
+
+  const conflictingPipeline = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('bugfix')} --project-root "${projectRoot}" --parent-continuation-file "${parentContinuationPath}"`, projectRoot);
+  assert(!conflictingPipeline.ok, 'ticket init should reject a conflicting pipeline resolution');
+  assert(cliErrorMessage(conflictingPipeline).includes('Ticket task state conflicts with requested task initialization'), `pipeline conflict should use strict ticket conflict error, got ${cliErrorMessage(conflictingPipeline)}`);
+});
+
 test('task init: rejects obsolete --pipeline shortcut', () => {
   const projectRoot = createTmpDir();
   fs.mkdirSync(path.join(projectRoot, '.fixme'), { recursive: true });
@@ -3960,7 +4006,7 @@ test('dispatch prepare honors explicit Codex runtime in durable payload', () => 
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `runtime mismatch should conflict, got ${JSON.stringify(conflict.data)}`);
 });
 
-test('dispatch prepare propagates Codex usage source from parent invocation to nested agent prompts', () => {
+test('dispatch prepare propagates Codex usage source from parent invocation to inline-skill prompts', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-parent-source.jsonl');
   appendJsonl(sourcePath, [
@@ -3985,7 +4031,7 @@ test('dispatch prepare propagates Codex usage source from parent invocation to n
   const prepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(dispatchPayload)}'`, ctx.projectRoot, dispatchEnv);
   assert(prepared.ok, `dispatch prepare should succeed without Codex env source, got ${JSON.stringify(prepared.data)}`);
   assert(prepared.data.usageContext.usageSourcePath === sourcePath, `usageContext should carry parent source path, got ${JSON.stringify(prepared.data.usageContext)}`);
-  assert(prepared.data.promptBlocks.usageContext.usageSourcePath === sourcePath, `promptBlocks should carry usageSourcePath, got ${JSON.stringify(prepared.data.promptBlocks.usageContext)}`);
+  assert(prepared.data.promptBlocks.usageContext.usageSourcePath === sourcePath, `inline-skill promptBlocks should carry usageSourcePath, got ${JSON.stringify(prepared.data.promptBlocks.usageContext)}`);
 
   const child = runInDirWithEnv(
     `usage start --skill fixme-review-plan --runtime codex --role reviewer --pipeline-run-id ${prepared.data.usageContext.pipelineRunId} --parent-invocation-id ${prepared.data.usageContext.parentInvocationId} --source-path "${prepared.data.usageContext.usageSourcePath}"`,
@@ -8864,13 +8910,15 @@ test('fixme-tools skill documents producer continuation lifecycle fields', () =>
 test('fixme-task skill: propagates usage pipeline IDs to child skill prompts', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
+  const lowerSkill = skill.toLowerCase();
   assert(skill.includes('usageInvocationId'), 'fixme-task should name its usage invocation state');
   assert(skill.includes('pipelineRunId'), 'fixme-task should name the shared pipelineRunId state');
   assert(skill.includes('usageSourcePath'), 'fixme-task should name the runtime counter source path state');
   assert(skill.includes('pipelineRunId: <pipelineRunId>'), 'child prompts should include camelCase pipelineRunId');
   assert(skill.includes('parentInvocationId: <usageInvocationId>'), 'child prompts should include camelCase parentInvocationId');
-  assert(skill.includes('usageSourcePath: <usageSourcePath>'), 'child prompts should include camelCase usageSourcePath when known');
-  assert(skill.includes('child `lifecycle dispatch prepare` JSON as `usageSourcePath`'), 'child dispatch prepare should receive usageSourcePath');
+  assert(lowerSkill.includes('for codex `agent` and `background` dispatches, omit `usagesourcepath`'), 'Codex agent/background dispatches should omit usageSourcePath');
+  assert(lowerSkill.includes('for claude and `inline-skill` dispatches, include `usagesourcepath: <usagesourcepath>`'), 'Claude and inline-skill dispatches should include usageSourcePath when eligible');
+  assert(!lowerSkill.includes('when `usagesourcepath` is known, pass it through both'), 'generic usageSourcePath pass-through wording should be removed');
   assert(skill.includes('Parent-driven `fixme-task` receives `pipelineRunId`'), 'parent-driven pipeline ID reuse should be explicit');
   assert(skill.includes('ownerSkill: fixme-task'), 'task-state owner prompt should use camelCase ownerSkill');
   assert(skill.includes('resumeRef: <FIXME-N|task-path|state-path|ticket-path>'), 'task-state owner prompt should use camelCase resumeRef');
@@ -9067,6 +9115,14 @@ test('fixme-task skill separates saved handoff task init from reserved state ini
   for (const required of [
     'If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`',
     'task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'If `launch.promptBlocks.taskInput.source === "existingTask"`',
+    'If `launch.promptBlocks.taskInput.resolvedMode === "standalone"`',
+    'task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'If `launch.promptBlocks.taskInput.resolvedMode === "ticket"`',
+    'task init --ticket <ticketPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'If `launch.promptBlocks.taskInput.resolvedMode === "reserved-state"`',
+    'task init --state <statePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
+    'Ticket existingTask initialization must be idempotent: it preserves the existing ticket-backed task state, merges only a matching parentContinuation, and rejects project, pipeline, or parentContinuation conflicts.',
     'Otherwise, initialize the reserved state path',
     'task init --state <activeChild.taskStatePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
     'Saved handoff children must not be initialized through `--state` because the reserved state path may collide with saved task markdown.',
@@ -9076,8 +9132,22 @@ test('fixme-task skill separates saved handoff task init from reserved state ini
   }
 
   const savedIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`');
+  const existingIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "existingTask"`');
   const reservedIndex = skill.indexOf('Otherwise, initialize the reserved state path');
   assert(savedIndex !== -1 && reservedIndex !== -1 && savedIndex < reservedIndex, 'saved handoff branch should be documented before reserved-state fallback');
+  assert(existingIndex !== -1 && savedIndex < existingIndex && existingIndex < reservedIndex, 'existingTask branch should be documented between saved handoff and reserved-state fallback');
+});
+
+test('fixme-task skill allowlist permits parent-driven existingTask ticket init', () => {
+  const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  const allowlistMatch = skill.match(/## Orchestrator Tool Allowlist[\s\S]*?Any Bash command with a literal `\.fixme\/` argument is forbidden\./);
+  const documentedTicketCommand = 'task init --ticket <ticketPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>';
+  const allowlistedTicketCommand = 'task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>';
+
+  assert(allowlistMatch, 'fixme-task should have an extractable orchestrator allowlist section');
+  assert(skill.includes(documentedTicketCommand), 'existingTask ticket documentation should include parentContinuation');
+  assert(allowlistMatch[0].includes(allowlistedTicketCommand), 'orchestrator allowlist should permit the parent-driven existingTask ticket init command');
 });
 
 test('review synthesize-clean-handler emits deterministic clean routing blocks', () => {
@@ -9477,7 +9547,9 @@ test('fixme-task skill: native ASK_USER pauses use durable attention when not us
   assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'loop guard escalation should use checkpoint-first durable attention when parent-driven');
   assert(skill.includes('A loop guard escalation in parent-driven mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary'), 'parent-driven loop guard should not output a hidden run summary');
   assert(skill.includes('or after a loop guard triggers in direct standalone mode'), 'top-level run-summary rule should not imply nested loop guards emit summaries');
-  assert(skill.includes('If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`'), 'missing parent liveness fallback should not hide later prompt failures');
+  assert(skill.includes('Missing parent liveness only skips parent heartbeat pings while no user-input prompt is pending.'), 'missing parent liveness should only skip heartbeat pings while no prompt is pending');
+  assert(skill.includes('If a later user-input prompt needs attention and no fixme-task liveness status id exists, return the full `FIXME_USER_PROMPT` envelope.'), 'missing parent liveness should route later prompts through the envelope');
+  assert(!skill.includes('If a later user-input prompt needs attention, the missing parent status id triggers `FIXME_ATTENTION_BLOCKED`'), 'missing parent liveness must not route to the stale attention-blocked fallback');
   assert(!skill.includes('Every review handler classification must be printed to the main conversation'), 'review visibility should not assume nested output reaches the main conversation');
   assert(!skill.includes('HAS_ASK_USER->ask then re-run'), 'manifest shorthand should not imply direct asking');
   assert(!skill.includes('batch questions to user (see ASK_USER Batching)'), 'native ASK_USER routing should not use stale direct-wait wording');
@@ -12341,8 +12413,8 @@ test('Codex agent dispatch does not inherit parent invocation usage source', () 
 
   const explicitPayload = { ...agentPayload, idempotencyKey: 'codex-agent-explicit-source', usageSourcePath: sourcePath };
   const explicitPrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(explicitPayload)}'`, ctx.projectRoot, dispatchEnv);
-  assert(explicitPrepared.ok, `codex agent dispatch with explicit source should succeed, got ${JSON.stringify(explicitPrepared.data)}`);
-  assert(explicitPrepared.data.usageContext.usageSourcePath === sourcePath, `explicit usageSourcePath is still honored, got ${JSON.stringify(explicitPrepared.data.usageContext)}`);
+  assert(!explicitPrepared.ok, `codex agent dispatch with explicit source should be rejected, got ${JSON.stringify(explicitPrepared.data)}`);
+  assert(cliErrorMessage(explicitPrepared).includes('usageSourcePath is not supported for Codex agent/background dispatches'), `explicit source rejection should explain child source ownership, got ${cliErrorMessage(explicitPrepared)}`);
 
   const inlinePayload = { ...agentPayload, idempotencyKey: 'codex-inline-inherit', transport: 'inline-skill' };
   const inlinePrepared = runInDirWithEnv(`lifecycle dispatch prepare --fixme-dir "${ctx.fixmeDir}" --data '${JSON.stringify(inlinePayload)}'`, ctx.projectRoot, dispatchEnv);
