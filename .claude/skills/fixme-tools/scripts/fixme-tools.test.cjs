@@ -3546,6 +3546,7 @@ test('lifecycle child finalize completed replay is idempotent', () => {
   assert(second.data.terminalResultId === first.data.terminalResultId, 'same terminalResultId on replay');
   assert(second.data.eventId === first.data.eventId, 'same eventId on replay');
   assert(second.data.wakeDirective === first.data.wakeDirective, 'same wakeDirective on replay');
+  assert(second.data.usageReportLine === first.data.usageReportLine, 'same usageReportLine on replay (quiet suppression preserved)');
   const eventsDir = path.join(setup.fixmeDir, 'task-events', setup.parentRunId);
   assert(fs.readdirSync(eventsDir).length === 1, 'exactly one task event after replay');
   assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'exactly one usage row after replay');
@@ -3560,6 +3561,7 @@ test('lifecycle child finalize failed replay is idempotent', () => {
   assert(second.ok, `failed replay should succeed, got ${JSON.stringify(second.data)}`);
   assert(second.data.terminalResultId === first.data.terminalResultId, 'same terminalResultId');
   assert(second.data.eventId === first.data.eventId, 'same eventId');
+  assert(second.data.usageReportLine === first.data.usageReportLine, 'same usageReportLine on replay (quiet suppression preserved)');
   assert(fs.readdirSync(path.join(setup.fixmeDir, 'task-events', setup.parentRunId)).length === 1, 'one event');
   assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'one usage row');
 });
@@ -4337,6 +4339,31 @@ test('cli help is registry backed', () => {
     assert(result.ok, `${entry.path} --help should succeed, got ${JSON.stringify(result.data)}`);
     assert(result.data.command === entry.path, `${entry.path} --help command should equal registry path, got ${result.data.command}`);
     assert(result.data.example && Object.keys(result.data.example).length > 0, `${entry.path} --help includes example`);
+  }
+});
+
+test('every registered command routes to a real handler', () => {
+  const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
+  // Run each registry command through main() with validation-only input (NO --help,
+  // no required flags/data). The router must resolve the top-level command to a real
+  // handler; the handler then fails on missing args. The only forbidden outcome is the
+  // top-level "Unknown command:" default branch, which would prove a registry entry is
+  // unroutable. Run in a temp dir with no .fixme/ so no command can touch real state.
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fixme-route-'));
+  try {
+    for (const entry of listRegisteredCommandsForTest()) {
+      // entry.path is the space-separated command/subcommand tokens; pass them as
+      // positional args with no flags or JSON data so the router resolves and stops
+      // before any side effect.
+      const result = runInDir(entry.path, dir);
+      const message = cliErrorMessage(result);
+      assert(
+        !/^Unknown command:/.test(message),
+        `${entry.path} must route to a real handler, got unknown-command error: ${message}`
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -8405,7 +8405,7 @@ function finishUsageInvocationForLifecycle({ fixmeDir, invocationId, outcome, re
     if (row.outcome !== outcomeResult.outcome || rowReason !== requestedReason) {
       lifecycleError('conflictingDuplicate', `Finalized usage outcome differs for invocation: ${invocationId}`);
     }
-    const suppressed = !usagePrintAfterFinishForFixmeDir(fixmeDir);
+    const suppressed = quiet === true || !usagePrintAfterFinishForFixmeDir(fixmeDir);
     return {
       eventId: row.eventId,
       invocationId: row.invocationId,
