@@ -9895,17 +9895,18 @@ test('fixme-task skill: requires a complete terminal child lifecycle before fina
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('Before emitting `TASK_EVENT_RECORDED` or any final directive, verify exactly one terminal child handoff sequence has completed'), 'fixme-task should gate final directives on a complete terminal handoff');
+  // Parent-driven terminal handoff is now the single lifecycle child finalize command.
+  assert(skill.includes('Before calling `lifecycle child finalize`, verify exactly one terminal child handoff sequence has completed'), 'fixme-task should gate the terminal finalize on a complete terminal handoff');
+  assert(skill.includes('lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-file <terminal-payload.json>'), 'fixme-task should document the single terminal finalize command');
+  assert(skill.includes('runs a single parent-linkage gate before any terminal write'), 'fixme-task should document the parent-linkage gate before terminal writes');
   for (const command of [
     'lifecycle dispatch complete',
     'task checkpoint',
-    'task result write',
-    'lifecycle task-event record',
-    'lifecycle invocation finish',
   ]) {
     assert(skill.includes(command), `terminal lifecycle checklist should include ${command}`);
   }
-  assert(skill.includes('Emit the usage report line and terminal task-event directive exactly once.'), 'fixme-task should forbid duplicate terminal usage/directive output');
+  assert(skill.includes('do NOT also call `lifecycle invocation finish` for parent-driven terminal runs'), 'fixme-task should forbid double usage finish for parent-driven runs');
+  assert(skill.includes('replay is idempotent; do not print another terminal directive'), 'fixme-task should forbid duplicate terminal directive output');
 });
 
 test('fixme-task skill: uses data-file payloads for nested workflow JSON', () => {
@@ -10622,8 +10623,9 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');
   assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'child fixme-task args should include statusId');
-  assert(skill.includes('run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'parent wait loop should read child fixme-task liveness');
-  assert(skill.includes('If `currentCommand` is `attention:<attention-id>`, follow the attention broker path before reporting coarse progress'), 'parent wait loop should broker attention instead of just reporting it');
+  assert(skill.includes('lifecycle dispatch reconcile-wait --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId>'), 'parent wait loop should reconcile child fixme-task wait by transition');
+  assert(skill.includes('`run status.updatedAt` is the last status write, not a heartbeat'), 'parent wait loop should not treat updatedAt as a heartbeat');
+  assert(skill.includes('`attention` brokers the prompt using the returned `brokerResumeTemplate`'), 'parent wait loop should broker attention via reconcile-wait transition');
 });
 
 test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {

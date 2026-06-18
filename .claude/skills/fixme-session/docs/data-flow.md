@@ -79,7 +79,9 @@ Path: `<session-dir>/session.md`
 
 | `activeChild.resumeDispatch` | `lifecycle attention broker acknowledge-resume` | `fixme-session`, `lifecycle attention broker acknowledge-resume` replay | Durable evidence that the parent launched the returned child resume message before returning to `awaitFixmeTask` and before later task-event consumption. |
 
-The broker answer path is `lifecycle attention broker resume` followed by `lifecycle attention broker acknowledge-resume`: the first helper records or reuses the raw answer, validates the active child from parent state, and returns only the existing-task `resume.message` and liveness context. After the parent launches that message, the acknowledgement records `activeChild.resumeDispatch`, checkpoints the parent back to `waitingForChild` / `awaitFixmeTask`, and leaves decision persistence to `fixme-task`.
+The broker answer path is `lifecycle attention broker resume` followed by `lifecycle attention broker acknowledge-resume`: the first helper records or reuses the raw answer, validates the active child from parent state, and returns the existing-task `resume.message`, liveness context, and a copy-ready `acknowledgeResumeTemplate` of `{ parentRunId, statusId, attentionId, data: { resumeMessage } }`. After the parent launches that message, it copies `acknowledgeResumeTemplate.data` and adds only runtime-derived launch evidence (`transport`, `runtime`, optional `runtimeHandle`) before calling acknowledge-resume, which records `activeChild.resumeDispatch`, checkpoints the parent back to `waitingForChild` / `awaitFixmeTask`, and leaves decision persistence to `fixme-task`.
+
+Runtime-owned wait semantics: parents that wait on a dispatched child treat `run status.updatedAt` as the last status write, not a heartbeat. On a runtime wait watchdog timeout the parent calls `lifecycle dispatch reconcile-wait` and branches only on its returned transition (`runtimeOwned`, `terminalEvent`, `attention`, `dispatchFailure`); an old `updatedAt` with an attached active runtime and no terminal/attention evidence is a no-transition `runtimeOwned` wait state, not a failure.
 
 ### Project Config
 

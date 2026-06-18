@@ -76,10 +76,10 @@ When dispatching sub-agents, always include `Fixme dir: <fixme-dir>` in the `<pr
 Start and finish this active `fixme-task` invocation through the lifecycle invocation helper, which brackets usage and (for direct runs) creates a self-owned run status in one call:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data '{"skill":"fixme-task","runtime":"claude","role":"orchestrator","idempotencyKey":"<stable-key>","createRunStatusForAgent":"fixme-task","pipelineRunId":"<incoming-or-omit>","parentInvocationId":"<incoming-or-omit>","usageSourcePath":"<incoming-or-omit>"}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data '{"skill":"fixme-task","runtime":"claude","role":"orchestrator","idempotencyKey":"<stable-key>","createRunStatusForAgent":"fixme-task","taskStatePath":"<child-task-state-when-parent-driven-or-omit>","pipelineRunId":"<incoming-or-omit>","parentInvocationId":"<incoming-or-omit>","usageSourcePath":"<incoming-or-omit>"}'
 ```
 
-Direct runs pass `createRunStatusForAgent: "fixme-task"` to get a self-owned run status (`statusId`/`statusPath`) for durable attention. Store the returned `invocationId` as `usageInvocationId`, the returned `pipelineRunId` as `pipelineRunId`, the returned `usageSourcePath` as `usageSourcePath` when non-empty, and the returned `statusId` as the self-owned liveness status.
+`--fixme-dir` is optional and auto-resolves from the working-directory root when omitted; pass it explicitly when known. Direct runs pass `createRunStatusForAgent: "fixme-task"` to get a self-owned run status (`statusId`/`statusPath`) for durable attention. Store the returned `invocationId` as `usageInvocationId`, the returned `pipelineRunId` as `pipelineRunId`, the returned `usageSourcePath` as `usageSourcePath` when non-empty, and the returned `statusId` as the self-owned liveness status. When this is a parent-driven child run, include `taskStatePath` so the helper persists the returned invocation id into `parentContinuation.usageInvocationId`; the parent-driven terminal finalizer reads that field to finish usage without an extra terminal payload field.
 
 Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pipelineRunId === usageInvocationId`. Parent-driven `fixme-task` receives `pipelineRunId` and, when available, `usageSourcePath` from its parent's `lifecycle dispatch prepare` `usageContext` and passes them in; the returned `pipelineRunId` reuses the parent value. The returned `usageSourcePath` is eligible only for Claude and `inline-skill` child dispatches that share the same runtime counter source. Fresh Codex `agent` and `background` children bind their own runtime source at `usage start` and must not receive the parent `usageSourcePath`.
 
@@ -788,6 +788,8 @@ Durable state shape:
 
 Run `task checkpoint --state <task-state-path> --data-file <checkpoint.json>` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.
 
+For a parent-driven child, `parentContinuation` carries the closed linkage fields `parentSkill`, `parentRunId`, `transport`, `resumeStep`, `parentStatusId`, plus the durable identity fields `taskRunId` (parent linkage; never a top-level task-state field), `childStatusId` (durable child liveness id, sourced from the dispatch-time `activeChild.statusId`), and `usageInvocationId` (set by `lifecycle invocation start` when `taskStatePath` is supplied). The parent-driven terminal finalizer reads exactly these fields; never derive child liveness from the current process, parent state probes, or the task-state owner block.
+
 `loops.planReadinessRiskLevel` (`"low"` or `"high"`) records plan-readiness risk in task state. Once it becomes `"high"`, it is sticky and permanent: it is set to `"high"` the first time any readiness output reports `RISK_LEVEL: high` and never de-escalates (fail-closed by design). Checkpoint high risk with the payload `{"loops":{"planReadinessRiskLevel":"high"}}`; do not write `"low"` from fixme-task over a stored `"high"` (the CLI rejects that de-escalation).
 
 Task-owned decisions are normally written with `task decision append`; terminal task results are normally written with `task result write`. Direct checkpoint writes to `decisions` and `terminalResult` are for durable state restoration and runtime helper coordination, and checkpoint validation supports the complete durable state shape.
@@ -909,7 +911,7 @@ RESUME_REF: FIXME-13
 
 Claude inline, Claude background, and Codex agent transports all launch `fixme-task` with the returned `resume.message` only. Parent brokers do not hand-compose the message and do not include original task text, prior artifacts, or selected answer prose. If the parent has the current task status id, keep the returned `resume.liveness` in the resumed invocation context. The status id is context, not a command-line flag.
 
-After the runtime launch succeeds, parent brokers call `lifecycle attention broker acknowledge-resume` with the returned `resume.message`, actual transport, actual runtime, and optional runtime handle. That acknowledgement records `activeChild.resumeDispatch` and moves the parent from `brokerChildAttention` back to `awaitFixmeTask`.
+`lifecycle attention broker resume` also returns a copy-ready `acknowledgeResumeTemplate` of `{ parentRunId, statusId, attentionId, data: { resumeMessage } }`. After the runtime launch succeeds, parent brokers copy `acknowledgeResumeTemplate.data` and add only the runtime-derived launch evidence (actual `transport`, actual `runtime`, and optional `runtimeHandle`), then call `lifecycle attention broker acknowledge-resume`. That acknowledgement records `activeChild.resumeDispatch` and moves the parent from `brokerChildAttention` back to `awaitFixmeTask`.
 
 ## Ticket Integration (Optional)
 
@@ -1025,7 +1027,10 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data-file <dispatch-complete.json>` (after each dispatched agent returns)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention open --fixme-dir <fixme-dir> --data-file <attention-open.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <readiness-validation.json>` (installed Codex skills use the `.codex` tool path)
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>` (parent-driven runs only)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>` (granular; the parent-driven terminal path uses `lifecycle child finalize` instead)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch reconcile-wait --fixme-dir <fixme-dir> --dispatch-id <dispatch-id> --status-id <status-id> --data-file <reconcile-wait.json>` (watchdog-timeout wait reconciliation)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch attach-runtime-handle --fixme-dir <fixme-dir> --data-file <attach-runtime-handle.json>` (after a child is running, before waiting)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-file <terminal-payload.json>` (parent-driven terminal finalize)
   - `mkdir -p <fixme-dir>`, `mkdir -p <fixme-dir>/plans`, `mkdir -p <fixme-dir>/specs/product`, or `mkdir -p <fixme-dir>/specs/technical` (using the resolved path, never literal `.fixme/`)
 
   Any Bash command with a literal `.fixme/` argument is forbidden. The value `<fixme-dir>` must be a substituted absolute path before the command runs.
@@ -1281,8 +1286,10 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch pre
 Dispatch prepare request payload has exactly these required fields:
 
 - Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.
-- Optional: `parentStatusId`, `parentInvocationId`, `pipelineRunId`, `taskStatePath`, `parentContinuation`, `runtime`, `allowProducerContinuation`, `forceFreshReason`, and `usageSourcePath`.
-- Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, and `bannerMarkdown`.
+- Optional: `parentStatusId`, `parentInvocationId`, `pipelineRunId`, `taskStatePath`, `parentContinuation`, `runtime`, `allowProducerContinuation`, `forceFreshReason`, `usageSourcePath`, and `checkpointData`.
+- Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, `completionTemplate`, `attachRuntimeHandleTemplate`, and `bannerMarkdown`.
+
+Pass optional `checkpointData` (a `task checkpoint`-shaped patch) to apply a pre-dispatch task checkpoint before the dispatch record is created, instead of a separate `task checkpoint` call. `checkpointData` participates in dispatch idempotency; a different `checkpointData` under the same idempotency key conflicts.
 
 Only send request `usageSourcePath` for Claude or `inline-skill` dispatches with a validated same-runtime counter source. Codex `agent` and `background` dispatches reject request `usageSourcePath` and bind their own runtime source at `usage start`.
 
@@ -1320,17 +1327,19 @@ Codex runtime mechanics:
 
 Closing a completed producer releases a completed resumable producer; it does not discard the continuation. After `lifecycle dispatch complete` stores the `runtimeHandle`, emit a one-line explanation such as `Releasing completed producer; continuation handle is stored for resume.`, then call `close_agent`. The stored handle remains available for a later resume. A failed close logs a warning with the agent name, runtime, and handle id and does not mark the continuation bad.
 
-#### Build dispatch complete from the completion template
+#### Build attach from the attach template, and dispatch complete from the completion template
 
-`lifecycle dispatch prepare` returns a `completionTemplate` object `{dispatchId, statusId, parentStatusId, currentCommand}`. Build `lifecycle dispatch complete` by spreading that `completionTemplate` and adding only `status` and the result-specific `runtimeHandle` (on success) or `failure` (on failure). Do not send a separate `run ping --current-command null` after child completion: completion carries `parentStatusId` and clears the parent wait marker itself.
+`lifecycle dispatch prepare` returns an `attachRuntimeHandleTemplate` object `{dispatchId, statusId, parentStatusId, runtime, transport}`. After the child is running, build `lifecycle dispatch attach-runtime-handle` by copying that template and adding only `runtimeHandle`. The template omits `runtimeHandle` and `currentCommand` because they are not known before launch.
+
+`lifecycle dispatch prepare` also returns a `completionTemplate` object `{dispatchId, statusId, parentStatusId, currentCommand}`. Build `lifecycle dispatch complete` by spreading that `completionTemplate` and adding only `status` plus, on success, the result-specific `runtimeHandle` (or omit `runtimeHandle` to derive the attached `activeRuntime`) or, on failure, `failure`. Optionally add `checkpointData` to apply a post-completion task checkpoint patch. A completion `runtimeHandle` is persisted as a producer continuation only when it matches the dispatch-owned `activeRuntime` recorded by attach; a mismatch fails before any mutation. Do not send a separate `run ping --current-command null` after child completion: completion carries `parentStatusId` and clears the parent wait marker itself.
 
 #### Active child launch sequence
 
-For a running child, follow: `lifecycle dispatch prepare` -> spawn or resume the child -> when the child is running, call `lifecycle dispatch attach-runtime-handle` with the returned wait payload before waiting -> wait through the runtime wait primitive -> terminal `lifecycle dispatch complete` only after the child returns completed or failed. `lifecycle dispatch complete` stays terminal-only and never records a running handle. If spawn succeeds but `attach-runtime-handle` fails, report a dispatch lifecycle failure with the child handle id, parent status id, and the attach error, then use the failure/recovery path; do not enter an untracked wait.
+For a running child, follow: `lifecycle dispatch prepare` -> spawn or resume the child -> when the child is running, copy `attachRuntimeHandleTemplate`, add `runtimeHandle`, and call `lifecycle dispatch attach-runtime-handle` before waiting -> wait through the runtime wait primitive -> terminal `lifecycle dispatch complete` only after the child returns completed or failed. `lifecycle dispatch complete` stays terminal-only and never records a running handle. If spawn succeeds but `attach-runtime-handle` fails, report a dispatch lifecycle failure with the child handle id, parent status id, and the attach error, then use the failure/recovery path; do not enter an untracked wait.
 
 #### Watchdog wait policy
 
-Replace routine polling with one durable wait marker (prefer `lifecycle dispatch prepare` or one quiet `run ping --quiet --current-command waiting-for:<child-name>`), then block silently on the runtime wait primitive with a 5-minute watchdog. For Codex agents use `wait_agent({ targets: [id], timeout_ms: 300000 })`. On watchdog timeout do one bounded `run status` plus durable event/attention check; re-enter the wait silently if there is progress; emit one compact status line only after two unchanged intervals. No repeated "still running" prose, no repeated identical `run ping`, no `run status` polling during a live wait. Explicit user status requests read liveness once.
+Replace routine polling with one durable wait marker (prefer `lifecycle dispatch prepare` or one quiet `run ping --quiet --current-command waiting-for:<child-name>`), then block silently on the runtime wait primitive with a 5-minute watchdog. For Codex agents use `wait_agent({ targets: [id], timeout_ms: 300000 })`. On watchdog timeout, call `lifecycle dispatch reconcile-wait --dispatch-id <id> --status-id <child-status> --data-file <payload-with-parentStatePath>` and branch only on its returned `transition`: `runtimeOwned` re-enters the wait silently (an old `updatedAt` with an attached active runtime and no terminal/attention evidence is a no-transition wait state, not a heartbeat or failure); `terminalEvent` proceeds to consume the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. Do not hand-roll `run status` age thresholds. Emit one compact status line only after two unchanged `runtimeOwned` intervals. No repeated "still running" prose, no repeated identical `run ping`, no `run status` polling during a live wait. Explicit user status requests read liveness once.
 
 #### Codex child usage source
 
@@ -1839,29 +1848,28 @@ When a review handler returns blocking FIX items, **always route through the pro
 
 ## Parent Continuation And Terminal Events
 
-When `parentContinuation` is present in task state (parent-driven mode), `fixme-task` does NOT print a Run Summary and does NOT own verification, commit, reply, resolve, or the final summary - the parent owns those. On reaching a terminal state, `fixme-task` instead produces a durable terminal result and an optional wake-up notification, in this order:
+When `parentContinuation` is present in task state (parent-driven mode), `fixme-task` does NOT print a Run Summary and does NOT own verification, commit, reply, resolve, or the final summary - the parent owns those. On reaching a terminal state, `fixme-task` calls the single parent-driven terminal command `lifecycle child finalize`, which owns the entire terminal handoff.
 
-Before emitting `TASK_EVENT_RECORDED` or any final directive, verify exactly one terminal child handoff sequence has completed for this `fixme-task` run:
+Before calling `lifecycle child finalize`, verify exactly one terminal child handoff sequence has completed for this `fixme-task` run:
 
 1. Every dispatched child needed for the terminal route, including the final review handler when one ran, has a completed `lifecycle dispatch complete` record.
 2. The final cursor, route, artifact, and loop state has been persisted with `task checkpoint`.
-3. Parent-driven mode has written the terminal result with `task result write`.
-4. Parent-driven mode has recorded the wakeable event with `lifecycle task-event record`.
-5. The current `fixme-task` usage invocation has been closed with `lifecycle invocation finish`.
 
-Emit the usage report line and terminal task-event directive exactly once. If any item above is missing or was already emitted, stop and repair the durable state instead of printing another terminal directive.
+Then run the single terminal command:
 
-1. Write the terminal result summary (this stamps a once-generated `terminalResultId` into task state and writes a parent-readable `<taskStem>.result.json`):
-   ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data-file <task-result.json>
-   ```
-2. Record the terminal task event so the parent can consume it (recordable only AFTER the result summary and terminal task state exist):
-   ```bash
-   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>
-   ```
-3. Emit an OPTIONAL plain-text notification carrying only the `eventId` (no required state). Place it AFTER the `lifecycle invocation finish` usage report line.
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-file <terminal-payload.json>
+```
 
-Direct user-facing runs (no `parentContinuation`) keep the existing Run Summary behavior and do NOT write task result summaries or record task events.
+The payload is the task-result contract: `{ "status": "completed", "summaryMarkdown": "<markdown>", "changedFiles": [], "artifactPaths": [] }` for success, plus `"failure": { "reason": "<reason>", "message": "<message>", "details": {} }` for `"status": "failed"`. Do NOT supply `terminalResultId`; the command generates it internally.
+
+`lifecycle child finalize` runs a single parent-linkage gate before any terminal write (it requires `parent.payload.activeChild.taskRunId === parentContinuation.taskRunId` when the parent state exposes it, and fails before any terminal write on a verifiable mismatch). After the gate, it writes the result summary, writes the task-state `terminalResult`, records the parent-consumable task event, closes child liveness by durable `parentContinuation.childStatusId`, closes parent liveness by `parentContinuation.parentStatusId`, fires the `task_finished`/`task_failed` alert, and finishes usage from `parentContinuation.usageInvocationId`. It returns `{ terminalResultId, resultSummaryPath, eventId, wakeDirective, usageReportLine }`.
+
+The failed-result reason maps to the usage finish reason through this table: `userAborted -> user_aborted`, `verificationFailed -> verification_failed`, `usageTrackingFailed -> usage_tracking_failed`, `runtimeError -> runtime_error`, `dispatchFailed -> dispatch_failed`, `timeout -> timeout`, `invalidUsageRequest -> invalid_usage_request`, `attentionBlocked -> runtime_error`, `workflowBlocked -> runtime_error`, `childFailed -> runtime_error`, `toolUnavailable -> runtime_error`, `unknown -> unknown`.
+
+Emit the returned `usageReportLine` (when non-null), then an OPTIONAL plain-text notification carrying only the returned `eventId` (no required state), exactly once. Because the finalizer owns usage finish, do NOT also call `lifecycle invocation finish` for parent-driven terminal runs. If the finalizer was already run for this terminal state, replay is idempotent; do not print another terminal directive.
+
+Direct user-facing runs (no `parentContinuation`) keep the existing Run Summary behavior, close usage with `lifecycle invocation finish`, and do NOT call `lifecycle child finalize`, write task result summaries, or record task events.
 
 ## Decision Log
 
