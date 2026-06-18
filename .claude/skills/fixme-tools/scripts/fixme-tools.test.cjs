@@ -3348,6 +3348,288 @@ test('dispatch complete does not apply checkpointData when runtime preflight fai
   assert(JSON.stringify(before) === JSON.stringify(after), 'task state unchanged when runtime preflight fails');
 });
 
+// Build a fully linked parent-driven child: prepare-child, checkpoint the linkage
+// continuation into the child state, and run invocation start so usageInvocationId
+// is persisted. Returns durable identifiers for finalizer tests.
+function setupParentDrivenChild(suffix, idempotencyKey) {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const payload = prepareChildPayload({ suffix });
+  const payloadPath = writeJsonFixture(projectRoot, `prepare-child-${suffix}.json`, payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = prepared.data.launch.activeChild;
+  const continuation = prepared.data.launch.promptBlocks.parentContinuation;
+  assert(continuation.childStatusId === activeChild.statusId, 'setup persists childStatusId from activeChild.statusId');
+
+  const checkpointed = runInDir(`task checkpoint --state "${activeChild.taskStatePath}" --data '${JSON.stringify({ parentContinuation: continuation })}'`, projectRoot);
+  assert(checkpointed.ok, `child state should accept the linkage continuation, got ${JSON.stringify(checkpointed.data)}`);
+
+  const startData = JSON.stringify({
+    skill: 'fixme-task',
+    runtime: 'claude',
+    role: 'orchestrator',
+    idempotencyKey,
+    taskStatePath: activeChild.taskStatePath,
+    pipelineRunId: `usage_pipeline_${suffix}`,
+    parentInvocationId: `usage_parent_${suffix}`,
+  });
+  const started = run(`lifecycle invocation start --fixme-dir "${fixmeDir}" --data '${startData}'`);
+  assert(started.ok, `invocation start should succeed, got ${JSON.stringify(started.data)}`);
+
+  return {
+    fixmeDir,
+    projectRoot,
+    parentRunId: prepared.data.parentRunId,
+    activeChild,
+    continuation: readJson(activeChild.taskStatePath).parentContinuation,
+    taskStatePath: activeChild.taskStatePath,
+    invocationId: started.data.invocationId,
+  };
+}
+
+function completedFinalizePayload() {
+  return { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [] };
+}
+
+function finalizeChild(setup, payload) {
+  const payloadPath = writeJsonFixture(setup.projectRoot, `finalize-${path.basename(setup.taskStatePath)}.json`, payload);
+  return runInDir(`lifecycle child finalize --fixme-dir "${setup.fixmeDir}" --state "${setup.taskStatePath}" --data-file "${payloadPath}"`, setup.projectRoot);
+}
+
+function projectUsageRowsForInvocation(fixmeDir, invocationId) {
+  const projectPath = path.join(fixmeDir, 'usage', 'events.jsonl');
+  if (!fs.existsSync(projectPath)) return [];
+  return fs.readFileSync(projectPath, 'utf8').split('\n').filter(Boolean)
+    .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
+    .filter(row => row && row.invocationId === invocationId);
+}
+
+test('task event record rejects taskRunId mismatch when parent active child is verifiable', () => {
+  const setup = setupParentDrivenChild('terecord-mismatch', 'terecord-mismatch-start');
+  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify(completedFinalizePayload())}'`, setup.projectRoot);
+  assert(result.ok, `result write should succeed, got ${JSON.stringify(result.data)}`);
+  const recordData = JSON.stringify({
+    parentRunId: setup.parentRunId,
+    taskRunId: 'taskRun_wrong',
+    taskStatePath: setup.taskStatePath,
+    resultSummaryPath: result.data.resultSummaryPath,
+    terminalResultId: result.data.terminalResultId,
+    status: 'completed',
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${recordData}'`);
+  assert(!recorded.ok, 'mismatched taskRunId should fail the record');
+  const events = fs.existsSync(path.join(setup.fixmeDir, 'task-events', setup.parentRunId))
+    ? fs.readdirSync(path.join(setup.fixmeDir, 'task-events', setup.parentRunId)) : [];
+  assert(events.length === 0, 'no event appended on verifiable mismatch');
+});
+
+test('task event record skips taskRunId guard with warning when parent active child is unavailable', () => {
+  const setup = setupParentDrivenChild('terecord-skip', 'terecord-skip-start');
+  // Remove parent state so the guard is unverifiable.
+  fs.rmSync(path.join(setup.fixmeDir, 'parents', setup.parentRunId), { recursive: true, force: true });
+  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify(completedFinalizePayload())}'`, setup.projectRoot);
+  assert(result.ok, `result write should succeed, got ${JSON.stringify(result.data)}`);
+  const recordData = JSON.stringify({
+    parentRunId: setup.parentRunId,
+    taskRunId: setup.continuation.taskRunId,
+    taskStatePath: setup.taskStatePath,
+    resultSummaryPath: result.data.resultSummaryPath,
+    terminalResultId: result.data.terminalResultId,
+    status: 'completed',
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${recordData}'`);
+  assert(recorded.ok, `record should succeed when parent identity unavailable, got ${JSON.stringify(recorded.data)}`);
+});
+
+test('lifecycle child finalize rejects verifiable taskRunId mismatch before mutation', () => {
+  const setup = setupParentDrivenChild('finalize-mismatch', 'finalize-mismatch-start');
+  // Mutate only the child state taskRunId; keep parent activeChild.taskRunId intact.
+  const childState = readJson(setup.taskStatePath);
+  childState.parentContinuation = { ...childState.parentContinuation, taskRunId: 'taskRun_wrong' };
+  fs.writeFileSync(setup.taskStatePath, JSON.stringify(childState, null, 2));
+
+  const finalize = finalizeChild(setup, completedFinalizePayload());
+  assert(!finalize.ok, 'verifiable mismatch should fail');
+  const message = cliErrorMessage(finalize);
+  assert(message.includes(setup.parentRunId), 'error names parentRunId');
+  assert(message.includes(setup.continuation.taskRunId), 'error names expected taskRunId');
+  assert(message.includes('taskRun_wrong'), 'error names supplied taskRunId');
+
+  // No Phase B effect ran.
+  const summaryPath = setup.taskStatePath.replace(/\.state\.json$/, '.result.json');
+  assert(!fs.existsSync(summaryPath), 'no result summary on mismatch (B1)');
+  const state = readJson(setup.taskStatePath);
+  assert(!state.terminalResult, 'no terminalResult on mismatch (B2)');
+  const eventsDir = path.join(setup.fixmeDir, 'task-events', setup.parentRunId);
+  const events = fs.existsSync(eventsDir) ? fs.readdirSync(eventsDir) : [];
+  assert(events.length === 0, 'no task event on mismatch (B3)');
+  const childStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.childStatusId, 'status.json'));
+  assert(childStatus.state !== 'completed' && childStatus.state !== 'failed', 'child run not terminal on mismatch (B4)');
+  const parentStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.parentStatusId, 'status.json'));
+  assert(parentStatus.state !== 'completed' && parentStatus.state !== 'failed', 'parent run not terminal on mismatch (B5)');
+  assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 0, 'no usage row on mismatch (B7)');
+});
+
+test('lifecycle child finalize completes parent-driven child', () => {
+  const setup = setupParentDrivenChild('finalize-complete', 'finalize-complete-start');
+  assert(setup.continuation.childStatusId === setup.activeChild.statusId, 'setup persisted childStatusId');
+  const finalize = finalizeChild(setup, completedFinalizePayload());
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  assert(isNonEmptyTestStr(finalize.data.terminalResultId), 'returns terminalResultId');
+  assert(isNonEmptyTestStr(finalize.data.resultSummaryPath), 'returns resultSummaryPath');
+  assert(isNonEmptyTestStr(finalize.data.eventId), 'returns eventId');
+  assert(isNonEmptyTestStr(finalize.data.wakeDirective), 'returns wakeDirective');
+  assert(Object.prototype.hasOwnProperty.call(finalize.data, 'usageReportLine'), 'returns usageReportLine');
+  assert(!Object.prototype.hasOwnProperty.call(finalize.data, 'terminalResultIdSupplied'), 'no caller terminalResultId needed');
+
+  assert(fs.existsSync(finalize.data.resultSummaryPath), 'result summary exists');
+  const state = readJson(setup.taskStatePath);
+  assert(state.terminalResult && state.terminalResult.terminalResultId === finalize.data.terminalResultId, 'terminalResult written');
+  const event = readJson(path.join(setup.fixmeDir, 'task-events', setup.parentRunId, `${finalize.data.eventId}.json`));
+  assert(event.parentRunId === setup.parentRunId && event.taskRunId === setup.continuation.taskRunId, 'event keyed by parentRunId and taskRunId');
+  const childStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.childStatusId, 'status.json'));
+  assert(childStatus.state === 'completed' && childStatus.checkpoint === 'done', 'child run closed completed/done');
+  const parentStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.parentStatusId, 'status.json'));
+  assert(parentStatus.state === 'completed', 'parent run closed terminal');
+  assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'usage finished');
+});
+
+test('lifecycle child finalize handles failed terminal', () => {
+  const setup = setupParentDrivenChild('finalize-failed', 'finalize-failed-start');
+  const payload = { status: 'failed', summaryMarkdown: 'Boom', changedFiles: [], artifactPaths: [], failure: { reason: 'verificationFailed', message: 'tests failed' } };
+  const finalize = finalizeChild(setup, payload);
+  assert(finalize.ok, `failed finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const rows = projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId);
+  assert(rows.length === 1, 'one usage row written');
+  assert(rows[0].outcome === 'failed', 'usage outcome failed');
+  assert(rows[0].outcomeReason === 'verification_failed', `usage reason mapped, got ${rows[0].outcomeReason}`);
+});
+
+test('lifecycle child finalize maps every failed task result reason to an accepted usage finish reason', () => {
+  const mapping = {
+    userAborted: 'user_aborted',
+    verificationFailed: 'verification_failed',
+    usageTrackingFailed: 'usage_tracking_failed',
+    runtimeError: 'runtime_error',
+    dispatchFailed: 'dispatch_failed',
+    timeout: 'timeout',
+    invalidUsageRequest: 'invalid_usage_request',
+    attentionBlocked: 'runtime_error',
+    workflowBlocked: 'runtime_error',
+    childFailed: 'runtime_error',
+    toolUnavailable: 'runtime_error',
+    unknown: 'unknown',
+  };
+  let index = 0;
+  for (const [reason, expected] of Object.entries(mapping)) {
+    const setup = setupParentDrivenChild(`finalize-reason-${index}`, `finalize-reason-${index}-start`);
+    const payload = { status: 'failed', summaryMarkdown: 'x', changedFiles: [], artifactPaths: [], failure: { reason, message: `failed via ${reason}` } };
+    const finalize = finalizeChild(setup, payload);
+    assert(finalize.ok, `finalize for reason ${reason} should succeed, got ${JSON.stringify(finalize.data)}`);
+    const rows = projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId);
+    assert(rows.length === 1 && rows[0].outcome === 'failed', `reason ${reason} should write a failed usage row`);
+    assert(rows[0].outcomeReason === expected, `reason ${reason} should map to ${expected}, got ${rows[0].outcomeReason}`);
+    index += 1;
+  }
+});
+
+test('lifecycle child finalize completed replay is idempotent', () => {
+  const setup = setupParentDrivenChild('finalize-replay-complete', 'finalize-replay-complete-start');
+  const first = finalizeChild(setup, completedFinalizePayload());
+  assert(first.ok, `first finalize should succeed, got ${JSON.stringify(first.data)}`);
+  const second = finalizeChild(setup, completedFinalizePayload());
+  assert(second.ok, `replay should succeed, got ${JSON.stringify(second.data)}`);
+  assert(second.data.terminalResultId === first.data.terminalResultId, 'same terminalResultId on replay');
+  assert(second.data.eventId === first.data.eventId, 'same eventId on replay');
+  assert(second.data.wakeDirective === first.data.wakeDirective, 'same wakeDirective on replay');
+  const eventsDir = path.join(setup.fixmeDir, 'task-events', setup.parentRunId);
+  assert(fs.readdirSync(eventsDir).length === 1, 'exactly one task event after replay');
+  assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'exactly one usage row after replay');
+});
+
+test('lifecycle child finalize failed replay is idempotent', () => {
+  const setup = setupParentDrivenChild('finalize-replay-failed', 'finalize-replay-failed-start');
+  const payload = { status: 'failed', summaryMarkdown: 'x', changedFiles: [], artifactPaths: [], failure: { reason: 'timeout', message: 'timed out' } };
+  const first = finalizeChild(setup, payload);
+  assert(first.ok, `first failed finalize should succeed, got ${JSON.stringify(first.data)}`);
+  const second = finalizeChild(setup, payload);
+  assert(second.ok, `failed replay should succeed, got ${JSON.stringify(second.data)}`);
+  assert(second.data.terminalResultId === first.data.terminalResultId, 'same terminalResultId');
+  assert(second.data.eventId === first.data.eventId, 'same eventId');
+  assert(fs.readdirSync(path.join(setup.fixmeDir, 'task-events', setup.parentRunId)).length === 1, 'one event');
+  assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'one usage row');
+});
+
+test('lifecycle child finalize replays usage after pending is missing when finalized row exists', () => {
+  const setup = setupParentDrivenChild('finalize-usage-replay', 'finalize-usage-replay-start');
+  const first = finalizeChild(setup, completedFinalizePayload());
+  assert(first.ok, `first finalize should succeed, got ${JSON.stringify(first.data)}`);
+  // Pending usage file is gone after first finish; replay must use the finalized row.
+  const replay = finalizeChild(setup, completedFinalizePayload());
+  assert(replay.ok, `usage replay after pending-missing should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'still one usage row');
+
+  // Completed-then-failed conflicts at the result-write phase (phase-agnostic).
+  const conflict = finalizeChild(setup, { status: 'failed', summaryMarkdown: 'x', changedFiles: [], artifactPaths: [], failure: { reason: 'timeout', message: 'late failure' } });
+  assert(!conflict.ok && conflict.data?.error?.code === 'conflictingDuplicate', `completed-then-failed should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('lifecycle child finalize closes child liveness by durable childStatusId', () => {
+  const setup = setupParentDrivenChild('finalize-liveness', 'finalize-liveness-start');
+  // Create an unrelated run that must not be touched.
+  const unrelated = run(`run start --fixme-dir "${setup.fixmeDir}" --agent fixme-review-plan`);
+  assert(unrelated.ok, `unrelated run should start, got ${JSON.stringify(unrelated.data)}`);
+  const finalize = finalizeChild(setup, completedFinalizePayload());
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const childStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.childStatusId, 'status.json'));
+  assert(childStatus.state === 'completed', 'child closed by childStatusId');
+  const unrelatedStatus = readJson(unrelated.data.statusPath);
+  assert(unrelatedStatus.state !== 'completed' && unrelatedStatus.state !== 'failed', 'unrelated run untouched');
+  const parentStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.parentStatusId, 'status.json'));
+  assert(parentStatus.state === 'completed', 'parent closed by parentStatusId');
+});
+
+test('lifecycle child finalize rejects invalid terminal payloads', () => {
+  const setup = setupParentDrivenChild('finalize-invalid', 'finalize-invalid-start');
+  const withTerminalResultId = finalizeChild(setup, { ...completedFinalizePayload(), terminalResultId: 'terminalResult_caller' });
+  assert(!withTerminalResultId.ok, 'caller terminalResultId is an unknown field');
+
+  const failedNoFailure = finalizeChild(setup, { status: 'failed', summaryMarkdown: 'x', changedFiles: [], artifactPaths: [] });
+  assert(!failedNoFailure.ok, 'failed without failure should reject');
+
+  const completedWithFailure = finalizeChild(setup, { ...completedFinalizePayload(), failure: { reason: 'timeout', message: 'x' } });
+  assert(!completedWithFailure.ok, 'completed with failure should reject');
+
+  // Direct (non-parent) state.
+  const directFixme = makeFixmeDir();
+  const directProject = path.dirname(directFixme);
+  const directInit = initTaskState('finalize-direct');
+  const directFinalizePath = writeJsonFixture(directInit.projectRoot, 'finalize-direct.json', completedFinalizePayload());
+  const directFinalize = runInDir(`lifecycle child finalize --fixme-dir "${directInit.fixmeDir}" --state "${directInit.statePath}" --data-file "${directFinalizePath}"`, directInit.projectRoot);
+  assert(!directFinalize.ok, 'direct non-parent state should reject');
+
+  // Parent-driven state missing taskRunId.
+  const missingTaskRun = setupParentDrivenChild('finalize-missing-taskrun', 'finalize-missing-taskrun-start');
+  const mtState = readJson(missingTaskRun.taskStatePath);
+  delete mtState.parentContinuation.taskRunId;
+  fs.writeFileSync(missingTaskRun.taskStatePath, JSON.stringify(mtState, null, 2));
+  const missingTaskRunFinalize = finalizeChild(missingTaskRun, completedFinalizePayload());
+  assert(!missingTaskRunFinalize.ok, 'missing taskRunId should reject');
+
+  // Parent-driven state missing childStatusId.
+  const missingChildStatus = setupParentDrivenChild('finalize-missing-childstatus', 'finalize-missing-childstatus-start');
+  const mcState = readJson(missingChildStatus.taskStatePath);
+  delete mcState.parentContinuation.childStatusId;
+  fs.writeFileSync(missingChildStatus.taskStatePath, JSON.stringify(mcState, null, 2));
+  const missingChildStatusFinalize = finalizeChild(missingChildStatus, completedFinalizePayload());
+  assert(!missingChildStatusFinalize.ok, 'missing childStatusId should reject');
+});
+
+function isNonEmptyTestStr(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
 test('dispatch prepare falls back for bad handles and forced fresh dispatch', () => {
   const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-fallback');
 

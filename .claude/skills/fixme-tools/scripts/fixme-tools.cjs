@@ -5061,6 +5061,15 @@ function normalizeTaskResultDurableFields(summary) {
 function taskResultWrite(flags) {
   const statePath = resolveTaskStatePathForDecision(flags);
   const data = resolveLifecycleData(flags);
+  return lifecycleOk(taskResultWriteCore(statePath, data));
+}
+
+// Shared core for terminal result write. Generates/reuses terminalResultId,
+// writes the result summary first, then task-state terminalResult, and detects
+// conflicting durable replays. Returns a plain result object (no stdout/exit) so
+// the finalizer (Phase B1+B2) can compose multiple terminal effects; the command
+// wrapper wraps it in lifecycleOk. terminalResultId semantics stay identical.
+function taskResultWriteCore(statePath, data) {
   try {
     assertKnownJsonFields(data, 'task result', TASK_RESULT_FIELDS);
   } catch (e) {
@@ -5117,7 +5126,7 @@ function taskResultWrite(flags) {
       });
       assertCamelCaseJsonKeys(nextState, 'task state');
       writeJsonAtomic(statePath, nextState);
-      return lifecycleOk({ terminalResultId: existingSummary.terminalResultId, resultSummaryPath: summaryPath, status: existingSummary.status });
+      return { terminalResultId: existingSummary.terminalResultId, resultSummaryPath: summaryPath, status: existingSummary.status };
     }
     lifecycleError('conflictingDuplicate', `terminal result '${existingSummary.terminalResultId}' already exists with different data`);
   }
@@ -5143,7 +5152,7 @@ function taskResultWrite(flags) {
   assertCamelCaseJsonKeys(nextState, 'task state');
   writeJsonAtomic(statePath, nextState);
 
-  return lifecycleOk({ terminalResultId, resultSummaryPath: summaryPath, status: data.status });
+  return { terminalResultId, resultSummaryPath: summaryPath, status: data.status };
 }
 
 // ============================================================================
@@ -8356,6 +8365,70 @@ function lifecycleInvocationStart(flags, fixmeRoot) {
   return lifecycleOk(out);
 }
 
+// Shared lifecycle usage-finish helper used by `lifecycle invocation finish` and
+// the terminal finalizer (Phase B7). It synthesizes a flags-shaped object and
+// calls the existing usageFinishCore so the direct usageFinish path (which reads
+// flags.outcome/flags.reason) stays untouched, then layers lifecycle behavior:
+// normal success, pending-missing finalized-row replay, finalized-row outcome/
+// reason conflict detection, reportLine suppression, and destination conflict/
+// error mapping. Throws lifecycleError on failure; returns the finish result.
+function finishUsageInvocationForLifecycle({ fixmeDir, invocationId, outcome, reason, fixmeRoot, quiet }) {
+  const finishFlags = {
+    'invocation-id': invocationId,
+    'fixme-dir': fixmeDir,
+    outcome,
+    reason: reason === undefined ? undefined : reason,
+  };
+  if (quiet === true) {
+    finishFlags.quiet = true;
+  }
+  const core = usageFinishCore(finishFlags, fixmeRoot);
+  if (core.ok) {
+    return core.result;
+  }
+
+  if (core.code === 'PENDING_USAGE_NOT_FOUND') {
+    const rows = readUsageRowsForInvocation(usageProjectEventPath(fixmeDir), invocationId);
+    if (rows.length === 0) {
+      lifecycleError('stateNotFound', `No pending usage and no finalized usage row for invocation: ${invocationId}`);
+    }
+    if (rows.length > 1) {
+      lifecycleError('conflictingDuplicate', `Multiple finalized usage rows for invocation: ${invocationId}`);
+    }
+    const row = rows[0];
+    const outcomeResult = validateOutcomeAndReason(outcome, reason);
+    if (!outcomeResult.ok) {
+      lifecycleError('invalidInput', outcomeResult.message);
+    }
+    const requestedReason = outcomeResult.outcomeReason !== undefined ? outcomeResult.outcomeReason : null;
+    const rowReason = row.outcomeReason !== undefined ? row.outcomeReason : null;
+    if (row.outcome !== outcomeResult.outcome || rowReason !== requestedReason) {
+      lifecycleError('conflictingDuplicate', `Finalized usage outcome differs for invocation: ${invocationId}`);
+    }
+    const suppressed = !usagePrintAfterFinishForFixmeDir(fixmeDir);
+    return {
+      eventId: row.eventId,
+      invocationId: row.invocationId,
+      status: row.status,
+      outcome: row.outcome,
+      outcomeReason: rowReason,
+      projectEventPath: usageProjectEventPath(fixmeDir),
+      globalEventPath: usageGlobalEventPath(),
+      reportLine: suppressed ? null : buildCompactUsageReportLine(row, usageProjectEventPath(fixmeDir)),
+      reportLineSuppressed: suppressed,
+      warnings: row.warnings || [],
+    };
+  }
+
+  if (core.code === 'DESTINATION_EVENT_CONFLICT') {
+    lifecycleError('conflictingDuplicate', core.message);
+  }
+  if (core.code === 'INVALID_OUTCOME' || core.code === 'INVALID_REASON' || core.code === 'MISSING_OUTCOME') {
+    lifecycleError('invalidInput', core.message);
+  }
+  lifecycleError('invalidInput', core.message);
+}
+
 function lifecycleInvocationFinish(flags, fixmeRoot) {
   if (!isNonEmptyString(flags['invocation-id'])) {
     lifecycleError('invalidInput', '--invocation-id is required');
@@ -8367,51 +8440,13 @@ function lifecycleInvocationFinish(flags, fixmeRoot) {
     lifecycleError('invalidInput', e.message);
   }
 
-  const core = usageFinishCore(flags, fixmeRoot);
-  if (core.ok) {
-    return lifecycleOk(core.result);
-  }
-
-  if (core.code === 'PENDING_USAGE_NOT_FOUND') {
-    const rows = readUsageRowsForInvocation(usageProjectEventPath(fixmeDir), flags['invocation-id']);
-    if (rows.length === 0) {
-      lifecycleError('stateNotFound', `No pending usage and no finalized usage row for invocation: ${flags['invocation-id']}`);
-    }
-    if (rows.length > 1) {
-      lifecycleError('conflictingDuplicate', `Multiple finalized usage rows for invocation: ${flags['invocation-id']}`);
-    }
-    const row = rows[0];
-    const outcomeResult = validateOutcomeAndReason(flags.outcome, flags.reason);
-    if (!outcomeResult.ok) {
-      lifecycleError('invalidInput', outcomeResult.message);
-    }
-    const requestedReason = outcomeResult.outcomeReason !== undefined ? outcomeResult.outcomeReason : null;
-    const rowReason = row.outcomeReason !== undefined ? row.outcomeReason : null;
-    if (row.outcome !== outcomeResult.outcome || rowReason !== requestedReason) {
-      lifecycleError('conflictingDuplicate', `Finalized usage outcome differs for invocation: ${flags['invocation-id']}`);
-    }
-    const suppressed = !usagePrintAfterFinishForFixmeDir(fixmeDir);
-    return lifecycleOk({
-      eventId: row.eventId,
-      invocationId: row.invocationId,
-      status: row.status,
-      outcome: row.outcome,
-      outcomeReason: rowReason,
-      projectEventPath: usageProjectEventPath(fixmeDir),
-      globalEventPath: usageGlobalEventPath(),
-      reportLine: suppressed ? null : buildCompactUsageReportLine(row, usageProjectEventPath(fixmeDir)),
-      reportLineSuppressed: suppressed,
-      warnings: row.warnings || [],
-    });
-  }
-
-  if (core.code === 'DESTINATION_EVENT_CONFLICT') {
-    lifecycleError('conflictingDuplicate', core.message);
-  }
-  if (core.code === 'INVALID_OUTCOME' || core.code === 'INVALID_REASON' || core.code === 'MISSING_OUTCOME') {
-    lifecycleError('invalidInput', core.message);
-  }
-  lifecycleError('invalidInput', core.message);
+  return lifecycleOk(finishUsageInvocationForLifecycle({
+    fixmeDir,
+    invocationId: flags['invocation-id'],
+    outcome: flags.outcome,
+    reason: flags.reason,
+    fixmeRoot,
+  }));
 }
 
 // ============================================================================
@@ -11408,9 +11443,44 @@ function listTaskEvents(fixmeDir, parentRunId) {
     .map(name => readJsonFileStrict(path.join(dir, name)));
 }
 
+// Parent activeChild taskRunId guard, shared by the granular task-event record
+// command and the finalizer's internal record step (Phase B3). Loads parent state
+// from parentRunId. When parent state exists and exposes
+// parent.payload.activeChild.taskRunId, a verifiable mismatch fails before any
+// append. When parent state is missing, abandoned, unreadable, or has no
+// activeChild.taskRunId, the guard is unverifiable: it warns and records.
+function assertTaskEventParentTaskRunIdGuard(fixmeDir, parentRunId, taskRunId) {
+  const statePath = parentStatePath(fixmeDir, parentRunId);
+  if (!fs.existsSync(statePath)) {
+    process.stderr.write(`warning: task-event record skipping taskRunId guard: parentRunId=${parentRunId} reason=parent-state-missing\n`);
+    return;
+  }
+  let parent;
+  try {
+    parent = readJsonFileStrict(statePath);
+  } catch (e) {
+    process.stderr.write(`warning: task-event record skipping taskRunId guard: parentRunId=${parentRunId} reason=parent-state-unreadable\n`);
+    return;
+  }
+  const activeChild = parent && parent.payload && parent.payload.activeChild;
+  if (!isPlainObject(activeChild) || !isNonEmptyString(activeChild.taskRunId)) {
+    process.stderr.write(`warning: task-event record skipping taskRunId guard: parentRunId=${parentRunId} reason=parent-activeChild-taskRunId-unavailable\n`);
+    return;
+  }
+  if (activeChild.taskRunId !== taskRunId) {
+    lifecycleError('conflictingDuplicate', `task event taskRunId mismatch for parentRunId ${parentRunId}: expected ${activeChild.taskRunId}, supplied ${taskRunId}`);
+  }
+}
+
 function lifecycleTaskEventRecord(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
+  return lifecycleOk(taskEventRecordCore(fixmeDir, data));
+}
+
+// Returns a plain { event } object (no stdout/exit) so the finalizer can compose
+// it as Phase B3; the command wrapper wraps it in lifecycleOk.
+function taskEventRecordCore(fixmeDir, data) {
   try {
     assertKnownJsonFields(data, 'task-event record', TASK_EVENT_RECORD_FIELDS);
   } catch (e) {
@@ -11424,6 +11494,9 @@ function lifecycleTaskEventRecord(flags) {
   if (data.status !== 'completed' && data.status !== 'failed') {
     lifecycleError('invalidInput', 'status must be one of: completed, failed');
   }
+
+  // Sibling guard: verify parent activeChild taskRunId before appending.
+  assertTaskEventParentTaskRunIdGuard(fixmeDir, data.parentRunId, data.taskRunId);
 
   // The result summary must exist and match the terminalResultId.
   if (!fs.existsSync(data.resultSummaryPath)) {
@@ -11457,7 +11530,7 @@ function lifecycleTaskEventRecord(flags) {
       existing.taskStatePath === data.taskStatePath &&
       existing.taskRunId === data.taskRunId;
     if (durableMatch) {
-      return lifecycleOk({ event: existing });
+      return { event: existing };
     }
     lifecycleError('conflictingDuplicate', 'A task event for this terminalResultId already exists with different data');
   }
@@ -11477,7 +11550,174 @@ function lifecycleTaskEventRecord(flags) {
     consumedBy: null,
   };
   writeJsonAtomic(taskEventPath(fixmeDir, data.parentRunId, eventId), event);
-  return lifecycleOk({ event });
+  return { event };
+}
+
+// Map a task-result failure reason to an accepted usage finish reason. Every
+// reason in TASK_RESULT_FAILURE_REASONS must map to a value in USAGE_REASON_VALUES.
+const FINALIZER_FAILURE_REASON_TO_USAGE_REASON = {
+  userAborted: 'user_aborted',
+  verificationFailed: 'verification_failed',
+  usageTrackingFailed: 'usage_tracking_failed',
+  runtimeError: 'runtime_error',
+  dispatchFailed: 'dispatch_failed',
+  timeout: 'timeout',
+  invalidUsageRequest: 'invalid_usage_request',
+  attentionBlocked: 'runtime_error',
+  workflowBlocked: 'runtime_error',
+  childFailed: 'runtime_error',
+  toolUnavailable: 'runtime_error',
+  unknown: 'unknown',
+};
+
+// Close a single run status as terminal (completed/done or failed/done) by its
+// durable statusId. No-op when the run file is missing. Idempotent on an already
+// terminal run. Only this statusId is touched; unrelated runs are never modified.
+function closeRunStatusTerminal(fixmeDir, statusId, terminalState) {
+  if (!isNonEmptyString(statusId)) return;
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) return;
+  const previous = readRunStatusFile(statusPath, statusId);
+  writeRunStatus(statusPath, {
+    schemaVersion: 1,
+    statusId,
+    agent: validateRunAgent(previous.agent),
+    state: terminalState,
+    checkpoint: 'done',
+    currentCommand: null,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+// Parent-driven terminal finalizer. Phase A validates the payload and parent-driven
+// preconditions, then runs a single parent-linkage gate. Phase B runs the seven
+// ordered terminal side effects only after the gate returns passed/unverifiable.
+// A verifiable parent taskRunId mismatch fails before any Phase B effect.
+function lifecycleChildFinalize(flags, fixmeRoot) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const statePath = resolveTaskStatePathForDecision(flags);
+  const data = resolveLifecycleData(flags);
+
+  // ---- Phase A: validation ----
+  // Reuse task-result-write field contract. Reject unknown fields (notably the
+  // internally-owned terminalResultId).
+  try {
+    assertKnownJsonFields(data, 'lifecycle child finalize', TASK_RESULT_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (data.status !== 'completed' && data.status !== 'failed') {
+    lifecycleError('invalidInput', 'status must be one of: completed, failed');
+  }
+  if (data.status === 'failed') {
+    if (!isPlainObject(data.failure) || !TASK_RESULT_FAILURE_REASONS.has(data.failure.reason) || !isNonEmptyString(data.failure.message)) {
+      lifecycleError('invalidInput', 'failed result requires failure with a valid reason and non-empty message');
+    }
+  } else if (data.failure !== undefined && data.failure !== null) {
+    lifecycleError('invalidInput', 'completed result must not include failure');
+  }
+
+  const state = readJsonFileStrict(statePath);
+  const continuation = state.parentContinuation;
+  if (!isPlainObject(continuation)) {
+    lifecycleError('invalidInput', 'lifecycle child finalize requires a parent-driven task state with parentContinuation; direct runs use invocation finish plus run summary');
+  }
+  for (const field of ['parentRunId', 'parentStatusId', 'taskRunId', 'childStatusId']) {
+    if (!isNonEmptyString(continuation[field])) {
+      lifecycleError('invalidInput', `parent-driven task state is missing parentContinuation.${field}`);
+    }
+  }
+  const usageInvocationId = isNonEmptyString(continuation.usageInvocationId) ? continuation.usageInvocationId : null;
+
+  // ---- Phase A: single parent-linkage gate (no Phase B effect may run yet) ----
+  const parentPath = parentStatePath(fixmeDir, continuation.parentRunId);
+  let gateVerified = false;
+  if (fs.existsSync(parentPath)) {
+    let parent = null;
+    try {
+      parent = readJsonFileStrict(parentPath);
+    } catch (e) {
+      parent = null;
+    }
+    const activeChild = parent && parent.payload && parent.payload.activeChild;
+    if (parent && isPlainObject(activeChild) && isNonEmptyString(activeChild.taskRunId)) {
+      if (activeChild.taskRunId !== continuation.taskRunId) {
+        lifecycleError('conflictingDuplicate', `parent-linkage gate taskRunId mismatch for parentRunId ${continuation.parentRunId}: expected ${activeChild.taskRunId}, supplied ${continuation.taskRunId}`);
+      }
+      gateVerified = true;
+    }
+  }
+  if (!gateVerified) {
+    process.stderr.write(`warning: lifecycle child finalize parent-linkage gate unverifiable: parentRunId=${continuation.parentRunId} taskStatePath=${statePath} reason=parent-activeChild-taskRunId-unavailable; skipping verification\n`);
+  }
+
+  // ---- Phase B: terminal side effects, strictly ordered, only after the gate ----
+  // B1 + B2: result summary write and task-state terminalResult write.
+  const resultData = {
+    status: data.status,
+    summaryMarkdown: data.summaryMarkdown,
+    changedFiles: data.changedFiles,
+    artifactPaths: data.artifactPaths,
+  };
+  if (data.status === 'failed') {
+    resultData.failure = data.failure;
+  }
+  const resultWrite = taskResultWriteCore(statePath, resultData);
+  const terminalResultId = resultWrite.terminalResultId;
+  const resultSummaryPath = resultWrite.resultSummaryPath;
+
+  // B3: parent-consumable task-event append (record core re-runs the sibling guard).
+  const eventResult = taskEventRecordCore(fixmeDir, {
+    parentRunId: continuation.parentRunId,
+    taskRunId: continuation.taskRunId,
+    taskStatePath: statePath,
+    resultSummaryPath,
+    terminalResultId,
+    status: data.status,
+  });
+  const event = eventResult.event;
+
+  // B4: child liveness closure by durable childStatusId.
+  const childTerminalState = data.status === 'completed' ? 'completed' : 'failed';
+  closeRunStatusTerminal(fixmeDir, continuation.childStatusId, childTerminalState);
+
+  // B5: parent liveness closure by durable parentStatusId.
+  closeRunStatusTerminal(fixmeDir, continuation.parentStatusId, childTerminalState);
+
+  // B6: audible alert (best-effort).
+  try {
+    runAlert(data.status === 'completed' ? 'task_finished' : 'task_failed', fixmeRoot);
+  } catch (e) {
+    process.stderr.write(`warning: lifecycle child finalize alert failed: ${e.message}\n`);
+  }
+
+  // B7: usage finish via shared lifecycle helper.
+  let usageReportLine = null;
+  if (usageInvocationId) {
+    const outcome = data.status === 'completed' ? 'complete' : 'failed';
+    const reason = data.status === 'completed'
+      ? undefined
+      : FINALIZER_FAILURE_REASON_TO_USAGE_REASON[data.failure.reason];
+    const usageResult = finishUsageInvocationForLifecycle({
+      fixmeDir,
+      invocationId: usageInvocationId,
+      outcome,
+      reason,
+      fixmeRoot,
+      quiet: true,
+    });
+    usageReportLine = usageResult.reportLine !== undefined ? usageResult.reportLine : null;
+  } else {
+    process.stderr.write(`warning: lifecycle child finalize has no usageInvocationId; usage finalization skipped: taskStatePath=${statePath}\n`);
+  }
+
+  return lifecycleOk({
+    terminalResultId,
+    resultSummaryPath,
+    eventId: event.eventId,
+    wakeDirective: `lifecycle task-event consume eventId=${event.eventId}`,
+    usageReportLine,
+  });
 }
 
 function lifecycleTaskEventConsume(flags) {
@@ -12624,6 +12864,13 @@ function main() {
                 return lifecycleTaskEventConsume(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle task-event action: '${args[0] || ''}'`);
+            }
+          case 'child':
+            switch (args[0]) {
+              case 'finalize':
+                return lifecycleChildFinalize(flags, getFixmeRoot());
+              default:
+                return lifecycleError('unsupportedCommand', `Unknown lifecycle child action: '${args[0] || ''}'`);
             }
           default:
             return lifecycleError('unsupportedCommand', `Unknown lifecycle subcommand: '${subcommand}'`);
