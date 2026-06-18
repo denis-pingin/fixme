@@ -275,14 +275,13 @@ query {
 Fetch all PR issue comments once. Do not filter by author at fetch time; parser hints are assigned during normalization.
 
 ```bash
-gh api repos/{owner}/{repo}/issues/{number}/comments --paginate \
-  --jq '[.[] | {
+gh api repos/{owner}/{repo}/issues/{number}/comments --paginate --slurp | jq 'map(.[]) | map({
     id,
     user: .user.login,
     user_type: .user.type,
     created_at,
     body
-  }]'
+  })'
 ```
 
 Known parser hints for this surface:
@@ -297,8 +296,7 @@ Known parser hints for this surface:
 Fetch top-level PR review bodies. These are separate from review threads and issue comments; this is where Codex connector review summaries can appear.
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate \
-  --jq '[.[] | select(.body != null and (.body | length) > 0) | {
+gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --slurp | jq 'map(.[]) | map(select(.body != null and (.body | length) > 0) | {
     id,
     user: .user.login,
     user_type: .user.type,
@@ -306,7 +304,7 @@ gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate \
     submitted_at,
     body,
     html_url
-  }]'
+  })'
 ```
 
 Known parser hints for this surface:

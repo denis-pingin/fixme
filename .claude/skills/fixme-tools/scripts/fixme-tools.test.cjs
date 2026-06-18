@@ -10193,6 +10193,9 @@ test('fixme-pr-comments skill: fetches three GitHub surfaces and normalizes revi
   assert(skill.includes('issue_comments'), 'skill should include PR issue comment surface');
   assert(skill.includes('pull_request_reviews'), 'skill should include top-level PR review body surface');
   assert(skill.includes('gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate'), 'skill should fetch PR reviews endpoint with pagination');
+  assert(skill.includes('gh api repos/{owner}/{repo}/issues/{number}/comments --paginate --slurp | jq'), 'skill should aggregate paginated issue comments before local jq filtering');
+  assert(skill.includes('gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --slurp | jq'), 'skill should aggregate paginated PR reviews before local jq filtering');
+  assert(!skill.includes('--slurp --jq'), 'skill should not combine gh api --slurp with --jq');
   assert(skill.includes('Normalize every fetched container into `review_item` records'), 'skill should normalize fetched containers before analysis');
   assert(skill.includes('chatgpt-codex-connector[bot]'), 'Codex connector reviews should be explicitly covered');
   assert(skill.includes('pull_request_review: reply target is the PR issue comment stream'), 'reply table should include PR review body handling');
