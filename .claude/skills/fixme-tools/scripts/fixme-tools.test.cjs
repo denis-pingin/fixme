@@ -6236,6 +6236,53 @@ test('attention broker resume records raw answer and returns minimal existing-ta
   assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_success', `resumeDispatch should record runtime handle, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
 });
 
+test('broker resume returns acknowledgeResumeTemplate', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'broker-ack-template' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-broker-ack-template.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = prepared.data.activeChild;
+  const attentionId = 'attn_broker_ack_template';
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
+    attention: { resumeRef: activeChild.resumeRef, taskStatePath: activeChild.taskStatePath, promptMarkdown: '## Decide' },
+  })}'`);
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const answerPayload = { answer: 'A', answeredBy: 'user', answerKind: 'decision' };
+  const resume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(answerPayload)}'`);
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  const template = resume.data.acknowledgeResumeTemplate;
+  assert(template, `acknowledgeResumeTemplate present, got ${JSON.stringify(resume.data)}`);
+  assert(template.parentRunId === prepared.data.parentRunId, 'template carries parentRunId');
+  assert(template.statusId === activeChild.statusId, 'template carries statusId');
+  assert(template.attentionId === attentionId, 'template carries attentionId');
+  assert(template.data.resumeMessage === resume.data.resume.message, 'template data carries resumeMessage');
+  assert(!Object.prototype.hasOwnProperty.call(template.data, 'transport'), 'template data omits transport');
+  assert(!Object.prototype.hasOwnProperty.call(template.data, 'runtime'), 'template data omits runtime');
+
+  // Copy .data and add only runtime-derived launch evidence.
+  const ackPayload = { ...template.data, transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_ack_template' } };
+  const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${template.parentRunId} --status-id ${template.statusId} --attention-id ${template.attentionId} --data '${JSON.stringify(ackPayload)}'`);
+  assert(acknowledged.ok, `acknowledge-resume from template should succeed, got ${JSON.stringify(acknowledged.data)}`);
+});
+
+test('lifecycle invocation start auto-resolves fixmeDir regression', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  fs.writeFileSync(path.join(fixmeDir, 'config.json'), '{}\n');
+  const startData = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'auto-resolve-fixmedir' });
+  const auto = runInDir(`lifecycle invocation start --data '${startData}'`, projectRoot);
+  assert(auto.ok, `invocation start without --fixme-dir should resolve root, got ${JSON.stringify(auto.data)}`);
+  assert(fs.realpathSync(auto.data.fixmeDir) === fs.realpathSync(fixmeDir), `auto-resolved fixmeDir should equal project .fixme, got ${auto.data.fixmeDir}`);
+
+  const explicitData = JSON.stringify({ skill: 'fixme-task', runtime: 'claude', role: 'orchestrator', idempotencyKey: 'auto-resolve-fixmedir-explicit' });
+  const explicit = run(`lifecycle invocation start --fixme-dir "${fixmeDir}" --data '${explicitData}'`);
+  assert(explicit.ok, `explicit --fixme-dir should still work, got ${JSON.stringify(explicit.data)}`);
+  assert(explicit.data.fixmeDir === fixmeDir, 'explicit fixmeDir preserved');
+});
+
 test('attention broker resume replaces prior resume dispatch for second attention on same active child', () => {
   const fixmeDir = makeFixmeDir();
   const payload = prepareChildPayload({ suffix: 'broker-resume-second-attention' });

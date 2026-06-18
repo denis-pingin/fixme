@@ -10128,16 +10128,29 @@ function checkpointBrokerChildAttention(fixmeDir, parent, attentionId) {
 
 function brokerResumeOutput(fixmeDir, parent, activeChild, attentionId) {
   const statusId = activeChild.statusId;
+  const resumeMessage = `--resume ${activeChild.resumeRef} --answer-attention ${attentionId}`;
   return lifecycleOk({
     parentRunId: parent.parentRunId,
     statusId,
     attentionId,
     resume: {
       agentName: 'fixme-task',
-      message: `--resume ${activeChild.resumeRef} --answer-attention ${attentionId}`,
+      message: resumeMessage,
       liveness: {
         statusId,
         statusPath: runStatusPath(fixmeDir, statusId),
+      },
+    },
+    // Copy-ready acknowledge payload: the parent copies .data and adds only the
+    // runtime-derived launch evidence (transport, runtime, optional runtimeHandle).
+    // transport/runtime/runtimeHandle are intentionally omitted because they only
+    // exist after the runtime launch the parent performs from resume.message.
+    acknowledgeResumeTemplate: {
+      parentRunId: parent.parentRunId,
+      statusId,
+      attentionId,
+      data: {
+        resumeMessage,
       },
     },
   });
