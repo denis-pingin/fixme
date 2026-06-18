@@ -9619,6 +9619,33 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(hookCount === 1, `Claude usage hook should be idempotent, got ${hookCount}`);
 });
 
+test('skills install excludes dev test files but deploys the runtime script', () => {
+  const dir = createTmpDir();
+  const skillsSrc = path.join(dir, 'source-skills');
+  const toolsDir = createSkillFile(skillsSrc, 'fixme-tools', 'Shared runtime CLI skill.');
+  const scriptsSrc = path.join(toolsDir, 'scripts');
+  fs.mkdirSync(scriptsSrc, { recursive: true });
+  fs.writeFileSync(path.join(scriptsSrc, 'fixme-tools.cjs'), 'module.exports = {};\n');
+  fs.writeFileSync(path.join(scriptsSrc, 'fixme-tools.test.cjs'), 'throw new Error("dev-only test, must not deploy");\n');
+  fs.writeFileSync(path.join(scriptsSrc, 'helper.test.js'), 'throw new Error("dev-only test, must not deploy");\n');
+
+  const claudeDir = path.join(dir, '.claude');
+  const claudeResult = run(`claude-skills install --skills-src "${skillsSrc}" --claude-dir "${claudeDir}"`);
+  assert(claudeResult.ok, `claude install should succeed, got: ${JSON.stringify(claudeResult)}`);
+  const claudeScripts = path.join(claudeDir, 'skills', 'fixme-tools', 'scripts');
+  assert(fs.existsSync(path.join(claudeScripts, 'fixme-tools.cjs')), 'Claude install should deploy the runtime CLI');
+  assert(!fs.existsSync(path.join(claudeScripts, 'fixme-tools.test.cjs')), 'Claude install must not deploy *.test.cjs dev files');
+  assert(!fs.existsSync(path.join(claudeScripts, 'helper.test.js')), 'Claude install must not deploy *.test.js dev files');
+
+  const codexDir = path.join(dir, '.codex');
+  const codexResult = run(`codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`);
+  assert(codexResult.ok, `codex install should succeed, got: ${JSON.stringify(codexResult)}`);
+  const codexScripts = path.join(codexDir, 'skills', 'fixme-tools', 'scripts');
+  assert(fs.existsSync(path.join(codexScripts, 'fixme-tools.cjs')), 'Codex install should deploy the runtime CLI');
+  assert(!fs.existsSync(path.join(codexScripts, 'fixme-tools.test.cjs')), 'Codex install must not deploy *.test.cjs dev files');
+  assert(!fs.existsSync(path.join(codexScripts, 'helper.test.js')), 'Codex install must not deploy *.test.js dev files');
+});
+
 // ============================================================================
 // Skill contract tests
 // ============================================================================

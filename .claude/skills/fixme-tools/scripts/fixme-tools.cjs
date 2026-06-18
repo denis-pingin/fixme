@@ -5782,6 +5782,13 @@ function convertClaudeSkillMarkdown(content, skillName, isSkillEntry) {
   return injectUsageTrackingBlock(converted, skillName, 'claude', false);
 }
 
+// Dev-only test files (e.g. fixme-tools.test.cjs) assert against the source repo
+// and cannot run from a deployed location, so they are never part of the runtime
+// skill tree. Exclude them from both the Claude and Codex skill installs.
+function isDevTestFile(name) {
+  return /\.test\.(c|m)?js$/.test(name);
+}
+
 function copyCodexSkillDir(sourceDir, targetDir, skillName) {
   fs.mkdirSync(targetDir, { recursive: true });
   for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
@@ -5794,6 +5801,10 @@ function copyCodexSkillDir(sourceDir, targetDir, skillName) {
     }
 
     if (!entry.isFile()) {
+      continue;
+    }
+
+    if (isDevTestFile(entry.name)) {
       continue;
     }
 
@@ -5817,6 +5828,7 @@ function copyClaudeSkillDir(sourceDir, targetDir, skillName) {
       continue;
     }
     if (!entry.isFile()) continue;
+    if (isDevTestFile(entry.name)) continue;
     if (entry.name.endsWith('.md')) {
       const content = fs.readFileSync(sourcePath, 'utf8');
       fs.writeFileSync(targetPath, convertClaudeSkillMarkdown(content, skillName, entry.name === 'SKILL.md'));
