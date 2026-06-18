@@ -37,18 +37,17 @@ Parent brokers must not run `task decision append`, `task checkpoint`, `run atte
 
 If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED` or `run status` reports `currentCommand` in the form `attention:<attention-id>`, this skill becomes only the user-facing broker for that prompt:
 
-1. Call `lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>`.
-2. Print the returned `promptMarkdown` exactly, then wait for the user's answer.
-3. If the user response is a decision answer, call `lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
-4. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
-5. Launch `fixme-task` with the returned `resume.message` only. The returned `resume.liveness.statusId` must equal `<fixmeTaskStatusId>` and remains context for the resumed invocation, not a command-line flag. Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand, do not re-pass routed PR fix item text, and do not include the user's answer as a locked decision in a fresh prompt. The status id is context, not a command-line flag.
-6. After the launch call succeeds, call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "resumeMessage": "<returned resume.message>", "transport": "<resume launch transport>", "runtime": "<runtime>", "runtimeHandle": <optional runtime handle> }`. Use the actual runtime transport and runtime used for the launch. Include `runtimeHandle` only when the launch returned one.
+1. Call `lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>`, then read the returned `promptMarkdown` and `renderContract` and present the prompt according to the Boundary Delivery Contract in `fixme-howto-present-decisions`.
+2. If the user response is a decision answer, call `lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
+3. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
+4. Launch `fixme-task` with the returned `resume.message` only. The returned `resume.liveness.statusId` must equal `<fixmeTaskStatusId>` and remains context for the resumed invocation, not a command-line flag. Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand, do not re-pass routed PR fix item text, and do not include the user's answer as a locked decision in a fresh prompt. The status id is context, not a command-line flag.
+5. After the launch call succeeds, call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "resumeMessage": "<returned resume.message>", "transport": "<resume launch transport>", "runtime": "<runtime>", "runtimeHandle": <optional runtime handle> }`. Use the actual runtime transport and runtime used for the launch. Include `runtimeHandle` only when the launch returned one.
 
 If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again. Call `lifecycle attention broker resume` with the returned `answer` object, launch `fixme-task` with the returned `resume.message` only, then call `lifecycle attention broker acknowledge-resume` with the same post-launch evidence shape.
 
 If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"` and resume `fixme-task` exactly the same way. Do not answer the clarification in this parent skill. If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way.
 
-Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself. Do not summarize, reclassify, or answer the prompt on behalf of the user.
+Do not persist any task-owned decision; `fixme-task` resumes and writes decisions itself. Do not duplicate the Boundary Delivery Contract's normative prose here.
 
 # Address PR Comments
 

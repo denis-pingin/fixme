@@ -121,7 +121,7 @@ Plain `/fixme-task ...` defaults to `standard`.
 **Rules:**
 1. Extract `--ticket <path>` if present (anywhere in args). Remove it from remaining args.
 2. Extract `--pipeline <name>` if present. Remove it from remaining args.
-3. Determine parent context from the dispatch prompt, not a CLI flag. When the dispatch prompt carries a `<task-state-owner>` / `parentContinuation` block (or the parent supplied `transport=inline-skill` via `lifecycle dispatch prepare`), this run is parent-driven: a parent skill (typically `fixme-pr-comments`) owns its own live manifest task list and the parent's final summary. Otherwise the run is direct. The dispatch manifest is built in parent-driven mode when `parentContinuation` is present in task state - see "Creating the Manifest with the live manifest task list" below. `transport` is informational launch metadata, never a `fixme-task` command-line flag.
+3. Determine parent context from the dispatch prompt, not a CLI flag. When the dispatch prompt carries a `<task-state-owner>` / `parentContinuation` block (or the parent supplied `transport=inline-skill` via `lifecycle dispatch prepare`), this run is parent-driven: a parent skill (typically `fixme-pr-comments`) owns its own live manifest task list and the parent's final summary. Otherwise, this run is direct ONLY when it has a positive top-level-interactive signal (it is a genuine top-level `/fixme-task` session whose stdout the user reads). A dispatched run with neither a `parentContinuation` block nor any parent-provided `<liveness>` status id is NOT top-level interactive: its final text becomes a tool result a parent consumes, so treat that boundary as untrusted and use the Durable Attention Requests path (attention mode when a liveness id can be obtained, otherwise the self-describing user-facing-prompt envelope), never the direct-print branch. The dispatch manifest is built in parent-driven mode when `parentContinuation` is present in task state - see "Creating the Manifest with the live manifest task list" below. `transport` is informational launch metadata, never a `fixme-task` command-line flag.
 4. Extract `--save` if present (boolean flag). Remove it from remaining args. Also set `saveIntent=true` when the user asks in prose to "save this as a fixme-task", "save this a fixme-task", "save it", or equivalent.
    - Save intent can be terminal or non-terminal depending on the rest of the instruction.
    - Set `continueAfterSave=false` when the prompt only asks to save a task, or when `--save` is present and the remaining text is only the task description.
@@ -774,7 +774,8 @@ Durable state shape:
         "cycles": 1
       }
     ],
-    "outerCycles": 0
+    "outerCycles": 0,
+    "planReadinessRiskLevel": "low"
   },
   "parentContinuation": null,
   "producerContinuations": [],
@@ -786,6 +787,8 @@ Durable state shape:
 ```
 
 Run `task checkpoint --state <task-state-path> --data-file <checkpoint.json>` after every dispatch return, route, artifact capture, loop counter change, and user-decision pause. The checkpoint data may update only `status`, `cursor`, `artifacts`, `handoff`, `loops`, `pendingDecision`, `parentContinuation`, `producerContinuations`, `decisions`, and `terminalResult`.
+
+`loops.planReadinessRiskLevel` (`"low"` or `"high"`) records plan-readiness risk in task state. Once it becomes `"high"`, it is sticky and permanent: it is set to `"high"` the first time any readiness output reports `RISK_LEVEL: high` and never de-escalates (fail-closed by design). Checkpoint high risk with the payload `{"loops":{"planReadinessRiskLevel":"high"}}`; do not write `"low"` from fixme-task over a stored `"high"` (the CLI rejects that de-escalation).
 
 Task-owned decisions are normally written with `task decision append`; terminal task results are normally written with `task result write`. Direct checkpoint writes to `decisions` and `terminalResult` are for durable state restoration and runtime helper coordination, and checkpoint validation supports the complete durable state shape.
 
@@ -803,7 +806,7 @@ Resume mode:
 
 1. Run `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.
 2. Read the returned state path.
-3. Rebuild the live manifest task list manifest from the workflow config and the semantic `cursor`.
+3. Rebuild the live manifest task list manifest from the workflow config and the semantic `cursor`. When rebuilding the live manifest on resume, read `loops.planReadinessRiskLevel` from the state file first. If it is `"high"`, use the sticky-high manifest shape with readiness steps omitted; do not resurrect readiness steps from memory or from an older live manifest.
 4. If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly. If `status` is `waitingForUser` without `answerAttentionId`, present `pendingDecision` only in a direct user-facing resume; in attention mode, return the existing `FIXME_ATTENTION_REQUIRED: <attention-id>` for the parent broker.
 5. If the cursor points at a dispatch step, re-dispatch that skill with the artifact and handoff data in the state file.
 6. If the saved task brief or state contains `Preparation Artifacts`, include only those explicit artifacts in the next dispatch context. Do not discover brainstorm or research files by recency.
@@ -813,9 +816,13 @@ Resume mode:
 
 Human input belongs to the owner of the task state, but the owner is not always the user-facing runner. A `fixme-task` may be running directly in the main session, inline inside a parent skill, or inside a registered agent whose output is not automatically shown to the user. For that reason, every decision pause must be durable and resumable.
 
-If `fixme-task` is running in a non-user-facing context (a parent-provided `parentContinuation` (transport `inline-skill` or `background`) or any parent-provided `<liveness>` status id), do not wait on normal text output. Use the `lifecycle attention open` path below to store the complete Review Classification block, then return `FIXME_ATTENTION_REQUIRED: <attention-id>`. Direct user-facing runs may print the block and wait normally when no parent or broker owns the prompt surface.
+If `fixme-task` is running in a non-user-facing context, do not wait on normal text output. A non-user-facing context is any run that lacks a positive top-level-interactive signal: a parent-provided `parentContinuation` (transport `inline-skill` or `background`), any parent-provided `<liveness>` status id, OR a bare dispatch with neither. When a current fixme-task liveness status id is available, use the `lifecycle attention open` path below to store the complete prompt durably, then return `FIXME_ATTENTION_REQUIRED: <attention-id>`; the helper's `directive` and `renderContract` carry a Boundary Delivery Contract reference for the parent broker. When no liveness status id is available, use the residual no-liveness envelope below instead of direct-printing. Only a genuine top-level interactive `/fixme-task` session (the user reads stdout directly) may print the block and wait normally.
 
-If attention mode is required but no current fixme-task liveness status id is available, stop with `FIXME_ATTENTION_BLOCKED`. Do not print a hidden prompt, do not create a new saved task, and do not guess that the parent will see normal output. The parent must restart or resume `fixme-task` with a `<liveness>` `statusId`.
+Residual no-liveness case: if a user-facing pause prompt must be returned but no fixme-task liveness status id can be obtained to open durable attention, do not print a bare prompt into a tool result and do not stop silently. Return the complete prompt in the canonical `FIXME_USER_PROMPT` envelope defined by the Boundary Delivery Contract in `fixme-howto-present-decisions`.
+
+Apply this envelope at this single user-facing-pause choke point so it covers decision cards, loop-guard escalations, and agent escalations without per-type enumeration. Do not emit the envelope in a genuine top-level interactive `/fixme-task` session (where the prompt is already rendered directly), and never wrap the informational Run Summary in it. Do not restate the envelope's normative render rule in `fixme-task`; the Boundary Delivery Contract is the only owner of that prose.
+
+`FIXME_ATTENTION_BLOCKED` is only for a failed required attention-open attempt after `fixme-task` has a liveness status id and calls `lifecycle attention open`. On `attentionBlocked`, report `FIXME_ATTENTION_BLOCKED` with the failed command and attention id. On `ioFailure`, mark the task failed/blocked. Do not use `FIXME_ATTENTION_BLOCKED` merely because a bare no-liveness dispatch exists; that path returns the `FIXME_USER_PROMPT` envelope.
 
 Agent escalation prompts are user-input prompts. In attention mode, use the `lifecycle attention open` path to checkpoint `waitingForUser` and store the Agent Escalation block, and return `FIXME_ATTENTION_REQUIRED: <attention-id>` instead of relying on hidden text output.
 
@@ -847,11 +854,10 @@ When `fixme-task` needs user input in attention mode, it must:
    Installed Codex skills use the Codex-installed tool path. The attention payload must include `attentionId`, `ownerSkill: "fixme-task"`, `sourceSkill`, `kind`, `resumeRef`, absolute `taskStatePath`, `promptMarkdown`, and `answerMode`. The payload must contain `"taskStatePath":"<absolute-task-state-path>"`.
 5. `lifecycle attention open` is checkpoint-first and self-repairing: it checkpoints, then creates the attention; if attention creation fails it restores the pre-open task-state snapshot and returns `attentionBlocked` (`repaired:true`) or `ioFailure` (`repaired:false`). On `attentionBlocked` report `FIXME_ATTENTION_BLOCKED` with the failed command and attention id; on `ioFailure` mark the task failed/blocked. Do not return `FIXME_ATTENTION_REQUIRED` for a prompt the parent cannot show.
 6. After a successful `lifecycle attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`; the helper already marked the run as waiting, and ordinary pings are rejected while `currentCommand` points at active attention.
-7. Return the helper's `directive` as the final content:
+7. Return the helper's `directive` as the final content. The `directive` carries the machine-readable `FIXME_ATTENTION_REQUIRED: <attention-id>` first line plus a Boundary Delivery Contract reference, and the helper result also carries `renderContract`. Return the directive exactly as returned; do not strip the render-contract lines:
    ```text
    FIXME_ATTENTION_REQUIRED: <attention-id>
-   OWNER_SKILL: fixme-task
-   RESUME_REF: <FIXME-N|task-path|state-path|ticket-path>
+   RENDER_CONTRACT: Boundary Delivery Contract: follow fixme-howto-present-decisions for promptMarkdown.
    ```
 
 The parent runner, if any, is only a broker. It renders the attention prompt and records the answer through `lifecycle attention broker answer`; it never decides what the answer means. Parent brokers must not run `task decision append`, `task checkpoint`, `run attention clear`, or `lifecycle dispatch prepare` after recording an attention answer. Only `fixme-task` interprets the answer and consumes it through `lifecycle attention consume` after an attention answer, then re-dispatches the same handler or child step when needed.
@@ -1018,14 +1024,18 @@ Before dispatching ANY agent, expand the full pipeline into a flat, numbered dis
 Always build the manifest for ALL phases in the pipeline, regardless of entry point. For each phase, add entries in this order:
 
 1. One dispatch entry per skill in `phase.skills`
-2. If `phase.review.readiness` exists and review is enabled:
+2. If `phase.review.readiness` exists, review is enabled, AND `loops.planReadinessRiskLevel` is not already `"high"`:
    a. One `[phase-name/readiness] Dispatch <readiness-skill>` entry
    b. One `[phase-name/readiness] Route on READINESS_RESULT` entry
+
+   When `loops.planReadinessRiskLevel === "high"`, omit both readiness entries entirely and wire the phase's last execute step (plan-write) straight to the first review step (`fixme-review-plan`). The one readiness pass that first determined high risk already ran; treat the plan phase exactly as a phase with no readiness configured. This gate is re-evaluated on every manifest (re)build: fresh entry, readiness REVISE_PLAN re-entry, full-review PLAN_REVISION re-entry, and resume manifest rebuild. Because the manifest is rebuilt from config + cursor + task state on resume, reading the sticky flag here is what makes the skip survive resume and context compaction.
 3. If `phase.review.skills` exists and review is enabled:
    a. One `[phase-name/review]` dispatch entry per skill in `phase.review.skills`
    b. One `[phase-name/route]` routing entry using `HANDLER_RESULT`
 
 Readiness routes are manifest-controlled jumps. Marking full plan review steps completed as skipped by readiness after `READINESS_RESULT: EXECUTE` is an explicit manifest route, not an inline bypass.
+
+On a sticky-high re-entry the readiness steps are not present in the rebuilt manifest at all; do not mark absent readiness steps `pending` or re-dispatch them. Replace/recreate the live manifest task list from the sticky-high manifest shape instead of mutating the old manifest in place. Set plan-write `in_progress` wired directly to `fixme-review-plan`.
 
 After the last phase: add a "Run Summary" entry.
 
@@ -1161,6 +1171,22 @@ TaskCreate([
   ...remaining steps as pending...
 ])
 ```
+
+**Sticky high-risk re-entry (standalone, `loops.planReadinessRiskLevel === "high"`, readiness steps omitted):**
+```text
+TaskCreate([
+  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
+  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
+  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
+  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
+  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
+  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
+  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
+  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
+  { content: "Step 9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
+])
+```
+The readiness dispatch and route steps are absent, so plan-write (Step 1) wires straight to `fixme-review-plan` (Step 2). Step numbers shift down accordingly; parent-driven mode applies the same omission and additionally drops the terminal Run Summary step.
 
 **Parent-driven mode (`parentContinuation` present):**
 
@@ -1738,7 +1764,7 @@ This built-in reviewer row does not apply to custom review skills. Custom review
 5. Follow the routing rules specified in the manifest entry. Treat printing the Review Classification block and taking the route as one atomic operation unless `HAS_ASK_USER` requires a user decision. Do not send a final response between the visible classification block and the next manifest action.
    - **CLEAN**: mark step `completed`, advance to the next numbered step
    - **HAS_BLOCKING_FIX + SPEC_REVISION**: mark step `completed`, jump back to the specification phase's first execute step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
-   - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. Reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
+   - **HAS_BLOCKING_FIX + PLAN_REVISION**: mark step `completed`, jump back to the target plan step. Check loop guards before jumping. If the target phase is `plan` and `loops.planReadinessRiskLevel === "high"`, rebuild/replace the live manifest task list from config + cursor + task state using the sticky-high manifest shape (no readiness dispatch/route entries), then set the plan writer step to `in_progress` and the first full-review step (`fixme-review-plan`) as the next pending step. Do not reset existing readiness entries in place; stale readiness entries must disappear from the rebuilt manifest. If the sticky flag is not `"high"`, reset ALL steps from the target step through the current routing step to `pending`, then set the target step to `in_progress`.
    - **HAS_BLOCKING_FIX + IMPLEMENT_REPAIR**: mark step `completed`, jump back to the implement execute step in repair mode. Check loop guards before jumping. Reset the implement execute, code review, handler, and routing steps to `pending`, then set the implement execute step to `in_progress`.
    - **HAS_NONBLOCKING_FINDINGS**: mark step `completed`, record follow-up-only items for the Run Summary, and advance to the next numbered step.
    - **HAS_ASK_USER**: batch questions for user input (see ASK_USER Batching). In a direct user-facing run, present the Review Classification block and wait normally. In attention mode, use the checkpoint-first attention path to checkpoint `waitingForUser`, store the complete Review Classification block with `lifecycle attention open`, and return `FIXME_ATTENTION_REQUIRED: <attention-id>`. After the answer is available, persist answers with `task decision append`. Re-dispatch the handler (set the handler step back to `in_progress`). Do NOT mark this routing step `completed` until the handler returns CLEAN, HAS_BLOCKING_FIX, or HAS_NONBLOCKING_FINDINGS.
@@ -1746,8 +1772,10 @@ This built-in reviewer row does not apply to custom review skills. Custom review
 
 **Readiness routing steps** (`[phase/readiness]` route entries):
 
+Before applying any readiness route, if the validated readiness output reports `RISK_LEVEL: high` (the `riskLevel` field returned by `review validate-plan-readiness`), checkpoint the sticky flag `{"loops":{"planReadinessRiskLevel":"high"}}` through `task checkpoint`. This applies to every route that can carry high risk (FULL_PLAN_REVIEW, or REVISE_PLAN with high risk, or any other route reporting high risk), not only FULL_PLAN_REVIEW. The flag is permanent and never de-escalates: fixme-task never writes `"low"` back over a stored `"high"`.
+
 - `READINESS_RESULT: EXECUTE` marks the full plan review steps completed as skipped by readiness, marks the readiness route completed, and advances to `fixme-execute-plan`.
-- `READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode, increments the plan phase review counter, resets the plan writer, readiness, and any pending full plan review steps to pending, and passes the full readiness output plus the validator-returned `blockingFindings` array using the readiness-driven revision contract. The readiness blocking findings are not handler-classified FIX items.
+- `READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode, increments the plan phase review counter, resets the plan writer, readiness, and any pending full plan review steps to pending, and passes the full readiness output plus the validator-returned `blockingFindings` array using the readiness-driven revision contract. The readiness blocking findings are not handler-classified FIX items. When `loops.planReadinessRiskLevel` is already `"high"`, rebuild the plan-phase manifest without the readiness dispatch + route steps (see Building the Manifest) so the re-entry wires plan-write straight to `fixme-review-plan` instead of re-dispatching readiness.
 - `READINESS_RESULT: ASK_USER` stores the readiness decision prompt through `lifecycle attention open`, persists answers through `task decision append`, and re-dispatches `fixme-plan-readiness` with the updated decision log. Do not mark the readiness route completed until readiness returns a non-ASK_USER route.
 - `READINESS_RESULT: FULL_PLAN_REVIEW` advances to `fixme-review-plan` without incrementing loop counters.
 
@@ -1930,7 +1958,7 @@ Gather all items from the handler output:
 
 ### 2. Present to user
 
-**The user reads the Review Classification block directly in a user-facing run, or through the parent broker rendering `promptMarkdown` in attention mode. It is the primary interface between the pipeline and the human. Follow these rules without exception.**
+**The user reads the Review Classification block directly in a user-facing run, or through the parent broker rendering `promptMarkdown` in attention mode. It is the primary interface between the pipeline and the human. Follow these rules without exception. Delivery across boundaries follows the Boundary Delivery Contract in `fixme-howto-present-decisions`; use durable attention when a liveness id is available, and use the canonical `FIXME_USER_PROMPT` envelope only for the residual no-liveness case.**
 
 #### Formatting Rules (NON-NEGOTIABLE)
 

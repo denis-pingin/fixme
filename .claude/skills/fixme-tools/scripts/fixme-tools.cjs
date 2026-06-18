@@ -249,7 +249,7 @@ const KNOWN_FIXME_AGENTS = new Set([
 
 // Run liveness "agent" is a backward-compatible JSON field name whose semantic
 // meaning is "run owner". Parent/orchestrator skills legitimately own liveness.
-const RUN_OWNER_PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
+const RUN_OWNER_PARENT_SKILLS = new Set(['fixme', 'fixme-pr-comments', 'fixme-session']);
 const KNOWN_RUN_OWNERS = new Set([...KNOWN_FIXME_AGENTS, ...RUN_OWNER_PARENT_SKILLS]);
 
 const RESUMABLE_PRODUCER_AGENTS = new Set([
@@ -4473,6 +4473,11 @@ function assertTaskCheckpointShape(patch) {
     ) {
       throw new Error('loops.outerCycles must be a non-negative integer');
     }
+    if (Object.prototype.hasOwnProperty.call(patch.loops, 'planReadinessRiskLevel')) {
+      if (patch.loops.planReadinessRiskLevel !== 'low' && patch.loops.planReadinessRiskLevel !== 'high') {
+        throw new Error('loops.planReadinessRiskLevel must be one of: low, high');
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(patch.loops, 'phaseReviewCycles')) {
       if (!Array.isArray(patch.loops.phaseReviewCycles)) {
         throw new Error('loops.phaseReviewCycles must be an array');
@@ -4538,9 +4543,23 @@ function assertTaskCheckpointShape(patch) {
   }
 }
 
+function assertTaskCheckpointTransitions(previous, patch) {
+  if (
+    isPlainObject(previous) &&
+    isPlainObject(previous.loops) &&
+    previous.loops.planReadinessRiskLevel === 'high' &&
+    isPlainObject(patch) &&
+    isPlainObject(patch.loops) &&
+    patch.loops.planReadinessRiskLevel === 'low'
+  ) {
+    throw new Error('loops.planReadinessRiskLevel cannot de-escalate from high to low');
+  }
+}
+
 function mergeTaskState(previous, patch) {
   assertSupportedTaskCheckpointFields(patch);
   assertTaskCheckpointShape(patch);
+  assertTaskCheckpointTransitions(previous, patch);
   return {
     ...mergePlainObjects(previous, patch),
     updatedAt: new Date().toISOString(),
@@ -8293,7 +8312,7 @@ const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'dir
 const LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS = new Set(['parent', 'child', 'parentContinuation', 'await', 'recoverStaleParent']);
 const PREPARE_CHILD_PARENT_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'payload']);
 const PREPARE_CHILD_CHILD_FIELDS = new Set(['idempotencyKey', 'agentName', 'runtime', 'transport', 'parentInvocationId', 'pipelineRunId', 'parentStatusId', 'handoff', 'promptInputs']);
-const PREPARE_CHILD_HANDOFF_FIELDS = new Set(['mode', 'taskSaveData', 'payload']);
+const PREPARE_CHILD_HANDOFF_FIELDS = new Set(['mode', 'taskSaveData', 'payload', 'resumeRef']);
 const PREPARE_CHILD_AWAIT_FIELDS = new Set(['fixBatches', 'activeBatchIndex', 'ledger']);
 
 function dispatchIdempotencyPath(fixmeDir, keyHash) {
@@ -8305,14 +8324,55 @@ function childHandoffIndexPath(fixmeDir, childIdempotencyKey) {
 }
 
 function childHandoffInputDigest(child) {
+  const handoffMode = child.handoff.mode || 'createOrReuse';
+  if (handoffMode === 'existingTask') {
+    return stableHash({
+      agentName: child.agentName,
+      runtime: child.runtime,
+      transport: child.transport,
+      handoff: { mode: 'existingTask', resumeRef: child.handoff.resumeRef },
+      promptInputs: sanitizePrepareChildPromptInputs(child.promptInputs || {}),
+    });
+  }
   return stableHash({
     agentName: child.agentName,
     runtime: child.runtime,
     transport: child.transport,
+    handoff: { mode: 'createOrReuse' },
     taskSaveData: child.handoff.taskSaveData,
     payload: child.handoff.payload,
     promptInputs: sanitizePrepareChildPromptInputs(child.promptInputs || {}),
   });
+}
+
+function assertExistingTaskHandoffIndex(index, childIdempotencyKey, indexPath) {
+  if (index.resolvedMode === 'standalone') {
+    if (!isNonEmptyString(index.taskPath) || !fs.existsSync(index.taskPath)) {
+      lifecycleError('staleState', 'Child handoff index is stale; missing taskPath', { childIdempotencyKey, indexPath });
+    }
+    if (index.ticketPath !== null) {
+      lifecycleError('staleState', 'Child handoff index is stale; ticketPath must be null for standalone existingTask', { childIdempotencyKey, indexPath });
+    }
+  } else if (index.resolvedMode === 'ticket') {
+    if (!isNonEmptyString(index.ticketPath) || !fs.existsSync(index.ticketPath)) {
+      lifecycleError('staleState', 'Child handoff index is stale; missing ticketPath', { childIdempotencyKey, indexPath });
+    }
+    if (index.taskPath !== null) {
+      lifecycleError('staleState', 'Child handoff index is stale; taskPath must be null for ticket existingTask', { childIdempotencyKey, indexPath });
+    }
+  } else if (index.resolvedMode === 'reserved-state') {
+    if (index.taskPath !== null || index.ticketPath !== null) {
+      lifecycleError('staleState', 'Child handoff index is stale; taskPath and ticketPath must be null for reserved-state existingTask', { childIdempotencyKey, indexPath });
+    }
+  } else {
+    lifecycleError('staleState', 'Child handoff index is stale; unsupported existingTask resolvedMode', { childIdempotencyKey, indexPath });
+  }
+  if (!isNonEmptyString(index.statePath) || !fs.existsSync(index.statePath)) {
+    lifecycleError('staleState', 'Child handoff index is stale; missing statePath', { childIdempotencyKey, indexPath });
+  }
+  if (index.handoffPayloadPath !== null) {
+    lifecycleError('staleState', 'Child handoff index is stale; handoffPayloadPath must be null for existingTask', { childIdempotencyKey, indexPath });
+  }
 }
 
 function preflightChildHandoffIndex(fixmeDir, child) {
@@ -8324,6 +8384,10 @@ function preflightChildHandoffIndex(fixmeDir, child) {
   const index = readJsonFileStrict(indexPath);
   if (index.durableInputDigest !== durableInputDigest) {
     lifecycleError('conflictingDuplicate', `child idempotencyKey '${child.idempotencyKey}' already used with different durable handoff input`);
+  }
+  if (index.mode === 'existingTask') {
+    assertExistingTaskHandoffIndex(index, child.idempotencyKey, indexPath);
+    return { mode: 'reuse', indexPath, durableInputDigest, index };
   }
   for (const fileField of ['taskPath', 'statePath', 'handoffPayloadPath']) {
     if (!isNonEmptyString(index[fileField]) || !fs.existsSync(index[fileField])) {
@@ -8340,6 +8404,88 @@ function preflightChildHandoffIndex(fixmeDir, child) {
     }
   }
   return { mode: 'reuse', indexPath, durableInputDigest, index };
+}
+
+function childHandoffForResolvedTask(fixmeDir, child, preflight, resolved) {
+  const now = new Date().toISOString();
+  let index;
+  if (resolved.mode === 'standalone') {
+    if (!isNonEmptyString(resolved.taskPath) || !isNonEmptyString(resolved.statePath)) {
+      lifecycleError('staleState', 'Resolved standalone existingTask is missing taskPath or statePath');
+    }
+    const taskPath = fs.realpathSync(resolved.taskPath);
+    const statePath = fs.realpathSync(resolved.statePath);
+    index = {
+      schemaVersion: 1,
+      childIdempotencyKey: child.idempotencyKey,
+      durableInputDigest: preflight.durableInputDigest,
+      mode: 'existingTask',
+      resolvedMode: 'standalone',
+      taskRef: resolved.taskRef || null,
+      taskPath,
+      ticketPath: null,
+      statePath,
+      resumeRef: child.handoff.resumeRef,
+      handoffPayloadPath: null,
+      source: 'existingTask',
+      createdAt: now,
+      updatedAt: now,
+    };
+  } else if (resolved.mode === 'ticket') {
+    if (!isNonEmptyString(resolved.ticketPath) || !isNonEmptyString(resolved.statePath)) {
+      lifecycleError('staleState', 'Resolved ticket existingTask is missing ticketPath or statePath');
+    }
+    index = {
+      schemaVersion: 1,
+      childIdempotencyKey: child.idempotencyKey,
+      durableInputDigest: preflight.durableInputDigest,
+      mode: 'existingTask',
+      resolvedMode: 'ticket',
+      taskRef: null,
+      taskPath: null,
+      ticketPath: resolved.ticketPath,
+      statePath: resolved.statePath,
+      resumeRef: child.handoff.resumeRef,
+      handoffPayloadPath: null,
+      source: 'existingTask',
+      createdAt: now,
+      updatedAt: now,
+    };
+  } else if (resolved.mode === 'reserved-state') {
+    if (!isNonEmptyString(resolved.statePath)) {
+      lifecycleError('staleState', 'Resolved reserved-state existingTask is missing statePath');
+    }
+    index = {
+      schemaVersion: 1,
+      childIdempotencyKey: child.idempotencyKey,
+      durableInputDigest: preflight.durableInputDigest,
+      mode: 'existingTask',
+      resolvedMode: 'reserved-state',
+      taskRef: null,
+      taskPath: null,
+      ticketPath: null,
+      statePath: resolved.statePath,
+      resumeRef: child.handoff.resumeRef,
+      handoffPayloadPath: null,
+      source: 'existingTask',
+      createdAt: now,
+      updatedAt: now,
+    };
+  } else {
+    lifecycleError('invalidInput', `Unsupported existingTask resolved mode: ${resolved.mode}`);
+  }
+  assertCamelCaseJsonKeys(index, 'child handoff index');
+  writeJsonAtomic(preflight.indexPath, index);
+  return {
+    taskRef: index.taskRef,
+    taskPath: index.taskPath,
+    ticketPath: index.ticketPath,
+    statePath: index.statePath,
+    resumeRef: index.resumeRef,
+    resolvedMode: index.resolvedMode,
+    handoffPayloadPath: null,
+    source: 'existingTask',
+  };
 }
 
 function attachPreparationArtifactCore(taskPath, statePath, artifactData) {
@@ -8367,14 +8513,31 @@ function attachPreparationArtifactCore(taskPath, statePath, artifactData) {
 
 function saveOrReuseChildHandoff(fixmeDir, child, preflight) {
   if (preflight.mode === 'reuse') {
+    if (preflight.index.mode === 'existingTask') {
+      return {
+        taskRef: preflight.index.taskRef || null,
+        taskPath: preflight.index.taskPath,
+        ticketPath: preflight.index.ticketPath,
+        statePath: preflight.index.statePath,
+        resumeRef: preflight.index.resumeRef,
+        resolvedMode: preflight.index.resolvedMode,
+        handoffPayloadPath: null,
+        source: 'existingTask',
+      };
+    }
     return {
       taskRef: preflight.index.taskRef,
       taskPath: preflight.index.taskPath,
+      ticketPath: preflight.index.ticketPath || null,
       statePath: preflight.index.statePath,
       resumeRef: preflight.index.resumeRef,
       handoffPayloadPath: preflight.index.handoffPayloadPath,
       source: preflight.index.source,
     };
+  }
+  if ((child.handoff.mode || 'createOrReuse') === 'existingTask') {
+    const resolved = resolveTask(child.handoff.resumeRef, path.dirname(fixmeDir));
+    return childHandoffForResolvedTask(fixmeDir, child, preflight, resolved);
   }
   const saved = saveStandaloneTaskCore(path.dirname(fixmeDir), child.handoff.taskSaveData);
   const handoffPayloadPath = saved.taskPath.replace(/\.md$/, '.handoff.json');
@@ -8392,8 +8555,10 @@ function saveOrReuseChildHandoff(fixmeDir, child, preflight) {
     schemaVersion: 1,
     childIdempotencyKey: child.idempotencyKey,
     durableInputDigest: preflight.durableInputDigest,
+    mode: 'createOrReuse',
     taskRef: saved.taskRef,
     taskPath: saved.taskPath,
+    ticketPath: null,
     statePath: saved.statePath,
     resumeRef: saved.taskPath,
     handoffPayloadPath,
@@ -8405,6 +8570,7 @@ function saveOrReuseChildHandoff(fixmeDir, child, preflight) {
   return {
     taskRef: index.taskRef,
     taskPath: index.taskPath,
+    ticketPath: index.ticketPath,
     statePath: index.statePath,
     resumeRef: index.resumeRef,
     handoffPayloadPath: index.handoffPayloadPath,
@@ -9298,6 +9464,10 @@ function lifecycleAttentionConsumeReplayPayload(statusId, statePath, attentionId
   });
 }
 
+// Static reference carried on every parent-visible attention channel. The
+// normative delivery rule lives only in fixme-howto-present-decisions.
+const ATTENTION_RENDER_CONTRACT = 'Boundary Delivery Contract: follow fixme-howto-present-decisions for promptMarkdown.';
+
 function lifecycleAttentionOpen(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const data = resolveLifecycleData(flags);
@@ -9349,7 +9519,8 @@ function lifecycleAttentionOpen(flags) {
         statusId: data.statusId,
         taskStatePath: statePath,
         attentionPath,
-        directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}`,
+        directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}\nRENDER_CONTRACT: ${ATTENTION_RENDER_CONTRACT}`,
+        renderContract: ATTENTION_RENDER_CONTRACT,
       });
     }
     lifecycleError('conflictingDuplicate', `attention ${attentionId} already open with different prompt/state/checkpoint`);
@@ -9394,7 +9565,8 @@ function lifecycleAttentionOpen(flags) {
     statusId: data.statusId,
     taskStatePath: statePath,
     attentionPath,
-    directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}`,
+    directive: `FIXME_ATTENTION_REQUIRED: ${attentionId}\nRENDER_CONTRACT: ${ATTENTION_RENDER_CONTRACT}`,
+    renderContract: ATTENTION_RENDER_CONTRACT,
   });
 }
 
@@ -9402,12 +9574,14 @@ function lifecycleAttentionBrokerProjection(record) {
   // Whitelist projection: the broker is the parent-facing surface and must not
   // expose task-owned decision state. metadata.openCheckpointData carries the
   // task's pendingDecision and is consumed only internally by the attention-open
-  // replay compare, never via broker show or answer.
+  // replay compare, never via broker show or answer. renderContract is a static
+  // Boundary Delivery Contract reference, not task-owned state.
   const projection = {
     attentionId: record.attentionId,
     statusId: record.statusId,
     status: record.status,
     promptMarkdown: record.promptMarkdown,
+    renderContract: ATTENTION_RENDER_CONTRACT,
     answerMode: record.answerMode,
     sourceSkill: record.sourceSkill,
     kind: record.kind,
@@ -9934,7 +10108,7 @@ function lifecycleWaitEnd(flags) {
 // Subcommands: lifecycle parent
 // ============================================================================
 
-const PARENT_SKILLS = new Set(['fixme-pr-comments', 'fixme-session']);
+const PARENT_SKILLS = new Set(['fixme', 'fixme-pr-comments', 'fixme-session']);
 
 const PR_PARENT_STATUSES = new Set(['running', 'waitingForUser', 'waitingForChild', 'completed', 'failed']);
 const PR_TERMINAL_STATUSES = new Set(['completed', 'failed']);
@@ -9991,6 +10165,7 @@ const PARENT_ABANDON_FIELDS = new Set(['parentRunId', 'idempotencyKey', 'reason'
 const PR_LOOKUP_REF_FIELDS = new Set(['host', 'owner', 'repo', 'number', 'headOwner', 'headRepo', 'headRef']);
 const PR_NORMALIZED_FLAG_FIELDS = new Set(['pause', 'skipCommit', 'skipPush', 'skipResolve', 'skipResponse']);
 const SESSION_TASK_REF_FIELDS = new Set(['sessionPath', 'ticketPath']);
+const FIXME_ROUTER_LOOKUP_FIELDS = new Set(['routeRef', 'pipeline', 'requestDigest']);
 
 function parentStatePath(fixmeDir, parentRunId) {
   return path.join(fixmeDir, 'parents', parentRunId, 'state.json');
@@ -10093,13 +10268,45 @@ function normalizeSessionLookupInput(lookupInput) {
   return { sessionTaskRef: { sessionPath: path.resolve(sessionPath), ticketPath: path.resolve(ticketPath) } };
 }
 
+function normalizeFixmeLookupInput(lookupInput) {
+  if (!isPlainObject(lookupInput)) {
+    lifecycleError('invalidInput', 'lookupInput must be an object');
+  }
+  try {
+    assertKnownJsonFields(lookupInput, 'fixme lookupInput', FIXME_ROUTER_LOOKUP_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  if (!isNonEmptyString(lookupInput.routeRef)) {
+    lifecycleError('invalidInput', 'lookupInput.routeRef must be a non-empty string');
+  }
+  const normalized = { routeRef: lookupInput.routeRef };
+  if (lookupInput.pipeline !== undefined) {
+    if (!isNonEmptyString(lookupInput.pipeline)) {
+      lifecycleError('invalidInput', 'lookupInput.pipeline must be a non-empty string');
+    }
+    normalized.pipeline = lookupInput.pipeline;
+  }
+  if (lookupInput.requestDigest !== undefined) {
+    if (!isNonEmptyString(lookupInput.requestDigest)) {
+      lifecycleError('invalidInput', 'lookupInput.requestDigest must be a non-empty string');
+    }
+    normalized.requestDigest = lookupInput.requestDigest;
+  }
+  return normalized;
+}
+
 function normalizeParentLookupInput(parentSkill, lookupInput) {
+  if (parentSkill === 'fixme') return normalizeFixmeLookupInput(lookupInput);
   if (parentSkill === 'fixme-pr-comments') return normalizePrLookupInput(lookupInput);
   if (parentSkill === 'fixme-session') return normalizeSessionLookupInput(lookupInput);
   lifecycleError('invalidInput', `Unsupported parentSkill: ${parentSkill}`);
 }
 
 function parentNaturalKeyFor(parentSkill, normalizedLookupInput) {
+  if (parentSkill === 'fixme') {
+    return stableHash({ parentSkill, route: normalizedLookupInput });
+  }
   if (parentSkill === 'fixme-session') {
     const ref = normalizedLookupInput.sessionTaskRef;
     return stableHash({ parentSkill, sessionTaskRef: { sessionPath: ref.sessionPath, ticketPath: ref.ticketPath } });
@@ -10113,6 +10320,9 @@ function parentNaturalKeyFor(parentSkill, normalizedLookupInput) {
 }
 
 function parentBroadKeyFor(parentSkill, normalizedLookupInput) {
+  if (parentSkill === 'fixme') {
+    return stableHash({ parentSkill, route: normalizedLookupInput });
+  }
   if (parentSkill === 'fixme-session') {
     return parentNaturalKeyFor(parentSkill, normalizedLookupInput);
   }
@@ -10586,6 +10796,9 @@ function prepareChildLedger(parentState, data) {
     }
     defaults.fixBatches = data.await.fixBatches;
   }
+  if (data.parent.parentSkill === 'fixme') {
+    defaults.fixBatches = data.await.fixBatches;
+  }
   return {
     ...defaults,
     ...(parentState.ledger || {}),
@@ -10672,7 +10885,18 @@ function validatePrepareChildData(data) {
       if (!isNonEmptyString(data.child[field])) lifecycleError('missingRequiredField', `child.${field} is required`);
     }
   }
-  if (!isPlainObject(data.child.handoff) || !isPlainObject(data.child.handoff.taskSaveData) || !isPlainObject(data.child.handoff.payload)) {
+  if (!isPlainObject(data.child.handoff)) {
+    lifecycleError('missingRequiredField', 'child.handoff is required');
+  }
+  const handoffMode = data.child.handoff.mode || 'createOrReuse';
+  if (handoffMode !== 'createOrReuse' && handoffMode !== 'existingTask') {
+    lifecycleError('invalidInput', 'child.handoff.mode must be one of: createOrReuse, existingTask');
+  }
+  if (handoffMode === 'existingTask') {
+    if (!isNonEmptyString(data.child.handoff.resumeRef)) {
+      lifecycleError('missingRequiredField', 'child.handoff.resumeRef is required for existingTask');
+    }
+  } else if (!isPlainObject(data.child.handoff.taskSaveData) || !isPlainObject(data.child.handoff.payload)) {
     lifecycleError('missingRequiredField', 'child.handoff.taskSaveData and child.handoff.payload are required');
   }
   if (!isPlainObject(data.child.promptInputs)) {
@@ -10698,6 +10922,7 @@ function hasNonEmptyStringItem(value) {
 
 function validatePrepareChildHandoffPayload(data) {
   if (data.parent.parentSkill !== 'fixme-pr-comments') return;
+  if ((data.child.handoff.mode || 'createOrReuse') === 'existingTask') return;
   const payload = data.child.handoff.payload;
   if (payload.routedFixGroups !== undefined && !Array.isArray(payload.routedFixGroups)) {
     lifecycleError('invalidInput', 'child.handoff.payload.routedFixGroups must be an array of objects with groupId values');
@@ -10792,7 +11017,7 @@ function lifecycleParentPrepareChild(flags) {
   const childPreflight = preflightChildHandoffIndex(fixmeDir, data.child);
   recoverStaleParentBeforeCreate(fixmeDir, data);
 
-  const parentCreateData = data.parent.parentSkill === 'fixme-session'
+  const parentCreateData = (data.parent.parentSkill === 'fixme-session' || data.parent.parentSkill === 'fixme')
     ? {
       parentSkill: data.parent.parentSkill,
       idempotencyKey: data.parent.idempotencyKey,
@@ -10841,9 +11066,14 @@ function lifecycleParentPrepareChild(flags) {
     ...sanitizePrepareChildPromptInputs(data.child.promptInputs),
     resumeRef: childTask.resumeRef,
     taskPath: childTask.taskPath,
+    ticketPath: childTask.ticketPath || null,
     statePath: childTask.statePath,
     handoffPayloadPath: childTask.handoffPayloadPath,
   };
+  if (childTask.source === 'existingTask') {
+    lightweightPromptInputs.source = 'existingTask';
+    lightweightPromptInputs.resolvedMode = childTask.resolvedMode;
+  }
   const dispatchData = {
     idempotencyKey: `${data.child.idempotencyKey}:dispatch`,
     agentName: 'fixme-task',
@@ -10865,13 +11095,24 @@ function lifecycleParentPrepareChild(flags) {
       ...launch.promptBlocks,
       parentContinuation,
       promptInputs: lightweightPromptInputs,
-      taskInput: {
-        resumeRef: childTask.resumeRef,
-        taskPath: childTask.taskPath,
-        statePath: childTask.statePath,
-        handoffPayloadPath: childTask.handoffPayloadPath,
-        source: 'savedTaskWithHandoffPayload',
-      },
+      taskInput: childTask.source === 'existingTask'
+        ? {
+          source: 'existingTask',
+          resumeRef: childTask.resumeRef,
+          resolvedMode: childTask.resolvedMode,
+          taskPath: childTask.taskPath,
+          ticketPath: childTask.ticketPath,
+          statePath: childTask.statePath,
+          handoffPayloadPath: null,
+        }
+        : {
+          resumeRef: childTask.resumeRef,
+          taskPath: childTask.taskPath,
+          ticketPath: childTask.ticketPath || null,
+          statePath: childTask.statePath,
+          handoffPayloadPath: childTask.handoffPayloadPath,
+          source: 'savedTaskWithHandoffPayload',
+        },
     },
   };
   const activeChild = {

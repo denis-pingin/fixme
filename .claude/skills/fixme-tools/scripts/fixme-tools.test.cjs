@@ -2621,6 +2621,37 @@ test('task checkpoint: merges allowed camelCase state fields and rejects invalid
   assert(invalidPendingDecision.data.error.includes('pendingDecision must be null or a JSON object'), `pendingDecision error should mention null or object, got ${invalidPendingDecision.data.error}`);
 });
 
+test('loops.planReadinessRiskLevel is monotonic once high', () => {
+  const { projectRoot, statePath } = initTaskState('plan-readiness-risk');
+
+  const acceptLowFresh = runInDir(`task checkpoint --state "${statePath}" --data '{"loops":{"planReadinessRiskLevel":"low"}}'`, projectRoot);
+  assert(acceptLowFresh.ok, `fresh low risk level should be accepted, got: ${JSON.stringify(acceptLowFresh.data)}`);
+  let state = readJson(statePath);
+  assert(state.loops.planReadinessRiskLevel === 'low', `fresh low should persist, got ${JSON.stringify(state.loops.planReadinessRiskLevel)}`);
+
+  const acceptHigh = runInDir(`task checkpoint --state "${statePath}" --data '{"loops":{"planReadinessRiskLevel":"high"}}'`, projectRoot);
+  assert(acceptHigh.ok, `high risk level should be accepted, got: ${JSON.stringify(acceptHigh.data)}`);
+  state = readJson(statePath);
+  assert(state.loops.planReadinessRiskLevel === 'high', `high should persist, got ${JSON.stringify(state.loops.planReadinessRiskLevel)}`);
+  assertNoSnakeCaseKeys(state, 'task state after risk checkpoint');
+
+  // Re-reading the persisted sticky value is unaffected by an unrelated checkpoint.
+  const otherCheckpoint = runInDir(`task checkpoint --state "${statePath}" --data '{"loops":{"outerCycles":1}}'`, projectRoot);
+  assert(otherCheckpoint.ok, `unrelated loops checkpoint should succeed, got: ${JSON.stringify(otherCheckpoint.data)}`);
+  state = readJson(statePath);
+  assert(state.loops.planReadinessRiskLevel === 'high', `sticky high should survive an unrelated loops checkpoint, got ${JSON.stringify(state.loops.planReadinessRiskLevel)}`);
+
+  const rejectLowAfterHigh = runInDir(`task checkpoint --state "${statePath}" --data '{"loops":{"planReadinessRiskLevel":"low"}}'`, projectRoot);
+  assert(!rejectLowAfterHigh.ok, 'low after high should fail');
+  assert(rejectLowAfterHigh.data.error.includes('loops.planReadinessRiskLevel cannot de-escalate from high to low'), `low-after-high error should explain monotonicity, got ${rejectLowAfterHigh.data.error}`);
+  state = readJson(statePath);
+  assert(state.loops.planReadinessRiskLevel === 'high', `failed low-after-high checkpoint must leave high persisted, got ${JSON.stringify(state.loops.planReadinessRiskLevel)}`);
+
+  const rejectOther = runInDir(`task checkpoint --state "${statePath}" --data '{"loops":{"planReadinessRiskLevel":"medium"}}'`, projectRoot);
+  assert(!rejectOther.ok, 'invalid planReadinessRiskLevel value should fail');
+  assert(rejectOther.data.error.includes('loops.planReadinessRiskLevel must be one of: low, high'), `error should name the allowed values, got ${rejectOther.data.error}`);
+});
+
 function initTaskState(slug) {
   const projectRoot = createTmpDir();
   const fixmeDir = path.join(projectRoot, '.fixme');
@@ -4205,6 +4236,255 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(replay.data.childTask.taskPath === first.data.childTask.taskPath, 'replay reuses saved task');
 });
 
+function fixmeRouterPrepareChildPayload(overrides = {}) {
+  const suffix = overrides.suffix || 'router';
+  const payload = prepareChildPayload({
+    suffix,
+    parentSkill: 'fixme',
+    lookupInput: overrides.lookupInput || { routeRef: `route:${suffix}`, pipeline: 'standard' },
+    parentPayload: overrides.parentPayload || { routeRef: `route:${suffix}`, pipeline: 'standard' },
+    runtime: overrides.runtime || 'codex',
+    transport: overrides.transport || 'agent',
+  });
+  payload.parentContinuation = { resumeStep: 'awaitFixmeTaskResult' };
+  payload.await = {
+    fixBatches: [{ id: `batch-${suffix}`, summary: overrides.summary || 'Fixme router task' }],
+    activeBatchIndex: 0,
+    ledger: {},
+  };
+  payload.child.handoff.taskSaveData = {
+    title: overrides.title || 'Run Fixme Router Task',
+    slug: `fixme-router-${suffix}`,
+    taskGoal: overrides.taskGoal || 'Run the task selected by the fixme router.',
+    settledSolutionShape: overrides.settledSolutionShape || 'Use the router-provided task boundary and run the selected Fixme workflow.',
+    agreedApproach: ['Use the fixme router handoff as the user-visible scope.'],
+    userVisibleBehavior: ['The child fixme-task receives parentContinuation and liveness prompt blocks.'],
+    scope: { inScope: ['the fixme router-selected task'], outOfScope: ['unrelated Fixme workflows'] },
+    laterPlanningNotes: ['Preserve the router routeRef as launch context.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'userProseIntent',
+      evidence: 'The fixme router selected the standard workflow.',
+      reason: 'The router route is the user-visible intent for this child task.',
+    },
+    source: 'fixme',
+    tags: ['fixme-router', 'parent-driven'],
+  };
+  payload.child.handoff.payload = overrides.handoffPayload || {
+    source: 'fixme',
+    routeRef: payload.parent.lookupInput.routeRef,
+    request: overrides.request || 'Run the router-selected task.',
+  };
+  payload.child.promptInputs = {
+    summary: overrides.summary || 'Fixme router task',
+    source: 'fixme',
+    route: overrides.route || 'oneOff',
+    title: overrides.title || 'Run Fixme Router Task',
+  };
+  return payload;
+}
+
+function assertExistingTaskBoundary(result, expected, label) {
+  assert(result.ok, `${label} should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.childTask.source === 'existingTask', `${label} childTask source should be existingTask, got ${result.data.childTask.source}`);
+  assert(result.data.childTask.resumeRef === expected.resumeRef, `${label} childTask resumeRef should be preserved, got ${result.data.childTask.resumeRef}`);
+  assert(result.data.childTask.resolvedMode === expected.resolvedMode, `${label} resolved mode should be ${expected.resolvedMode}, got ${result.data.childTask.resolvedMode}`);
+  assert(result.data.childTask.taskPath === expected.taskPath, `${label} childTask taskPath mismatch, got ${result.data.childTask.taskPath}`);
+  assert(result.data.childTask.ticketPath === expected.ticketPath, `${label} childTask ticketPath mismatch, got ${result.data.childTask.ticketPath}`);
+  assert(result.data.childTask.statePath === expected.statePath, `${label} childTask statePath mismatch, got ${result.data.childTask.statePath}`);
+  assert(result.data.childTask.handoffPayloadPath === null, `${label} existingTask should not create a handoff payload, got ${result.data.childTask.handoffPayloadPath}`);
+  const taskInput = result.data.launch.promptBlocks.taskInput;
+  assert(taskInput.source === 'existingTask', `${label} taskInput source should be existingTask, got ${taskInput.source}`);
+  assert(taskInput.resumeRef === expected.resumeRef, `${label} taskInput resumeRef should be preserved, got ${taskInput.resumeRef}`);
+  assert(taskInput.resolvedMode === expected.resolvedMode, `${label} taskInput resolvedMode should be ${expected.resolvedMode}, got ${taskInput.resolvedMode}`);
+  assert(taskInput.taskPath === expected.taskPath, `${label} taskInput taskPath mismatch, got ${taskInput.taskPath}`);
+  assert(taskInput.ticketPath === expected.ticketPath, `${label} taskInput ticketPath mismatch, got ${taskInput.ticketPath}`);
+  assert(taskInput.statePath === expected.statePath, `${label} taskInput statePath mismatch, got ${taskInput.statePath}`);
+  assert(taskInput.handoffPayloadPath === null, `${label} taskInput handoffPayloadPath should be null, got ${taskInput.handoffPayloadPath}`);
+}
+
+test('parent prepare-child supports fixme router one-off launch with liveness', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = fixmeRouterPrepareChildPayload({ suffix: 'one-off', route: 'oneOff' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-fixme-router-one-off.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `fixme router prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.launch.promptBlocks.parentContinuation.parentSkill === 'fixme', `parentSkill should be fixme, got ${JSON.stringify(prepared.data.launch.promptBlocks.parentContinuation)}`);
+  assert(prepared.data.launch.promptBlocks.liveness.statusId === prepared.data.statusId, 'launch prompt blocks carry child liveness');
+  assert(prepared.data.launch.promptBlocks.taskStateOwner.ownerSkill === 'fixme-task', 'taskStateOwner identifies fixme-task');
+  const parent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(parent.parentSkill === 'fixme', `parent skill should be fixme, got ${parent.parentSkill}`);
+  assert(parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask', `parent waits for child, got ${JSON.stringify(parent)}`);
+  const parentStatus = readJson(path.join(fixmeDir, 'runs', prepared.data.launch.promptBlocks.parentContinuation.parentStatusId, 'status.json'));
+  assert(parentStatus.agent === 'fixme', `parent liveness owner should be fixme, got ${parentStatus.agent}`);
+  assertNoSnakeCaseKeys(prepared.data, 'fixme router prepare-child output');
+});
+
+test('parent prepare-child supports fixme router standalone existing-task launch without wrapping the task', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.mkdirSync(fixmeDir, { recursive: true });
+  const saveData = JSON.stringify({
+    title: 'Existing Router Task',
+    taskGoal: 'Run an existing saved task through the fixme router.',
+    settledSolutionShape: 'Resume the existing saved task state directly.',
+    agreedApproach: ['Resolve the saved task and launch fixme-task with parent liveness.'],
+    userVisibleBehavior: ['The original saved task remains the authoritative task state.'],
+    scope: { inScope: ['existing saved task resume'], outOfScope: ['creating wrapper tasks'] },
+    laterPlanningNotes: ['Use the saved task state path returned by task resolve.'],
+    pipelineResolution: {
+      pipeline: 'standard',
+      source: 'explicitPipelineArg',
+      evidence: '--pipeline standard',
+      reason: 'Test supplies the selected workflow explicitly.',
+    },
+    source: 'test',
+  });
+  const saved = runInDir(`task save --data '${saveData}'`, projectRoot);
+  assert(saved.ok, `task save should succeed, got ${JSON.stringify(saved.data)}`);
+
+  const payload = fixmeRouterPrepareChildPayload({
+    suffix: 'existing-task',
+    lookupInput: { routeRef: `resume:${saved.data.taskRef}`, pipeline: 'standard' },
+    parentPayload: { routeRef: `resume:${saved.data.taskRef}`, pipeline: 'standard' },
+    route: 'savedTask',
+    summary: 'Existing saved task',
+  });
+  payload.child.handoff = {
+    mode: 'existingTask',
+    resumeRef: saved.data.taskRef,
+  };
+  payload.child.promptInputs.resumeRef = saved.data.taskRef;
+  const payloadPath = writeJsonFixture(projectRoot, 'prepare-child-fixme-router-existing-task.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `existing-task prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.childTask.taskPath === saved.data.taskPath, `should use original taskPath, got ${prepared.data.childTask.taskPath}`);
+  assert(prepared.data.childTask.ticketPath === null, `standalone existingTask should not have ticketPath, got ${prepared.data.childTask.ticketPath}`);
+  assert(prepared.data.childTask.statePath === saved.data.statePath, `should use original statePath, got ${prepared.data.childTask.statePath}`);
+  assert(prepared.data.childTask.handoffPayloadPath === null, `existing task should not create a wrapper handoff payload, got ${prepared.data.childTask.handoffPayloadPath}`);
+  assert(prepared.data.childTask.resolvedMode === 'standalone', `resolved mode should be standalone, got ${prepared.data.childTask.resolvedMode}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.source === 'existingTask', `taskInput source should be existingTask, got ${prepared.data.launch.promptBlocks.taskInput.source}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.resumeRef === saved.data.taskRef, 'taskInput carries original resumeRef');
+  assert(prepared.data.launch.promptBlocks.liveness.statusId === prepared.data.statusId, 'existing-task launch carries child liveness');
+  const expected = {
+    resumeRef: saved.data.taskRef,
+    resolvedMode: 'standalone',
+    taskPath: saved.data.taskPath,
+    ticketPath: null,
+    statePath: saved.data.statePath,
+  };
+  assertExistingTaskBoundary(prepared, expected, 'standalone existingTask first run');
+
+  const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assertExistingTaskBoundary(replay, expected, 'standalone existingTask replay');
+  assert(replay.data.parentRunId === prepared.data.parentRunId, `replay should reuse parentRunId, got ${replay.data.parentRunId}`);
+  assert(replay.data.dispatchId === prepared.data.dispatchId, `replay should reuse dispatchId, got ${replay.data.dispatchId}`);
+  assert(replay.data.statusId === prepared.data.statusId, `replay should reuse statusId, got ${replay.data.statusId}`);
+});
+
+test('parent prepare-child supports fixme router ticket existing-task launch without task markdown', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  const sessionDir = path.join(fixmeDir, 'sessions', 'router-session');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'router-ticket', 'queued');
+  const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `ticket task init should succeed, got ${JSON.stringify(initialized.data)}`);
+  assert(initialized.data.mode === 'ticket', `task init mode should be ticket, got ${initialized.data.mode}`);
+  assert(initialized.data.taskPath === null, `ticket task should not have taskPath, got ${initialized.data.taskPath}`);
+  assert(initialized.data.ticketPath === ticketPath, `ticketPath should be preserved, got ${initialized.data.ticketPath}`);
+  assert(fs.existsSync(initialized.data.statePath), 'ticket task state should exist');
+
+  const payload = fixmeRouterPrepareChildPayload({
+    suffix: 'existing-ticket',
+    lookupInput: { routeRef: `resume:${ticketPath}`, pipeline: 'standard' },
+    parentPayload: { routeRef: `resume:${ticketPath}`, pipeline: 'standard' },
+    route: 'savedTask',
+    summary: 'Existing ticket task',
+  });
+  payload.child.handoff = {
+    mode: 'existingTask',
+    resumeRef: ticketPath,
+  };
+  payload.child.promptInputs.resumeRef = ticketPath;
+  const payloadPath = writeJsonFixture(projectRoot, 'prepare-child-fixme-router-existing-ticket.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `ticket existingTask prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.childTask.taskPath === null, `ticket existingTask should keep taskPath null, got ${prepared.data.childTask.taskPath}`);
+  assert(prepared.data.childTask.ticketPath === ticketPath, `ticket existingTask should keep ticketPath, got ${prepared.data.childTask.ticketPath}`);
+  assert(prepared.data.childTask.statePath === initialized.data.statePath, `ticket existingTask should use ticket statePath, got ${prepared.data.childTask.statePath}`);
+  assert(prepared.data.childTask.handoffPayloadPath === null, `ticket existingTask should not create a handoff payload, got ${prepared.data.childTask.handoffPayloadPath}`);
+  assert(prepared.data.childTask.resolvedMode === 'ticket', `resolved mode should be ticket, got ${prepared.data.childTask.resolvedMode}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.source === 'existingTask', `taskInput source should be existingTask, got ${prepared.data.launch.promptBlocks.taskInput.source}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.resumeRef === ticketPath, 'taskInput carries ticket resumeRef');
+  const expected = {
+    resumeRef: ticketPath,
+    resolvedMode: 'ticket',
+    taskPath: null,
+    ticketPath,
+    statePath: initialized.data.statePath,
+  };
+  assertExistingTaskBoundary(prepared, expected, 'ticket existingTask first run');
+
+  const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assertExistingTaskBoundary(replay, expected, 'ticket existingTask replay');
+  assert(replay.data.parentRunId === prepared.data.parentRunId, `replay should reuse parentRunId, got ${replay.data.parentRunId}`);
+  assert(replay.data.dispatchId === prepared.data.dispatchId, `replay should reuse dispatchId, got ${replay.data.dispatchId}`);
+  assert(replay.data.statusId === prepared.data.statusId, `replay should reuse statusId, got ${replay.data.statusId}`);
+});
+
+test('parent prepare-child supports fixme router reserved-state existing-task launch', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  fs.mkdirSync(path.join(fixmeDir, 'tasks'), { recursive: true });
+  const statePath = path.join(fixmeDir, 'tasks', 'router-reserved.state.json');
+  const initialized = runInDir(`task init --state "${statePath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
+  assert(initialized.ok, `reserved-state task init should succeed, got ${JSON.stringify(initialized.data)}`);
+  assert(initialized.data.mode === 'reserved-state', `task init mode should be reserved-state, got ${initialized.data.mode}`);
+  assert(initialized.data.taskPath === null, `reserved-state task should not have taskPath, got ${initialized.data.taskPath}`);
+  assert(initialized.data.ticketPath === null, `reserved-state task should not have ticketPath, got ${initialized.data.ticketPath}`);
+  assert(fs.existsSync(initialized.data.statePath), 'reserved task state should exist');
+
+  const payload = fixmeRouterPrepareChildPayload({
+    suffix: 'existing-reserved',
+    lookupInput: { routeRef: `resume:${statePath}`, pipeline: 'standard' },
+    parentPayload: { routeRef: `resume:${statePath}`, pipeline: 'standard' },
+    route: 'savedTask',
+    summary: 'Existing reserved task state',
+  });
+  payload.child.handoff = {
+    mode: 'existingTask',
+    resumeRef: statePath,
+  };
+  payload.child.promptInputs.resumeRef = statePath;
+  const payloadPath = writeJsonFixture(projectRoot, 'prepare-child-fixme-router-existing-reserved.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `reserved-state existingTask prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.childTask.taskPath === null, `reserved-state existingTask should keep taskPath null, got ${prepared.data.childTask.taskPath}`);
+  assert(prepared.data.childTask.ticketPath === null, `reserved-state existingTask should keep ticketPath null, got ${prepared.data.childTask.ticketPath}`);
+  assert(prepared.data.childTask.statePath === statePath, `reserved-state existingTask should use reserved statePath, got ${prepared.data.childTask.statePath}`);
+  assert(prepared.data.childTask.handoffPayloadPath === null, `reserved-state existingTask should not create a handoff payload, got ${prepared.data.childTask.handoffPayloadPath}`);
+  assert(prepared.data.childTask.resolvedMode === 'reserved-state', `resolved mode should be reserved-state, got ${prepared.data.childTask.resolvedMode}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.source === 'existingTask', `taskInput source should be existingTask, got ${prepared.data.launch.promptBlocks.taskInput.source}`);
+  assert(prepared.data.launch.promptBlocks.taskInput.resumeRef === statePath, 'taskInput carries reserved-state resumeRef');
+  assert(!fs.existsSync(statePath.replace(/\.state\.json$/, '.md')), 'reserved-state launch must not create task markdown');
+  const expected = {
+    resumeRef: statePath,
+    resolvedMode: 'reserved-state',
+    taskPath: null,
+    ticketPath: null,
+    statePath,
+  };
+  assertExistingTaskBoundary(prepared, expected, 'reserved-state existingTask first run');
+
+  const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assertExistingTaskBoundary(replay, expected, 'reserved-state existingTask replay');
+  assert(replay.data.parentRunId === prepared.data.parentRunId, `replay should reuse parentRunId, got ${replay.data.parentRunId}`);
+  assert(replay.data.dispatchId === prepared.data.dispatchId, `replay should reuse dispatchId, got ${replay.data.dispatchId}`);
+  assert(replay.data.statusId === prepared.data.statusId, `replay should reuse statusId, got ${replay.data.statusId}`);
+  assert(!fs.existsSync(statePath.replace(/\.state\.json$/, '.md')), 'reserved-state replay must not create task markdown');
+});
+
 test('parent prepare-child saved task init preserves handoff artifact and parentContinuation', () => {
   const fixmeDir = makeFixmeDir();
   const projectRoot = path.dirname(fixmeDir);
@@ -5008,6 +5288,27 @@ test('attention open conflicting prompt returns conflictingDuplicate', () => {
   assert(conflict.data.error.code === 'conflictingDuplicate', `code should be conflictingDuplicate, got ${JSON.stringify(conflict.data)}`);
 });
 
+test('lifecycle attention open directive and result carry the render contract', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-render');
+  const data = attentionOpenData(statusId, statePath, { attentionId: 'attn_render1' });
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(open.ok, `attention open should succeed, got: ${JSON.stringify(open.data)}`);
+  // The directive must keep the machine-readable prefix on its first line.
+  assert(open.data.directive.startsWith('FIXME_ATTENTION_REQUIRED: attn_render1'), `directive must start with the attention prefix, got ${JSON.stringify(open.data.directive)}`);
+  // The directive must point at the single canonical Boundary Delivery Contract.
+  assert(open.data.directive.includes('RENDER_CONTRACT:'), `directive should name the render-contract line, got ${JSON.stringify(open.data.directive)}`);
+  assert(open.data.directive.includes('Boundary Delivery Contract'), `directive must point at the canonical Boundary Delivery Contract, got ${JSON.stringify(open.data.directive)}`);
+  assert(/promptMarkdown/.test(open.data.directive), `directive must name promptMarkdown, got ${JSON.stringify(open.data.directive)}`);
+  // The structured render contract field must be present without duplicating the canonical rule.
+  assert(typeof open.data.renderContract === 'string' && open.data.renderContract.includes('Boundary Delivery Contract'), `result must carry a renderContract reference, got ${JSON.stringify(open.data.renderContract)}`);
+  assertNoSnakeCaseKeys(open.data, 'attention open output');
+  // Idempotent replay returns identical directive and renderContract.
+  const replay = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${data}'`);
+  assert(replay.ok, `replay should succeed, got: ${JSON.stringify(replay.data)}`);
+  assert(replay.data.directive === open.data.directive, `replay directive must match, got ${JSON.stringify(replay.data.directive)}`);
+  assert(replay.data.renderContract === open.data.renderContract, `replay renderContract must match, got ${JSON.stringify(replay.data.renderContract)}`);
+});
+
 test('attention broker show and answer record answer without interpreting', () => {
   const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker');
   const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_brk1' })}'`);
@@ -5068,6 +5369,26 @@ test('attention broker answer first response does not expose task-owned decision
   for (const forbidden of ['metadata', 'openCheckpointData', 'pendingDecision', 'resumeRef', 'taskStatePath']) {
     assert(!JSON.stringify(answer.data).includes(forbidden), `broker answer must not expose ${forbidden}, got ${JSON.stringify(answer.data)}`);
   }
+});
+
+test('broker show and broker answer projections carry the render contract', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-render');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_brk_render1' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const show = run(`lifecycle attention broker show --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk_render1`);
+  assert(show.ok, `broker show should succeed, got: ${JSON.stringify(show.data)}`);
+  assert(typeof show.data.renderContract === 'string' && show.data.renderContract.includes('Boundary Delivery Contract'), `broker show must carry the Boundary Delivery Contract reference, got ${JSON.stringify(show.data.renderContract)}`);
+  assert(typeof show.data.promptMarkdown === 'string', 'broker show still returns promptMarkdown');
+  // The render contract is a static instruction string, not task-owned state.
+  const shownSerialized = JSON.stringify(show.data);
+  for (const forbidden of ['openCheckpointData', 'pendingDecision', 'resumeRef', 'taskStatePath']) {
+    assert(!shownSerialized.includes(forbidden), `broker show must not expose ${forbidden}, got ${shownSerialized}`);
+  }
+  assert(show.data.metadata === undefined, `broker show must not return raw metadata, got ${JSON.stringify(show.data.metadata)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_brk_render1 --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok, `broker answer should succeed, got: ${JSON.stringify(answer.data)}`);
+  assert(typeof answer.data.renderContract === 'string' && answer.data.renderContract.includes('Boundary Delivery Contract'), `broker answer must carry the Boundary Delivery Contract reference, got ${JSON.stringify(answer.data.renderContract)}`);
+  assert(answer.data.status === 'answered', `broker answer status should be answered, got ${answer.data.status}`);
 });
 
 test('attention broker answer replay does not expose task-owned decision state', () => {
@@ -8423,8 +8744,9 @@ test('fixme bootstrap skill: routes Fixme-shaped requests to concrete entry poin
   assert(skill.includes('name: fixme'), 'frontmatter name');
   assert(skill.includes('Use first for Fixme-related requests'), 'description should make Fixme routing an early skill-selection trigger');
   assert(skill.includes('FIXME-9 followed by FIXME-10, both standard pipeline'), 'bootstrap should cover bare sequential FIXME references');
-  assert(skill.includes('Skill("fixme-task", "--pipeline standard --resume FIXME-9")'), 'first sequential task should route to fixme-task with standard pipeline');
-  assert(skill.includes('Skill("fixme-task", "--pipeline standard --resume FIXME-10")'), 'second sequential task should route to fixme-task with standard pipeline');
+  assert(skill.includes('Prepare a `parentSkill: "fixme"` existingTask handoff for `FIXME-9` with `parent.lookupInput.pipeline: "standard"`'), 'first sequential task should route through parent-aware existingTask handoff with standard pipeline');
+  assert(skill.includes('Prepare a `parentSkill: "fixme"` existingTask handoff for `FIXME-10` with `parent.lookupInput.pipeline: "standard"`'), 'second sequential task should route through parent-aware existingTask handoff with standard pipeline');
+  assert(skill.includes('launch only through the returned `launch.transport`'), 'fixme-task routes should launch only from prepared lifecycle transport');
   assert(skill.includes('Skill("fixme-session"'), 'bug-session requests should route to fixme-session');
   assert(skill.includes('Skill("fixme-pr-comments"'), 'PR comment requests should route to fixme-pr-comments');
   assert(skill.includes('Skill("fixme-rebase"'), 'rebase requests should route to fixme-rebase');
@@ -9144,10 +9466,11 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
 test('fixme-task skill: native ASK_USER pauses use durable attention when not user-facing', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert(skill.includes('If `fixme-task` is running in a non-user-facing context (a parent-provided `parentContinuation` (transport `inline-skill` or `background`) or any parent-provided `<liveness>` status id), do not wait on normal text output.'), 'parent-driven/background native ASK_USER should not wait on hidden output');
-  assert(skill.includes('Use the `lifecycle attention open` path below to store the complete Review Classification block'), 'native ASK_USER should store the full review block through checkpoint-first attention');
-  assert(skill.includes('Direct user-facing runs may print the block and wait normally'), 'direct fixme-task should still allow normal user-facing prompts');
-  assert(skill.includes('If attention mode is required but no current fixme-task liveness status id is available, stop with `FIXME_ATTENTION_BLOCKED`'), 'attention mode should fail closed without a task liveness id');
+  assert(skill.includes('If `fixme-task` is running in a non-user-facing context, do not wait on normal text output.'), 'non-user-facing native ASK_USER should not wait on hidden output');
+  assert(skill.includes('When a current fixme-task liveness status id is available, use the `lifecycle attention open` path below to store the complete prompt durably'), 'native ASK_USER should store the full prompt through checkpoint-first attention');
+  assert(skill.includes('Only a genuine top-level interactive `/fixme-task` session (the user reads stdout directly) may print the block and wait normally.'), 'direct fixme-task should still allow normal user-facing prompts');
+  assert(skill.includes('Residual no-liveness case: if a user-facing pause prompt must be returned but no fixme-task liveness status id can be obtained to open durable attention'), 'residual no-liveness native ASK_USER should use the envelope path');
+  assert(skill.includes('`FIXME_ATTENTION_BLOCKED` is only for a failed required attention-open attempt after `fixme-task` has a liveness status id'), 'attentionBlocked should be limited to failed attention-open attempts');
   assert(skill.includes('After a successful `lifecycle attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
   assert(skill.includes('In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching'), 'answer-attention should feed native ASK_USER batching');
   assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'agent escalation should use checkpoint-first durable attention when parent-driven');

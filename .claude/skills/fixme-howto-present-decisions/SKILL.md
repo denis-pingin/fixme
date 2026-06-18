@@ -9,6 +9,25 @@ These guidelines own two responsibilities: (1) whether an item is a genuine user
 
 Transport is owned by the caller. This skill defines both decision eligibility (the Decision Eligibility Gate) and decision-card content and format. Task-bound runs under `fixme-task` use the Task-Bound User Input Contract and durable attention; standalone or directly user-facing runs may render the decision directly through their normal prompt mechanism.
 
+## Boundary Delivery Contract
+
+A decision card, or any user-facing pause prompt, is only useful if it reaches the user exactly as written. The instruction governing the artifact must travel with the artifact across every boundary, on the channel every parent is guaranteed to read.
+
+Rules for any skill that relays or renders a stored prompt:
+
+- Render `promptMarkdown` verbatim to the user. Do not summarize, rephrase, compress, reformat, or reclassify it, and do not answer it on the user's behalf.
+- The safest delivery is durable storage rendered by a broker. A dispatched producer or orchestrator that has a top-level-interactive or liveness signal must store the prompt durably (attention mode) so a broker renders it from storage, instead of returning it as ordinary text a generic relay may summarize.
+- When durable storage is unavailable (no liveness signal), the returned message itself must carry the verbatim instruction with the payload, wrapped in an explicit envelope:
+
+  ```text
+  FIXME_USER_PROMPT (render verbatim to the user; do not summarize, rephrase, or compress):
+  <full promptMarkdown>
+  END_FIXME_USER_PROMPT
+  ```
+
+- The envelope is a best-effort floor, not a guarantee: a generic relay can still ignore a text marker, so durable storage is always preferred when a liveness signal is present.
+- This contract covers every user-facing pause prompt (decision cards, loop-guard escalations, agent escalations), keyed at the single point where the prompt would otherwise be returned as ordinary text. The informational Run Summary is out of scope here; its fidelity is handled by parent-driven or top-level mode, not by this envelope.
+
 These guidelines do not define the persisted format for final product specifications, technical specifications, implementation plans, review reports, or other saved artifacts unless that artifact's owning skill explicitly opts into decision cards. Saved artifacts should record resolved decisions in their own document format.
 
 The output is a decision card: a compact, self-contained block optimized for fast re-entry after context switching. It must guide the user from the high-level situation to the concrete tradeoff before asking them to choose.
