@@ -13893,6 +13893,43 @@ test('usage start: automatic Codex binding without --source-path still works', (
   assert(fs.existsSync(path.join(pendingDir, `${result.data.invocationId}.json`)), 'pending state should be written for auto binding');
 });
 
+console.log('\n=== trace event ledger tests ===\n');
+
+const traceTools = require(TOOLS_PATH);
+
+test('trace event: append writes one camelCase event with nested activity', () => {
+  const ctx = createUsageWorkspace();
+  const event = traceTools.appendTraceEvent(ctx.fixmeDir, {
+    eventType: 'toolFinished',
+    source: 'hook',
+    runtime: 'claude',
+    sessionId: 'abc',
+    scope: 'fixmeRun',
+    activity: { plane: 'work', bucket: 'verification', confidence: 'exact' },
+  });
+  const tracePath = path.join(ctx.fixmeDir, 'trace', 'events.jsonl');
+  assert(fs.existsSync(tracePath), 'trace events.jsonl should exist');
+  const rows = readJsonl(tracePath);
+  assert(rows.length === 1, `one event should be appended, got ${rows.length}`);
+  const stored = rows[0];
+  assert(stored.schemaVersion === 1, 'event has schemaVersion 1');
+  assert(typeof stored.eventId === 'string' && stored.eventId.startsWith('trace_'), `eventId should start with trace_, got ${stored.eventId}`);
+  assert(typeof stored.recordedAt === 'string', 'event has recordedAt');
+  assert(stored.activity && stored.activity.plane === 'work' && stored.activity.bucket === 'verification' && stored.activity.confidence === 'exact', `nested activity, got ${JSON.stringify(stored.activity)}`);
+  assert(!('plane' in stored) && !('bucket' in stored) && !('confidence' in stored), 'no top-level plane/bucket/confidence');
+  assertNoSnakeCaseKeys(stored, 'trace event');
+  assert(stored.eventId === event.eventId, 'returned event id matches stored');
+});
+
+test('trace event: read returns appended events in append order', () => {
+  const ctx = createUsageWorkspace();
+  traceTools.appendTraceEvent(ctx.fixmeDir, { eventType: 'sessionStart', source: 'hook', runtime: 'codex', sessionId: 's1' });
+  traceTools.appendTraceEvent(ctx.fixmeDir, { eventType: 'stop', source: 'hook', runtime: 'codex', sessionId: 's1' });
+  const events = traceTools.readTraceEvents(ctx.fixmeDir);
+  assert(events.length === 2, `two events, got ${events.length}`);
+  assert(events[0].eventType === 'sessionStart' && events[1].eventType === 'stop', `order preserved, got ${events.map(e => e.eventType).join(',')}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

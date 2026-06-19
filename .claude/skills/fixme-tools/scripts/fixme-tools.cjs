@@ -345,6 +345,25 @@ const USAGE_TOKEN_BUCKETS = Object.freeze([
   'totalTokens',
 ]);
 
+const TRACE_SCHEMA_VERSION = 1;
+const TRACE_MANAGED_HOOK_ID = 'fixmeTraceHook';
+const TRACE_SOURCES = Object.freeze(['hook', 'transcript', 'lifecycle', 'usage', 'installer']);
+const TRACE_PLANES = Object.freeze(['orchestration', 'work']);
+const TRACE_ORCHESTRATION_BUCKETS = Object.freeze([
+  'workflowRouting', 'dispatchManagement', 'stateCheckpointing', 'reviewLoopControl',
+  'attentionBrokering', 'recoveryHandling', 'summaryReporting',
+]);
+const TRACE_WORK_BUCKETS = Object.freeze([
+  'contextReading', 'codeUnderstanding', 'codeWriting', 'planWriting', 'planReviewing',
+  'planReviewHandling', 'specWriting', 'specReviewing', 'specReviewHandling', 'codeReviewing',
+  'codeReviewHandling', 'verification', 'research', 'investigation', 'decisionAnalysis',
+  'artifactReporting', 'mixedModelReasoning', 'uncategorizedModelReasoning',
+]);
+const TRACE_CONFIDENCES = Object.freeze(['exact', 'exactModelCall', 'derived', 'mixed', 'unknown']);
+const TRACE_SCOPES = Object.freeze(['fixmeRun', 'fixmeInvocation', 'fixmeProjectAmbient', 'nonFixme', 'unknown']);
+const TRACE_COMMAND_KINDS = Object.freeze(['test', 'build', 'lint', 'browserVerification']);
+const TRACE_CYCLE_KINDS = Object.freeze(['planReadiness', 'planReview', 'codeReview', 'outerPlanRequired', 'implementRepair']);
+
 const ALERT_EVENTS = Object.freeze(['user_input', 'task_finished', 'task_failed']);
 
 const ALERT_DEFAULT_SOUNDS = Object.freeze({
@@ -6245,6 +6264,70 @@ function usageProjectEventPath(fixmeDir) {
 
 function usageGlobalEventPath() {
   return path.join(os.homedir(), '.fixme', 'usage', 'events.jsonl');
+}
+
+function traceProjectDir(fixmeDir) {
+  return path.join(fixmeDir, 'trace');
+}
+function traceProjectEventPath(fixmeDir) {
+  return path.join(traceProjectDir(fixmeDir), 'events.jsonl');
+}
+function traceGlobalEventPath() {
+  return path.join(os.homedir(), '.fixme', 'trace', 'events.jsonl');
+}
+function traceActiveDir(fixmeDir) {
+  return path.join(traceProjectDir(fixmeDir), 'active');
+}
+function traceActivePath(fixmeDir, runtime, sessionId) {
+  return path.join(traceActiveDir(fixmeDir), `${runtime}-${sessionId}.json`);
+}
+// Build a normalized event envelope. Stored events use nested activity only.
+function buildTraceEvent(input) {
+  const event = {
+    schemaVersion: TRACE_SCHEMA_VERSION,
+    eventId: generateUsageId('trace'),
+    eventType: input.eventType,
+    recordedAt: input.recordedAt || new Date().toISOString(),
+  };
+  for (const key of [
+    'source', 'runtime', 'sessionId', 'transcriptPath', 'cwd', 'fixmeRoot', 'fixmeDir',
+    'scope', 'invocationId', 'pipelineRunId', 'parentInvocationId', 'statusId', 'taskStatePath',
+    'skill', 'phase', 'cycleKind', 'cycleIndex',
+  ]) {
+    if (input[key] !== undefined) event[key] = input[key];
+  }
+  // Copy any additional safe, already-sanitized event-type-specific fields the
+  // caller assembled (tool metadata, usage deltas, registration metadata).
+  for (const [key, value] of Object.entries(input.extra || {})) {
+    event[key] = value;
+  }
+  if (input.activity) {
+    event.activity = {
+      plane: input.activity.plane,
+      bucket: input.activity.bucket,
+      confidence: input.activity.confidence,
+    };
+  }
+  return event;
+}
+function appendTraceEventToPath(eventPath, event) {
+  fs.mkdirSync(path.dirname(eventPath), { recursive: true });
+  fs.appendFileSync(eventPath, JSON.stringify(event) + '\n');
+  return event;
+}
+function appendTraceEvent(fixmeDir, input) {
+  const event = buildTraceEvent(input);
+  appendTraceEventToPath(traceProjectEventPath(fixmeDir), event);
+  return event;
+}
+function readTraceEvents(fixmeDir) {
+  const eventPath = traceProjectEventPath(fixmeDir);
+  if (!fs.existsSync(eventPath)) return [];
+  return fs.readFileSync(eventPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
+    .filter(Boolean);
 }
 
 function usageClaudeHook() {
@@ -13341,4 +13424,9 @@ module.exports = {
   RUN_STATES,
   RUN_CHECKPOINTS,
   listRegisteredCommandsForTest,
+  appendTraceEvent,
+  readTraceEvents,
+  buildTraceEvent,
+  traceProjectEventPath,
+  traceActivePath,
 };
