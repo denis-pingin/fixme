@@ -14399,6 +14399,22 @@ test('report: text commands view shows passed/failed/unknown-exit labeling', () 
   assert(text.includes('test') && text.includes('passed') && text.includes('unknown exit'), `commands text labeling, got ${text}`);
 });
 
+console.log('\n=== trace skill docs tests ===\n');
+
+test('skill docs: fixme-tools documents trace hook and report views', () => {
+  const toolsSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-tools', 'SKILL.md'), 'utf8');
+  assert(toolsSkill.includes('trace hook'), 'fixme-tools skill should document trace hook');
+  assert(toolsSkill.includes('usage report --view'), 'fixme-tools skill should document report views');
+  assert(toolsSkill.includes('--fixme-managed-hook-id fixmeTraceHook'), 'fixme-tools skill should document the managed hook marker');
+});
+
+test('skill docs: usage-source docs reject artifact paths', () => {
+  const toolsSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-tools', 'SKILL.md'), 'utf8');
+  const taskSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md'), 'utf8');
+  assert(/artifact|task, ticket, spec, plan, report/i.test(toolsSkill) && /fail|reject|invalid/i.test(toolsSkill), 'fixme-tools documents artifact-path rejection at usage start');
+  assert(/artifact|task, ticket, spec, plan, report/i.test(taskSkill) && /usageSourcePath/.test(taskSkill), 'fixme-task documents artifact paths are never valid usageSourcePath');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

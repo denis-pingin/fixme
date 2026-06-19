@@ -1343,7 +1343,7 @@ Replace routine polling with one durable wait marker (prefer `lifecycle dispatch
 
 #### Codex child usage source
 
-Codex child `agent`/`background` dispatches must not pass the parent or explicit `usageSourcePath` through `lifecycle dispatch prepare` or the child `<usage>` block; the child captures its own runtime source at `usage start`. The CLI rejects `usageSourcePath` for Codex `agent` and `background` dispatches. Claude and `inline-skill` dispatches keep usage-source pass-through only when the source is a validated same-runtime counter source.
+Codex child `agent`/`background` dispatches must not pass the parent or explicit `usageSourcePath` through `lifecycle dispatch prepare` or the child `<usage>` block; the child captures its own runtime source at `usage start`. The CLI rejects `usageSourcePath` for Codex `agent` and `background` dispatches. Claude and `inline-skill` dispatches keep usage-source pass-through only when the source is a validated same-runtime counter source. Fixme artifact paths (task, ticket, spec, plan, report, and decision files) are never valid `usageSourcePath` values; passing one to a Codex `usage start --source-path` fails fast with `INVALID_USAGE_SOURCE_PATH` before any usage state is created.
 
 Claude runtime mechanics:
 
