@@ -14024,6 +14024,77 @@ test('active context: out-of-order enrichment uses interval containing event tim
   assert(enrichedAfter.invocationId === 'usage_a', `later event bound to invocation, got ${JSON.stringify(enrichedAfter)}`);
 });
 
+console.log('\n=== trace classifier tests ===\n');
+
+test('classifier: lifecycle/usage/task commands map to orchestration buckets', () => {
+  const lifecycle = traceTools.classifyCommand('node /x/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir /a');
+  assert(lifecycle.plane === 'orchestration', `lifecycle is orchestration, got ${lifecycle.plane}`);
+  const checkpoint = traceTools.classifyCommand('node /x/fixme-tools.cjs task checkpoint --state /a');
+  assert(checkpoint.plane === 'orchestration' && checkpoint.bucket === 'stateCheckpointing', `task checkpoint, got ${JSON.stringify(checkpoint)}`);
+  const usageReport = traceTools.classifyCommand('node /x/fixme-tools.cjs usage report --view buckets');
+  assert(usageReport.plane === 'orchestration' && usageReport.bucket === 'summaryReporting', `usage report, got ${JSON.stringify(usageReport)}`);
+});
+
+test('classifier: verification commands keep command-derived buckets', () => {
+  for (const [cmd, kind] of [['yarn test', 'test'], ['npm run build', 'build'], ['yarn lint', 'lint'], ['node .claude/skills/fixme-tools/scripts/fixme-tools.test.cjs', 'test']]) {
+    const result = traceTools.classifyCommand(cmd);
+    assert(result.plane === 'work' && result.bucket === 'verification' && result.commandKind === kind, `${cmd} -> verification/${kind}, got ${JSON.stringify(result)}`);
+  }
+});
+
+test('classifier: read and write commands map to work buckets', () => {
+  assert(traceTools.classifyCommand('rg foo src/').bucket === 'contextReading', 'rg is contextReading');
+  assert(traceTools.classifyCommand('git diff').bucket === 'contextReading', 'git diff is contextReading');
+  assert(traceTools.classifyCommand('apply_patch < patch').bucket === 'codeWriting', 'apply_patch is codeWriting');
+});
+
+test('classifier: unmatched shell command becomes unknownCommand', () => {
+  const result = traceTools.classifyCommand('curl https://example.com');
+  assert(result.commandFamily === 'unknownCommand' && result.confidence === 'unknown', `unknown command, got ${JSON.stringify(result)}`);
+});
+
+test('classifier: recognized command keeps bucket over active skill default', () => {
+  const result = traceTools.classifyToolEvent({ toolName: 'Bash', toolKind: 'shellCommand', commandString: 'yarn test', skill: 'fixme-write-plan' });
+  assert(result.activity.bucket === 'verification', `recognized command wins over planWriting default, got ${JSON.stringify(result.activity)}`);
+});
+
+test('classifier: active skill default applies only to non-shell tool without classifier hit', () => {
+  const readResult = traceTools.classifyToolEvent({ toolName: 'Read', toolKind: 'fileRead', skill: 'fixme-write-plan' });
+  assert(readResult.activity.bucket === 'contextReading', `read tool keeps tool-derived bucket, got ${JSON.stringify(readResult.activity)}`);
+  const unknownTool = traceTools.classifyToolEvent({ toolName: 'CustomTool', toolKind: 'other', skill: 'fixme-write-plan' });
+  assert(unknownTool.activity.bucket === 'planWriting', `unrecognized non-shell tool uses active skill default, got ${JSON.stringify(unknownTool.activity)}`);
+});
+
+test('classifier: unmatched shell command keeps unknownCommand over active skill default', () => {
+  const result = traceTools.classifyToolEvent({ toolName: 'Bash', toolKind: 'shellCommand', commandString: 'curl https://x', skill: 'fixme-write-plan' });
+  assert(result.commandFamily === 'unknownCommand' && result.activity.confidence === 'unknown', `unknownCommand keeps its classification, got ${JSON.stringify(result)}`);
+});
+
+test('classifier: every listed active Fixme skill maps to the specified bucket', () => {
+  const expected = {
+    'fixme': ['orchestration', 'workflowRouting'],
+    'fixme-session': ['orchestration', 'workflowRouting'],
+    'fixme-config': ['orchestration', 'stateCheckpointing'],
+    'fixme-write-plan': ['work', 'planWriting'],
+    'fixme-review-plan': ['work', 'planReviewing'],
+    'fixme-handle-plan-review': ['work', 'planReviewHandling'],
+    'fixme-review-code': ['work', 'codeReviewing'],
+    'fixme-handle-code-review': ['work', 'codeReviewHandling'],
+    'fixme-investigate': ['work', 'investigation'],
+    'fixme-research': ['work', 'research'],
+    'fixme-browser-verify': ['work', 'verification'],
+  };
+  for (const [skill, [plane, bucket]] of Object.entries(expected)) {
+    const result = traceTools.activeSkillDefaultBucket(skill);
+    assert(result.plane === plane && result.bucket === bucket, `${skill} -> ${plane}/${bucket}, got ${JSON.stringify(result)}`);
+  }
+});
+
+test('classifier: unmapped active skill becomes uncategorizedModelReasoning', () => {
+  const result = traceTools.activeSkillDefaultBucket('some-unknown-skill');
+  assert(result.plane === 'work' && result.bucket === 'uncategorizedModelReasoning' && result.confidence === 'unknown', `unmapped skill, got ${JSON.stringify(result)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

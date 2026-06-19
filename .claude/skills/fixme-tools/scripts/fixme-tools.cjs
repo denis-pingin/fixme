@@ -6577,6 +6577,172 @@ function enrichEventFromActiveContext(active, event) {
   return enriched;
 }
 
+const TRACE_ACTIVE_SKILL_BUCKETS = Object.freeze({
+  'fixme': { plane: 'orchestration', bucket: 'workflowRouting' },
+  'fixme-task': { plane: 'orchestration', bucket: 'workflowRouting' },
+  'fixme-session': { plane: 'orchestration', bucket: 'workflowRouting' },
+  'fixme-config': { plane: 'orchestration', bucket: 'stateCheckpointing' },
+  'fixme-alert': { plane: 'orchestration', bucket: 'attentionBrokering' },
+  'fixme-ticket': { plane: 'orchestration', bucket: 'stateCheckpointing' },
+  'fixme-tickets': { plane: 'orchestration', bucket: 'stateCheckpointing' },
+  'fixme-tickets-md': { plane: 'orchestration', bucket: 'stateCheckpointing' },
+  'fixme-tools': { plane: 'orchestration', bucket: 'stateCheckpointing' },
+  'fixme-usage': { plane: 'orchestration', bucket: 'summaryReporting' },
+  'fixme-brainstorm': { plane: 'work', bucket: 'decisionAnalysis' },
+  'fixme-write-product-spec': { plane: 'work', bucket: 'specWriting' },
+  'fixme-write-technical-spec': { plane: 'work', bucket: 'specWriting' },
+  'fixme-review-spec': { plane: 'work', bucket: 'specReviewing' },
+  'fixme-handle-spec-review': { plane: 'work', bucket: 'specReviewHandling' },
+  'fixme-write-plan': { plane: 'work', bucket: 'planWriting' },
+  'fixme-plan-readiness': { plane: 'work', bucket: 'planReviewing' },
+  'fixme-review-plan': { plane: 'work', bucket: 'planReviewing' },
+  'fixme-handle-plan-review': { plane: 'work', bucket: 'planReviewHandling' },
+  'fixme-execute-plan': { plane: 'work', bucket: 'codeWriting' },
+  'fixme-review-code': { plane: 'work', bucket: 'codeReviewing' },
+  'fixme-handle-code-review': { plane: 'work', bucket: 'codeReviewHandling' },
+  'fixme-investigate': { plane: 'work', bucket: 'investigation' },
+  'fixme-research': { plane: 'work', bucket: 'research' },
+  'fixme-browser-verify': { plane: 'work', bucket: 'verification' },
+  'fixme-pr-comments': { plane: 'work', bucket: 'codeReviewHandling' },
+  'fixme-rebase': { plane: 'work', bucket: 'decisionAnalysis' },
+});
+
+function activeSkillDefaultBucket(skill) {
+  const mapped = TRACE_ACTIVE_SKILL_BUCKETS[skill];
+  if (mapped) return { plane: mapped.plane, bucket: mapped.bucket, confidence: 'derived' };
+  // Unmapped (including howto reference skills) get uncategorized; never guess a
+  // bucket from the skill name. Warn so the gap is visible.
+  process.stderr.write(`[trace] no active-skill default bucket for skill ${JSON.stringify(skill)}; using uncategorizedModelReasoning\n`);
+  return { plane: 'work', bucket: 'uncategorizedModelReasoning', confidence: 'unknown' };
+}
+
+function tokenizeCommandString(commandString) {
+  return String(commandString || '').trim().split(/\s+/).filter(Boolean);
+}
+
+// Strips a leading `node <script-path>` prefix, returning the meaningful tokens.
+function meaningfulCommandTokens(tokens) {
+  if (tokens.length === 0) return tokens;
+  if (tokens[0] === 'node') {
+    // Drop node and the immediately following script path token if present.
+    return tokens.slice(tokens.length > 1 ? 2 : 1);
+  }
+  return tokens;
+}
+
+function lifecycleSubcommandBucket(subcommand) {
+  switch (subcommand) {
+    case 'dispatch': return 'dispatchManagement';
+    case 'attention': return 'attentionBrokering';
+    case 'wait': return 'dispatchManagement';
+    case 'parent':
+    case 'task-event':
+    case 'child':
+    case 'invocation': return 'stateCheckpointing';
+    default: return 'stateCheckpointing';
+  }
+}
+
+// Deterministic, low-cardinality command classifier. Returns
+// { plane, bucket, commandFamily, commandKind, confidence }.
+function classifyCommand(commandString) {
+  const allTokens = tokenizeCommandString(commandString);
+  const tokens = meaningfulCommandTokens(allTokens);
+  const head = tokens[0] || '';
+  const isFixmeToolsTest = allTokens.some(t => /fixme-tools\.test\.cjs$/.test(t));
+  const isFixmeTools = !isFixmeToolsTest && allTokens.some(t => /fixme-tools\.cjs$/.test(t));
+
+  const recognized = (family, plane, bucket, commandKind) => ({
+    plane, bucket, commandFamily: family, commandKind: commandKind || null, confidence: 'exact',
+  });
+
+  // 1. Fixme lifecycle / usage / task commands. After stripping `node <script>`,
+  // tokens[0] is the command group (lifecycle/usage/task/...).
+  if (isFixmeTools) {
+    const group = tokens[0];
+    if (group === 'lifecycle') {
+      return recognized('fixmeTools', 'orchestration', lifecycleSubcommandBucket(tokens[1]), null);
+    }
+    if (group === 'usage') {
+      const bucket = tokens[1] === 'report' ? 'summaryReporting' : 'stateCheckpointing';
+      return recognized('fixmeTools', 'orchestration', bucket, null);
+    }
+    if (group === 'task' && ['checkpoint', 'init', 'save', 'decision', 'result'].includes(tokens[1])) {
+      return recognized('fixmeTools', 'orchestration', 'stateCheckpointing', null);
+    }
+    return recognized('fixmeTools', 'orchestration', 'stateCheckpointing', null);
+  }
+  if (isFixmeToolsTest) {
+    return recognized('fixmeTools', 'work', 'verification', 'test');
+  }
+
+  // 2. Verification commands.
+  const joined = allTokens.join(' ');
+  const isYarnScript = (script) => head === 'yarn' && (tokens[1] === script || (tokens[1] === 'run' && tokens[2] === script));
+  const isNpmScript = (script) => head === 'npm' && ((tokens[1] === 'run' && tokens[2] === script) || tokens[1] === script);
+  const isPnpmScript = (script) => head === 'pnpm' && (tokens[1] === script || (tokens[1] === 'run' && tokens[2] === script));
+
+  if (isYarnScript('test') || isNpmScript('test') || isPnpmScript('test') || head === 'jest' || head === 'vitest' || (head === 'node' && allTokens.includes('--test'))) {
+    return recognized(head === 'node' ? 'node' : head, 'work', 'verification', 'test');
+  }
+  if (isYarnScript('build') || isNpmScript('build') || isPnpmScript('build') || head === 'tsc') {
+    return recognized(head, 'work', 'verification', 'build');
+  }
+  if (isYarnScript('lint') || isNpmScript('lint') || isPnpmScript('lint') || head === 'eslint') {
+    return recognized(head, 'work', 'verification', 'lint');
+  }
+  if (head === 'playwright-cli' || head === 'playwright') {
+    return recognized(head, 'work', 'verification', 'browserVerification');
+  }
+
+  // 3. Read commands.
+  if (head === 'rg' || head === 'grep' || head === 'nl' || head === 'ls' || head === 'find') {
+    return recognized(head, 'work', 'contextReading', null);
+  }
+  if (head === 'sed' && tokens.includes('-n')) {
+    return recognized('sed', 'work', 'contextReading', null);
+  }
+  if (head === 'git' && ['show', 'diff', 'status'].includes(tokens[1])) {
+    return recognized('git', 'work', 'contextReading', null);
+  }
+
+  // 4. Write commands.
+  if (head === 'apply_patch' || joined.startsWith('apply_patch')) {
+    return recognized('apply_patch', 'work', 'codeWriting', null);
+  }
+
+  // 5. Unmatched shell command.
+  return { plane: 'work', bucket: 'uncategorizedModelReasoning', commandFamily: 'unknownCommand', commandKind: null, confidence: 'unknown' };
+}
+
+const TRACE_READ_TOOL_NAMES = Object.freeze(['Read', 'Grep', 'Glob', 'NotebookRead']);
+const TRACE_WRITE_TOOL_NAMES = Object.freeze(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
+
+// Applies the brief's tool/command classification precedence.
+function classifyToolEvent(input) {
+  const { toolName, toolKind, commandString, skill } = input || {};
+  // 1. Shell command -> command classifier (unknownCommand is never overridden).
+  if (toolKind === 'shellCommand' && commandString) {
+    const cmd = classifyCommand(commandString);
+    return {
+      toolKind,
+      commandFamily: cmd.commandFamily,
+      commandKind: cmd.commandKind,
+      activity: { plane: cmd.plane, bucket: cmd.bucket, confidence: cmd.confidence },
+    };
+  }
+  // 3. Recognized read/write tool names -> tool-derived bucket.
+  if (TRACE_READ_TOOL_NAMES.includes(toolName)) {
+    return { toolKind, commandFamily: null, commandKind: null, activity: { plane: 'work', bucket: 'contextReading', confidence: 'derived' } };
+  }
+  if (TRACE_WRITE_TOOL_NAMES.includes(toolName)) {
+    return { toolKind, commandFamily: null, commandKind: null, activity: { plane: 'work', bucket: 'codeWriting', confidence: 'derived' } };
+  }
+  // 5. Active skill default for non-shell tool without a classifier hit.
+  const fallback = activeSkillDefaultBucket(skill);
+  return { toolKind, commandFamily: null, commandKind: null, activity: fallback };
+}
+
 function usageClaudeHook() {
   let input;
   try {
@@ -13679,4 +13845,7 @@ module.exports = {
   applyActiveContextEvent,
   enrichEventFromActiveContext,
   readActiveContext,
+  classifyCommand,
+  activeSkillDefaultBucket,
+  classifyToolEvent,
 };
