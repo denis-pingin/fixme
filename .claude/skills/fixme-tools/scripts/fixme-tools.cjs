@@ -6330,6 +6330,253 @@ function readTraceEvents(fixmeDir) {
     .filter(Boolean);
 }
 
+function emptyActiveContext(runtime, sessionId) {
+  return {
+    schemaVersion: TRACE_SCHEMA_VERSION,
+    runtime,
+    sessionId,
+    transcriptPath: null,
+    cwd: null,
+    fixmeRoot: null,
+    fixmeDir: null,
+    currentInvocationId: null,
+    currentTaskRunKey: null,
+    invocations: {},
+    taskRuns: {},
+    lastEventAt: null,
+  };
+}
+
+function readActiveContext(fixmeDir, runtime, sessionId) {
+  const activePath = traceActivePath(fixmeDir, runtime, sessionId);
+  if (!fs.existsSync(activePath)) return emptyActiveContext(runtime, sessionId);
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+  } catch (_) {
+    const quarantineDir = path.join(traceActiveDir(fixmeDir), 'corrupt');
+    const timestamp = new Date().toISOString().replace(/[-:.]/g, '');
+    const quarantinePath = path.join(quarantineDir, `${runtime}-${sessionId}-${timestamp}.json`);
+    try {
+      fs.mkdirSync(quarantineDir, { recursive: true });
+      fs.renameSync(activePath, quarantinePath);
+    } catch (renameErr) {
+      process.stderr.write(`[trace] failed to quarantine corrupt active context for ${runtime}/${sessionId} at ${activePath}: ${renameErr.message}\n`);
+    }
+    process.stderr.write(`[trace] corrupt active context quarantined for ${runtime}/${sessionId}; rebinding ambient (moved to ${quarantinePath})\n`);
+    appendTraceEvent(fixmeDir, {
+      source: 'lifecycle',
+      eventType: 'recoveryHandling',
+      runtime,
+      sessionId,
+      extra: { recoveryKind: 'corruptActiveContext', runtime, sessionId },
+    });
+    return emptyActiveContext(runtime, sessionId);
+  }
+  if (!raw || typeof raw !== 'object') return emptyActiveContext(runtime, sessionId);
+  return raw;
+}
+
+function writeActiveContext(fixmeDir, active) {
+  writeJsonAtomic(traceActivePath(fixmeDir, active.runtime, active.sessionId), active);
+  return active;
+}
+
+function taskRunKeyForEvent(event) {
+  return event.statusId || event.taskRunId || event.taskStatePath || null;
+}
+
+function nearestUnfinishedParentInvocation(active, finishedId) {
+  const finished = active.invocations[finishedId];
+  let parentId = finished ? finished.parentInvocationId : null;
+  const seen = new Set();
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = active.invocations[parentId];
+    if (!parent) return null;
+    if (parent.finishedAt === null) return parentId;
+    parentId = parent.parentInvocationId;
+  }
+  return null;
+}
+
+function applyActiveContextEvent(fixmeDir, event) {
+  const runtime = event.runtime || 'unknown';
+  const sessionId = event.sessionId || 'unknown';
+  const active = readActiveContext(fixmeDir, runtime, sessionId);
+  active.runtime = runtime;
+  active.sessionId = sessionId;
+  const eventTime = event.startedAt || event.finishedAt || event.recordedAt || new Date().toISOString();
+  let appendBindingEvent = true;
+
+  switch (event.eventType) {
+    case 'runtimeSessionBound': {
+      if (event.transcriptPath !== undefined) active.transcriptPath = event.transcriptPath;
+      if (event.cwd !== undefined) active.cwd = event.cwd;
+      if (event.fixmeRoot !== undefined) active.fixmeRoot = event.fixmeRoot;
+      if (event.fixmeDir !== undefined) active.fixmeDir = event.fixmeDir;
+      break;
+    }
+    case 'fixmeInvocationStarted': {
+      active.invocations[event.invocationId] = {
+        invocationId: event.invocationId,
+        skill: event.skill !== undefined ? event.skill : null,
+        role: event.role !== undefined ? event.role : null,
+        pipelineRunId: event.pipelineRunId !== undefined ? event.pipelineRunId : null,
+        parentInvocationId: event.parentInvocationId !== undefined ? event.parentInvocationId : null,
+        startedAt: eventTime,
+        finishedAt: null,
+        outcome: null,
+      };
+      active.currentInvocationId = event.invocationId;
+      break;
+    }
+    case 'fixmeInvocationFinished': {
+      const record = active.invocations[event.invocationId];
+      if (!record) {
+        process.stderr.write(`[trace] finish for unknown invocation ${event.invocationId} (${runtime}/${sessionId}); leaving current context unchanged\n`);
+        appendTraceEvent(fixmeDir, {
+          source: 'lifecycle', eventType: 'recoveryHandling', runtime, sessionId,
+          extra: { recoveryKind: 'unknownInvocationFinish', invocationId: event.invocationId },
+        });
+        active.lastEventAt = eventTime;
+        writeActiveContext(fixmeDir, active);
+        return active;
+      }
+      record.finishedAt = eventTime;
+      record.outcome = event.outcome !== undefined ? event.outcome : null;
+      if (active.currentInvocationId === event.invocationId) {
+        active.currentInvocationId = nearestUnfinishedParentInvocation(active, event.invocationId);
+      }
+      break;
+    }
+    case 'fixmeTaskRunBound': {
+      const key = taskRunKeyForEvent(event);
+      active.taskRuns[key] = {
+        statusId: event.statusId !== undefined ? event.statusId : null,
+        taskRunId: event.taskRunId !== undefined ? event.taskRunId : null,
+        taskStatePath: event.taskStatePath !== undefined ? event.taskStatePath : null,
+        taskRef: event.taskRef !== undefined ? event.taskRef : null,
+        ticketPath: event.ticketPath !== undefined ? event.ticketPath : null,
+        invocationId: event.invocationId !== undefined ? event.invocationId : null,
+        skill: event.skill !== undefined ? event.skill : null,
+        phase: event.phase !== undefined ? event.phase : null,
+        cycleKind: event.cycleKind !== undefined ? event.cycleKind : null,
+        cycleIndex: event.cycleIndex !== undefined ? event.cycleIndex : null,
+        startedAt: eventTime,
+        finishedAt: null,
+        outcome: null,
+      };
+      active.currentTaskRunKey = key;
+      break;
+    }
+    case 'fixmeTaskRunTerminal': {
+      const key = taskRunKeyForEvent(event);
+      const record = active.taskRuns[key];
+      if (!record) {
+        process.stderr.write(`[trace] terminal for unknown task run ${key} (${runtime}/${sessionId}); leaving current context unchanged\n`);
+        appendTraceEvent(fixmeDir, {
+          source: 'lifecycle', eventType: 'recoveryHandling', runtime, sessionId,
+          extra: { recoveryKind: 'unknownTaskRunTerminal', taskRunKey: key },
+        });
+        active.lastEventAt = eventTime;
+        writeActiveContext(fixmeDir, active);
+        return active;
+      }
+      record.finishedAt = eventTime;
+      record.outcome = event.outcome !== undefined ? event.outcome : null;
+      if (active.currentTaskRunKey === key) {
+        active.currentTaskRunKey = null;
+      }
+      break;
+    }
+    default: {
+      // Unknown event types do not mutate the binding state machine.
+      appendBindingEvent = false;
+      break;
+    }
+  }
+
+  active.lastEventAt = eventTime;
+  writeActiveContext(fixmeDir, active);
+  if (appendBindingEvent) {
+    appendTraceEvent(fixmeDir, {
+      source: event.source || 'lifecycle',
+      eventType: event.eventType,
+      runtime,
+      sessionId,
+      recordedAt: eventTime,
+      invocationId: event.invocationId,
+      pipelineRunId: event.pipelineRunId,
+      parentInvocationId: event.parentInvocationId,
+      statusId: event.statusId,
+      taskStatePath: event.taskStatePath,
+      skill: event.skill,
+      phase: event.phase,
+      cycleKind: event.cycleKind,
+      cycleIndex: event.cycleIndex,
+    });
+  }
+  return active;
+}
+
+function firstInvocationStartTime(active) {
+  let earliest = null;
+  for (const record of Object.values(active.invocations || {})) {
+    if (record && typeof record.startedAt === 'string') {
+      if (earliest === null || record.startedAt < earliest) earliest = record.startedAt;
+    }
+  }
+  return earliest;
+}
+
+// Pure function: returns a shallow-merged copy enriched with the most-specific
+// scope/identity, preserving the event's own recordedAt. Events before the first
+// invocation binding stay fixmeProjectAmbient (when fixmeDir is known) or unknown.
+function enrichEventFromActiveContext(active, event) {
+  const enriched = { ...event };
+  const fixmeDirKnown = active && typeof active.fixmeDir === 'string' && active.fixmeDir;
+  const eventTime = event.recordedAt || null;
+  const firstStart = active ? firstInvocationStartTime(active) : null;
+  const beforeFirstBinding = firstStart !== null && eventTime !== null && eventTime < firstStart;
+
+  if (active && active.fixmeRoot) enriched.fixmeRoot = active.fixmeRoot;
+  if (fixmeDirKnown) enriched.fixmeDir = active.fixmeDir;
+
+  if (beforeFirstBinding || !active) {
+    enriched.scope = fixmeDirKnown ? 'fixmeProjectAmbient' : 'unknown';
+    return enriched;
+  }
+
+  const taskRun = active.currentTaskRunKey ? active.taskRuns[active.currentTaskRunKey] : null;
+  if (taskRun && taskRun.finishedAt === null) {
+    enriched.scope = 'fixmeRun';
+    if (taskRun.statusId) enriched.statusId = taskRun.statusId;
+    if (taskRun.taskStatePath) enriched.taskStatePath = taskRun.taskStatePath;
+    if (taskRun.skill) enriched.skill = taskRun.skill;
+    if (taskRun.phase) enriched.phase = taskRun.phase;
+    if (taskRun.cycleKind) enriched.cycleKind = taskRun.cycleKind;
+    if (taskRun.cycleIndex !== null && taskRun.cycleIndex !== undefined) enriched.cycleIndex = taskRun.cycleIndex;
+    if (taskRun.invocationId) enriched.invocationId = taskRun.invocationId;
+    return enriched;
+  }
+
+  if (active.currentInvocationId) {
+    enriched.scope = 'fixmeInvocation';
+    enriched.invocationId = active.currentInvocationId;
+    const inv = active.invocations[active.currentInvocationId];
+    if (inv) {
+      if (inv.skill) enriched.skill = inv.skill;
+      if (inv.pipelineRunId) enriched.pipelineRunId = inv.pipelineRunId;
+      if (inv.parentInvocationId) enriched.parentInvocationId = inv.parentInvocationId;
+    }
+    return enriched;
+  }
+
+  enriched.scope = fixmeDirKnown ? 'fixmeProjectAmbient' : 'nonFixme';
+  return enriched;
+}
+
 function usageClaudeHook() {
   let input;
   try {
@@ -13429,4 +13676,7 @@ module.exports = {
   buildTraceEvent,
   traceProjectEventPath,
   traceActivePath,
+  applyActiveContextEvent,
+  enrichEventFromActiveContext,
+  readActiveContext,
 };

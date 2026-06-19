@@ -13930,6 +13930,100 @@ test('trace event: read returns appended events in append order', () => {
   assert(events[0].eventType === 'sessionStart' && events[1].eventType === 'stop', `order preserved, got ${events.map(e => e.eventType).join(',')}`);
 });
 
+console.log('\n=== active context lifecycle tests ===\n');
+
+function readActive(ctx, runtime, sessionId) {
+  const p = path.join(ctx.fixmeDir, 'trace', 'active', `${runtime}-${sessionId}.json`);
+  return fs.existsSync(p) ? readJson(p) : null;
+}
+
+test('active context: invocation start sets current invocation', () => {
+  const ctx = createUsageWorkspace();
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, {
+    eventType: 'fixmeInvocationStarted', runtime: 'codex', sessionId: 's', invocationId: 'usage_a',
+    skill: 'fixme-task', role: 'orchestrator', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z',
+  });
+  const active = readActive(ctx, 'codex', 's');
+  assert(active.currentInvocationId === 'usage_a', `current invocation, got ${JSON.stringify(active)}`);
+  assert(active.invocations.usage_a && active.invocations.usage_a.finishedAt === null, 'invocation recorded unfinished');
+});
+
+test('active context: child start then finish restores nearest unfinished parent', () => {
+  const ctx = createUsageWorkspace();
+  const base = { runtime: 'codex', sessionId: 's' };
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_parent', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_child', parentInvocationId: 'usage_parent', startedAt: '2026-06-18T12:01:00.000Z' });
+  let active = readActive(ctx, 'codex', 's');
+  assert(active.currentInvocationId === 'usage_child', 'child becomes current');
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationFinished', invocationId: 'usage_child', outcome: 'complete' });
+  active = readActive(ctx, 'codex', 's');
+  assert(active.currentInvocationId === 'usage_parent', `current restored to parent, got ${active.currentInvocationId}`);
+  assert(active.invocations.usage_child.outcome === 'complete', 'child outcome recorded');
+});
+
+test('active context: task bind sets currentTaskRunKey and terminal clears it', () => {
+  const ctx = createUsageWorkspace();
+  const base = { runtime: 'codex', sessionId: 's' };
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_a', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeTaskRunBound', invocationId: 'usage_a', statusId: 'run_1', taskStatePath: '/repo/.fixme/tasks/t.state.json', skill: 'fixme-execute-plan', phase: 'implement', cycleKind: 'codeReview', cycleIndex: 2 });
+  let active = readActive(ctx, 'codex', 's');
+  assert(active.currentTaskRunKey === 'run_1', `task run key set, got ${active.currentTaskRunKey}`);
+  assert(active.taskRuns.run_1.cycleIndex === 2, 'cycle recorded');
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeTaskRunTerminal', statusId: 'run_1', outcome: 'completed' });
+  active = readActive(ctx, 'codex', 's');
+  assert(active.currentTaskRunKey === null, `task run cleared, got ${active.currentTaskRunKey}`);
+  assert(active.taskRuns.run_1.outcome === 'completed', 'terminal outcome recorded');
+});
+
+test('active context: repeated finish does not clear unrelated current context', () => {
+  const ctx = createUsageWorkspace();
+  const base = { runtime: 'codex', sessionId: 's' };
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_a', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationFinished', invocationId: 'usage_a', outcome: 'complete' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_b', parentInvocationId: null, startedAt: '2026-06-18T12:05:00.000Z' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationFinished', invocationId: 'usage_a', outcome: 'complete' });
+  const active = readActive(ctx, 'codex', 's');
+  assert(active.currentInvocationId === 'usage_b', `repeated finish of usage_a must not clear current usage_b, got ${active.currentInvocationId}`);
+});
+
+test('active context: unknown finish leaves current context unchanged and emits recoveryHandling', () => {
+  const ctx = createUsageWorkspace();
+  const base = { runtime: 'codex', sessionId: 's' };
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_a', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z' });
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationFinished', invocationId: 'usage_unknown', outcome: 'complete' });
+  const active = readActive(ctx, 'codex', 's');
+  assert(active.currentInvocationId === 'usage_a', 'unknown finish does not change current');
+  const traceEvents = traceTools.readTraceEvents(ctx.fixmeDir);
+  assert(traceEvents.some(e => e.eventType === 'recoveryHandling'), 'recoveryHandling event emitted for unknown finish');
+});
+
+test('active context: corrupt file is quarantined and rebinds ambient', () => {
+  const ctx = createUsageWorkspace();
+  const activePath = path.join(ctx.fixmeDir, 'trace', 'active', 'codex-s.json');
+  fs.mkdirSync(path.dirname(activePath), { recursive: true });
+  fs.writeFileSync(activePath, '{ this is not json');
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, {
+    eventType: 'runtimeSessionBound', runtime: 'codex', sessionId: 's',
+    transcriptPath: '/t.jsonl', cwd: ctx.projectRoot, fixmeRoot: ctx.projectRoot, fixmeDir: ctx.fixmeDir, scope: 'fixmeProjectAmbient',
+  });
+  const corruptDir = path.join(ctx.fixmeDir, 'trace', 'active', 'corrupt');
+  assert(fs.existsSync(corruptDir) && fs.readdirSync(corruptDir).some(name => name.startsWith('codex-s-')), 'corrupt file quarantined');
+  const active = readActive(ctx, 'codex', 's');
+  assert(active && active.sessionId === 's', 'active context rebound from runtimeSessionBound');
+});
+
+test('active context: out-of-order enrichment uses interval containing event timestamp', () => {
+  const ctx = createUsageWorkspace();
+  const base = { runtime: 'codex', sessionId: 's' };
+  traceTools.applyActiveContextEvent(ctx.fixmeDir, { ...base, eventType: 'fixmeInvocationStarted', invocationId: 'usage_a', parentInvocationId: null, startedAt: '2026-06-18T12:00:00.000Z' });
+  const active = readActive(ctx, 'codex', 's');
+  // An event recorded before the first binding stays fixmeProjectAmbient/unknown.
+  const enrichedEarly = traceTools.enrichEventFromActiveContext(active, { recordedAt: '2026-06-18T11:00:00.000Z' });
+  assert(enrichedEarly.scope === 'fixmeProjectAmbient' || enrichedEarly.scope === 'unknown', `early event not bound to invocation, got ${enrichedEarly.scope}`);
+  const enrichedAfter = traceTools.enrichEventFromActiveContext(active, { recordedAt: '2026-06-18T12:30:00.000Z' });
+  assert(enrichedAfter.invocationId === 'usage_a', `later event bound to invocation, got ${JSON.stringify(enrichedAfter)}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
