@@ -14378,6 +14378,27 @@ test('report: existing token-only report behavior is preserved', () => {
   assert(Array.isArray(result.data.bySkill), 'bySkill preserved');
 });
 
+console.log('\n=== trace report text tests ===\n');
+
+test('report: text default includes Orchestration Buckets and Work Buckets headers', () => {
+  const ctx = createUsageWorkspace();
+  traceTools.appendTraceEvent(ctx.fixmeDir, { eventType: 'modelTurnUsageObserved', source: 'transcript', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0, totalTokens: 12 } }, activity: { plane: 'work', bucket: 'codeReviewing', confidence: 'exactModelCall' } });
+  const result = runInDirWithEnv(`usage report --format text --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  const text = result.data;
+  assert(typeof text === 'string', `text output, got ${typeof text}`);
+  assert(text.includes('Orchestration Buckets') && text.includes('Work Buckets'), 'default text report includes full bucket tables');
+  assert(text.includes('codeReviewing'), 'populated bucket shown');
+  assert(text.includes('planWriting'), 'zero bucket still listed');
+});
+
+test('report: text commands view shows passed/failed/unknown-exit labeling', () => {
+  const ctx = createUsageWorkspace();
+  traceTools.appendTraceEvent(ctx.fixmeDir, { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { toolKind: 'shellCommand', commandKind: 'test', startedAt: '2026-06-18T12:00:00.000Z', finishedAt: '2026-06-18T12:01:00.000Z', durationMs: 60000, timingConfidence: 'exact', exitCode: 0, exitCodeConfidence: 'exact' }, activity: { plane: 'work', bucket: 'verification', confidence: 'exact' } });
+  const result = runInDirWithEnv(`usage report --view commands --format text --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  const text = result.data;
+  assert(text.includes('test') && text.includes('passed') && text.includes('unknown exit'), `commands text labeling, got ${text}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
