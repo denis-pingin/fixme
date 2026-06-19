@@ -14144,6 +14144,47 @@ test('tool event: command string is absent from stored event', () => {
   assert(typeof event.commandHash === 'string' && event.commandHash.startsWith('sha256:'), `commandHash present, got ${event.commandHash}`);
 });
 
+console.log('\n=== trace transcript model turn tests ===\n');
+
+test('transcript: Codex model turns use last_token_usage as the per-turn source', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-turns.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 100, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 130 },
+      { input_tokens: 100, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 130 }
+    ),
+    codexTokenCount(
+      { input_tokens: 220, cached_input_tokens: 0, output_tokens: 55, reasoning_output_tokens: 20, total_tokens: 275 },
+      { input_tokens: 120, cached_input_tokens: 0, output_tokens: 25, reasoning_output_tokens: 10, total_tokens: 145 }
+    ),
+  ]);
+  const events = traceTools.parseModelTurnUsageEvents('codex', sourcePath, { plane: 'work', bucket: 'codeWriting' });
+  assert(events.length === 2, `two model turns, got ${events.length}`);
+  assert(events[1].usage.inputTokens === 120 && events[1].usage.totalTokens === 145, `uses last_token_usage delta, got ${JSON.stringify(events[1].usage)}`);
+  assert(events[0].eventType === 'modelTurnUsageObserved', 'event type');
+});
+
+test('transcript: Claude model turns use assistant message usage', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'claude-turns.jsonl');
+  appendJsonl(sourcePath, [
+    { type: 'assistant', message: { usage: { input_tokens: 40, cache_read_input_tokens: 5, output_tokens: 12 } } },
+  ]);
+  const events = traceTools.parseModelTurnUsageEvents('claude', sourcePath, { plane: 'work', bucket: 'planWriting' });
+  assert(events.length === 1 && events[0].usage.inputTokens === 40 && events[0].usage.outputTokens === 12, `claude usage, got ${JSON.stringify(events[0] && events[0].usage)}`);
+});
+
+test('transcript: model turn events use exactModelCall confidence', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-conf.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount({ input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 2 }, { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 2 }),
+  ]);
+  const events = traceTools.parseModelTurnUsageEvents('codex', sourcePath, { plane: 'work', bucket: 'codeReviewing' });
+  assert(events[0].activity.confidence === 'exactModelCall', `confidence exactModelCall, got ${events[0].activity.confidence}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

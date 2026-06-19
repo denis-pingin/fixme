@@ -6812,6 +6812,53 @@ function buildToolEvent(input) {
   });
 }
 
+function modelTurnUsageFields(normalized) {
+  if (!normalized) return null;
+  return {
+    inputTokens: normalized.inputTokens === undefined ? null : normalized.inputTokens,
+    cachedInputTokens: normalized.cachedInputTokens === undefined ? null : normalized.cachedInputTokens,
+    outputTokens: normalized.outputTokens === undefined ? null : normalized.outputTokens,
+    reasoningOutputTokens: normalized.reasoningOutputTokens === undefined ? null : normalized.reasoningOutputTokens,
+    totalTokens: normalized.totalTokens === undefined ? null : normalized.totalTokens,
+  };
+}
+
+// Emits one modelTurnUsageObserved event per model call. Codex uses
+// last_token_usage (per-turn primary); Claude uses assistant message.usage.
+// Confidence is always exactModelCall.
+function parseModelTurnUsageEvents(runtime, sourcePath, activity) {
+  if (!fs.existsSync(sourcePath)) return [];
+  const rows = readJsonlSlice(sourcePath, 0, null);
+  const events = [];
+  const emit = (usageFields) => {
+    if (!usageFields) return;
+    events.push(buildTraceEvent({
+      source: 'transcript',
+      eventType: 'modelTurnUsageObserved',
+      runtime,
+      extra: {
+        modelTurnId: generateUsageId('turn'),
+        observedAt: new Date().toISOString(),
+        usage: usageFields,
+      },
+      activity: { plane: activity.plane, bucket: activity.bucket, confidence: 'exactModelCall' },
+    }));
+  };
+
+  for (const row of rows) {
+    if (runtime === 'codex') {
+      if (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count' && row.payload.info && row.payload.info.last_token_usage) {
+        emit(modelTurnUsageFields(normalizeCodexUsage(row.payload.info.last_token_usage)));
+      }
+    } else if (runtime === 'claude') {
+      if (row.message && row.message.usage) {
+        emit(modelTurnUsageFields(normalizeClaudeUsage(row.message.usage)));
+      }
+    }
+  }
+  return events;
+}
+
 function usageClaudeHook() {
   let input;
   try {
@@ -13918,4 +13965,5 @@ module.exports = {
   activeSkillDefaultBucket,
   classifyToolEvent,
   buildToolEvent,
+  parseModelTurnUsageEvents,
 };
