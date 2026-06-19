@@ -13351,6 +13351,272 @@ function formatUsageReportText(report) {
   return lines.join('\n');
 }
 
+const TRACE_REPORT_VIEWS = Object.freeze(['summary', 'buckets', 'cycles', 'spans', 'commands', 'unknowns']);
+
+function traceEventPlane(event) {
+  return event.activity ? event.activity.plane : null;
+}
+function traceEventBucket(event) {
+  return event.activity ? event.activity.bucket : null;
+}
+function tokensForEvent(event) {
+  if (event.usage && typeof event.usage.totalTokens === 'number') return event.usage.totalTokens;
+  return 0;
+}
+function eventWallMs(event) {
+  if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)) return event.durationMs;
+  return 0;
+}
+
+// Merge key per the brief: scope, invocation, status, skill, phase, cycle, plane,
+// bucket. NOT confidence.
+function spanMergeKey(event) {
+  return JSON.stringify({
+    scope: event.scope || null,
+    invocationId: event.invocationId || null,
+    statusId: event.statusId || null,
+    skill: event.skill || null,
+    phase: event.phase || null,
+    cycleKind: event.cycleKind || null,
+    cycleIndex: event.cycleIndex === undefined ? null : event.cycleIndex,
+    plane: traceEventPlane(event),
+    bucket: traceEventBucket(event),
+  });
+}
+
+function mergeAdjacentSpans(events) {
+  // Sort by event timestamp; preserve append order on ties so adjacency follows
+  // the ledger ordering rather than the random suffix in eventId.
+  const indexed = events.map((event, index) => ({ event, index }));
+  indexed.sort((a, b) => {
+    const at = Date.parse(a.event.recordedAt || '') || 0;
+    const bt = Date.parse(b.event.recordedAt || '') || 0;
+    if (at !== bt) return at - bt;
+    return a.index - b.index;
+  });
+  const sorted = indexed.map(entry => entry.event);
+  const spans = [];
+  let current = null;
+  let currentKey = null;
+  for (const event of sorted) {
+    const key = spanMergeKey(event);
+    if (!current || key !== currentKey) {
+      current = {
+        key: JSON.parse(key),
+        eventCount: 0,
+        tokens: 0,
+        elapsedWallMs: 0,
+        commandDurationSumMs: 0,
+        firstAt: event.recordedAt || null,
+        lastAt: event.recordedAt || null,
+      };
+      currentKey = key;
+      spans.push(current);
+    }
+    current.eventCount += 1;
+    current.tokens += tokensForEvent(event);
+    current.commandDurationSumMs += eventWallMs(event);
+    current.lastAt = event.recordedAt || current.lastAt;
+  }
+  for (const span of spans) {
+    const first = Date.parse(span.firstAt || '');
+    const last = Date.parse(span.lastAt || '');
+    span.elapsedWallMs = (Number.isFinite(first) && Number.isFinite(last)) ? Math.max(0, last - first) : 0;
+  }
+  return spans;
+}
+
+function buildBucketRows(events, bucketList, plane) {
+  return bucketList.map(bucket => {
+    let tokens = 0;
+    let wallMs = 0;
+    for (const event of events) {
+      if (traceEventPlane(event) === plane && traceEventBucket(event) === bucket) {
+        tokens += tokensForEvent(event);
+        wallMs += eventWallMs(event);
+      }
+    }
+    return { bucket, tokens, wallMs };
+  });
+}
+
+function buildCommandRows(events) {
+  const byKind = new Map();
+  for (const event of events) {
+    if ((event.eventType !== 'toolFinished' && event.eventType !== 'toolFailed') || event.toolKind !== 'shellCommand' || !event.commandKind) continue;
+    if (!byKind.has(event.commandKind)) {
+      byKind.set(event.commandKind, {
+        commandKind: event.commandKind,
+        runCount: 0,
+        passedCount: 0,
+        failedCount: 0,
+        unknownExitCount: 0,
+        elapsedWallMs: 0,
+        commandDurationSumMs: 0,
+        failureRate: null,
+        _minStart: null,
+        _maxFinish: null,
+      });
+    }
+    const row = byKind.get(event.commandKind);
+    row.runCount += 1;
+    if (event.exitCode === 0) row.passedCount += 1;
+    else if (typeof event.exitCode === 'number' && event.exitCode > 0) row.failedCount += 1;
+    else row.unknownExitCount += 1;
+    if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)) row.commandDurationSumMs += event.durationMs;
+    const start = Date.parse(event.startedAt || '');
+    const finish = Date.parse(event.finishedAt || '');
+    if (Number.isFinite(start)) row._minStart = row._minStart === null ? start : Math.min(row._minStart, start);
+    if (Number.isFinite(finish)) row._maxFinish = row._maxFinish === null ? finish : Math.max(row._maxFinish, finish);
+  }
+  return [...byKind.values()].map(row => {
+    const denominator = row.runCount - row.unknownExitCount;
+    row.failureRate = denominator > 0 ? row.failedCount / denominator : null;
+    row.elapsedWallMs = (row._minStart !== null && row._maxFinish !== null) ? Math.max(0, row._maxFinish - row._minStart) : 0;
+    delete row._minStart;
+    delete row._maxFinish;
+    return row;
+  }).sort((a, b) => a.commandKind.localeCompare(b.commandKind));
+}
+
+function buildCycleRows(spans) {
+  const byCycle = new Map();
+  for (const span of spans) {
+    const cycleKind = span.key.cycleKind;
+    const cycleIndex = span.key.cycleIndex;
+    if (!cycleKind && cycleIndex === null) continue;
+    const cycleKey = `${cycleKind}#${cycleIndex}`;
+    if (!byCycle.has(cycleKey)) {
+      byCycle.set(cycleKey, { cycleKind, cycleIndex, tokens: 0, elapsedWallMs: 0, spanCount: 0 });
+    }
+    const row = byCycle.get(cycleKey);
+    row.tokens += span.tokens;
+    row.elapsedWallMs += span.elapsedWallMs;
+    row.spanCount += 1;
+  }
+  return [...byCycle.values()];
+}
+
+function buildTraceReport(fixmeDir, options = {}) {
+  const events = readTraceEvents(fixmeDir);
+  const spans = mergeAdjacentSpans(events);
+  const orchestrationBuckets = buildBucketRows(events, TRACE_ORCHESTRATION_BUCKETS, 'orchestration');
+  const workBuckets = buildBucketRows(events, TRACE_WORK_BUCKETS, 'work');
+  const commands = buildCommandRows(events);
+  const cycles = buildCycleRows(spans);
+
+  let mixedTokens = 0;
+  let unknownTokens = 0;
+  let orchestrationTokens = 0;
+  let workTokens = 0;
+  let totalTokens = 0;
+  for (const event of events) {
+    const tokens = tokensForEvent(event);
+    totalTokens += tokens;
+    const plane = traceEventPlane(event);
+    if (plane === 'orchestration') orchestrationTokens += tokens;
+    if (plane === 'work') workTokens += tokens;
+    if (traceEventBucket(event) === 'mixedModelReasoning') mixedTokens += tokens;
+    if (traceEventBucket(event) === 'uncategorizedModelReasoning') unknownTokens += tokens;
+  }
+
+  const projectedSpans = spans.map(span => ({
+    plane: span.key.plane,
+    bucket: span.key.bucket,
+    skill: span.key.skill,
+    cycleKind: span.key.cycleKind,
+    cycleIndex: span.key.cycleIndex,
+    eventCount: span.eventCount,
+    tokens: span.tokens,
+    elapsedWallMs: span.elapsedWallMs,
+    commandDurationSumMs: span.commandDurationSumMs,
+  }));
+
+  return {
+    schemaVersion: TRACE_SCHEMA_VERSION,
+    view: options.view || 'summary',
+    orchestrationBuckets,
+    workBuckets,
+    spans: projectedSpans,
+    commands,
+    cycles,
+    mixedTokens,
+    unknownTokens,
+    totals: {
+      totalTokens,
+      orchestrationTokens,
+      workTokens,
+      mixedPercent: totalTokens > 0 ? (mixedTokens / totalTokens) * 100 : 0,
+      unknownPercent: totalTokens > 0 ? (unknownTokens / totalTokens) * 100 : 0,
+    },
+  };
+}
+
+function formatTraceReportText(report) {
+  const lines = [];
+  lines.push('Orchestration Buckets:');
+  for (const row of report.orchestrationBuckets) {
+    lines.push(`  ${row.bucket}: ${row.tokens} tokens, ${row.wallMs} ms wall`);
+  }
+  lines.push('Work Buckets:');
+  for (const row of report.workBuckets) {
+    lines.push(`  ${row.bucket}: ${row.tokens} tokens, ${row.wallMs} ms wall`);
+  }
+  lines.push('Cycle Breakdown:');
+  for (const row of report.cycles) {
+    lines.push(`  ${row.cycleKind} #${row.cycleIndex}: ${row.tokens} tokens, ${row.elapsedWallMs} ms wall`);
+  }
+  lines.push('Verification Commands:');
+  for (const row of report.commands) {
+    lines.push(`  ${row.commandKind}: ${Math.round(row.elapsedWallMs / 1000)}s wall, ${Math.round(row.commandDurationSumMs / 1000)}s command-sum, ${row.runCount} runs, ${row.passedCount} passed, ${row.failedCount} failed, ${row.unknownExitCount} unknown exit`);
+  }
+  lines.push('Hot Areas:');
+  const hot = [...report.workBuckets, ...report.orchestrationBuckets]
+    .filter(row => row.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 5);
+  for (const row of hot) {
+    lines.push(`  ${row.bucket}: ${row.tokens} tokens`);
+  }
+  lines.push('Unknown and mixed:');
+  lines.push(`  mixedModelReasoning: ${report.totals.mixedPercent.toFixed(1)} percent tokens`);
+  lines.push(`  uncategorizedModelReasoning: ${report.totals.unknownPercent.toFixed(1)} percent tokens`);
+  return lines.join('\n');
+}
+
+function formatTraceViewText(view, report) {
+  if (view === 'commands') {
+    const lines = ['Verification Commands:'];
+    for (const row of report.commands) {
+      lines.push(`  ${row.commandKind}: ${Math.round(row.elapsedWallMs / 1000)}s wall, ${Math.round(row.commandDurationSumMs / 1000)}s command-sum, ${row.runCount} runs, ${row.passedCount} passed, ${row.failedCount} failed, ${row.unknownExitCount} unknown exit`);
+    }
+    return lines.join('\n');
+  }
+  if (view === 'spans') {
+    const lines = ['Spans:'];
+    for (const span of report.spans) {
+      lines.push(`  ${span.plane}/${span.bucket} (${span.skill || 'n/a'}): ${span.eventCount} events, ${span.tokens} tokens, ${span.elapsedWallMs} ms wall`);
+    }
+    return lines.join('\n');
+  }
+  if (view === 'cycles') {
+    const lines = ['Cycle Breakdown:'];
+    for (const row of report.cycles) {
+      lines.push(`  ${row.cycleKind} #${row.cycleIndex}: ${row.tokens} tokens, ${row.elapsedWallMs} ms wall`);
+    }
+    return lines.join('\n');
+  }
+  if (view === 'unknowns') {
+    return [
+      'Unknown and mixed:',
+      `  mixedModelReasoning: ${report.totals.mixedPercent.toFixed(1)} percent tokens (${report.mixedTokens} tokens)`,
+      `  uncategorizedModelReasoning: ${report.totals.unknownPercent.toFixed(1)} percent tokens (${report.unknownTokens} tokens)`,
+    ].join('\n');
+  }
+  // summary and buckets share the full bucket tables.
+  return formatTraceReportText(report);
+}
+
 function usageReport(flags, fixmeRoot) {
   const scope = flags.scope || 'project';
   const format = flags.format || 'json';
@@ -13373,6 +13639,22 @@ function usageReport(flags, fixmeRoot) {
   const limit = flags.limit === undefined ? 20 : Number(flags.limit);
   if (!Number.isInteger(limit) || limit <= 0) {
     return usageCliError('INVALID_USAGE_LIMIT', '--limit must be a positive integer');
+  }
+
+  // --view selects a detailed trace report surface backed by the trace ledger.
+  if (Object.prototype.hasOwnProperty.call(flags, 'view')) {
+    const view = flags.view;
+    if (!TRACE_REPORT_VIEWS.includes(view)) {
+      return usageCliError('INVALID_USAGE_VIEW', `--view must be one of ${TRACE_REPORT_VIEWS.join('|')}`);
+    }
+    let traceFixmeDir;
+    try {
+      traceFixmeDir = resolveUsageFixmeDir(flags, fixmeRoot);
+    } catch (e) {
+      return usageCliError(e.code || 'INVALID_USAGE_REQUEST', e.message);
+    }
+    const traceReport = buildTraceReport(traceFixmeDir, { view });
+    return usageCliResult(format === 'text' ? formatTraceViewText(view, traceReport) : traceReport);
   }
 
   let eventPath;
@@ -13398,7 +13680,34 @@ function usageReport(flags, fixmeRoot) {
     limit,
   });
 
-  return usageCliResult(format === 'text' ? formatUsageReportText(report) : report);
+  // Default report augments the token-only summary with the full trace bucket,
+  // cycle, command, and unknown/mixed sections (Locked Decision 4). Existing
+  // fields are never removed or renamed.
+  let traceReport = null;
+  if (scope === 'project') {
+    try {
+      traceReport = buildTraceReport(resolveUsageFixmeDir(flags, fixmeRoot), { view: 'summary' });
+    } catch (_) {
+      traceReport = null;
+    }
+  }
+  if (traceReport) {
+    report.orchestrationBuckets = traceReport.orchestrationBuckets;
+    report.workBuckets = traceReport.workBuckets;
+    report.cycles = traceReport.cycles;
+    report.commands = traceReport.commands;
+    report.spans = traceReport.spans;
+    report.mixedTokens = traceReport.mixedTokens;
+    report.unknownTokens = traceReport.unknownTokens;
+    report.traceTotals = traceReport.totals;
+  }
+
+  if (format === 'text') {
+    const baseText = formatUsageReportText(report);
+    const traceText = traceReport ? `\n${formatTraceReportText(traceReport)}` : '';
+    return usageCliResult(baseText + traceText);
+  }
+  return usageCliResult(report);
 }
 
 function buildCompactUsageReportLine(event, projectEventPath) {

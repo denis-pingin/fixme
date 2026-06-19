@@ -14310,6 +14310,74 @@ test('trace hook: emitted events contain no raw command string, output, or trans
   assert(!serialized.includes(secret), 'secret must not appear in any trace event');
 });
 
+console.log('\n=== trace report view tests ===\n');
+
+function seedTraceEvents(ctx, events) {
+  for (const e of events) traceTools.appendTraceEvent(ctx.fixmeDir, e);
+}
+
+test('report: default view lists every orchestration and work bucket in fixed order including zero rows', () => {
+  const ctx = createUsageWorkspace();
+  seedTraceEvents(ctx, [
+    { eventType: 'modelTurnUsageObserved', source: 'transcript', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 1, totalTokens: 12 } }, activity: { plane: 'work', bucket: 'codeReviewing', confidence: 'exactModelCall' } },
+  ]);
+  const result = runInDirWithEnv(`usage report --view buckets --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `report should succeed, got ${JSON.stringify(result.data)}`);
+  const orchKeys = result.data.orchestrationBuckets.map(b => b.bucket);
+  const expectedOrch = ['workflowRouting', 'dispatchManagement', 'stateCheckpointing', 'reviewLoopControl', 'attentionBrokering', 'recoveryHandling', 'summaryReporting'];
+  assert(JSON.stringify(orchKeys) === JSON.stringify(expectedOrch), `orchestration buckets fixed order, got ${JSON.stringify(orchKeys)}`);
+  const workKeys = result.data.workBuckets.map(b => b.bucket);
+  assert(workKeys[0] === 'contextReading' && workKeys.includes('verification') && workKeys.includes('uncategorizedModelReasoning'), `work buckets include all, got ${JSON.stringify(workKeys)}`);
+  // Zero rows are present even with one populated bucket.
+  const planWriting = result.data.workBuckets.find(b => b.bucket === 'planWriting');
+  assert(planWriting && planWriting.tokens === 0, `zero bucket present, got ${JSON.stringify(planWriting)}`);
+});
+
+test('report: spans merge only on identical activity key', () => {
+  const ctx = createUsageWorkspace();
+  seedTraceEvents(ctx, [
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', invocationId: 'u1', statusId: 'r1', skill: 'fixme-review-code', phase: 'implement', cycleKind: 'codeReview', cycleIndex: 2, activity: { plane: 'work', bucket: 'codeReviewing', confidence: 'exact' } },
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', invocationId: 'u1', statusId: 'r1', skill: 'fixme-review-code', phase: 'implement', cycleKind: 'codeReview', cycleIndex: 2, activity: { plane: 'work', bucket: 'codeReviewing', confidence: 'exact' } },
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', invocationId: 'u1', statusId: 'r1', skill: 'fixme-review-code', phase: 'implement', cycleKind: 'codeReview', cycleIndex: 2, activity: { plane: 'work', bucket: 'verification', confidence: 'exact' } },
+  ]);
+  const result = runInDirWithEnv(`usage report --view spans --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `spans report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.spans.length === 2, `adjacent same-key events merge into one span; differing bucket breaks the span -> 2 spans, got ${result.data.spans.length}`);
+});
+
+test('report: commands view reports wall, command-sum, run, passed, failed, unknown-exit counts', () => {
+  const ctx = createUsageWorkspace();
+  seedTraceEvents(ctx, [
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { toolKind: 'shellCommand', commandKind: 'test', startedAt: '2026-06-18T12:00:00.000Z', finishedAt: '2026-06-18T12:01:00.000Z', durationMs: 60000, timingConfidence: 'exact', exitCode: 0, exitCodeConfidence: 'exact' }, activity: { plane: 'work', bucket: 'verification', confidence: 'exact' } },
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { toolKind: 'shellCommand', commandKind: 'test', startedAt: '2026-06-18T12:01:00.000Z', finishedAt: '2026-06-18T12:02:00.000Z', durationMs: 60000, timingConfidence: 'exact', exitCode: 1, exitCodeConfidence: 'exact' }, activity: { plane: 'work', bucket: 'verification', confidence: 'exact' } },
+    { eventType: 'toolFinished', source: 'hook', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { toolKind: 'shellCommand', commandKind: 'test', startedAt: '2026-06-18T12:02:00.000Z', finishedAt: '2026-06-18T12:03:00.000Z', durationMs: 60000, timingConfidence: 'exact', exitCode: null, exitCodeConfidence: 'unknown' }, activity: { plane: 'work', bucket: 'verification', confidence: 'exact' } },
+  ]);
+  const result = runInDirWithEnv(`usage report --view commands --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `commands report should succeed, got ${JSON.stringify(result.data)}`);
+  const testRow = result.data.commands.find(c => c.commandKind === 'test');
+  assert(testRow.runCount === 3 && testRow.passedCount === 1 && testRow.failedCount === 1 && testRow.unknownExitCount === 1, `command counts, got ${JSON.stringify(testRow)}`);
+  assert(typeof testRow.elapsedWallMs === 'number' && typeof testRow.commandDurationSumMs === 'number', 'wall and command-sum present');
+});
+
+test('report: unknowns view shows mixed and unknown attribution', () => {
+  const ctx = createUsageWorkspace();
+  seedTraceEvents(ctx, [
+    { eventType: 'modelTurnUsageObserved', source: 'transcript', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 100 } }, activity: { plane: 'work', bucket: 'mixedModelReasoning', confidence: 'mixed' } },
+    { eventType: 'modelTurnUsageObserved', source: 'transcript', runtime: 'codex', sessionId: 's', scope: 'fixmeRun', extra: { usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 50 } }, activity: { plane: 'work', bucket: 'uncategorizedModelReasoning', confidence: 'unknown' } },
+  ]);
+  const result = runInDirWithEnv(`usage report --view unknowns --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `unknowns report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.mixedTokens === 100 && result.data.unknownTokens === 50, `mixed/unknown tokens, got ${JSON.stringify(result.data)}`);
+});
+
+test('report: existing token-only report behavior is preserved', () => {
+  const ctx = createUsageWorkspace();
+  const result = runInDirWithEnv(`usage report --fixme-dir "${ctx.fixmeDir}"`, ctx.projectRoot, ctx.env);
+  assert(result.ok, `default report should succeed, got ${JSON.stringify(result.data)}`);
+  assert(result.data.totalUsage && typeof result.data.totalUsage.totalTokens === 'number', 'totalUsage preserved');
+  assert(Array.isArray(result.data.bySkill), 'bySkill preserved');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
