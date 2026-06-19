@@ -7140,6 +7140,118 @@ function usageClaudeHook() {
   });
 }
 
+const TRACE_HOOK_EVENT_TYPE_MAP = Object.freeze({
+  SessionStart: 'sessionStart',
+  UserPromptSubmit: 'userPromptSubmit',
+  PreToolUse: 'toolStarted',
+  PostToolUse: 'toolFinished',
+  PostToolUseFailure: 'toolFailed',
+  PostToolBatch: 'toolBatch',
+  SubagentStart: 'subagentStart',
+  SubagentStop: 'subagentStop',
+  Stop: 'stop',
+  SessionEnd: 'sessionEnd',
+});
+
+// Managed runtime hook entry point. Reads runtime hook JSON from stdin, resolves
+// the Fixme directory from the hook cwd, and appends one normalized trace event.
+// Never reads raw command strings, tool output, or transcript bodies.
+function traceHook(flags) {
+  if (flags['fixme-managed-hook-id'] !== TRACE_MANAGED_HOOK_ID) {
+    return output({ recorded: false, reason: 'invalid or missing managed hook id' });
+  }
+  let input;
+  try {
+    const raw = fs.readFileSync(0, 'utf8');
+    input = raw.trim() ? JSON.parse(raw) : {};
+  } catch (e) {
+    process.stderr.write(`[trace] invalid hook JSON on stdin: ${e.message}\n`);
+    return output({ recorded: false, reason: `Invalid hook JSON: ${e.message}` });
+  }
+  if (!input || typeof input !== 'object') {
+    return output({ recorded: false, reason: 'Hook input was not an object' });
+  }
+
+  const hookEventName = (typeof input.hook_event_name === 'string' && input.hook_event_name)
+    || (typeof input.hookEventName === 'string' && input.hookEventName)
+    || null;
+  const rawSessionId = input.session_id || input.sessionId;
+  const sessionId = (typeof rawSessionId === 'string' && /^[A-Za-z0-9_-]+$/.test(rawSessionId)) ? rawSessionId : null;
+  const cwd = (typeof input.cwd === 'string' && input.cwd.trim()) ? path.resolve(expandHomePath(input.cwd)) : process.cwd();
+  const rawTranscript = input.transcript_path || input.transcriptPath || input.agent_transcript_path || input.agentTranscriptPath;
+  const transcriptPath = (typeof rawTranscript === 'string' && rawTranscript.trim()) ? path.resolve(expandHomePath(rawTranscript)) : null;
+  const runtime = (typeof flags.runtime === 'string' && flags.runtime) || inferInstalledRuntimeFromPath(process.argv[1]) || 'unknown';
+  const toolName = (typeof input.tool_name === 'string' && input.tool_name) || (typeof input.toolName === 'string' && input.toolName) || null;
+
+  const eventType = (hookEventName && TRACE_HOOK_EVENT_TYPE_MAP[hookEventName]) || 'runtimeEvent';
+
+  let fixmeRoot = null;
+  let fixmeDir = null;
+  let scope = 'unknown';
+  try {
+    fixmeRoot = findFixmeRoot(cwd);
+    const candidateFixmeDir = path.join(fixmeRoot, '.fixme');
+    if (fs.existsSync(candidateFixmeDir) && fs.statSync(candidateFixmeDir).isDirectory()) {
+      fixmeDir = candidateFixmeDir;
+      scope = 'fixmeProjectAmbient';
+    }
+  } catch (e) {
+    process.stderr.write(`[trace] failed to resolve fixme root from hook cwd ${cwd}: ${e.message}; recording as nonFixme\n`);
+  }
+  if (!fixmeDir) scope = 'nonFixme';
+
+  // Binding events update the active-context state machine.
+  if (sessionId && fixmeDir && eventType === 'sessionStart') {
+    applyActiveContextEvent(fixmeDir, {
+      eventType: 'runtimeSessionBound', runtime, sessionId, transcriptPath, cwd, fixmeRoot, fixmeDir,
+    });
+  }
+
+  // Build the event from sanitized metadata only.
+  let event;
+  if (eventType === 'toolFinished' || eventType === 'toolFailed') {
+    const toolKind = toolName === 'Bash' ? 'shellCommand' : 'other';
+    event = buildToolEvent({
+      eventType,
+      source: 'hook',
+      runtime,
+      sessionId,
+      transcriptPath,
+      cwd,
+      scope,
+      toolName,
+      toolKind,
+      // Intentionally do NOT pass commandString/output: hook tool_input/tool_response
+      // bodies are never read into the stored event.
+      skill: null,
+    });
+  } else {
+    event = buildTraceEvent({
+      source: 'hook',
+      eventType,
+      runtime,
+      sessionId,
+      transcriptPath,
+      cwd,
+      fixmeRoot,
+      fixmeDir,
+      scope,
+      extra: toolName ? { toolName } : {},
+    });
+  }
+
+  // Enrich from the active context when one exists for this session.
+  if (sessionId && fixmeDir) {
+    const active = readActiveContext(fixmeDir, runtime, sessionId);
+    event = enrichEventFromActiveContext(active, event);
+  }
+
+  const eventPath = fixmeDir ? traceProjectEventPath(fixmeDir) : traceGlobalEventPath();
+  appendTraceEventToPath(eventPath, event);
+
+  return output({ recorded: true, eventId: event.eventId, scope: event.scope || scope, fixmeDir });
+}
+
 function normalizeNullableFlag(value) {
   if (value === undefined || value === null || value === '' || value === 'null') return null;
   return value;
@@ -13749,6 +13861,15 @@ function buildCommandRegistry() {
       example: { flags: { state: '/absolute/task.state.json' }, data: { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [] } },
       guidance: 'Direct/granular terminal result write. Parent-driven terminal runs use lifecycle child finalize instead.',
     }) },
+    { path: 'trace hook', kind: 'flags', help: commandHelpPayload({
+      command: 'trace hook',
+      requiredFlags: ['fixme-managed-hook-id'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { 'fixme-managed-hook-id': ['fixmeTraceHook'] },
+      example: { flags: { fixmeManagedHookId: 'fixmeTraceHook' } },
+      guidance: 'Managed runtime hook entry point. Reads runtime hook JSON from stdin, resolves the Fixme directory from the hook cwd, and appends one normalized trace event. Never stores raw command strings, output, or transcript bodies.',
+    }) },
   ];
 }
 
@@ -14133,8 +14254,16 @@ function main() {
         return output(resolveModel(agentName, getFixmeRoot(), { runtime: flags.runtime }));
       }
 
+      case 'trace':
+        switch (subcommand) {
+          case 'hook':
+            return traceHook(flags);
+          default:
+            return error(`Unknown trace subcommand: '${subcommand}'. Valid: hook`);
+        }
+
       default:
-        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, review, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, liveness, root, resolve-model, alert`);
+        return error(`Unknown command: '${command}'. Valid: ticket, task, lifecycle, pipeline, review, session, context, config, codex-agents, codex-skills, claude-skills, usage, run, liveness, root, resolve-model, alert, trace`);
     }
   } catch (e) {
     if (e instanceof CliJsonError) {

@@ -14269,6 +14269,47 @@ test('hook install: emits hookRegistrationObserved events with source installer 
   }
 });
 
+console.log('\n=== trace hook command tests ===\n');
+
+test('trace hook: ingests stdin event and appends to project ledger', () => {
+  const ctx = createUsageWorkspace();
+  const hookInput = JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'sess1', cwd: ctx.projectRoot, tool_name: 'Read' });
+  const result = runToolPathWithInput(TOOLS_PATH, 'trace hook --fixme-managed-hook-id fixmeTraceHook', hookInput, { cwd: ctx.projectRoot, env: ctx.env });
+  assert(result.ok || result.data, `trace hook should respond, got ${JSON.stringify(result)}`);
+  const events = traceTools.readTraceEvents(ctx.fixmeDir);
+  assert(events.length >= 1, `event appended, got ${events.length}`);
+  assert(events.some(e => e.source === 'hook'), 'hook-sourced event present');
+});
+
+test('trace hook: rejects wrong managed marker value', () => {
+  const ctx = createUsageWorkspace();
+  const result = runToolPathWithInput(TOOLS_PATH, 'trace hook --fixme-managed-hook-id notTheRightId', '{}', { cwd: ctx.projectRoot, env: ctx.env });
+  assert(!result.ok || (result.data && result.data.recorded === false), `wrong marker should be rejected, got ${JSON.stringify(result.data)}`);
+});
+
+test('trace hook: multi-root cwd resolves parent fixme dir', () => {
+  const ctx = createUsageWorkspace();
+  // Parent fixme dir already at ctx.projectRoot/.fixme; make a sub-repo with a .git so the resolver walks up.
+  const subRepo = path.join(ctx.projectRoot, 'sub');
+  fs.mkdirSync(path.join(subRepo, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(ctx.fixmeDir, 'config.json'), JSON.stringify({ subRepos: ['sub'] }));
+  const hookInput = JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'sess2', cwd: subRepo, tool_name: 'Read' });
+  runToolPathWithInput(TOOLS_PATH, 'trace hook --fixme-managed-hook-id fixmeTraceHook', hookInput, { cwd: subRepo, env: ctx.env });
+  const parentEvents = traceTools.readTraceEvents(ctx.fixmeDir);
+  assert(parentEvents.length >= 1, `event landed in parent fixme dir, got ${parentEvents.length}`);
+  const subEventsPath = path.join(subRepo, '.fixme', 'trace', 'events.jsonl');
+  assert(!fs.existsSync(subEventsPath), 'no events.jsonl created inside the sub-repo');
+});
+
+test('trace hook: emitted events contain no raw command string, output, or transcript body', () => {
+  const ctx = createUsageWorkspace();
+  const secret = 'sk-SECRET-9999';
+  const hookInput = JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'sess3', cwd: ctx.projectRoot, tool_name: 'Bash', tool_input: { command: `echo ${secret}` }, tool_response: { stdout: secret } });
+  runToolPathWithInput(TOOLS_PATH, 'trace hook --fixme-managed-hook-id fixmeTraceHook', hookInput, { cwd: ctx.projectRoot, env: ctx.env });
+  const serialized = fs.readFileSync(path.join(ctx.fixmeDir, 'trace', 'events.jsonl'), 'utf8');
+  assert(!serialized.includes(secret), 'secret must not appear in any trace event');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
