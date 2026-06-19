@@ -10,7 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const os = require('os');
 
 const TOOLS_PATH = path.join(__dirname, 'fixme-tools.cjs');
@@ -144,6 +144,22 @@ function runToolPathWithInput(toolPath, args, input, options = {}) {
 
 function runInDirWithEnv(args, cwd, env = {}) {
   return runToolPath(TOOLS_PATH, args, { cwd, env });
+}
+
+// Captures stdout AND stderr regardless of exit code so tests can assert
+// graceful-degradation warnings that production writes to stderr on success.
+function runInDirCapturingStderr(args, cwd, env = {}) {
+  const result = spawnSync('node', [TOOLS_PATH, ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    timeout: 5000,
+    shell: false,
+  });
+  const stdout = (result.stdout || '').trim();
+  let data = null;
+  try { data = JSON.parse(stdout); } catch (_) {}
+  return { ok: result.status === 0, data, stdout, stderr: result.stderr || '', exitCode: result.status };
 }
 
 function readJson(filePath) {
@@ -13840,6 +13856,46 @@ test('usage start: invalid Codex spec/plan/report path fails before pending stat
   }
 });
 
+test('usage start: explicit Codex source whose head-read fails is accepted (not INVALID_USAGE_SOURCE_PATH) and warns', () => {
+  const ctx = createUsageWorkspace();
+  // A directory passes fs.existsSync but throws EISDIR on the bounded head-read,
+  // standing in for a transient permission/IO failure on a plausible runtime
+  // source path. It must NOT be misclassified as an artifact masquerade.
+  const sourcePath = path.join(ctx.projectRoot, 'unreadable-source');
+  fs.mkdirSync(sourcePath, { recursive: true });
+  const started = runInDirCapturingStderr(
+    ['usage', 'start', '--skill', 'fixme-write-plan', '--runtime', 'codex', '--source-path', sourcePath],
+    ctx.projectRoot,
+    ctx.env
+  );
+  assert(started.ok, `read-failure source should start, got ${JSON.stringify(started.data)} stderr=${started.stderr}`);
+  assert(
+    !(started.data && started.data.code === 'INVALID_USAGE_SOURCE_PATH'),
+    `read failure must not produce INVALID_USAGE_SOURCE_PATH, got ${JSON.stringify(started.data)}`
+  );
+  assert(/usage source validation could not read head/i.test(started.stderr), `expected a read-failure warning on stderr, got ${JSON.stringify(started.stderr)}`);
+  // The accepted-but-unmeasurable source finalizes as unmeasured at finish.
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === started.data.invocationId);
+  assert(row && row.status === 'unmeasured', `row should be unmeasured, got ${JSON.stringify(row)}`);
+});
+
+test('usage start: confirmed non-counter content still fails fast with INVALID_USAGE_SOURCE_PATH (regression guard)', () => {
+  const ctx = createUsageWorkspace();
+  // A readable file whose rows parse but carry no Codex counter shape: must
+  // remain a hard reject, proving the read-failure relaxation did not weaken
+  // the artifact masquerade defense.
+  const sourcePath = path.join(ctx.projectRoot, 'not-a-counter.jsonl');
+  fs.writeFileSync(sourcePath, `${JSON.stringify({ type: 'note', text: 'narrative' })}\n${JSON.stringify({ type: 'other' })}\n`);
+  const result = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(!result.ok, 'confirmed non-counter content should fail');
+  assert(result.data && result.data.code === 'INVALID_USAGE_SOURCE_PATH', `expected INVALID_USAGE_SOURCE_PATH, got ${JSON.stringify(result.data)}`);
+  const pendingDir = path.join(ctx.fixmeDir, 'usage', 'pending');
+  const pendingFiles = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : [];
+  assert(pendingFiles.length === 0, `no pending usage file should be written, got ${JSON.stringify(pendingFiles)}`);
+});
+
 test('usage start/finish: valid stale Codex JSONL finalizes unmeasured with STALE_COUNTER_SOURCE', () => {
   const ctx = createUsageWorkspace();
   const sourcePath = path.join(ctx.projectRoot, 'codex-stale.jsonl');
@@ -14376,6 +14432,35 @@ test('report: existing token-only report behavior is preserved', () => {
   assert(result.ok, `default report should succeed, got ${JSON.stringify(result.data)}`);
   assert(result.data.totalUsage && typeof result.data.totalUsage.totalTokens === 'number', 'totalUsage preserved');
   assert(Array.isArray(result.data.bySkill), 'bySkill preserved');
+});
+
+test('report: trace-report build failure warns on stderr and still renders the token-only default report', () => {
+  const ctx = createUsageWorkspace();
+  // Write a corrupt trace event line directly into the ledger: a shell-command
+  // tool event whose commandKind is a non-string. readTraceEvents parses it raw
+  // (no shape validation), so it reaches command-row sorting where
+  // (number).localeCompare throws, forcing the augmentation catch.
+  const tracePath = path.join(ctx.fixmeDir, 'trace', 'events.jsonl');
+  fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+  // Two distinct non-string commandKinds force the command-row sort comparator
+  // to run (number).localeCompare, which throws.
+  fs.writeFileSync(tracePath, [
+    JSON.stringify({ eventType: 'toolFinished', toolKind: 'shellCommand', commandKind: 123, recordedAt: '2026-06-18T12:00:00.000Z' }),
+    JSON.stringify({ eventType: 'toolFinished', toolKind: 'shellCommand', commandKind: 456, recordedAt: '2026-06-18T12:01:00.000Z' }),
+    '',
+  ].join('\n'));
+  const result = runInDirCapturingStderr(
+    ['usage', 'report', '--scope', 'project', '--fixme-dir', ctx.fixmeDir],
+    ctx.projectRoot,
+    ctx.env
+  );
+  assert(result.ok, `report should still succeed with token-only fallback, got ${JSON.stringify(result.data)} stderr=${result.stderr}`);
+  // Graceful degradation must not be silent.
+  assert(/could not build the trace report/i.test(result.stderr), `expected a trace-report-build warning on stderr, got ${JSON.stringify(result.stderr)}`);
+  assert(/bucket tables were omitted/i.test(result.stderr), `warning should state the mandated bucket tables were omitted, got ${JSON.stringify(result.stderr)}`);
+  // Token-only default report still renders; the trace bucket tables are absent.
+  assert(result.data && result.data.totalUsage && typeof result.data.totalUsage.totalTokens === 'number', 'token-only report still renders');
+  assert(result.data.orchestrationBuckets === undefined && result.data.workBuckets === undefined, 'trace bucket tables omitted on build failure');
 });
 
 console.log('\n=== trace report text tests ===\n');

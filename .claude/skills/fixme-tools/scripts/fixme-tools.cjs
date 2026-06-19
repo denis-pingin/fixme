@@ -8140,8 +8140,15 @@ function validateExplicitCodexCounterSource(explicitPath) {
   let rows;
   try {
     rows = readJsonlHeadRows(explicitPath, USAGE_SOURCE_DISCOVERY_SCAN_BYTES);
-  } catch (_) {
-    rows = [];
+  } catch (readError) {
+    // A transient head-read failure (permission/IO) on an otherwise-plausible
+    // runtime source must not be misclassified as an artifact masquerade. Warn
+    // and accept the source so downstream "unavailable/stale" handling decides
+    // at finish, mirroring the non-existent-path branch above.
+    process.stderr.write(
+      `[fixme-tools] warning: usage source validation could not read head of ${explicitPath}: ${readError && readError.message ? readError.message : readError}; treating it as a valid runtime source (will be finalized unavailable/stale if it yields no counters)\n`
+    );
+    return { valid: true };
   }
   const looksLikeCounterSource = rows.some(row =>
     (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count') ||
@@ -13687,7 +13694,14 @@ function usageReport(flags, fixmeRoot) {
   if (scope === 'project') {
     try {
       traceReport = buildTraceReport(resolveUsageFixmeDir(flags, fixmeRoot), { view: 'summary' });
-    } catch (_) {
+    } catch (traceError) {
+      // Graceful degradation must never be silent: name the report scope, state
+      // that fixme-dir resolution / trace report build failed, and that the
+      // mandated orchestration/work bucket tables were omitted. The token-only
+      // default report still renders via the null fallback below.
+      process.stderr.write(
+        `[fixme-tools] warning: usage report (scope=project) could not build the trace report (fixme-dir resolution / trace report build failed: ${traceError && traceError.message ? traceError.message : traceError}); the mandated orchestration and work bucket tables were omitted from this report\n`
+      );
       traceReport = null;
     }
   }
