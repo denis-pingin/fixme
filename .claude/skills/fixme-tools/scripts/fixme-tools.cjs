@@ -7178,6 +7178,34 @@ function explicitUsageSourcePath(runtime, explicitPath) {
   return sourceRef ? sourceRef.path : null;
 }
 
+// Returns { valid: true } when the explicit path parses as a Codex runtime
+// counter source (rows carrying token_count/last_token_usage/total_token_usage
+// or turn.completed usage). Returns { valid:false, reason } for Fixme artifact
+// files (task/ticket/spec/plan/report/decision) that exist on disk but cannot
+// provide runtime token counters. Reads only a bounded, sanitized head so no
+// raw body, command, or secret enters memory or output.
+function validateExplicitCodexCounterSource(explicitPath) {
+  if (!explicitPath) return { valid: true };
+  if (!fs.existsSync(explicitPath)) {
+    // A non-existent explicit path is not an artifact masquerade; preserve the
+    // existing downstream "unavailable/stale" handling at finish.
+    return { valid: true };
+  }
+  let rows;
+  try {
+    rows = readJsonlHeadRows(explicitPath, USAGE_SOURCE_DISCOVERY_SCAN_BYTES);
+  } catch (_) {
+    rows = [];
+  }
+  const looksLikeCounterSource = rows.some(row =>
+    (row.type === 'event_msg' && row.payload && row.payload.type === 'token_count') ||
+    (row.type === 'turn.completed' && row.usage) ||
+    (row.type === 'session_meta')
+  );
+  if (looksLikeCounterSource) return { valid: true };
+  return { valid: false, reason: 'sourcePath is not a Codex runtime counter source (Fixme task, ticket, spec, plan, report, and decision files are not valid usage sources)' };
+}
+
 function normalizeUsageSourcePathField(value, label) {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0) {
@@ -7795,6 +7823,19 @@ function usageStartCore(flags, fixmeRoot) {
     runtime = resolveUsageRuntime(flags.runtime || 'auto', process.argv[1]);
   } catch (e) {
     return { ok: false, code: e.code || 'USAGE_RUNTIME_ERROR', message: e.message };
+  }
+
+  if (runtime === 'codex' && Object.prototype.hasOwnProperty.call(flags, 'source-path')) {
+    let explicitSourcePath;
+    try {
+      explicitSourcePath = normalizeUsageSourcePathField(flags['source-path'], 'sourcePath');
+    } catch (e) {
+      return { ok: false, code: e.code || 'INVALID_USAGE_SOURCE_PATH', message: e.message };
+    }
+    const sourceCheck = validateExplicitCodexCounterSource(explicitSourcePath);
+    if (!sourceCheck.valid) {
+      return { ok: false, code: 'INVALID_USAGE_SOURCE_PATH', message: sourceCheck.reason };
+    }
   }
 
   let fixmeDir;

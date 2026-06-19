@@ -13815,6 +13815,84 @@ test('plan-process skills document failure-family expansion, State/Effect Contra
   assert(task.includes('before stall escalation'), 'fixme-task should sequence contract replan before stall escalation');
 });
 
+console.log('\n=== usage source validation tests ===\n');
+
+test('usage start: invalid Codex artifact source-path fails before pending state', () => {
+  const ctx = createUsageWorkspace();
+  const taskPath = path.join(ctx.projectRoot, 'task.md');
+  fs.writeFileSync(taskPath, '---\ntitle: A task\n---\n# A task\nWork context, not a counter source.\n');
+  const result = runInDirWithEnv(`usage start --skill fixme-task --runtime codex --role orchestrator --source-path "${taskPath}"`, ctx.projectRoot, ctx.env);
+  assert(!result.ok, 'usage start with a markdown artifact source should fail');
+  assert(result.data && result.data.code === 'INVALID_USAGE_SOURCE_PATH', `expected INVALID_USAGE_SOURCE_PATH, got ${JSON.stringify(result.data)}`);
+  const pendingDir = path.join(ctx.fixmeDir, 'usage', 'pending');
+  const pendingFiles = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : [];
+  assert(pendingFiles.length === 0, `no pending usage file should be written, got ${JSON.stringify(pendingFiles)}`);
+});
+
+test('usage start: invalid Codex spec/plan/report path fails before pending state', () => {
+  const ctx = createUsageWorkspace();
+  for (const name of ['product-spec.md', 'plan.md', 'report.json']) {
+    const artifactPath = path.join(ctx.projectRoot, name);
+    const body = name.endsWith('.json') ? JSON.stringify({ summary: 'report', findings: [] }) : '# Document\nNarrative content.\n';
+    fs.writeFileSync(artifactPath, body);
+    const result = runInDirWithEnv(`usage start --skill fixme-review-plan --runtime codex --role reviewer --source-path "${artifactPath}"`, ctx.projectRoot, ctx.env);
+    assert(!result.ok && result.data && result.data.code === 'INVALID_USAGE_SOURCE_PATH', `${name} should be rejected, got ${JSON.stringify(result.data)}`);
+  }
+});
+
+test('usage start/finish: valid stale Codex JSONL finalizes unmeasured with STALE_COUNTER_SOURCE', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-stale.jsonl');
+  // A parseable Codex runtime counter source whose only counters precede invocation start.
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 },
+      { input_tokens: 10, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 13 }
+    ),
+  ]);
+  const started = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(started.ok, `valid stale Codex JSONL should start, got ${JSON.stringify(started.data)}`);
+  // No new counters appended after start.
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === started.data.invocationId);
+  assert(row && row.status === 'unmeasured', `row should be unmeasured, got ${JSON.stringify(row)}`);
+  const codes = (row.warnings || []).map(warning => warning.code);
+  assert(codes.includes('STALE_COUNTER_SOURCE'), `warnings should include STALE_COUNTER_SOURCE, got ${JSON.stringify(codes)}`);
+});
+
+test('usage start/finish: valid Codex JSONL measures tokens', () => {
+  const ctx = createUsageWorkspace();
+  const sourcePath = path.join(ctx.projectRoot, 'codex-live.jsonl');
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 6 },
+      { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 6 }
+    ),
+  ]);
+  const started = runInDirWithEnv(`usage start --skill fixme-write-plan --runtime codex --source-path "${sourcePath}"`, ctx.projectRoot, ctx.env);
+  assert(started.ok, `start should succeed, got ${JSON.stringify(started.data)}`);
+  appendJsonl(sourcePath, [
+    codexTokenCount(
+      { input_tokens: 105, cached_input_tokens: 0, output_tokens: 31, reasoning_output_tokens: 10, total_tokens: 136 },
+      { input_tokens: 100, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 130 }
+    ),
+  ]);
+  const finished = runInDirWithEnv(`usage finish --invocation-id ${started.data.invocationId} --outcome complete`, ctx.projectRoot, ctx.env);
+  assert(finished.ok, `finish should succeed, got ${JSON.stringify(finished.data)}`);
+  const row = readJsonl(ctx.projectEvents).find(event => event.invocationId === started.data.invocationId);
+  assert(row && row.status === 'measured', `row should be measured, got ${JSON.stringify(row)}`);
+});
+
+test('usage start: automatic Codex binding without --source-path still works', () => {
+  const ctx = createUsageWorkspace();
+  // No --source-path and no Codex env source: start must still create pending state.
+  const result = runInDirWithEnv('usage start --skill fixme-write-plan --runtime codex', ctx.projectRoot, ctx.env);
+  assert(result.ok, `auto Codex start should succeed without explicit source, got ${JSON.stringify(result.data)}`);
+  const pendingDir = path.join(ctx.fixmeDir, 'usage', 'pending');
+  assert(fs.existsSync(path.join(pendingDir, `${result.data.invocationId}.json`)), 'pending state should be written for auto binding');
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
