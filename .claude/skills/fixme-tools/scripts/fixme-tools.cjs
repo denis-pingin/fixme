@@ -6743,6 +6743,75 @@ function classifyToolEvent(input) {
   return { toolKind, commandFamily: null, commandKind: null, activity: fallback };
 }
 
+// Builds a toolFinished/toolFailed event from sanitized metadata only. The raw
+// command string is hashed (sha256), never stored; output bodies are never read.
+function buildToolEvent(input) {
+  const classification = classifyToolEvent({
+    toolName: input.toolName,
+    toolKind: input.toolKind,
+    commandString: input.commandString,
+    skill: input.skill,
+  });
+  const isCommand = input.toolKind === 'shellCommand';
+  const commandHash = (typeof input.commandString === 'string' && input.commandString.length > 0)
+    ? `sha256:${crypto.createHash('sha256').update(input.commandString).digest('hex')}`
+    : null;
+
+  let startedAt = null;
+  let finishedAt = null;
+  let durationMs = null;
+  let timingConfidence = 'unknown';
+  let exitCode = null;
+  let exitCodeConfidence = 'unknown';
+
+  if (isCommand) {
+    startedAt = input.startedAt !== undefined ? input.startedAt : null;
+    finishedAt = input.finishedAt !== undefined ? input.finishedAt : null;
+    if (typeof input.runtimeDurationMs === 'number' && Number.isFinite(input.runtimeDurationMs)) {
+      durationMs = input.runtimeDurationMs;
+      timingConfidence = 'exact';
+    } else if (startedAt && finishedAt) {
+      const delta = Date.parse(finishedAt) - Date.parse(startedAt);
+      if (Number.isFinite(delta)) {
+        durationMs = delta;
+        timingConfidence = 'derived';
+      }
+    }
+    if (typeof input.exitCode === 'number' && Number.isFinite(input.exitCode)) {
+      exitCode = input.exitCode;
+      exitCodeConfidence = 'exact';
+    }
+  }
+
+  return buildTraceEvent({
+    eventType: input.eventType,
+    source: input.source,
+    runtime: input.runtime,
+    sessionId: input.sessionId,
+    recordedAt: input.recordedAt,
+    scope: input.scope,
+    skill: input.skill,
+    activity: classification.activity,
+    extra: {
+      toolUseId: input.toolUseId !== undefined ? input.toolUseId : null,
+      toolName: input.toolName !== undefined ? input.toolName : null,
+      toolKind: input.toolKind !== undefined ? input.toolKind : null,
+      commandFamily: classification.commandFamily,
+      commandKind: classification.commandKind,
+      commandHash,
+      startedAt,
+      finishedAt,
+      durationMs,
+      timingConfidence,
+      exitCode,
+      exitCodeConfidence,
+      outputBytes: input.outputBytes !== undefined ? input.outputBytes : null,
+      outputSha256: input.outputSha256 !== undefined ? input.outputSha256 : null,
+      outputLogPath: input.outputLogPath !== undefined ? input.outputLogPath : null,
+    },
+  });
+}
+
 function usageClaudeHook() {
   let input;
   try {
@@ -13848,4 +13917,5 @@ module.exports = {
   classifyCommand,
   activeSkillDefaultBucket,
   classifyToolEvent,
+  buildToolEvent,
 };

@@ -14095,6 +14095,55 @@ test('classifier: unmapped active skill becomes uncategorizedModelReasoning', ()
   assert(result.plane === 'work' && result.bucket === 'uncategorizedModelReasoning' && result.confidence === 'unknown', `unmapped skill, got ${JSON.stringify(result)}`);
 });
 
+console.log('\n=== trace tool event tests ===\n');
+
+test('tool event: command event carries timing and exit-code confidence', () => {
+  const event = traceTools.buildToolEvent({
+    eventType: 'toolFinished', runtime: 'claude', sessionId: 's', toolName: 'Bash', toolKind: 'shellCommand',
+    commandString: 'yarn test', startedAt: '2026-06-18T12:00:00.000Z', finishedAt: '2026-06-18T12:00:04.187Z',
+    runtimeDurationMs: 4187, exitCode: 1, skill: 'fixme-execute-plan',
+  });
+  for (const field of ['startedAt', 'finishedAt', 'durationMs', 'timingConfidence', 'exitCode', 'exitCodeConfidence']) {
+    assert(field in event, `command event has ${field}, got ${JSON.stringify(event)}`);
+  }
+  assert(event.commandKind === 'test' && event.activity.bucket === 'verification', `verification command, got ${JSON.stringify(event.activity)}`);
+  assert(event.exitCode === 1 && event.exitCodeConfidence === 'exact', `exit code exact, got ${JSON.stringify(event)}`);
+  assert(event.timingConfidence === 'exact', `runtime duration is exact, got ${event.timingConfidence}`);
+});
+
+test('tool event: computed duration is derived; missing exit code is unknown', () => {
+  const event = traceTools.buildToolEvent({
+    eventType: 'toolFinished', runtime: 'codex', sessionId: 's', toolName: 'Bash', toolKind: 'shellCommand',
+    commandString: 'yarn build', startedAt: '2026-06-18T12:00:00.000Z', finishedAt: '2026-06-18T12:00:02.000Z',
+    skill: 'fixme-execute-plan',
+  });
+  assert(event.durationMs === 2000 && event.timingConfidence === 'derived', `computed duration derived, got ${JSON.stringify(event)}`);
+  assert(event.exitCode === null && event.exitCodeConfidence === 'unknown', `missing exit code unknown, got ${JSON.stringify(event)}`);
+});
+
+test('tool event: non-command tool carries null timing and exit fields with unknown confidence', () => {
+  const event = traceTools.buildToolEvent({
+    eventType: 'toolFinished', runtime: 'claude', sessionId: 's', toolName: 'Read', toolKind: 'fileRead', skill: 'fixme-write-plan',
+  });
+  assert(event.startedAt === null && event.finishedAt === null && event.durationMs === null, 'null timing');
+  assert(event.timingConfidence === 'unknown' && event.exitCode === null && event.exitCodeConfidence === 'unknown', `unknown timing/exit, got ${JSON.stringify(event)}`);
+  assert(event.activity.bucket === 'contextReading', `read tool bucket, got ${JSON.stringify(event.activity)}`);
+});
+
+test('tool event: command string is absent from stored event', () => {
+  const secret = 'sk-SECRET-TOKEN-12345';
+  const event = traceTools.buildToolEvent({
+    eventType: 'toolFinished', runtime: 'claude', sessionId: 's', toolName: 'Bash', toolKind: 'shellCommand',
+    commandString: `curl -H "Authorization: Bearer ${secret}" https://x`, startedAt: '2026-06-18T12:00:00.000Z', finishedAt: '2026-06-18T12:00:01.000Z', exitCode: 0, skill: 'fixme-execute-plan',
+  });
+  const serialized = JSON.stringify(event);
+  assert(!serialized.includes(secret), 'secret command string must not appear in event');
+  for (const banned of ['command', 'commandString', 'output', 'stdout', 'stderr', 'transcriptBody']) {
+    assert(!(banned in event), `event must not carry ${banned}`);
+  }
+  assert(typeof event.commandHash === 'string' && event.commandHash.startsWith('sha256:'), `commandHash present, got ${event.commandHash}`);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
