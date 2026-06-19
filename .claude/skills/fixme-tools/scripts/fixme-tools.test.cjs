@@ -14185,6 +14185,90 @@ test('transcript: model turn events use exactModelCall confidence', () => {
   assert(events[0].activity.confidence === 'exactModelCall', `confidence exactModelCall, got ${events[0].activity.confidence}`);
 });
 
+console.log('\n=== trace hook registration tests ===\n');
+
+const CLAUDE_TRACE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'SubagentStop', 'Stop', 'SessionEnd'];
+
+function makeHookCtx() {
+  const ctx = createUsageWorkspace();
+  ctx.fixmeToolsPath = '/installed/.claude/skills/fixme-tools/scripts/fixme-tools.cjs';
+  ctx.configPath = path.join(ctx.homeDir, '.claude', 'settings.json');
+  return ctx;
+}
+
+test('hook install: empty config gets one managed entry per required event', () => {
+  const ctx = makeHookCtx();
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  const settings = readJson(ctx.configPath);
+  for (const event of CLAUDE_TRACE_EVENTS) {
+    const groups = settings.hooks[event] || [];
+    const managed = groups.flatMap(g => g.hooks || []).filter(h => h.command && h.command.includes('--fixme-managed-hook-id fixmeTraceHook') && h.command.includes('trace hook'));
+    assert(managed.length === 1, `${event} should have exactly one managed entry, got ${managed.length}`);
+  }
+});
+
+test('hook install: preserves existing unrelated user hooks', () => {
+  const ctx = makeHookCtx();
+  fs.mkdirSync(path.dirname(ctx.configPath), { recursive: true });
+  fs.writeFileSync(ctx.configPath, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'echo my-own-hook' }] }] } }));
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  const settings = readJson(ctx.configPath);
+  const commands = (settings.hooks.PreToolUse || []).flatMap(g => g.hooks || []).map(h => h.command);
+  assert(commands.includes('echo my-own-hook'), 'user hook preserved');
+  assert(commands.some(c => c.includes('--fixme-managed-hook-id fixmeTraceHook')), 'managed hook added');
+});
+
+test('hook install: preserves substring false-positive user hook', () => {
+  const ctx = makeHookCtx();
+  fs.mkdirSync(path.dirname(ctx.configPath), { recursive: true });
+  // A user hook whose command text contains the literal characters "fixmeTraceHook"
+  // but NOT as the value of the managed marker flag in argv.
+  const falsePositive = 'node my-script.js --label fixmeTraceHook-custom';
+  fs.writeFileSync(ctx.configPath, JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: falsePositive }] }] } }));
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  let commands = (readJson(ctx.configPath).hooks.Stop || []).flatMap(g => g.hooks || []).map(h => h.command);
+  assert(commands.includes(falsePositive), 'substring false-positive user hook preserved on install');
+  traceTools.uninstallTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  commands = (readJson(ctx.configPath).hooks.Stop || []).flatMap(g => g.hooks || []).map(h => h.command);
+  assert(commands.includes(falsePositive), 'substring false-positive user hook preserved on uninstall');
+  assert(!commands.some(c => c.includes('--fixme-managed-hook-id fixmeTraceHook')), 'managed entry removed on uninstall');
+});
+
+test('hook install: reinstall is idempotent', () => {
+  const ctx = makeHookCtx();
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  const settings = readJson(ctx.configPath);
+  const managed = (settings.hooks.PostToolUse || []).flatMap(g => g.hooks || []).filter(h => h.command.includes('--fixme-managed-hook-id fixmeTraceHook'));
+  assert(managed.length === 1, `reinstall keeps one managed entry, got ${managed.length}`);
+});
+
+test('hook install: stale managed entry with wrong path is replaced', () => {
+  const ctx = makeHookCtx();
+  fs.mkdirSync(path.dirname(ctx.configPath), { recursive: true });
+  const staleCommand = 'node /OLD/fixme-tools.cjs trace hook --fixme-managed-hook-id fixmeTraceHook';
+  fs.writeFileSync(ctx.configPath, JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: staleCommand }] }] } }));
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  const commands = (readJson(ctx.configPath).hooks.Stop || []).flatMap(g => g.hooks || []).map(h => h.command);
+  assert(!commands.includes(staleCommand), 'stale managed entry with old path replaced');
+  assert(commands.some(c => c.includes(ctx.fixmeToolsPath) && c.includes('--fixme-managed-hook-id fixmeTraceHook')), 'current managed entry present');
+});
+
+test('hook install: emits hookRegistrationObserved events with source installer and normalized envelope', () => {
+  const ctx = makeHookCtx();
+  traceTools.installTraceHooks({ runtime: 'claude', configPath: ctx.configPath, fixmeToolsPath: ctx.fixmeToolsPath, fixmeDir: ctx.fixmeDir });
+  const events = traceTools.readTraceEvents(ctx.fixmeDir).filter(e => e.eventType === 'hookRegistrationObserved');
+  assert(events.length > 0, 'hookRegistrationObserved events emitted');
+  for (const event of events) {
+    assert(event.source === 'installer', `source installer, got ${event.source}`);
+    assert(event.managedHookId === 'fixmeTraceHook', 'managedHookId present');
+    assert(typeof event.configPathHash === 'string', 'configPathHash present');
+    assert(!('command' in event) && !('rawConfig' in event), 'no raw config/command stored');
+    assert(event.schemaVersion === 1 && typeof event.eventId === 'string' && event.eventId.startsWith('trace_'), 'normalized envelope');
+    assertNoSnakeCaseKeys(event, 'hookRegistrationObserved');
+  }
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

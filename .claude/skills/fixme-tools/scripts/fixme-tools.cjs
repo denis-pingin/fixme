@@ -363,6 +363,8 @@ const TRACE_CONFIDENCES = Object.freeze(['exact', 'exactModelCall', 'derived', '
 const TRACE_SCOPES = Object.freeze(['fixmeRun', 'fixmeInvocation', 'fixmeProjectAmbient', 'nonFixme', 'unknown']);
 const TRACE_COMMAND_KINDS = Object.freeze(['test', 'build', 'lint', 'browserVerification']);
 const TRACE_CYCLE_KINDS = Object.freeze(['planReadiness', 'planReview', 'codeReview', 'outerPlanRequired', 'implementRepair']);
+const TRACE_CLAUDE_HOOK_EVENTS = Object.freeze(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'SubagentStop', 'Stop', 'SessionEnd']);
+const TRACE_CODEX_HOOK_EVENTS = Object.freeze(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'Stop']);
 
 const ALERT_EVENTS = Object.freeze(['user_input', 'task_finished', 'task_failed']);
 
@@ -6130,12 +6132,29 @@ function installCodexSkills(options) {
 
   fs.rmSync(path.join(skillsDir, 'fixme-tickets-md', 'scripts'), { recursive: true, force: true });
 
+  // Codex exposes no JSON hook-configuration surface (config.toml is TOML and the
+  // CLI owns its hook wiring), so trace hook coverage degrades to transcript and
+  // lifecycle ingestion. Never throw: report degraded and emit registration events.
+  let traceHooks = { runtime: 'codex', events: [], degraded: true, reason: 'codexHookSurfaceUnavailable' };
+  try {
+    const configPath = path.join(codexDir, 'config.toml');
+    const configPathHash = traceConfigPathHash(configPath);
+    const globalEventPath = path.join(path.dirname(path.resolve(codexDir)), '.fixme', 'trace', 'events.jsonl');
+    for (const eventName of traceHookEventsForRuntime('codex')) {
+      appendHookRegistrationEvent(null, { runtime: 'codex', eventName, action: 'install', result: 'degraded', warningCode: 'codexHookSurfaceUnavailable', configPathHash }, globalEventPath);
+    }
+    process.stderr.write('[trace] Codex hook surface unavailable; trace coverage relies on transcript and lifecycle ingestion\n');
+  } catch (e) {
+    process.stderr.write(`[trace] Codex managed hook registration degraded: ${e.message}\n`);
+  }
+
   return {
     codexDir: path.resolve(codexDir),
     skillsDir: path.resolve(skillsDir),
     installed: sourceDirs.length,
     removed,
     skills: sourceDirs,
+    traceHooks,
   };
 }
 
@@ -6229,6 +6248,22 @@ function installClaudeSkills(options) {
   fs.rmSync(path.join(skillsDir, 'fixme-tickets-md', 'scripts'), { recursive: true, force: true });
   const settingsPath = installClaudeUsageHook(claudeDir);
 
+  // Register managed trace hooks alongside the usage hook. Install runs outside a
+  // resolvable run, so registration events append to the global ambient ledger.
+  let traceHooks = null;
+  try {
+    traceHooks = installTraceHooks({
+      runtime: 'claude',
+      configPath: settingsPath,
+      fixmeToolsPath: path.join(claudeDir, 'skills', 'fixme-tools', 'scripts', 'fixme-tools.cjs'),
+      fixmeDir: null,
+      globalEventPath: path.join(path.dirname(path.resolve(claudeDir)), '.fixme', 'trace', 'events.jsonl'),
+    });
+  } catch (e) {
+    process.stderr.write(`[trace] managed Claude hook registration degraded: ${e.message}\n`);
+    traceHooks = { runtime: 'claude', degraded: true };
+  }
+
   return {
     claudeDir: path.resolve(claudeDir),
     skillsDir: path.resolve(skillsDir),
@@ -6236,6 +6271,7 @@ function installClaudeSkills(options) {
     installed: sourceDirs.length,
     removed,
     skills: sourceDirs,
+    traceHooks,
   };
 }
 
@@ -6857,6 +6893,192 @@ function parseModelTurnUsageEvents(runtime, sourcePath, activity) {
     }
   }
   return events;
+}
+
+function tokenizeHookCommand(commandString) {
+  // Split on whitespace and strip surrounding double quotes so a JSON-stringified
+  // path token (`"/installed/.../fixme-tools.cjs"`) compares equal to the path.
+  return String(commandString || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(token => (token.length >= 2 && token.startsWith('"') && token.endsWith('"') ? token.slice(1, -1) : token));
+}
+
+// Managed iff tokenized argv contains `--fixme-managed-hook-id` immediately
+// followed by exactly `fixmeTraceHook`, AND `trace hook` is invoked, AND a token
+// equals the current installed fixme-tools path. Substring matching is forbidden.
+function isManagedTraceHookCommand(commandString, fixmeToolsPath) {
+  const tokens = tokenizeHookCommand(commandString);
+  const markerIndex = tokens.indexOf('--fixme-managed-hook-id');
+  if (markerIndex === -1 || tokens[markerIndex + 1] !== TRACE_MANAGED_HOOK_ID) return false;
+  const traceIndex = tokens.indexOf('trace');
+  if (traceIndex === -1 || tokens[traceIndex + 1] !== 'hook') return false;
+  if (!tokens.includes(fixmeToolsPath)) return false;
+  return true;
+}
+
+// True when the command carries the managed marker (regardless of path), so a
+// stale entry with an old path can be detected and replaced on reinstall.
+function hasManagedTraceMarker(commandString) {
+  const tokens = tokenizeHookCommand(commandString);
+  const markerIndex = tokens.indexOf('--fixme-managed-hook-id');
+  if (markerIndex === -1 || tokens[markerIndex + 1] !== TRACE_MANAGED_HOOK_ID) return false;
+  const traceIndex = tokens.indexOf('trace');
+  return traceIndex !== -1 && tokens[traceIndex + 1] === 'hook';
+}
+
+function buildManagedTraceHookCommand(fixmeToolsPath) {
+  return `node ${JSON.stringify(fixmeToolsPath)} trace hook --fixme-managed-hook-id ${TRACE_MANAGED_HOOK_ID}`;
+}
+
+function traceConfigPathHash(configPath) {
+  return `sha256:${crypto.createHash('sha256').update(String(configPath || '')).digest('hex')}`;
+}
+
+function appendHookRegistrationEvent(fixmeDir, fields, globalEventPath) {
+  const event = {
+    source: 'installer',
+    eventType: 'hookRegistrationObserved',
+    runtime: fields.runtime,
+    extra: {
+      managedHookId: TRACE_MANAGED_HOOK_ID,
+      eventName: fields.eventName,
+      action: fields.action,
+      result: fields.result,
+      warningCode: fields.warningCode || null,
+      configPathHash: fields.configPathHash,
+    },
+  };
+  if (fixmeDir) {
+    appendTraceEvent(fixmeDir, event);
+  } else {
+    appendTraceEventToPath(globalEventPath || traceGlobalEventPath(), buildTraceEvent(event));
+  }
+}
+
+function traceHookEventsForRuntime(runtime) {
+  return runtime === 'codex' ? TRACE_CODEX_HOOK_EVENTS : TRACE_CLAUDE_HOOK_EVENTS;
+}
+
+function readHookConfigObject(configPath) {
+  if (!fs.existsSync(configPath)) return {};
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`Hook config must be a JSON object: ${configPath}`);
+  }
+  return raw;
+}
+
+// Upserts exactly one managed trace-hook entry per required runtime event,
+// preserving every user hook (including substring false positives) and replacing
+// stale managed entries. Emits one hookRegistrationObserved event per event.
+function installTraceHooks({ runtime, configPath, fixmeToolsPath, fixmeDir, globalEventPath }) {
+  const events = traceHookEventsForRuntime(runtime);
+  const configPathHash = traceConfigPathHash(configPath);
+  let config;
+  try {
+    config = readHookConfigObject(configPath);
+  } catch (e) {
+    process.stderr.write(`[trace] failed to parse hook config for runtime ${runtime} at ${configPath}: ${e.message}; leaving transcript+lifecycle tracing enabled\n`);
+    for (const eventName of events) {
+      appendHookRegistrationEvent(fixmeDir, { runtime, eventName, action: 'install', result: 'blocked', warningCode: 'configParseFailed', configPathHash }, globalEventPath);
+    }
+    return { configPath, runtime, events: [], degraded: true };
+  }
+  if (!config.hooks || typeof config.hooks !== 'object' || Array.isArray(config.hooks)) {
+    config.hooks = {};
+  }
+
+  const managedCommand = buildManagedTraceHookCommand(fixmeToolsPath);
+  const perEventResult = [];
+
+  for (const eventName of events) {
+    const groups = Array.isArray(config.hooks[eventName]) ? config.hooks[eventName] : [];
+    let hadCurrentManaged = false;
+    const cleanedGroups = [];
+    for (const group of groups) {
+      if (!group || typeof group !== 'object') continue;
+      const hooks = Array.isArray(group.hooks) ? group.hooks : [];
+      const preserved = hooks.filter(hook => {
+        if (!hook || typeof hook !== 'object' || hook.type !== 'command' || typeof hook.command !== 'string') return true;
+        // Drop any managed-marked entry: current ones are re-added once, stale
+        // ones (wrong path) are replaced. Non-managed user hooks are preserved.
+        if (hasManagedTraceMarker(hook.command)) {
+          if (isManagedTraceHookCommand(hook.command, fixmeToolsPath)) hadCurrentManaged = true;
+          return false;
+        }
+        return true;
+      });
+      if (preserved.length > 0) cleanedGroups.push({ ...group, hooks: preserved });
+    }
+    cleanedGroups.push({ matcher: '', hooks: [{ type: 'command', command: managedCommand }] });
+    config.hooks[eventName] = cleanedGroups;
+    perEventResult.push({ eventName, result: hadCurrentManaged ? 'updated' : 'created' });
+  }
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  writeJsonAtomic(configPath, config);
+
+  // Read back and confirm exactly one managed-current entry per required event.
+  let degraded = false;
+  const readback = readHookConfigObject(configPath);
+  const readbackHooks = (readback.hooks && typeof readback.hooks === 'object') ? readback.hooks : {};
+  for (const item of perEventResult) {
+    const groups = Array.isArray(readbackHooks[item.eventName]) ? readbackHooks[item.eventName] : [];
+    const managedCount = groups
+      .flatMap(g => (Array.isArray(g.hooks) ? g.hooks : []))
+      .filter(h => h && typeof h.command === 'string' && isManagedTraceHookCommand(h.command, fixmeToolsPath))
+      .length;
+    let result = item.result;
+    let warningCode = null;
+    if (managedCount !== 1) {
+      result = 'readbackMismatch';
+      warningCode = 'readbackMismatch';
+      degraded = true;
+      process.stderr.write(`[trace] hook readback mismatch for runtime ${runtime} event ${item.eventName}: expected 1 managed entry, found ${managedCount}\n`);
+    }
+    appendHookRegistrationEvent(fixmeDir, { runtime, eventName: item.eventName, action: 'install', result, warningCode, configPathHash }, globalEventPath);
+  }
+
+  return { configPath, runtime, events: events.slice(), degraded };
+}
+
+function uninstallTraceHooks({ runtime, configPath, fixmeToolsPath, fixmeDir, globalEventPath }) {
+  const events = traceHookEventsForRuntime(runtime);
+  const configPathHash = traceConfigPathHash(configPath);
+  let config;
+  try {
+    config = readHookConfigObject(configPath);
+  } catch (e) {
+    process.stderr.write(`[trace] failed to parse hook config for uninstall (runtime ${runtime}) at ${configPath}: ${e.message}\n`);
+    return { configPath, runtime, events: [], degraded: true, globalEventPath };
+  }
+  if (!config.hooks || typeof config.hooks !== 'object' || Array.isArray(config.hooks)) {
+    config.hooks = {};
+  }
+
+  for (const eventName of events) {
+    const groups = Array.isArray(config.hooks[eventName]) ? config.hooks[eventName] : [];
+    const cleanedGroups = [];
+    for (const group of groups) {
+      if (!group || typeof group !== 'object') continue;
+      const hooks = Array.isArray(group.hooks) ? group.hooks : [];
+      const preserved = hooks.filter(hook => {
+        if (!hook || typeof hook !== 'object' || hook.type !== 'command' || typeof hook.command !== 'string') return true;
+        return !isManagedTraceHookCommand(hook.command, fixmeToolsPath);
+      });
+      if (preserved.length > 0) cleanedGroups.push({ ...group, hooks: preserved });
+    }
+    config.hooks[eventName] = cleanedGroups;
+  }
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  writeJsonAtomic(configPath, config);
+  for (const eventName of events) {
+    appendHookRegistrationEvent(fixmeDir, { runtime, eventName, action: 'uninstall', result: 'removed', warningCode: null, configPathHash }, globalEventPath);
+  }
+  return { configPath, runtime, events: events.slice(), degraded: false };
 }
 
 function usageClaudeHook() {
@@ -13966,4 +14188,7 @@ module.exports = {
   classifyToolEvent,
   buildToolEvent,
   parseModelTurnUsageEvents,
+  installTraceHooks,
+  uninstallTraceHooks,
+  isManagedTraceHookCommand,
 };
