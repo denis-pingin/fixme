@@ -5007,6 +5007,10 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   const parent = parentState(fixmeDir, first.data.parentRunId);
   assert(parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask', `parent waits for child, got ${JSON.stringify(parent)}`);
   assert(JSON.stringify(parent.payload.activeChild) === JSON.stringify(first.data.activeChild), 'parent persisted exact activeChild');
+  assert(JSON.stringify(parent.payload.flags) === JSON.stringify(payload.parent.payload.flags), 'parent await payload preserves PR-comment flags');
+  assert(JSON.stringify(parent.payload.reviewItems) === JSON.stringify(payload.parent.payload.reviewItems), 'parent await payload preserves review items');
+  assert(JSON.stringify(parent.payload.analysis) === JSON.stringify(payload.parent.payload.analysis), 'parent await payload preserves analysis');
+  assert(JSON.stringify(parent.payload.routedGroups) === JSON.stringify(payload.parent.payload.routedGroups), 'parent await payload preserves routed groups');
 
   const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(replay.ok, `prepare-child replay should succeed, got ${JSON.stringify(replay.data)}`);
@@ -5738,6 +5742,10 @@ test('parent-driven fixme-task materializes and completes from activeChild state
       payload: {
         fixBatches: [[{ id: 'comment-1' }]],
         activeBatchIndex: 0,
+        flags: { pause: false, skipCommit: false, skipPush: false, skipResolve: false, skipResponse: false },
+        reviewItems: { currentPrFix: [{ id: 'comment-1' }] },
+        analysis: { currentPrFixCount: 1 },
+        routedGroups: [{ groupId: 'G1', route: 'currentPrFix', sourceIds: ['comment-1'], title: 'Fix reviewed behavior' }],
         parentContinuation: parentContinuationTemplate,
       },
     },
@@ -5770,6 +5778,11 @@ test('parent-driven fixme-task materializes and completes from activeChild state
     payload: {
       fixBatches: [[{ id: 'comment-1' }]],
       activeBatchIndex: 0,
+      flags: { pause: false, skipCommit: false, skipPush: false, skipResolve: false, skipResponse: false },
+      reviewItems: { currentPrFix: [{ id: 'comment-1' }] },
+      analysis: { currentPrFixCount: 1 },
+      routedGroups: [{ groupId: 'G1', route: 'currentPrFix', sourceIds: ['comment-1'], title: 'Fix reviewed behavior' }],
+      parentContinuation,
       activeChild,
     },
     ledger: {},
@@ -7117,6 +7130,10 @@ function setupTaskEventScenario(slug) {
     lookupInput: prLookupInput(), status: 'waitingForChild', cursor: 'awaitFixmeTask',
     payload: {
       fixBatches: [{}], activeBatchIndex: 0,
+      flags: { pause: false, skipCommit: false, skipPush: false, skipResolve: false, skipResponse: false },
+      reviewItems: { currentPrFix: [{ id: 'G1' }] },
+      analysis: { currentPrFixCount: 1 },
+      routedGroups: [{ groupId: 'G1', route: 'currentPrFix', sourceIds: ['PRRT_example'], title: 'Fix reviewed behavior' }],
       activeChild: { statusId: 'run_x', taskRunId, taskStatePath: statePath, resumeRef: 'FIXME-1' },
     },
   });
@@ -7202,6 +7219,29 @@ test('task-event consume records into parent state and is idempotent', () => {
   assert(parent.data.payload.consumedTaskEvent && parent.data.payload.consumedTaskEvent.eventId === consume.data.event.eventId, 'parent recorded the event');
   const retry = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
   assert(retry.ok && retry.data.event.eventId === consume.data.event.eventId, 'idempotent re-consume returns recorded event');
+});
+
+test('task-event consume --next advances completed parent to verify with exact payload', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-consume-next');
+  const recordData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+
+  const consume = run(`lifecycle task-event consume --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId} --next`);
+  assert(consume.ok, `consume should succeed, got: ${JSON.stringify(consume.data)}`);
+  assert(consume.data.nextParent && consume.data.nextParent.cursor === 'verify', `consume should report verify next parent, got ${JSON.stringify(consume.data)}`);
+
+  const parent = run(`lifecycle parent resolve --fixme-dir "${fixmeDir}" --parent-run-id ${parentRunId}`);
+  assert(parent.ok, `parent resolve should succeed, got ${JSON.stringify(parent.data)}`);
+  assert(parent.data.status === 'running', `parent should be running after consume --next, got ${parent.data.status}`);
+  assert(parent.data.cursor === 'verify', `parent should advance to verify, got ${parent.data.cursor}`);
+  assert(parent.data.payload.childResultSummaryPaths.length === 1, 'verify payload has one child result summary');
+  assert(parent.data.payload.childResultSummaryPaths[0] === resultSummaryPath, 'verify payload includes consumed result summary path');
+  assert(Array.isArray(parent.data.payload.routedGroups) && parent.data.payload.routedGroups[0].groupId === 'G1', 'verify payload preserves routed groups');
+  assert(parent.data.payload.flags && parent.data.payload.flags.skipCommit === false, 'verify payload preserves normalized flags');
+  assert(parent.data.payload.consumedTaskEvent.eventId === consume.data.event.eventId, 'verify payload preserves consumed task event');
 });
 
 test('task-event consume with no pending event returns noPendingEvent', () => {
@@ -10698,6 +10738,9 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(!skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should not pre-create child liveness outside prepare-child');
   assert(!skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should not dispatch fixme-task through manual dispatch prepare');
   assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
+  assert(skill.includes('A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10'), 'PR comments should document the exact post-child parent cursor');
+  assert(skill.includes('Do not call `lifecycle parent checkpoint` to reconstruct `consumeTaskEvent`, `verify`, `commit`, `push`, `replyComments`, `resolveThreads`, or `summarize`'), 'PR comments should forbid raw parent checkpoint recovery after child completion');
+  assert(skill.includes('If `lifecycle task-event consume --next` fails with a missing parent payload field, stop with a runtime contract blocker'), 'PR comments should fail closed on impossible post-child payloads');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');
   assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'child fixme-task args should include statusId');
   assert(skill.includes('lifecycle dispatch reconcile-wait --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId>'), 'parent wait loop should reconcile child fixme-task wait by transition');
@@ -13357,6 +13400,7 @@ test('dispatch prepare exposes structured banner context for producer continuati
   assert(resume.data.bannerContext.storedHandleStatus === 'available', `resume storedHandleStatus available, got ${resume.data.bannerContext.storedHandleStatus}`);
   assert(resume.data.bannerMarkdown.includes('resume existing producer'), `resume banner labels mode, got ${resume.data.bannerMarkdown}`);
   assert(resume.data.bannerMarkdown.includes('stored resumable producer handle'), `resume banner labels handle, got ${resume.data.bannerMarkdown}`);
+  assert(resume.data.completionRuntimeHandlePolicy === 'persistProducerContinuation', `resumable producer completion policy, got ${resume.data.completionRuntimeHandlePolicy}`);
   assertNoSnakeCaseKeys(resume.data.bannerContext, 'bannerContext');
 
   const forced = runInDir(
@@ -13370,6 +13414,7 @@ test('dispatch prepare exposes structured banner context for producer continuati
   assert(forced.data.bannerContext.continuationReason === 'forcedFresh', `forced reason, got ${forced.data.bannerContext.continuationReason}`);
   assert(forced.data.bannerMarkdown.includes('fresh producer'), `forced banner says fresh, got ${forced.data.bannerMarkdown}`);
   assert(forced.data.bannerMarkdown.includes('forced fresh'), `forced banner labels forced fresh, got ${forced.data.bannerMarkdown}`);
+  assert(forced.data.completionRuntimeHandlePolicy === 'persistProducerContinuation', `forced producer completion policy, got ${forced.data.completionRuntimeHandlePolicy}`);
 
   const bad = runInDir(
     `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
@@ -13381,6 +13426,7 @@ test('dispatch prepare exposes structured banner context for producer continuati
   assert(bad.ok, `bad-handle prepare should pass: ${bad.stderr || bad.stdout}`);
   assert(bad.data.bannerContext.continuationReason === 'storedHandleBad', `bad reason, got ${bad.data.bannerContext.continuationReason}`);
   assert(bad.data.bannerMarkdown.includes('bad stored handle'), `bad banner labels bad handle, got ${bad.data.bannerMarkdown}`);
+  assert(bad.data.completionRuntimeHandlePolicy === 'persistProducerContinuation', `bad-handle producer completion policy, got ${bad.data.completionRuntimeHandlePolicy}`);
 
   const notResumable = runInDir(
     `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
@@ -13392,6 +13438,7 @@ test('dispatch prepare exposes structured banner context for producer continuati
   assert(notResumable.ok, `not-resumable prepare should pass: ${notResumable.stderr || notResumable.stdout}`);
   assert(notResumable.data.bannerContext.continuationReason === 'agentNotResumable', `not-resumable reason, got ${notResumable.data.bannerContext.continuationReason}`);
   assert(!notResumable.data.bannerMarkdown.includes('stored resumable producer handle'), `not-resumable banner must not claim a producer handle, got ${notResumable.data.bannerMarkdown}`);
+  assert(notResumable.data.completionRuntimeHandlePolicy === 'omit', `non-resumable completion policy, got ${notResumable.data.completionRuntimeHandlePolicy}`);
 });
 
 test('dispatch prepare returns a completion template carrying dispatchId, statusId, parentStatusId and currentCommand null', () => {
@@ -13762,6 +13809,9 @@ test('fixme-task instructions document release, attach, watchdog wait, owner att
   for (const phrase of ['releasing completed producer', 'attach-runtime-handle', 'completiontemplate', 'lifecycle attention consume', 'wait_agent', 'must not pass the parent']) {
     assert(skill.includes(phrase), `fixme-task SKILL.md should document "${phrase}"`);
   }
+  assert(skill.includes('completionruntimehandlepolicy'), 'fixme-task SKILL.md should document completionRuntimeHandlePolicy');
+  assert(skill.includes('persistproducercontinuation'), 'fixme-task SKILL.md should document the producer runtime-handle completion policy');
+  assert(skill.includes('do not include `runtimehandle`'), 'fixme-task SKILL.md should forbid runtimeHandle on omit policy completions');
   assert(skill.includes('300000') || skill.includes('5-minute watchdog'), 'fixme-task SKILL.md should document the watchdog timeout');
 });
 

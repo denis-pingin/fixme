@@ -258,6 +258,8 @@ const RESUMABLE_PRODUCER_AGENTS = new Set([
   'fixme-write-plan',
   'fixme-execute-plan',
 ]);
+const COMPLETION_RUNTIME_HANDLE_POLICY_PERSIST = 'persistProducerContinuation';
+const COMPLETION_RUNTIME_HANDLE_POLICY_OMIT = 'omit';
 
 const PRODUCER_CONTINUATION_STATUSES = new Set(['available', 'bad']);
 const RUNTIME_HANDLE_KINDS_BY_RUNTIME = Object.freeze({
@@ -5590,7 +5592,7 @@ function codexFullAgentDispatchLines() {
     '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
     '- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.',
     '- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.',
-    '- When fresh-dispatching a resumable producer with `spawn_agent`, preserve the returned agent id and pass it as `runtimeHandle` to `lifecycle dispatch complete`.',
+    '- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. On dispatch complete, include `runtimeHandle` only when `lifecycle dispatch prepare` returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.',
     '- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })` to release the completed resumable producer; do not keep producer agents open between phases.',
     '- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
@@ -5883,7 +5885,7 @@ function codexDeveloperInstructions(agentContent, resolvedAgentName) {
     lines.push('- When calling `lifecycle dispatch prepare`, include `"runtime":"codex"` in the JSON payload so lifecycle runtime settings match Codex dispatch.');
     lines.push('- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.');
     lines.push('- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.');
-    lines.push('- When fresh-dispatching a resumable producer with `spawn_agent`, preserve the returned agent id and pass it as `runtimeHandle` to `lifecycle dispatch complete`.');
+    lines.push('- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. On dispatch complete, include `runtimeHandle` only when `lifecycle dispatch prepare` returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.');
     lines.push('- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })` to release the completed resumable producer; do not keep producer agents open between phases.');
     lines.push('- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.');
   } else if (role === 'producer') {
@@ -9899,6 +9901,12 @@ function freshProducerContinuation(agentName, runtime, reason, extra = {}) {
   };
 }
 
+function completionRuntimeHandlePolicyForAgent(agentName) {
+  return RESUMABLE_PRODUCER_AGENTS.has(agentName)
+    ? COMPLETION_RUNTIME_HANDLE_POLICY_PERSIST
+    : COMPLETION_RUNTIME_HANDLE_POLICY_OMIT;
+}
+
 function selectProducerContinuation({ agentName, runtime, taskStatePath, allowProducerContinuation, forceFreshReason }) {
   if (!RESUMABLE_PRODUCER_AGENTS.has(agentName)) {
     return freshProducerContinuation(agentName, runtime, 'agentNotResumable');
@@ -10097,6 +10105,9 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
         existing.output.promptBlocks.activeChild.activeRuntime = existing.activeRuntime;
       }
     }
+    if (existing.output && existing.output.completionRuntimeHandlePolicy === undefined) {
+      existing.output.completionRuntimeHandlePolicy = completionRuntimeHandlePolicyForAgent(data.agentName);
+    }
     return existing.output;
   }
 
@@ -10196,6 +10207,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     continuation,
     usageContext,
     activeChild,
+    completionRuntimeHandlePolicy: completionRuntimeHandlePolicyForAgent(data.agentName),
     completionTemplate: {
       dispatchId,
       statusId: child.statusId,
@@ -12209,6 +12221,16 @@ function prepareChildLedger(parentState, data) {
   };
 }
 
+function prepareChildParentPayloadCarry(data) {
+  if (data.parent.parentSkill !== 'fixme-pr-comments') return {};
+  const payload = data.parent.payload || {};
+  const carry = {};
+  for (const field of ['flags', 'reviewItems', 'analysis', 'routedGroups']) {
+    if (payload[field] !== undefined) carry[field] = payload[field];
+  }
+  return carry;
+}
+
 const PREPARE_CHILD_LIGHTWEIGHT_PROMPT_INPUT_FIELDS = new Set([
   'summary',
   'title',
@@ -12540,6 +12562,7 @@ function lifecycleParentPrepareChild(flags) {
   launch.promptBlocks.parentContinuation = parentContinuation;
 
   if (!(parentState.status === 'waitingForChild' && parentState.cursor === 'awaitFixmeTask')) {
+    const parentPayloadCarry = prepareChildParentPayloadCarry(data);
     if (parentState.cursor !== 'dispatchFixmeTask') {
       parentState = parentCheckpointCore(fixmeDir, parentState.parentRunId, {
         idempotencyKey: `${data.parent.idempotencyKey}:dispatch`,
@@ -12547,6 +12570,7 @@ function lifecycleParentPrepareChild(flags) {
         status: 'running',
         cursor: 'dispatchFixmeTask',
         payload: {
+          ...parentPayloadCarry,
           fixBatches: data.await.fixBatches,
           activeBatchIndex: data.await.activeBatchIndex,
           parentContinuation,
@@ -12560,13 +12584,15 @@ function lifecycleParentPrepareChild(flags) {
       status: 'waitingForChild',
       cursor: 'awaitFixmeTask',
       payload: {
+        ...parentPayloadCarry,
         fixBatches: data.await.fixBatches,
         activeBatchIndex: data.await.activeBatchIndex,
+        parentContinuation,
         activeChild,
       },
       ledger: prepareChildLedger(parentState, data),
     });
-  }
+    }
 
   return lifecycleOk({
     parentRunId: parentState.parentRunId,
@@ -12879,6 +12905,96 @@ function lifecycleChildFinalize(flags, fixmeRoot) {
   });
 }
 
+function taskEventSummaryForParent(eventRecord) {
+  return {
+    eventId: eventRecord.eventId,
+    terminalResultId: eventRecord.terminalResultId,
+    resultSummaryPath: eventRecord.resultSummaryPath,
+    status: eventRecord.status,
+  };
+}
+
+function appendUniqueString(items, item) {
+  const next = Array.isArray(items) ? [...items] : [];
+  if (!next.includes(item)) next.push(item);
+  return next;
+}
+
+function parentTaskEventNextPayload(parent, eventRecord) {
+  const eventSummary = taskEventSummaryForParent(eventRecord);
+  return {
+    ...parent.payload,
+    taskEvent: eventSummary,
+    consumedTaskEvent: eventSummary,
+  };
+}
+
+function parentTaskEventNextLedger(parent, eventRecord) {
+  const ledger = parent.ledger || {};
+  return {
+    ...ledger,
+    childResultSummaryPaths: appendUniqueString(ledger.childResultSummaryPaths, eventRecord.resultSummaryPath),
+  };
+}
+
+function nextParentAfterConsumedTaskEvent(fixmeDir, parentRunId, parent, eventRecord) {
+  if (parent.cursor !== 'awaitFixmeTask') {
+    return parent;
+  }
+
+  let next = parentCheckpointCore(fixmeDir, parentRunId, {
+    idempotencyKey: `consume-${eventRecord.eventId}:cursor`,
+    expectedRevision: parent.revision,
+    status: 'running',
+    cursor: 'consumeTaskEvent',
+    payload: parentTaskEventNextPayload(parent, eventRecord),
+    ledger: parentTaskEventNextLedger(parent, eventRecord),
+  });
+
+  if (eventRecord.status === 'failed') {
+    return parentCheckpointCore(fixmeDir, parentRunId, {
+      idempotencyKey: `consume-${eventRecord.eventId}:child-failed`,
+      expectedRevision: next.revision,
+      status: 'failed',
+      cursor: 'summarize',
+      payload: {},
+      ledger: next.ledger || {},
+      failure: {
+        reason: 'childFailed',
+        message: `Child fixme-task failed; result summary: ${eventRecord.resultSummaryPath}`,
+      },
+    });
+  }
+
+  const fixBatches = Array.isArray(next.payload.fixBatches) ? next.payload.fixBatches : [];
+  const activeBatchIndex = Number.isInteger(next.payload.activeBatchIndex) ? next.payload.activeBatchIndex : 0;
+  if (activeBatchIndex + 1 < fixBatches.length) {
+    return parentCheckpointCore(fixmeDir, parentRunId, {
+      idempotencyKey: `consume-${eventRecord.eventId}:next-batch`,
+      expectedRevision: next.revision,
+      status: 'running',
+      cursor: 'dispatchFixmeTask',
+      payload: {
+        ...next.payload,
+        activeBatchIndex: activeBatchIndex + 1,
+      },
+      ledger: next.ledger || {},
+    });
+  }
+
+  return parentCheckpointCore(fixmeDir, parentRunId, {
+    idempotencyKey: `consume-${eventRecord.eventId}:verify`,
+    expectedRevision: next.revision,
+    status: 'running',
+    cursor: 'verify',
+    payload: {
+      ...next.payload,
+      childResultSummaryPaths: appendUniqueString(next.payload.childResultSummaryPaths, eventRecord.resultSummaryPath),
+    },
+    ledger: next.ledger || {},
+  });
+}
+
 function lifecycleTaskEventConsume(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   const parentRunId = flags['parent-run-id'];
@@ -12894,6 +13010,7 @@ function lifecycleTaskEventConsume(flags) {
   if (!isPlainObject(activeChild) || !isNonEmptyString(activeChild.taskRunId)) {
     parentStaleStateError(parent, { message: 'Parent run is waiting for a child but has no activeChild handle' });
   }
+  const shouldAdvanceNext = flags.next === true || flags.next === '';
 
   const events = listTaskEvents(fixmeDir, parentRunId);
 
@@ -12918,7 +13035,8 @@ function lifecycleTaskEventConsume(flags) {
           eventRecord.consumedBy = parentRunId;
           writeJsonAtomic(eventPath, eventRecord);
         }
-        return lifecycleOk({ event: eventRecord });
+        const nextParent = shouldAdvanceNext ? nextParentAfterConsumedTaskEvent(fixmeDir, parentRunId, parent, eventRecord) : null;
+        return lifecycleOk(nextParent ? { event: eventRecord, nextParent } : { event: eventRecord });
       }
     }
   }
@@ -12971,6 +13089,11 @@ function lifecycleTaskEventConsume(flags) {
   eventRecord.consumedBy = parentRunId;
   writeJsonAtomic(eventPath, eventRecord);
 
+  if (shouldAdvanceNext) {
+    const recordedParent = readJsonFileStrict(statePath);
+    const nextParent = nextParentAfterConsumedTaskEvent(fixmeDir, parentRunId, recordedParent, eventRecord);
+    return lifecycleOk({ event: eventRecord, nextParent });
+  }
   return lifecycleOk({ event: eventRecord });
 }
 
@@ -14059,7 +14182,7 @@ function buildCommandRegistry() {
         flags: { fixmeDir: '/absolute/.fixme' },
         data: { idempotencyKey: 'dispatch-key', agentName: 'fixme-task', transport: 'inline-skill', promptInputs: {}, checkpointData: { status: 'running' } },
       },
-      guidance: 'Optional checkpointData applies a pre-dispatch task checkpoint patch before the dispatch record is created. The output includes attachRuntimeHandleTemplate; copy it and add only runtimeHandle to call attach-runtime-handle.',
+      guidance: 'Optional checkpointData applies a pre-dispatch task checkpoint patch before the dispatch record is created. The output includes attachRuntimeHandleTemplate; copy it and add only runtimeHandle to call attach-runtime-handle. The output completionRuntimeHandlePolicy tells callers whether dispatch complete may persist a runtimeHandle.',
     }) },
     { path: 'lifecycle dispatch complete', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch complete',
@@ -14068,7 +14191,7 @@ function buildCommandRegistry() {
       optionalDataFields: ['parentStatusId', 'currentCommand', 'failure', 'runtimeHandle', 'checkpointData'],
       enumValues: { status: ['completed', 'failed'] },
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed', checkpointData: { status: 'reviewing' } } },
-      guidance: 'A completion runtimeHandle is persisted as a producer continuation only when it matches the dispatch-owned activeRuntime from attach-runtime-handle; omit it to derive the attached handle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
+      guidance: 'Follow the prepare output completionRuntimeHandlePolicy: when it is persistProducerContinuation, a completion runtimeHandle is persisted only when it matches the dispatch-owned activeRuntime from attach-runtime-handle, or omit it to derive the attached handle; when it is omit, do not include runtimeHandle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
     }) },
     { path: 'lifecycle dispatch attach-runtime-handle', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch attach-runtime-handle',
