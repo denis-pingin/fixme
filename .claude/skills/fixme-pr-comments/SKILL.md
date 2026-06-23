@@ -154,52 +154,48 @@ When `--pause` IS set, the turn that emits the Step 4 presentation may end with 
 
 ### Creating the Manifest with the live manifest task list
 
-After deriving the manifest, create it via the live manifest task list. Step 1 starts `in_progress`; all other steps start `pending`. The live manifest task list **depends on whether `--pause` was set in the invocation**:
+After deriving the manifest, create it via the live manifest task list per `fixme-howto-workflow-manifest`: create one task per step (each is created `pending`), then `TaskUpdate` Step 1 to `in_progress`. The lists below are manifest content (each row is one task's `subject` and `activeForm`), not a call shape. The manifest **depends on whether `--pause` was set in the invocation**:
 
-**When `--pause` IS set (15-step manifest, Step 8 included):**
+**When `--pause` IS set (15-step manifest, Step 8 included):** create all tasks (`pending`), then `TaskUpdate` Step 1 to `in_progress`.
 
-```
-TaskCreate([
-  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
-  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
-  { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
-  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis`", status: "pending", activeForm: "Presenting analysis" },
-  { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
-  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
-  { content: "Step 7 [consult/route] Route on remaining CURRENT_PR_FIX groups and --pause", status: "pending", activeForm: "Routing on confirmation" },
-  { content: "Step 8 [confirm] Present `## Ready to Execute` and wait", status: "pending", activeForm: "Awaiting confirmation" },
-  { content: "Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups", status: "pending", activeForm: "Launching fixme-task" },
-  { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
-  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
-  { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
-  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
-  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
-  { content: "Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve", status: "pending", activeForm: "Checking for late comments" },
-  { content: "Step 16 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
-])
-```
+| Step (subject) | activeForm |
+| --- | --- |
+| Step 1 [fetch] Fetch three GitHub API surfaces with pagination | Fetching PR comments |
+| Step 2 [fetch/display] Normalize and display review_item records | Displaying fetched items |
+| Step 3 [analyze] Analyze every item individually | Analyzing comments |
+| Step 4 [analyze/present] Present `## PR Comment Analysis` | Presenting analysis |
+| Step 5 [analyze/route] Route on consultation need | Routing on consultation |
+| Step 6 [consult] Run consultation loop until all decisions resolved | Consulting user on ambiguous fixes |
+| Step 7 [consult/route] Route on remaining CURRENT_PR_FIX groups and --pause | Routing on confirmation |
+| Step 8 [confirm] Present `## Ready to Execute` and wait | Awaiting confirmation |
+| Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups | Launching fixme-task |
+| Step 10 [verify] Run build/lint/test | Running verification |
+| Step 11 [commit/route] Route on --skip-commit | Routing on commit |
+| Step 12 [commit] Commit and push | Committing changes |
+| Step 13 [resolve/route] Route on --skip-resolve | Routing on resolve |
+| Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve | Resolving threads |
+| Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve | Checking for late comments |
+| Step 16 [done] Run summary | Writing run summary |
 
-**When `--pause` is NOT set (14-step manifest, Step 8 OMITTED entirely):**
+**When `--pause` is NOT set (14-step manifest, Step 8 OMITTED entirely):** create all tasks (`pending`), then `TaskUpdate` Step 1 to `in_progress`.
 
-```
-TaskCreate([
-  { content: "Step 1 [fetch] Fetch three GitHub API surfaces with pagination", status: "in_progress", activeForm: "Fetching PR comments" },
-  { content: "Step 2 [fetch/display] Normalize and display review_item records", status: "pending", activeForm: "Displaying fetched items" },
-  { content: "Step 3 [analyze] Analyze every item individually", status: "pending", activeForm: "Analyzing comments" },
-  { content: "Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately continue to Step 9 or Step 14 in same turn", status: "pending", activeForm: "Presenting analysis and continuing" },
-  { content: "Step 5 [analyze/route] Route on consultation need", status: "pending", activeForm: "Routing on consultation" },
-  { content: "Step 6 [consult] Run consultation loop until all decisions resolved", status: "pending", activeForm: "Consulting user on ambiguous fixes" },
-  { content: "Step 7 [consult/route] Route to dispatch or resolve (no --pause confirmation gate)", status: "pending", activeForm: "Routing to dispatch or resolve" },
-  { content: "Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups (SAME TURN as Step 4)", status: "pending", activeForm: "Launching fixme-task" },
-  { content: "Step 10 [verify] Run build/lint/test", status: "pending", activeForm: "Running verification" },
-  { content: "Step 11 [commit/route] Route on --skip-commit", status: "pending", activeForm: "Routing on commit" },
-  { content: "Step 12 [commit] Commit and push", status: "pending", activeForm: "Committing changes" },
-  { content: "Step 13 [resolve/route] Route on --skip-resolve", status: "pending", activeForm: "Routing on resolve" },
-  { content: "Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve", status: "pending", activeForm: "Resolving threads" },
-  { content: "Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve", status: "pending", activeForm: "Checking for late comments" },
-  { content: "Step 16 [done] Run summary", status: "pending", activeForm: "Writing run summary" }
-])
-```
+| Step (subject) | activeForm |
+| --- | --- |
+| Step 1 [fetch] Fetch three GitHub API surfaces with pagination | Fetching PR comments |
+| Step 2 [fetch/display] Normalize and display review_item records | Displaying fetched items |
+| Step 3 [analyze] Analyze every item individually | Analyzing comments |
+| Step 4 [analyze/present] Present `## PR Comment Analysis` AND immediately continue to Step 9 or Step 14 in same turn | Presenting analysis and continuing |
+| Step 5 [analyze/route] Route on consultation need | Routing on consultation |
+| Step 6 [consult] Run consultation loop until all decisions resolved | Consulting user on ambiguous fixes |
+| Step 7 [consult/route] Route to dispatch or resolve (no --pause confirmation gate) | Routing to dispatch or resolve |
+| Step 9 [dispatch] Prepare child handoff and launch fixme-task through returned transport with CURRENT_PR_FIX groups (SAME TURN as Step 4) | Launching fixme-task |
+| Step 10 [verify] Run build/lint/test | Running verification |
+| Step 11 [commit/route] Route on --skip-commit | Routing on commit |
+| Step 12 [commit] Commit and push | Committing changes |
+| Step 13 [resolve/route] Route on --skip-resolve | Routing on resolve |
+| Step 14 [resolve] Build reply execution table, preflight reply bodies, then reply/resolve | Resolving threads |
+| Step 15 [final-check] Re-fetch unresolved review threads after reply/resolve | Checking for late comments |
+| Step 16 [done] Run summary | Writing run summary |
 
 Note that Step 9 keeps its number even when Step 8 is absent - step numbers are stable workflow anchors, not list indices. The Step 4, Step 7, Step 9, and Step 14 entries in the no-`--pause` variant are explicitly worded to remind you the routed next action executes in the **same turn**, eliminating the implicit "I should pause here" pattern.
 
@@ -1006,7 +1002,7 @@ For `fixme-pr-comments`, `await.ledger` MUST be `{}` at launch. Do not put `curr
 }
 ```
 
-Render the child prompt from the returned `promptBlocks`, plus `usageContext`; in the helper response those values live under `launch.promptBlocks` and `launch.usageContext`. Do not reconstruct these blocks manually from project, liveness, or fix-item fields. Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`; `lifecycle parent prepare-child` performs that persistence before it returns. The child prompt must include the returned blocks in this shape and order:
+Render the child prompt from the returned `promptBlocks`, plus `usageContext`; in the helper response those values live under `launch.promptBlocks` and `launch.usageContext`. Do not reconstruct these blocks manually from project, liveness, or fix-item fields. Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`; `lifecycle parent prepare-child` performs that persistence before it returns and carries `parent.payload.flags`, `parent.payload.reviewItems`, `parent.payload.analysis`, and `parent.payload.routedGroups` into the durable `awaitFixmeTask` parent payload. Those fields are required later by `lifecycle task-event consume --next`; do not recreate them from memory. The child prompt must include the returned blocks in this shape and order:
 
 ```text
 <launch.promptBlocks.taskStateOwner>
@@ -1060,7 +1056,9 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch rec
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next
 ```
 
-The reconcile-wait payload carries `{ "parentStatePath": "<parent state.json>" }` (optionally `childTaskStatePath`/`childSummaryPath`). Branch on its `transition`: `runtimeOwned` re-enters the wait silently; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, consume it with `lifecycle task-event consume --next`, record the child result summary path into the active batch (`ledger.childResultSummaryPaths`), and route per the cursor table (childFailed -> failed summarize; more batches -> increment + dispatch; all done -> verify). If reconcile-wait fails, print a warning with `fixmeTaskStatusId` and then fall back to the previous coarse signals.
+The reconcile-wait payload carries `{ "parentStatePath": "<parent state.json>" }` (optionally `childTaskStatePath`/`childSummaryPath`). Branch on its `transition`: `runtimeOwned` re-enters the wait silently; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, run exactly `lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next`. A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10 with `payload.childResultSummaryPaths`, `payload.flags`, `payload.routedGroups`, and the consumed task event already present. Continue directly to Step 10 using that returned parent state. If the child failed, the same command persists a failed parent at `summarize` with reason `childFailed`; stop and report the child failure.
+
+Do not call `lifecycle parent checkpoint` to reconstruct `consumeTaskEvent`, `verify`, `commit`, `push`, `replyComments`, `resolveThreads`, or `summarize`. That command is a low-level runtime primitive, not a PR-comments recovery path. If `lifecycle task-event consume --next` fails with a missing parent payload field, stop with a runtime contract blocker that names the missing field, `parentRunId`, and `fixmeTaskStatusId`; do not inspect `<fixme-dir>` files, infer payload fields, or replay checkpoints by hand. A correct run that followed `lifecycle parent prepare-child` has the required fields already.
 
 ### 4. Verify All Changes
 

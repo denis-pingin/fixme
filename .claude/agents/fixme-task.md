@@ -1,7 +1,7 @@
 ---
 name: fixme-task
 description: Config-driven pipeline orchestrator. Dispatches sub-skills as agents, manages review loops, compact review context packets, task code map paths, artifact handoff, decision persistence, and ticket state transitions. Never reads source code or edits files directly.
-tools: Agent, Read, Write, Bash
+tools: Agent, Read, Write, Bash, TaskCreate, TaskUpdate, TaskList, TaskGet
 skills:
   - fixme-task
   - fixme-howto-find-fixme-dir

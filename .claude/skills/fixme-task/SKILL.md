@@ -1162,55 +1162,45 @@ When the dispatch input already contains a complete pre-planned recipe (TDD step
 
 ### Creating the Manifest with the live manifest task list
 
-After building the manifest, create it using the live manifest task list. One live manifest task per step. All steps start as `pending` for a fresh pipeline, or with pre-entry steps as `completed` for mid-pipeline entry.
+After building the manifest, create it using the live manifest task list per `fixme-howto-workflow-manifest`: create one task per step (each is created `pending`), then use `TaskUpdate` to set the entry step `in_progress` and, for mid-pipeline entry, pre-entry steps `completed`. The lists below are manifest content (each row is one task's `subject` and `activeForm`), not a call shape.
 
 The manifest is created in one of two modes depending on whether this run is parent-driven (a `parentContinuation` block is present in task state / the dispatch prompt) as determined in Argument Parsing:
 
 - **Standalone mode** (default): replace the live manifest task list entirely with the standard manifest. Use this for `/fixme-task` invocations and for dispatch from `fixme-session` or any other parent that does not own a wrapping live manifest task list.
 - **Parent-driven mode** (`parentContinuation` is present): create a child-owned live manifest task list for this `fixme-task` run only. Parent and child live manifest task lists stay separate. Do not inspect, merge, replace, or advance the parent manifest from `fixme-task`; the parent continues by consuming durable task events after the child records them.
 
-**Fresh start (standalone, no prior state):**
-```
-TaskCreate([
-  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "pending", activeForm: "Dispatching fixme-plan-readiness" },
-  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "pending", activeForm: "Routing on plan readiness result" },
-  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 5 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 6 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 7 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 8 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 9 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 10 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
-  { content: "Step 11 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
-])
-```
+**Fresh start (standalone, no prior state):** create all 11 tasks (`pending`), then `TaskUpdate` Step 1 to `in_progress`; Steps 2-11 stay `pending`.
 
-**Mid-pipeline entry (standalone, plan exists, entering at plan review):**
-```
-TaskCreate([
-  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "completed", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "completed", activeForm: "Dispatching fixme-plan-readiness" },
-  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "completed", activeForm: "Routing on plan readiness result" },
-  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "in_progress", activeForm: "Dispatching fixme-review-plan" },
-  ...remaining steps as pending...
-])
-```
+| Step (subject) | activeForm |
+| --- | --- |
+| Step 1 [plan] Dispatch fixme-write-plan | Dispatching fixme-write-plan |
+| Step 2 [plan/readiness] Dispatch fixme-plan-readiness | Dispatching fixme-plan-readiness |
+| Step 3 [plan/readiness] Route on READINESS_RESULT | Routing on plan readiness result |
+| Step 4 [plan/review] Dispatch fixme-review-plan | Dispatching fixme-review-plan |
+| Step 5 [plan/review] Dispatch fixme-handle-plan-review | Dispatching fixme-handle-plan-review |
+| Step 6 [plan/route] Route on HANDLER_RESULT | Routing on plan review result |
+| Step 7 [implement] Dispatch fixme-execute-plan | Dispatching fixme-execute-plan |
+| Step 8 [implement/review] Dispatch fixme-review-code | Dispatching fixme-review-code |
+| Step 9 [implement/review] Dispatch fixme-handle-code-review | Dispatching fixme-handle-code-review |
+| Step 10 [implement/route] Route on HANDLER_RESULT | Routing on code review result |
+| Step 11 [done] Run Summary | Writing run summary |
 
-**Sticky high-risk re-entry (standalone, `loops.planReadinessRiskLevel === "high"`, readiness steps omitted):**
-```text
-TaskCreate([
-  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 3 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 4 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 5 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 6 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 7 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 8 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" },
-  { content: "Step 9 [done] Run Summary", status: "pending", activeForm: "Writing run summary" }
-])
-```
+**Mid-pipeline entry (standalone, plan exists, entering at plan review):** create the same 11 tasks as Fresh start (all `pending`), then `TaskUpdate` Steps 1-3 to `completed` and Step 4 to `in_progress`; Steps 5-11 stay `pending`.
+
+**Sticky high-risk re-entry (standalone, `loops.planReadinessRiskLevel === "high"`, readiness steps omitted):** create these 9 tasks (`pending`), then `TaskUpdate` Step 1 to `in_progress`.
+
+| Step (subject) | activeForm |
+| --- | --- |
+| Step 1 [plan] Dispatch fixme-write-plan | Dispatching fixme-write-plan |
+| Step 2 [plan/review] Dispatch fixme-review-plan | Dispatching fixme-review-plan |
+| Step 3 [plan/review] Dispatch fixme-handle-plan-review | Dispatching fixme-handle-plan-review |
+| Step 4 [plan/route] Route on HANDLER_RESULT | Routing on plan review result |
+| Step 5 [implement] Dispatch fixme-execute-plan | Dispatching fixme-execute-plan |
+| Step 6 [implement/review] Dispatch fixme-review-code | Dispatching fixme-review-code |
+| Step 7 [implement/review] Dispatch fixme-handle-code-review | Dispatching fixme-handle-code-review |
+| Step 8 [implement/route] Route on HANDLER_RESULT | Routing on code review result |
+| Step 9 [done] Run Summary | Writing run summary |
+
 The readiness dispatch and route steps are absent, so plan-write (Step 1) wires straight to `fixme-review-plan` (Step 2). Step numbers shift down accordingly; parent-driven mode applies the same omission and additionally drops the terminal Run Summary step.
 
 **Parent-driven mode (`parentContinuation` present):**
@@ -1227,29 +1217,28 @@ Construction rules:
 4. Every subsequent live manifest task list update includes only child steps.
 5. **Terminal task event at Step 10.** When the implement-routing step returns CLEAN and the child pipeline has nothing more to do internally, mark Step 10 `completed`, then record a durable terminal task event for the parent to consume. Do not output a Run Summary and do not advance the parent manifest.
 
-**Parent-driven child manifest example**:
-```
-TaskCreate([
-  { content: "Step 1 [plan] Dispatch fixme-write-plan", status: "in_progress", activeForm: "Dispatching fixme-write-plan" },
-  { content: "Step 2 [plan/readiness] Dispatch fixme-plan-readiness", status: "pending", activeForm: "Dispatching fixme-plan-readiness" },
-  { content: "Step 3 [plan/readiness] Route on READINESS_RESULT", status: "pending", activeForm: "Routing on plan readiness result" },
-  { content: "Step 4 [plan/review] Dispatch fixme-review-plan", status: "pending", activeForm: "Dispatching fixme-review-plan" },
-  { content: "Step 5 [plan/review] Dispatch fixme-handle-plan-review", status: "pending", activeForm: "Dispatching fixme-handle-plan-review" },
-  { content: "Step 6 [plan/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on plan review result" },
-  { content: "Step 7 [implement] Dispatch fixme-execute-plan", status: "pending", activeForm: "Dispatching fixme-execute-plan" },
-  { content: "Step 8 [implement/review] Dispatch fixme-review-code", status: "pending", activeForm: "Dispatching fixme-review-code" },
-  { content: "Step 9 [implement/review] Dispatch fixme-handle-code-review", status: "pending", activeForm: "Dispatching fixme-handle-code-review" },
-  { content: "Step 10 [implement/route] Route on HANDLER_RESULT", status: "pending", activeForm: "Routing on code review result" }
-])
-```
+**Parent-driven child manifest example**: create these 10 tasks (`pending`), then `TaskUpdate` Step 1 to `in_progress`. There is no Run Summary step.
+
+| Step (subject) | activeForm |
+| --- | --- |
+| Step 1 [plan] Dispatch fixme-write-plan | Dispatching fixme-write-plan |
+| Step 2 [plan/readiness] Dispatch fixme-plan-readiness | Dispatching fixme-plan-readiness |
+| Step 3 [plan/readiness] Route on READINESS_RESULT | Routing on plan readiness result |
+| Step 4 [plan/review] Dispatch fixme-review-plan | Dispatching fixme-review-plan |
+| Step 5 [plan/review] Dispatch fixme-handle-plan-review | Dispatching fixme-handle-plan-review |
+| Step 6 [plan/route] Route on HANDLER_RESULT | Routing on plan review result |
+| Step 7 [implement] Dispatch fixme-execute-plan | Dispatching fixme-execute-plan |
+| Step 8 [implement/review] Dispatch fixme-review-code | Dispatching fixme-review-code |
+| Step 9 [implement/review] Dispatch fixme-handle-code-review | Dispatching fixme-handle-code-review |
+| Step 10 [implement/route] Route on HANDLER_RESULT | Routing on code review result |
 
 ### Following the Manifest
 
 Execute steps in order. After each dispatch:
 
 1. Process the output (see Step Processing below)
-2. Mark the current step `completed` via the live manifest task list
-3. Set the next step to `in_progress`
+2. Mark the current step `completed` with `TaskUpdate`
+3. Set the next step to `in_progress` with `TaskUpdate`
 4. Dispatch the next agent - or jump per routing rules
 
 **Never skip steps. Never combine steps. Never "optimize" the sequence. The manifest is the law.**
@@ -1287,7 +1276,7 @@ Dispatch prepare request payload has exactly these required fields:
 
 - Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.
 - Optional: `parentStatusId`, `parentInvocationId`, `pipelineRunId`, `taskStatePath`, `parentContinuation`, `runtime`, `allowProducerContinuation`, `forceFreshReason`, `usageSourcePath`, and `checkpointData`.
-- Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, `completionTemplate`, `attachRuntimeHandleTemplate`, and `bannerMarkdown`.
+- Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`, `statusId`, `statusPath`, `dispatchId`, `continuation`, `completionRuntimeHandlePolicy`, `completionTemplate`, `attachRuntimeHandleTemplate`, and `bannerMarkdown`.
 
 Pass optional `checkpointData` (a `task checkpoint`-shaped patch) to apply a pre-dispatch task checkpoint before the dispatch record is created, instead of a separate `task checkpoint` call. `checkpointData` participates in dispatch idempotency; a different `checkpointData` under the same idempotency key conflicts.
 
@@ -1295,7 +1284,7 @@ Only send request `usageSourcePath` for Claude or `inline-skill` dispatches with
 
 Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload. They are response values built by the lifecycle helper after it accepts the request.
 
-Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `runtimeSettings.reasoningEffort` contains the runtime-specific reasoning setting; do not hardcode models, reasoning effort, or runtime behavior. Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` tool parameters when `runtimeSettings.reasoningEffort` is non-null. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
+Returns `{ok:true, dispatchId, statusId, statusPath, runtimeSettings, bannerMarkdown, continuation, completionRuntimeHandlePolicy, usageContext, activeChild, promptBlocks}`. For parent-driven `fixme-task` dispatches, `activeChild` contains `statusId`, generated `taskRunId`, reserved absolute `taskStatePath`, and `resumeRef`, and the same handle appears at `promptBlocks.activeChild`; use that handle when creating or reusing task state and when recording terminal task events. `completionRuntimeHandlePolicy` is either `"persistProducerContinuation"` for resumable producers or `"omit"` for every other child. `runtimeSettings.reasoningEffort` contains the runtime-specific reasoning setting; do not hardcode models, reasoning effort, or runtime behavior. Codex `runtimeSettings.model` is intentionally `null`; preserve the user-selected Codex model and pass only `reasoning_effort` tool parameters when `runtimeSettings.reasoningEffort` is non-null. Store the returned `statusId` as the dispatched agent's liveness status. Do not dispatch the agent if `lifecycle dispatch prepare` fails; surface the failure with the agent name, `<fixme-dir>`, and the JSON error, then stop the current manifest step.
 
 Installed Codex skills use the Codex-installed tool path `node ~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare ...` and set `"runtime":"codex"` in the dispatch payload.
 
@@ -1318,9 +1307,9 @@ Codex runtime mechanics:
 
 - Fresh path uses `spawn_agent`.
 - `resume_agent resumes a previously closed agent`. Do not keep completed producers open between workflow phases.
-- Fresh path stores the id returned by `spawn_agent`, waits for the final result, calls `lifecycle dispatch complete` with `runtimeHandle: { "kind": "codexAgentId", "id": "<spawned-agent-id>" }` on successful resumable producer completion, then calls `close_agent({ target: "<spawned-agent-id>" })`.
+- Fresh path stores the id returned by `spawn_agent`, attaches it with `attachRuntimeHandleTemplate`, waits for the final result, calls `lifecycle dispatch complete` following `completionRuntimeHandlePolicy`, then calls `close_agent({ target: "<spawned-agent-id>" })` only for completed resumable producers.
 - Resume path calls `resume_agent({ id })` with the exact stored id, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.
-- After a resumed producer reaches a normal final result, call `lifecycle dispatch complete` with `runtimeHandle: { "kind": "codexAgentId", "id": "<id>" }`, then call `close_agent({ target: id })` again.
+- After a resumed producer reaches a normal final result, call `lifecycle dispatch complete` following `completionRuntimeHandlePolicy`, then call `close_agent({ target: id })` again.
 - If `close_agent` fails after a successful dispatch, log a warning with agent name, runtime, and handle id. Do not mark the handle bad unless a later resume attempt fails.
 
 #### Release a completed resumable producer
@@ -1331,7 +1320,7 @@ Closing a completed producer releases a completed resumable producer; it does no
 
 `lifecycle dispatch prepare` returns an `attachRuntimeHandleTemplate` object `{dispatchId, statusId, parentStatusId, runtime, transport}`. After the child is running, build `lifecycle dispatch attach-runtime-handle` by copying that template and adding only `runtimeHandle`. The template omits `runtimeHandle` and `currentCommand` because they are not known before launch.
 
-`lifecycle dispatch prepare` also returns a `completionTemplate` object `{dispatchId, statusId, parentStatusId, currentCommand}`. Build `lifecycle dispatch complete` by spreading that `completionTemplate` and adding only `status` plus, on success, the result-specific `runtimeHandle` (or omit `runtimeHandle` to derive the attached `activeRuntime`) or, on failure, `failure`. Optionally add `checkpointData` to apply a post-completion task checkpoint patch. A completion `runtimeHandle` is persisted as a producer continuation only when it matches the dispatch-owned `activeRuntime` recorded by attach; a mismatch fails before any mutation. Do not send a separate `run ping --current-command null` after child completion: completion carries `parentStatusId` and clears the parent wait marker itself.
+`lifecycle dispatch prepare` also returns a `completionTemplate` object `{dispatchId, statusId, parentStatusId, currentCommand}`. Build `lifecycle dispatch complete` by spreading that `completionTemplate`, adding `status`, and following top-level `completionRuntimeHandlePolicy`: when it is `"persistProducerContinuation"` and status is `completed`, include the runtime handle from the spawned or resumed agent, or omit it to derive the attached `activeRuntime`; when it is `"omit"`, do not include `runtimeHandle`. On failure, add `failure`. Optionally add `checkpointData` to apply a post-completion task checkpoint patch. A completion `runtimeHandle` is persisted as a producer continuation only when it matches the dispatch-owned `activeRuntime` recorded by attach; a mismatch fails before any mutation. Do not send a separate `run ping --current-command null` after child completion: completion carries `parentStatusId` and clears the parent wait marker itself.
 
 #### Active child launch sequence
 
