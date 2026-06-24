@@ -14347,7 +14347,7 @@ function buildCommandRegistry() {
         always: ['parent.parentSkill', 'parent.idempotencyKey', 'child.idempotencyKey', 'child.agentName', 'child.runtime', 'child.transport', 'child.handoff', 'child.promptInputs'],
         whenParentSkillIsFixmePrComments: ['child.parentInvocationId', 'child.pipelineRunId'],
       },
-      enumValues: { 'child.transport': setValues(DISPATCH_TRANSPORTS) },
+      enumValues: { 'child.transport': setValues(FIXME_TASK_CHILD_TRANSPORTS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/prepare-child.json' }, data: { parent: {}, child: {}, await: {} } },
       guidance: 'Returns a launch block only; the runtime adapter performs the returned launch action. requiredNestedFields.whenParentSkillIsFixmePrComments (child.parentInvocationId, child.pipelineRunId) are required only when parent.parentSkill is fixme-pr-comments.',
     }) },

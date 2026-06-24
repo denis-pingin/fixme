@@ -4223,7 +4223,7 @@ test('cli help emits command schemas before required validation', () => {
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['parent', 'child', 'await'],
       optionalDataFields: ['parentContinuation', 'recoverStaleParent'],
-      enumChecks: [['child.transport', ['agent', 'inline-skill', 'background', 'direct']]],
+      enumChecks: [['child.transport', ['agent', 'background']]],
       requiredNestedFields: {
         always: ['parent.parentSkill', 'parent.idempotencyKey', 'child.idempotencyKey', 'child.agentName', 'child.runtime', 'child.transport', 'child.handoff', 'child.promptInputs'],
         whenParentSkillIsFixmePrComments: ['child.parentInvocationId', 'child.pipelineRunId'],
@@ -10742,6 +10742,8 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
     assert(content.includes('lifecycle attention broker acknowledge-resume'), `${name} should document broker acknowledge-resume`);
   }
   assert(toolsSkill.includes('Claude dispatches (any transport) and `inline-skill` dispatches may pass'), 'fixme-tools should document runtime-keyed usage-source pass-through');
+  assert(toolsSkill.includes('Runtime adapters perform the returned `agent` or `background` child launch'), 'fixme-tools should document task-child agent/background launch mechanics');
+  assert(!toolsSkill.includes('Claude Skill or Codex agent launch'), 'fixme-tools should not document stale Claude Skill task-child launch mechanics');
   assert(claudeDoc.includes('Parent-driven `fixme-task` launches use `agent` or `background`, never `inline-skill`.'), 'CLAUDE should document the uniform child transport invariant as its own sentence');
   assert(claudeDoc.includes('Claude therefore requires Claude Code >= 2.1.172 or a nesting-capable Claude desktop app for nested subagents.'), 'CLAUDE should document the Claude nesting requirement as its own sentence');
   assert(readme.includes('Parent-driven `fixme-task` launches use `agent` or `background`, never `inline-skill`; Claude launches through `Agent(subagent_type="fixme-task", ...)` and Codex launches through `spawn_agent(agent_type="fixme-task", ...)`.'), 'README should document the uniform parent-driven launch mechanics');
