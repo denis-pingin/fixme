@@ -1018,32 +1018,32 @@ Compatibility names for the returned prompt block members are `<promptBlocks.tas
 
 `launch.promptBlocks.taskStateOwner` identifies `fixme-task` as the task-state owner. The returned `promptBlocks.taskStateOwner`, `promptBlocks.parentContinuation`, and `promptBlocks.activeChild` are the continuation contract. `launch.promptBlocks.parentContinuation` carries `parentSkill`, `parentRunId`, `transport`, `resumeStep`, and `parentStatusId`. `launch.promptBlocks.activeChild` carries the exact returned active-child handle. `launch.usageContext` carries the returned pipeline and parent invocation context. Pass these returned blocks through verbatim, then append only parent-owned prose that is not already represented in `launch.promptBlocks.taskInput`.
 
-If `launch.transport == "inline-skill"`, Claude executes the installed/source `fixme-task` skill with the rendered prompt:
+If `launch.transport == "agent"`, launch `fixme-task` as a fresh nested subagent with the rendered prompt. In Claude, use the Agent tool:
 
 ```text
-Skill(
-  skill="fixme-task",
-  args="<launch.promptBlocks.taskStateOwner>
-<launch.promptBlocks.parentContinuation>
-<launch.promptBlocks.activeChild>
-<launch.promptBlocks.project>
-<launch.promptBlocks.liveness>
-<launch.promptBlocks.taskInput>
-<launch.usageContext>"
+Agent(
+  subagent_type: "fixme-task",
+  model: launch.runtimeSettings.model,
+  reasoning_effort: launch.runtimeSettings.reasoningEffort,
+  prompt: "<rendered launch.promptBlocks plus launch.usageContext>"
 )
 ```
 
-If `launch.transport == "agent"`, Codex launches the registered `fixme-task` agent with the returned prompt and runtime settings:
+If the resolver returned `null` for `model` or `reasoning_effort`, omit that Agent field.
+
+In Codex, launch the registered `fixme-task` agent with the returned prompt and runtime settings:
 
 ```text
-spawn_agent(agent_type="fixme-task", reasoning_effort=launch.runtimeSettings.reasoningEffort, message="<rendered launch.promptBlocks>")
+spawn_agent(agent_type="fixme-task", reasoning_effort=launch.runtimeSettings.reasoningEffort, message="<rendered launch.promptBlocks plus launch.usageContext>")
 ```
+
+If `launch.runtimeSettings.reasoningEffort` is `null`, omit `reasoning_effort`. Always omit a Codex model argument.
 
 The returned `launch.promptBlocks.liveness` contains the child run context, including `statusId: <fixmeTaskStatusId>`.
 
 fixme-task runs the default pipeline (plan with review loop -> execute with review loop), handling plan writing, plan review, execution, and code review internally. In parent-driven mode, its substeps appear as `Step 9.1` ... `Step 9.8` between this skill's `Step 7` and `Step 10`, so when the pipeline finishes the model sees `Step 10 [verify]` as the next pending item and continues automatically.
 
-The returned launch transport decides the execution path. Claude may use the `inline-skill` branch above. Codex must use the `agent` branch above, launching the registered `fixme-task` agent; that child task then owns its plan, execute, review, handler, research, investigation, and browser verification sub-agent dispatches.
+PR-comments child launches set `child.transport: "agent"` for both Claude and Codex. `background` remains valid for fire-and-forget parent workflows such as `fixme-session`; PR-comments waits on the child and therefore uses `agent`. `inline-skill` and `direct` are invalid for parent-driven `fixme-task` child launches.
 
 The sample `child.handoff.taskSaveData` includes a concrete `settledSolutionShape` that preserves the current PR-fix solution at the saved-task boundary. `child.handoff.payload.routedFixGroups` remains the authoritative heavy sidecar for full comment detail. A missing `settledSolutionShape` is a caller payload bug, not a runtime workaround. `prepare-child` no longer requires the caller to supply `child.parentStatusId` when direct parent liveness is missing; the CLI creates the parent liveness and returns its canonical `parentStatusId`.
 
@@ -1325,7 +1325,7 @@ If `--skip-resolve` is set, do not run this final unresolved-thread loop. The us
 - **Surface item IDs**: Every `review_item` gets a permanent ID at normalization time: `T1`, `T2` for inline review threads; `I1`, `I2` for issue-comment findings; `R1`, `R2` for PR-review findings. IDs persist through analysis - the same ID appears in the display, analysis report, and any follow-up references regardless of verdict.
 - **Precision is non-negotiable**: Every comment gets an exact verdict. No vague quantifiers (most, likely, ~N). No batch dismissals. All counts must be exact and sum to total. See presentation rules 10-11.
 - **Bot comments get individual analysis**: Comments from bots (Copilot, Codex, Claude, Greptile) are analyzed individually, same as human comments. Being bot-generated is not a reason to skip analysis or batch-dismiss.
-- **fixme-task invocation**: uses `lifecycle parent prepare-child --data-file` followed only by the returned `launch.transport` branch. Claude may execute the `inline-skill` branch when returned by the CLI. Codex must execute the `agent` branch and launch the registered `fixme-task` agent, which owns its downstream sub-agent dispatches.
+- **fixme-task invocation**: uses `lifecycle parent prepare-child --data-file` followed by a nested `fixme-task` subagent launch. Claude uses `Agent(subagent_type="fixme-task", ...)`; Codex uses `spawn_agent(agent_type="fixme-task", ...)`. `inline-skill` and `direct` are invalid for parent-driven `fixme-task` child launches.
 
 ## Review-Level PR Comment Metadata
 

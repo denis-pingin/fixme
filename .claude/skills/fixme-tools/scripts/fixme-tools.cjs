@@ -3784,6 +3784,16 @@ function sameExistingProjectRoot(existingProjectRoot, requestedProjectRoot) {
   }
 }
 
+// Task-state identity for create-or-reuse is projectRoot + pipeline. The
+// pipelineResolution prose (source/evidence/reason/candidates) is explanatory
+// metadata, not identity: two callers that independently resolve the SAME
+// pipeline with different wording must reuse the saved state, not conflict.
+// (prepare-child seeds one resolution; fixme-task later re-resolves the same
+// pipeline.) Reuse is first-writer-wins - the existing resolution is preserved.
+function taskInitIdentityConflict(existing, projectRoot, pipeline) {
+  return !sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline;
+}
+
 function taskInit(flags, fixmeRoot) {
   const pipelineResolution = pipelineResolutionForTaskInitFlags(flags, fixmeRoot);
   const pipeline = pipelineResolution.pipeline;
@@ -3808,7 +3818,7 @@ function taskInit(flags, fixmeRoot) {
 
     if (fs.existsSync(statePath)) {
       const existing = readJsonFileStrict(statePath);
-      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+      if (taskInitIdentityConflict(existing, projectRoot, pipeline)) {
         throw new Error(`Reserved task state conflicts with requested task initialization: ${statePath}`);
       }
       const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Reserved task state');
@@ -3848,7 +3858,7 @@ function taskInit(flags, fixmeRoot) {
 
     if (fs.existsSync(statePath)) {
       const existing = readJsonFileStrict(statePath);
-      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+      if (taskInitIdentityConflict(existing, projectRoot, pipeline)) {
         throw new Error(`Ticket task state conflicts with requested task initialization: ${statePath}`);
       }
       const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Ticket task state');
@@ -3894,7 +3904,7 @@ function taskInit(flags, fixmeRoot) {
       : mergeTaskState(state, { parentContinuation });
     if (fs.existsSync(statePath)) {
       const existing = readJsonFileStrict(statePath);
-      if (!sameExistingProjectRoot(existing.projectRoot, projectRoot) || existing.pipeline !== pipeline || !jsonEqual(existing.pipelineResolution, pipelineResolution)) {
+      if (taskInitIdentityConflict(existing, projectRoot, pipeline)) {
         throw new Error(`Saved task state conflicts with requested task initialization: ${statePath}`);
       }
       const updated = mergeParentContinuationForInit(existing, parentContinuation, statePath, 'Saved task state');
@@ -5592,7 +5602,7 @@ function codexFullAgentDispatchLines() {
     '- When you call `lifecycle dispatch prepare`, include `"runtime":"codex"` in every `lifecycle dispatch prepare` JSON payload.',
     '- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.',
     '- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.',
-    '- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. On dispatch complete, include `runtimeHandle` only when `lifecycle dispatch prepare` returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.',
+    '- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. Build terminal completion from `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. On completed dispatch, add `runtimeHandle` only when prepare returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.',
     '- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })` to release the completed resumable producer; do not keep producer agents open between phases.',
     '- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
@@ -5885,7 +5895,7 @@ function codexDeveloperInstructions(agentContent, resolvedAgentName) {
     lines.push('- When calling `lifecycle dispatch prepare`, include `"runtime":"codex"` in the JSON payload so lifecycle runtime settings match Codex dispatch.');
     lines.push('- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.');
     lines.push('- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.');
-    lines.push('- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. On dispatch complete, include `runtimeHandle` only when `lifecycle dispatch prepare` returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.');
+    lines.push('- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. Build terminal completion from `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. On completed dispatch, add `runtimeHandle` only when prepare returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.');
     lines.push('- After a fresh or resumed producer reaches a terminal result and lifecycle completion is recorded, call `close_agent({ target: id })` to release the completed resumable producer; do not keep producer agents open between phases.');
     lines.push('- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.');
   } else if (role === 'producer') {
@@ -9471,6 +9481,7 @@ const LIFECYCLE_DISPATCH_COMPLETE_FIELDS = new Set(['dispatchId', 'statusId', 's
 const LIFECYCLE_DISPATCH_ATTACH_FIELDS = new Set(['dispatchId', 'statusId', 'parentStatusId', 'runtime', 'transport', 'runtimeHandle']);
 
 const DISPATCH_TRANSPORTS = new Set(['agent', 'inline-skill', 'background', 'direct']);
+const FIXME_TASK_CHILD_TRANSPORTS = new Set(['agent', 'background']);
 
 const LIFECYCLE_PARENT_PREPARE_CHILD_FIELDS = new Set(['parent', 'child', 'parentContinuation', 'await', 'recoverStaleParent']);
 const PREPARE_CHILD_PARENT_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'payload']);
@@ -9907,6 +9918,19 @@ function completionRuntimeHandlePolicyForAgent(agentName) {
     : COMPLETION_RUNTIME_HANDLE_POLICY_OMIT;
 }
 
+function dispatchCompletionTemplates({ dispatchId, statusId, parentStatusId }) {
+  const base = {
+    dispatchId,
+    statusId,
+    parentStatusId: parentStatusId || null,
+    currentCommand: null,
+  };
+  return {
+    completed: { ...base, status: 'completed' },
+    failed: { ...base, status: 'failed' },
+  };
+}
+
 function selectProducerContinuation({ agentName, runtime, taskStatePath, allowProducerContinuation, forceFreshReason }) {
   if (!RESUMABLE_PRODUCER_AGENTS.has(agentName)) {
     return freshProducerContinuation(agentName, runtime, 'agentNotResumable');
@@ -10066,6 +10090,9 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   if (!KNOWN_FIXME_AGENTS.has(data.agentName)) {
     lifecycleError('invalidInput', `Unknown agent: ${data.agentName}`);
   }
+  if (data.agentName === 'fixme-task' && isPlainObject(data.parentContinuation) && !FIXME_TASK_CHILD_TRANSPORTS.has(data.transport)) {
+    lifecycleError('invalidInput', `transport for parent-driven fixme-task must be one of: ${[...FIXME_TASK_CHILD_TRANSPORTS].join(', ')}`);
+  }
   assertNoSameAgentParentDispatch(fixmeDir, data);
   const runtime = resolveLifecycleDispatchRuntime(data, flags);
 
@@ -10107,6 +10134,16 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     }
     if (existing.output && existing.output.completionRuntimeHandlePolicy === undefined) {
       existing.output.completionRuntimeHandlePolicy = completionRuntimeHandlePolicyForAgent(data.agentName);
+    }
+    if (existing.output && existing.output.completionTemplates === undefined) {
+      const completionTemplate = existing.output.completionTemplate || {};
+      existing.output.completionTemplates = dispatchCompletionTemplates({
+        dispatchId: completionTemplate.dispatchId || existing.output.dispatchId,
+        statusId: completionTemplate.statusId || existing.output.statusId,
+        parentStatusId: Object.prototype.hasOwnProperty.call(completionTemplate, 'parentStatusId')
+          ? completionTemplate.parentStatusId
+          : null,
+      });
     }
     return existing.output;
   }
@@ -10214,6 +10251,11 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
       parentStatusId: data.parentStatusId || null,
       currentCommand: null,
     },
+    completionTemplates: dispatchCompletionTemplates({
+      dispatchId,
+      statusId: child.statusId,
+      parentStatusId: data.parentStatusId || null,
+    }),
     // Copy-ready attach payload: the caller adds only runtimeHandle (and never
     // currentCommand, which is not known before runtime launch).
     attachRuntimeHandleTemplate: {
@@ -11571,7 +11613,7 @@ const PARENT_FAILURE_REASONS = new Set([
   'userAborted', 'fetchFailed', 'analysisFailed', 'taskDispatchFailed', 'childFailed',
   'verificationFailed', 'commitFailed', 'pushFailed', 'replyFailed', 'resolveFailed',
   'usageTrackingFailed', 'toolUnavailable', 'runtimeError', 'staleParentMissingActiveChild',
-  'staleParentConsumedTaskEvent', 'unknown',
+  'staleParentConsumedTaskEvent', 'staleParentLivenessDead', 'unknown',
 ]);
 
 const PARENT_CREATE_FIELDS = new Set(['parentSkill', 'idempotencyKey', 'lookupInput', 'status', 'cursor', 'payload']);
@@ -12145,17 +12187,87 @@ function parentIsMissingActiveChild(state) {
     !isPlainObject(state.payload && state.payload.activeChild);
 }
 
-function parentHasConsumedTerminalChildEvent(state) {
+// True when the parent's CURRENT activeChild has already had its terminal result
+// consumed and durably recorded. After that point the child's work is finished
+// and the parent is only doing mechanical post-consume finalization (verify ->
+// commit -> push -> replyComments -> resolveThreads -> summarize); a crashed
+// session leaves it nonterminal at one of those cursors. This is decided by the
+// durable event record, not by cursor, so the whole post-consume window is
+// covered. Multi-batch safe: the consumed event must belong to the current
+// activeChild (same taskRunId/taskStatePath), so a parent re-dispatched onto a
+// later batch - whose consumedTaskEvent still references the prior batch - is
+// correctly NOT treated as finished, mirroring the consume path's own ownership
+// check.
+function parentActiveChildTerminalConsumed(fixmeDir, state) {
   const payload = state.payload || {};
-  const consumedTaskEvent = payload.consumedTaskEvent;
-  return state.status === 'waitingForChild' &&
-    state.cursor === 'awaitFixmeTask' &&
-    isPlainObject(payload.activeChild) &&
-    isPlainObject(consumedTaskEvent) &&
-    ['completed', 'failed'].includes(consumedTaskEvent.status) &&
-    isNonEmptyString(consumedTaskEvent.eventId) &&
-    isNonEmptyString(consumedTaskEvent.terminalResultId) &&
-    isNonEmptyString(consumedTaskEvent.resultSummaryPath);
+  const activeChild = payload.activeChild;
+  const consumed = payload.consumedTaskEvent;
+  if (!isPlainObject(activeChild) || !isNonEmptyString(activeChild.taskRunId)) return false;
+  if (!isPlainObject(consumed) || !isNonEmptyString(consumed.eventId)) return false;
+  if (!['completed', 'failed'].includes(consumed.status)) return false;
+  const eventPath = taskEventPath(fixmeDir, state.parentRunId, consumed.eventId);
+  if (!fs.existsSync(eventPath)) return false;
+  let eventRecord;
+  try {
+    eventRecord = readJsonFileStrict(eventPath);
+  } catch (e) {
+    // An unreadable event record is not proof the current child is finished; fall
+    // back to "not consumed" so the conflict path (or liveness) decides.
+    process.stderr.write(`warning: stale-parent recovery treating consumed event as not-finished: parentRunId=${state.parentRunId} eventId=${consumed.eventId} reason=event-record-unreadable\n`);
+    return false;
+  }
+  return eventRecord.taskRunId === activeChild.taskRunId &&
+    eventRecord.taskStatePath === activeChild.taskStatePath &&
+    (!isNonEmptyString(activeChild.terminalResultId) || eventRecord.terminalResultId === activeChild.terminalResultId);
+}
+
+// Read the parent's own liveness run status without throwing. Returns null when
+// the parent never recorded a liveness id, the status file is gone, or the record
+// is unreadable - none of which is positive proof of life.
+function readParentLivenessRunStatus(fixmeDir, state) {
+  const statusId = state.parentLivenessStatusId;
+  if (!isNonEmptyString(statusId)) return null;
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  if (!fs.existsSync(statusPath)) return null;
+  try {
+    return readRunStatusFile(statusPath, statusId);
+  } catch (e) {
+    // An unreadable liveness record is treated as a dead session below (the run
+    // record can no longer prove life); surface it since it drives a reap.
+    process.stderr.write(`warning: stale-parent recovery treating liveness as dead: parentRunId=${state.parentRunId} statusId=${statusId} reason=liveness-record-unreadable\n`);
+    return null;
+  }
+}
+
+// A parent's owning session is dead when it HAS a liveness id whose run status is
+// terminal (completed/failed) or whose status record is gone/unreadable. A parent
+// that never recorded a liveness id yields no death signal here and is left for
+// the child-work predicates and create-time conflict handling.
+function parentLivenessIsDead(fixmeDir, state) {
+  if (!isNonEmptyString(state.parentLivenessStatusId)) return false;
+  const status = readParentLivenessRunStatus(fixmeDir, state);
+  if (status === null) return true;
+  return status.state === 'completed' || status.state === 'failed';
+}
+
+// Classify a nonterminal natural-key sibling as an unambiguously stale parent
+// that prepare-child may abandon before creating the fresh run. Recoverability is
+// decided by liveness and durable child-work state, never by cursor shape alone,
+// so a session that crashed anywhere in the post-consume finalization window is
+// reaped instead of blocking every future run on the same natural key. Returns
+// the abandon {reason, message} or null when the candidate is still live or
+// ambiguous and must be left for create-time conflict handling.
+function classifyStaleParentForRecovery(fixmeDir, candidate) {
+  if (parentIsMissingActiveChild(candidate)) {
+    return { reason: 'staleParentMissingActiveChild', message: 'Recovered stale parent missing activeChild during prepare-child' };
+  }
+  if (parentActiveChildTerminalConsumed(fixmeDir, candidate)) {
+    return { reason: 'staleParentConsumedTaskEvent', message: 'Recovered stale parent whose active child terminal result was already consumed during prepare-child' };
+  }
+  if (parentLivenessIsDead(fixmeDir, candidate)) {
+    return { reason: 'staleParentLivenessDead', message: 'Recovered stale parent with a dead liveness run status during prepare-child' };
+  }
+  return null;
 }
 
 function findNonterminalParentsForLookup(fixmeDir, parentSkill, lookupInput) {
@@ -12177,28 +12289,21 @@ function findNonterminalParentsForLookup(fixmeDir, parentSkill, lookupInput) {
 function recoverStaleParentBeforeCreate(fixmeDir, data) {
   const nonterminal = findNonterminalParentsForLookup(fixmeDir, data.parent.parentSkill, data.parent.lookupInput);
   for (const candidate of nonterminal) {
-    let staleReason = null;
-    let staleMessage = null;
-    if (parentIsMissingActiveChild(candidate)) {
-      staleReason = 'staleParentMissingActiveChild';
-      staleMessage = 'Recovered stale parent missing activeChild during prepare-child';
-    } else if (parentHasConsumedTerminalChildEvent(candidate)) {
-      staleReason = 'staleParentConsumedTaskEvent';
-      staleMessage = 'Recovered stale parent with already-consumed terminal child event during prepare-child';
-    } else {
-      // Live/unconsumed child work is NOT an unambiguous stale shape; leave it
-      // untouched so create-time natural-key conflict handling can block it.
+    const stale = classifyStaleParentForRecovery(fixmeDir, candidate);
+    if (!stale) {
+      // Live or ambiguous shape (alive liveness with no finished child work):
+      // leave it so create-time natural-key conflict handling can block a genuine
+      // concurrent run on the same PR.
       continue;
     }
-    // Both predicates above (missing activeChild, consumed terminal child event)
-    // are unambiguous stale shapes and are recovered automatically. The legacy
+    // Unambiguously stale shapes are recovered automatically. The legacy
     // recoverStaleParent flag remains accepted for backward compatibility but is
-    // no longer required for these two cases.
+    // not required for recovery.
     parentAbandonCore(fixmeDir, {
       parentRunId: candidate.parentRunId,
       idempotencyKey: `${data.parent.idempotencyKey}:recover-stale:${candidate.parentRunId}`,
-      reason: staleReason,
-      message: staleMessage,
+      reason: stale.reason,
+      message: stale.message,
     });
   }
 }
@@ -12300,8 +12405,8 @@ function validatePrepareChildData(data) {
   if (!DISPATCH_TRANSPORTS.has(data.child.transport)) {
     lifecycleError('invalidInput', `child.transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
   }
-  if (data.parent.parentSkill === 'fixme-pr-comments' && data.child.runtime === 'codex' && data.child.transport !== 'agent') {
-    lifecycleError('invalidInput', 'Codex fixme-pr-comments prepare-child must use child.transport agent');
+  if (!FIXME_TASK_CHILD_TRANSPORTS.has(data.child.transport)) {
+    lifecycleError('invalidInput', `child.transport for fixme-task must be one of: ${[...FIXME_TASK_CHILD_TRANSPORTS].join(', ')}`);
   }
   if (data.parent.parentSkill === 'fixme-pr-comments') {
     // parentStatusId is now optional: prepare-child creates/recovers parent
@@ -13966,6 +14071,7 @@ function commandHelpPayload({
   requiredFlags = [],
   requiredDataFields = [],
   optionalDataFields = [],
+  requiredNestedFields = null,
   enumValues = {},
   example = {},
   audience = null,
@@ -13980,6 +14086,10 @@ function commandHelpPayload({
     enumValues,
     example,
   };
+  // Nested required fields the validator enforces beyond the top-level data keys,
+  // grouped so conditionally-required fields are not mistaken for always-required.
+  // Surfacing them keeps callers from learning required fields by trial and error.
+  if (requiredNestedFields) payload.requiredNestedFields = requiredNestedFields;
   if (audience) payload.audience = audience;
   if (guidance) payload.guidance = guidance;
   return payload;
@@ -14180,9 +14290,9 @@ function buildCommandRegistry() {
       enumValues: { transport: setValues(DISPATCH_TRANSPORTS) },
       example: {
         flags: { fixmeDir: '/absolute/.fixme' },
-        data: { idempotencyKey: 'dispatch-key', agentName: 'fixme-task', transport: 'inline-skill', promptInputs: {}, checkpointData: { status: 'running' } },
+        data: { idempotencyKey: 'dispatch-key', agentName: 'fixme-task', transport: 'agent', promptInputs: {}, checkpointData: { status: 'running' } },
       },
-      guidance: 'Optional checkpointData applies a pre-dispatch task checkpoint patch before the dispatch record is created. The output includes attachRuntimeHandleTemplate; copy it and add only runtimeHandle to call attach-runtime-handle. The output completionRuntimeHandlePolicy tells callers whether dispatch complete may persist a runtimeHandle.',
+      guidance: 'Optional checkpointData applies a pre-dispatch task checkpoint patch before the dispatch record is created. The output includes attachRuntimeHandleTemplate; copy it and add only runtimeHandle to call attach-runtime-handle. The output completionTemplates.completed and completionTemplates.failed are copy-ready dispatch complete bases. The output completionRuntimeHandlePolicy tells callers whether completed dispatch complete may persist a runtimeHandle.',
     }) },
     { path: 'lifecycle dispatch complete', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch complete',
@@ -14191,7 +14301,7 @@ function buildCommandRegistry() {
       optionalDataFields: ['parentStatusId', 'currentCommand', 'failure', 'runtimeHandle', 'checkpointData'],
       enumValues: { status: ['completed', 'failed'] },
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed', checkpointData: { status: 'reviewing' } } },
-      guidance: 'Follow the prepare output completionRuntimeHandlePolicy: when it is persistProducerContinuation, a completion runtimeHandle is persisted only when it matches the dispatch-owned activeRuntime from attach-runtime-handle, or omit it to derive the attached handle; when it is omit, do not include runtimeHandle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
+      guidance: 'Build payloads from prepare output completionTemplates.completed or completionTemplates.failed; do not add runtime, transport, or result. Follow completionRuntimeHandlePolicy: when it is persistProducerContinuation, a completed runtimeHandle is persisted only when it matches the dispatch-owned activeRuntime from attach-runtime-handle, or omit it to derive the attached handle; when it is omit, do not include runtimeHandle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
     }) },
     { path: 'lifecycle dispatch attach-runtime-handle', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch attach-runtime-handle',
@@ -14233,9 +14343,13 @@ function buildCommandRegistry() {
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['parent', 'child', 'await'],
       optionalDataFields: ['parentContinuation', 'recoverStaleParent'],
+      requiredNestedFields: {
+        always: ['parent.parentSkill', 'parent.idempotencyKey', 'child.idempotencyKey', 'child.agentName', 'child.runtime', 'child.transport', 'child.handoff', 'child.promptInputs'],
+        whenParentSkillIsFixmePrComments: ['child.parentInvocationId', 'child.pipelineRunId'],
+      },
       enumValues: { 'child.transport': setValues(DISPATCH_TRANSPORTS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', dataFile: '/absolute/prepare-child.json' }, data: { parent: {}, child: {}, await: {} } },
-      guidance: 'Returns a launch block only; the runtime adapter performs the returned launch action.',
+      guidance: 'Returns a launch block only; the runtime adapter performs the returned launch action. requiredNestedFields.whenParentSkillIsFixmePrComments (child.parentInvocationId, child.pipelineRunId) are required only when parent.parentSkill is fixme-pr-comments.',
     }) },
     { path: 'lifecycle parent abandon', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent abandon',

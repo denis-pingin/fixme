@@ -167,6 +167,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
 
 - **Ticket files are the state.** Each bug gets a numbered markdown file with YAML frontmatter. Ticket operations go through the fixme-tickets abstraction which routes to the configured backend.
 - **Lean orchestrators, fresh subagents.** Orchestrators (fixme-session, fixme-task) are dispatchers only. They never investigate, write code, or read source files. All real work happens in subagents spawned via the Agent tool with fresh context windows.
+  Parent-driven `fixme-task` launches use `agent` or `background`, never `inline-skill`. Claude therefore requires Claude Code >= 2.1.172 or a nesting-capable Claude desktop app for nested subagents.
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
 - **Dynamic state machine.** The state machine is derived from workflow config. Phase names ARE ticket states. `fixme-tools.cjs` builds valid transitions from the workflow definition.
 - **Background dispatch.** fixme-session dispatches fixme-task in the background per ticket, staying responsive for new intake and status queries.

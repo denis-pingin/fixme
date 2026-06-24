@@ -149,6 +149,8 @@ Linear team and default-priority discovery are used by `/fixme-ticket` even when
 
 **fixme-task** executes workflows. It reads phase definitions from `.fixme/config.json`, dispatches each phase's skills as isolated agents, manages review loops within phases, and optionally updates ticket state at phase boundaries.
 
+Parent-driven `fixme-task` launches use `agent` or `background`, never `inline-skill`; Claude launches through `Agent(subagent_type="fixme-task", ...)` and Codex launches through `spawn_agent(agent_type="fixme-task", ...)`.
+
 ### Config-Driven Workflows
 
 Workflows are defined in `.fixme/config.json`:
@@ -285,7 +287,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 
 - **Ticket files are the state.** Each bug gets a numbered markdown file with YAML frontmatter. State transitions go through `fixme-tools.cjs` which validates, computes durations, and maintains the transition log.
 
-- **Lean orchestrators, fresh subagents.** Orchestrators never read source code or do implementation work. All real work happens in subagents spawned with fresh context windows.
+- **Lean orchestrators, fresh subagents.** Orchestrators never read source code or do implementation work. All real work happens in subagents spawned with fresh context windows. Parent-driven `fixme-task` itself is also a fresh nested subagent so its producer/reviewer children run one level deeper instead of sharing the parent context.
 
 - **State on disk, not in memory.** After every subagent returns, state is re-read from disk. Context compaction can discard in-memory state at any time.
 
@@ -302,6 +304,7 @@ Copies all `fixme*` skill directories from `.claude/skills/` to `~/.claude/skill
 ## Requirements
 
 - Claude Code or Codex, depending on the installed runtime
+- Claude Code >= 2.1.172 or a nesting-capable Claude desktop app for parent-driven `fixme-task` launches on Claude
 - Node.js 18+
 - Playwright CLI (for browser automation skills)
 - Linear MCP for `/fixme-ticket` and the Linear ticket backend

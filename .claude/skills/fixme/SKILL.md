@@ -78,7 +78,7 @@ Saved task, ticket, or `FIXME-N` resume:
     "idempotencyKey": "<stable-router-child-key>",
     "agentName": "fixme-task",
     "runtime": "<claude|codex>",
-    "transport": "<inline-skill|agent>",
+    "transport": "agent",
     "parentInvocationId": "<usage invocation id if available>",
     "pipelineRunId": "<pipeline run id if available>",
     "handoff": {
@@ -103,6 +103,8 @@ Saved task, ticket, or `FIXME-N` resume:
   "recoverStaleParent": true
 }
 ```
+
+Parent-driven `fixme-task` launches use `agent` by default. Use `background` only for fire-and-forget parent workflows such as `fixme-session`. Never use `inline-skill` or `direct` for a `fixme-task` child launch.
 
 The `resumeRef` value may be a `FIXME-N` label, standalone task markdown/state path, ticket markdown/folder path, or reserved task-state path. `lifecycle parent prepare-child` resolves it through `task resolve` and returns `launch.promptBlocks.taskInput.resolvedMode` plus the correct nullable path set; the router must not infer task/ticket/reserved shape itself.
 
