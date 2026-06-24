@@ -4223,7 +4223,7 @@ test('cli help emits command schemas before required validation', () => {
       requiredFlags: ['fixme-dir'],
       requiredDataFields: ['parent', 'child', 'await'],
       optionalDataFields: ['parentContinuation', 'recoverStaleParent'],
-      enumChecks: [['child.transport', ['agent', 'background']]],
+      exactEnumChecks: [['child.transport', ['agent', 'background']]],
       requiredNestedFields: {
         always: ['parent.parentSkill', 'parent.idempotencyKey', 'child.idempotencyKey', 'child.agentName', 'child.runtime', 'child.transport', 'child.handoff', 'child.promptInputs'],
         whenParentSkillIsFixmePrComments: ['child.parentInvocationId', 'child.pipelineRunId'],
@@ -4277,6 +4277,12 @@ test('cli help emits command schemas before required validation', () => {
       for (const value of values) {
         assert(result.data.enumValues[enumName].includes(value), `${item.command} help enum ${enumName} missing ${value}`);
       }
+    }
+    for (const [enumName, values] of (item.exactEnumChecks || [])) {
+      assert(Array.isArray(result.data.enumValues[enumName]), `${item.command} help missing enum ${enumName}`);
+      const actualValues = [...result.data.enumValues[enumName]].sort();
+      const expectedValues = [...values].sort();
+      assert(JSON.stringify(actualValues) === JSON.stringify(expectedValues), `${item.command} help enum ${enumName} expected exactly ${JSON.stringify(expectedValues)}, got ${JSON.stringify(actualValues)}`);
     }
     if (item.requiredNestedFields) {
       assert(isPlainObjectForTest(result.data.requiredNestedFields), `${item.command} help requiredNestedFields object`);
