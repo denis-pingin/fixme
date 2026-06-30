@@ -88,6 +88,14 @@ function runInDir(args, cwd) {
   }
 }
 
+function runShellInDir(command, cwd) {
+  execSync(command, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+}
+
 function cliErrorMessage(result) {
   const cliError = result.data?.error;
   if (typeof cliError === 'string') return cliError;
@@ -2722,7 +2730,7 @@ function initTaskState(slug) {
   const ticketPath = createTicketFolder(sessionDir, '0001', slug, 'queued');
   const initialized = runInDir(`task init --ticket "${ticketPath}" ${pipelineResolutionFlag('standard')} --project-root "${projectRoot}"`, projectRoot);
   assert(initialized.ok, `task init should succeed, got: ${JSON.stringify(initialized.data)}`);
-  return { projectRoot, fixmeDir, statePath: initialized.data.statePath };
+  return { projectRoot, fixmeDir, statePath: initialized.data.statePath, taskPath: ticketPath };
 }
 
 test('task state initializes parentContinuation/decisions/terminalResult', () => {
@@ -3089,6 +3097,68 @@ test('dispatch complete stores runtime handles for resumable producers only', ()
   assert(nextPrepare.data.continuation.runtimeHandle.id === 'agent_plan_after_success', 'next dispatch should use stored handle');
 });
 
+test('dispatch prepare resumes a distinct producer through durable dispatch tracking', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('producer-resume-durable', 'producer-resume-durable-first');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_producer_resume_durable');
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+    })}'`,
+    projectRoot,
+  );
+  assert(complete.ok, `first completion should store producer continuation, got ${JSON.stringify(complete.data)}`);
+
+  const resumed = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey: 'producer-resume-durable-second',
+      agentName: 'fixme-write-plan',
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      allowProducerContinuation: true,
+      promptInputs: { mode: 'plan-repair' },
+      callerStatusId: 'run_dispatcher_producer_resume',
+      callerRuntimeHandle: { kind: 'codexAgentId', id: 'agent_dispatcher_producer_resume' },
+    })}'`,
+    projectRoot,
+  );
+  assert(resumed.ok, `resume prepare should succeed, got ${JSON.stringify(resumed.data)}`);
+  assert(resumed.data.status === 'requiresRuntimeAction', `resume prepare should return sealed action, got ${JSON.stringify(resumed.data)}`);
+  assert(resumed.data.dispatchId && resumed.data.statusId, 'resume prepare returns durable dispatch identity');
+  assert(resumed.data.statusId !== prepare.data.statusId, 'resume prepare creates a distinct child run');
+  assert(resumed.data.completionTemplates.completed.dispatchId === resumed.data.dispatchId, 'resume prepare returns completion templates for the new dispatch');
+  assert(resumed.data.runtimeAction.kind === 'resumeAgentAndSendInput', `resume action should resume and send input, got ${JSON.stringify(resumed.data.runtimeAction)}`);
+  assert(resumed.data.runtimeAction.continuation.mode === 'dispatchStart', 'resume action observes through dispatchStart');
+  assert(resumed.data.runtimeAction.continuation.dispatchId === resumed.data.dispatchId, 'resume action is tied to the new dispatch id');
+  assert(fs.existsSync(dispatchRecordPathForTest(fixmeDir, resumed.data.dispatchId)), 'resume prepare persists dispatch record');
+
+  const started = runInDir(
+    `lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      actionId: resumed.data.runtimeAction.actionId,
+      status: 'succeeded',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_producer_resume_durable' },
+    })}'`,
+    projectRoot,
+  );
+  assert(started.ok, `resume action observation should succeed, got ${JSON.stringify(started.data)}`);
+  assert(started.data.status === 'requiresRuntimeAction' && started.data.runtimeAction.kind === 'waitAgent', `resume observation should return sealed waitAgent, got ${JSON.stringify(started.data)}`);
+
+  const completed = runInDir(
+    `lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      actionId: started.data.runtimeAction.actionId,
+      waitOutcome: 'completed',
+      result: { status: 'completed', output: 'PLAN_PATH: /tmp/resumed-plan.md' },
+      checkpointData: { artifacts: { planPath: '/tmp/resumed-plan.md' } },
+    })}'`,
+    projectRoot,
+  );
+  assert(completed.ok, `resumed wait completion should succeed, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.status === 'completed' && completed.data.dispatchId === resumed.data.dispatchId, `resumed wait should terminalize dispatch, got ${JSON.stringify(completed.data)}`);
+  assert(readJson(statePath).artifacts.planPath === '/tmp/resumed-plan.md', 'resumed wait applies checkpointData through runtime-action observe');
+});
+
 test('dispatch complete rejects runtime handles for non-resumable agents', () => {
   const { projectRoot, fixmeDir, statePath } = initTaskState('producer-continuation-reviewer-reject');
 
@@ -3141,7 +3211,16 @@ function prepareResumableProducerDispatch(slug, idempotencyKey) {
     projectRoot,
   );
   assert(prepare.ok, `expected prepare to pass: ${prepare.stderr || prepare.stdout}`);
-  return { projectRoot, fixmeDir, statePath, prepare };
+  return {
+    projectRoot,
+    fixmeDir,
+    statePath,
+    taskStatePath: statePath,
+    prepare,
+    dispatchId: prepare.data.dispatchId,
+    statusId: prepare.data.statusId,
+    statusPath: prepare.data.statusPath,
+  };
 }
 
 function attachResumableHandle(fixmeDir, prepare, projectRoot, handleId) {
@@ -3195,6 +3274,334 @@ test('dispatch prepare returns attach runtime handle template', () => {
   );
   assert(replay.ok, `prepare replay should succeed, got ${JSON.stringify(replay.data)}`);
   assert(JSON.stringify(replay.data.attachRuntimeHandleTemplate) === JSON.stringify(template), 'replay returns identical attach template');
+});
+
+test('dispatch prepare returns sealed spawn action with dispatch identity block', () => {
+  const init = initTaskState('dispatch-runtime-action');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'dispatch-runtime-action' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const prepared = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    idempotencyKey: 'dispatch-runtime-action-plan',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: init.statePath,
+    ownerFence: continued.data.ownerFence,
+    allowProducerContinuation: true,
+    promptInputs: { task: 'write plan' },
+  })}'`);
+  assert(prepared.ok, `dispatch prepare should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.status === 'requiresRuntimeAction', `prepare returns runtime action, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.runtimeAction.kind === 'spawnAgent', `fresh producer spawns, got ${JSON.stringify(prepared.data.runtimeAction)}`);
+  assert(prepared.data.runtimeAction.message.includes('<dispatch-identity>'), 'message contains dispatch identity block');
+  assert(prepared.data.runtimeAction.message.includes('mayUseRuntimeControlTools: false'), 'producer dispatch identity forbids runtime control');
+});
+
+test('dispatch prepare attach and complete require current owner fence', () => {
+  const init = initTaskState('dispatch-owner-fence');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'dispatch-owner-fence' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const staleFence = { ...continued.data.ownerFence, taskOwnerGeneration: continued.data.ownerFence.taskOwnerGeneration + 1 };
+  const stalePrepare = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    idempotencyKey: 'dispatch-prepare-stale',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: init.statePath,
+    ownerFence: staleFence,
+    promptInputs: { task: 'write plan' },
+  })}'`);
+  assert(!stalePrepare.ok && stalePrepare.data.error.code === 'staleTaskOwner', `stale dispatch prepare should reject, got ${JSON.stringify(stalePrepare.data)}`);
+
+  const prepared = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    idempotencyKey: 'dispatch-prepare-current',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: init.statePath,
+    ownerFence: continued.data.ownerFence,
+    promptInputs: { task: 'write plan' },
+  })}'`);
+  assert(prepared.ok, `current dispatch prepare should succeed, got ${JSON.stringify(prepared.data)}`);
+  const staleAttach = run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    ...prepared.data.attachRuntimeHandleTemplate,
+    taskStatePath: init.statePath,
+    ownerFence: staleFence,
+    idempotencyKey: 'dispatch-attach-stale',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_stale_attach' },
+  })}'`);
+  assert(!staleAttach.ok && staleAttach.data.error.code === 'staleTaskOwner', `stale dispatch attach should reject, got ${JSON.stringify(staleAttach.data)}`);
+
+  const staleComplete = run(`lifecycle dispatch complete --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    ...prepared.data.completionTemplates.completed,
+    ownerFence: staleFence,
+    idempotencyKey: 'dispatch-complete-stale',
+  })}'`);
+  assert(!staleComplete.ok && staleComplete.data.error.code === 'staleTaskOwner', `stale dispatch complete should reject, got ${JSON.stringify(staleComplete.data)}`);
+});
+
+function observeSpawnForDispatch(setup, handleId) {
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    actionId: setup.prepare.data.runtimeAction.actionId,
+    status: 'succeeded',
+    runtimeHandle: { kind: 'codexAgentId', id: handleId },
+  })}'`);
+  assert(observed.ok, `spawn observe should succeed, got ${JSON.stringify(observed.data)}`);
+  setup.waitActionId = observed.data.runtimeAction && observed.data.runtimeAction.actionId;
+  return observed;
+}
+
+function observeWaitForDispatch(setup, evidence) {
+  const actionId = evidence.actionId || setup.waitActionId;
+  return run(`lifecycle runtime-action observe --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({ ...evidence, actionId })}'`);
+}
+
+function snapshotTaskDispatch(setup) {
+  return {
+    task: fs.readFileSync(setup.taskStatePath, 'utf8'),
+    dispatch: fs.readFileSync(dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId), 'utf8'),
+    status: fs.readFileSync(setup.statusPath, 'utf8'),
+  };
+}
+
+test('wait completed observation applies checkpointData through runtime-action observe', () => {
+  const setup = prepareResumableProducerDispatch('wait-completed-observe', 'wait-completed-observe-prepare');
+  const started = observeSpawnForDispatch(setup, 'agent_wait_completed_observe');
+  assert(started.data.runtimeAction.kind === 'waitAgent', `spawn observe should return wait action, got ${JSON.stringify(started.data)}`);
+  const completedEvidence = {
+    waitOutcome: 'completed',
+    result: { status: 'completed', output: 'PLAN_PATH: /tmp/plan.md\nCODE_MAP_PATH: /tmp/code-map.md' },
+    checkpointData: {
+      artifacts: { planPath: '/tmp/plan.md', codeMapPath: '/tmp/code-map.md' },
+      handoff: { executionSummary: 'Producer returned PLAN_PATH and CODE_MAP_PATH.' },
+    },
+  };
+  const completed = observeWaitForDispatch(setup, completedEvidence);
+  assert(completed.ok, `completed wait observation should succeed, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.status === 'completed', `observe returns terminal dispatch output, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.dispatchId === setup.dispatchId, 'observe terminalizes the dispatch tied to the wait action');
+  const taskAfterObserve = readJson(setup.taskStatePath);
+  assert(taskAfterObserve.artifacts.planPath === '/tmp/plan.md', `observe checkpointData records PLAN_PATH, got ${JSON.stringify(taskAfterObserve.artifacts)}`);
+  assert(taskAfterObserve.artifacts.codeMapPath === '/tmp/code-map.md', `observe checkpointData records CODE_MAP_PATH, got ${JSON.stringify(taskAfterObserve.artifacts)}`);
+  const afterFirst = snapshotTaskDispatch(setup);
+
+  const replay = observeWaitForDispatch(setup, completedEvidence);
+  assert(replay.ok && replay.data.status === 'completed', `completed wait replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'completed wait replay must not mutate task or dispatch state');
+
+  const conflict = observeWaitForDispatch(setup, {
+    ...completedEvidence,
+    result: { status: 'completed', output: 'PLAN_PATH: /tmp/other-plan.md' },
+  });
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting completed wait should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'conflicting completed wait must reject before mutation');
+});
+
+test('wait failed observation records dispatch failure through runtime-action observe', () => {
+  const setup = prepareResumableProducerDispatch('wait-failed-observe', 'wait-failed-observe-prepare');
+  const started = observeSpawnForDispatch(setup, 'agent_wait_failed_observe');
+  assert(started.data.runtimeAction.kind === 'waitAgent', `spawn observe should return wait action, got ${JSON.stringify(started.data)}`);
+  const failedEvidence = {
+    waitOutcome: 'failed',
+    failure: { message: 'producer failed while writing plan', reason: 'producerFailed' },
+    checkpointData: { handoff: { executionSummary: 'Producer failed while writing plan.' } },
+  };
+  const failed = observeWaitForDispatch(setup, failedEvidence);
+  assert(failed.ok, `failed wait observation should succeed, got ${JSON.stringify(failed.data)}`);
+  assert(failed.data.status === 'failed', `observe returns failed dispatch output, got ${JSON.stringify(failed.data)}`);
+  assert(failed.data.failure.message === 'producer failed while writing plan', `failure is preserved, got ${JSON.stringify(failed.data.failure)}`);
+  const failedState = readJson(setup.taskStatePath);
+  assert(failedState.handoff.executionSummary === 'Producer failed while writing plan.', `failed wait checkpointData applied, got ${JSON.stringify(failedState.handoff)}`);
+  const afterFirst = snapshotTaskDispatch(setup);
+
+  const replay = observeWaitForDispatch(setup, failedEvidence);
+  assert(replay.ok && replay.data.status === 'failed', `failed wait replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'failed wait replay must not mutate task or dispatch state');
+});
+
+test('completed wait observation returns closeAgent release plan and release-complete replays exactly', () => {
+  const setup = prepareResumableProducerDispatch('release-complete-replay', 'release-complete-replay-prepare');
+  observeSpawnForDispatch(setup, 'agent_release_complete_replay');
+  const complete = observeWaitForDispatch(setup, {
+    waitOutcome: 'completed',
+    result: { status: 'completed', output: 'PLAN_PATH: /tmp/plan.md' },
+    checkpointData: { artifacts: { planPath: '/tmp/plan.md' } },
+  });
+  assert(complete.ok, `completed wait observation should succeed, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.releaseState === 'pending', `release should be pending, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.runtimeReleasePlan.runtimeAction.kind === 'closeAgent', `close action returned, got ${JSON.stringify(complete.data.runtimeReleasePlan)}`);
+  const releasePayload = { ...complete.data.releaseCompleteTemplate.data, releaseStatus: 'released' };
+  const released = run(`lifecycle dispatch release-complete --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(releasePayload)}'`);
+  assert(released.ok, `release-complete should succeed, got ${JSON.stringify(released.data)}`);
+  assert(released.data.releaseState.status === 'released', `release state records released, got ${JSON.stringify(released.data)}`);
+  const afterFirst = snapshotTaskDispatch(setup);
+
+  const replay = run(`lifecycle dispatch release-complete --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(releasePayload)}'`);
+  assert(replay.ok, `release-complete replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'release-complete replay must not rewrite lifecycle state');
+
+  const conflict = run(`lifecycle dispatch release-complete --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    ...releasePayload,
+    releaseStatus: 'releaseFailed',
+    failureKind: 'closeAgentFailed',
+    failureMessage: 'runtime close failed after release was recorded',
+  })}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting release-complete should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'conflicting release-complete must reject before mutation');
+});
+
+test('wait timeout with only runtime identity returns runtimeWaitTimedOut', () => {
+  const setup = prepareResumableProducerDispatch('wait-timeout-liveness-unknown', 'wait-timeout-liveness-unknown-prepare');
+  observeSpawnForDispatch(setup, 'agent_wait_timeout_unknown');
+  const before = snapshotTaskDispatch(setup);
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'runtimeWaitTimedOut', `timeout should not return runtimeOwned, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.reason === 'runtimeLivenessUnknown', `timeout reason should be runtimeLivenessUnknown, got ${JSON.stringify(timeout.data)}`);
+  assert(!JSON.stringify(timeout.data).includes('runtimeOwned'), `timeout response must not mention runtimeOwned, got ${JSON.stringify(timeout.data)}`);
+  const after = snapshotTaskDispatch(setup);
+  assert(after.task === before.task, 'runtimeWaitTimedOut must not mutate task state');
+  assert(after.dispatch === before.dispatch, 'runtimeWaitTimedOut must not mutate dispatch state');
+  const status = run(`run status --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId}`);
+  assert(status.ok, `run status should expose timeout label, got ${JSON.stringify(status.data)}`);
+  assert(status.data.userStatus === 'owned, wait timed out, liveness unknown', `timeout userStatus should distinguish runtime liveness, got ${JSON.stringify(status.data)}`);
+});
+
+test('wait timeout observation returns pending attention before runtimeWaitTimedOut', () => {
+  const setup = prepareResumableProducerDispatch('wait-timeout-attention', 'wait-timeout-attention-prepare');
+  observeSpawnForDispatch(setup, 'agent_wait_timeout_attention');
+  const attentionData = JSON.stringify({
+    ownerSkill: 'fixme-task',
+    sourceSkill: 'fixme-execute-plan',
+    kind: 'execution-ambiguity',
+    resumeRef: setup.taskStatePath,
+    taskStatePath: setup.taskStatePath,
+    promptMarkdown: 'Need input',
+    answerMode: 'freeform',
+  });
+  const opened = run(`run attention set --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --data '${attentionData}'`);
+  assert(opened.ok, `attention setup should succeed, got ${JSON.stringify(opened.data)}`);
+  const before = snapshotTaskDispatch(setup);
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'attention', `pending attention should win over runtimeWaitTimedOut, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.attentionId === opened.data.attentionId, `attention id should be returned, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.brokerResumeTemplate.statusId === setup.statusId, 'brokerResumeTemplate carries statusId');
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(before), 'attention timeout classification must not mutate task or dispatch state');
+});
+
+function prepareDispatchWithOwnerStatus(slug) {
+  const setup = prepareResumableProducerDispatch(`${slug}-child`, `${slug}-prepare`);
+  const owner = run(`run start --fixme-dir "${setup.fixmeDir}" --agent fixme-task`);
+  assert(owner.ok, `owner run start should succeed, got ${JSON.stringify(owner.data)}`);
+  const prepared = runInDir(`lifecycle dispatch prepare --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    idempotencyKey: `${slug}-owned-prepare`,
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: setup.taskStatePath,
+    parentStatusId: owner.data.statusId,
+    allowProducerContinuation: true,
+    promptInputs: { mode: 'plan' },
+  })}'`, setup.projectRoot);
+  assert(prepared.ok, `owned prepare should succeed, got ${JSON.stringify(prepared.data)}`);
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    actionId: prepared.data.runtimeAction.actionId,
+    status: 'succeeded',
+    runtimeHandle: { kind: 'codexAgentId', id: `agent_${slug}_child` },
+  })}'`);
+  assert(observed.ok, `owned spawn observe should succeed, got ${JSON.stringify(observed.data)}`);
+  return {
+    ...setup,
+    ownerStatusId: owner.data.statusId,
+    ownedPrepare: prepared.data,
+    waitActionId: observed.data.runtimeAction.actionId,
+  };
+}
+
+function markChildRunTerminal(setup, status = 'completed') {
+  const child = readJson(setup.ownedPrepare.statusPath);
+  fs.writeFileSync(setup.ownedPrepare.statusPath, JSON.stringify({
+    ...child,
+    state: status,
+    checkpoint: 'done',
+    currentCommand: null,
+    updatedAt: '2026-06-12T00:00:00.000Z',
+  }, null, 2));
+}
+
+test('wait timeout detects stalled owner when terminal child completion was not consumed', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-detect');
+  markChildRunTerminal(setup, 'completed');
+  const before = snapshotTaskDispatch({
+    ...setup,
+    dispatchId: setup.ownedPrepare.dispatchId,
+    statusPath: setup.ownedPrepare.statusPath,
+  });
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `stalled owner timeout should classify, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'stalledOwner', `timeout should return stalledOwner, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.ownerStatusId === setup.ownerStatusId, 'stalledOwner names the owner status');
+  assert(timeout.data.childStatusId === setup.ownedPrepare.statusId, 'stalledOwner names the terminal child status');
+  assert(timeout.data.dispatchId === setup.ownedPrepare.dispatchId, 'stalledOwner names the dispatch');
+  assert(timeout.data.childAgent === 'fixme-write-plan', 'stalledOwner names the child agent');
+  assert(timeout.data.terminalChildStatus === 'completed', 'stalledOwner reports terminal child status');
+  assert(timeout.data.recovery.command.includes('lifecycle dispatch stalled-owner recover'), 'stalledOwner returns recovery command');
+  assert(JSON.stringify(snapshotTaskDispatch({
+    ...setup,
+    dispatchId: setup.ownedPrepare.dispatchId,
+    statusPath: setup.ownedPrepare.statusPath,
+  })) === JSON.stringify(before), 'stalledOwner classification must not mutate task or dispatch state');
+  const ownerStatus = run(`run status --fixme-dir "${setup.fixmeDir}" --status-id ${setup.ownerStatusId}`);
+  assert(ownerStatus.ok, `owner status should be readable, got ${JSON.stringify(ownerStatus.data)}`);
+  assert(ownerStatus.data.userStatus === 'stalled owner: child completed but owner did not consume completion', `owner status label should describe stalled owner, got ${JSON.stringify(ownerStatus.data)}`);
+});
+
+test('stalled-owner recover returns sealed owner resume after revalidating durable facts', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-recover');
+  const ownerStatusPath = path.join(setup.fixmeDir, 'runs', setup.ownerStatusId, 'status.json');
+  const ownerStatus = readJson(ownerStatusPath);
+  fs.writeFileSync(ownerStatusPath, JSON.stringify({
+    ...ownerStatus,
+    activeRuntime: { dispatchId: setup.ownedPrepare.dispatchId, kind: 'codexAgentId', id: 'agent_stalled_owner_recover_owner' },
+  }, null, 2));
+  markChildRunTerminal(setup, 'completed');
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok && timeout.data.transition === 'stalledOwner', `setup should detect stalled owner, got ${JSON.stringify(timeout.data)}`);
+  const recovered = run(`lifecycle dispatch stalled-owner recover --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(timeout.data.recovery.data)}'`);
+  assert(recovered.ok, `stalled-owner recover should succeed, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.transition === 'stalledOwner', `recover returns stalledOwner resume transition, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.status === 'requiresRuntimeAction', 'recover returns a sealed runtime action');
+  assert(recovered.data.runtimeAction.kind === 'resumeAgentAndSendInput', `recover action resumes owner, got ${JSON.stringify(recovered.data.runtimeAction)}`);
+  assert(recovered.data.runtimeAction.runtimeHandle.id === 'agent_stalled_owner_recover_owner', 'recover targets the owner runtime handle');
+  assert(recovered.data.runtimeAction.continuation.mode === 'stalledOwnerRecover', 'recover action carries stalledOwnerRecover continuation');
+});
+
+test('stalled-owner recover records owner stopped when durable facts no longer match', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-stopped');
+  markChildRunTerminal(setup, 'completed');
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok && timeout.data.transition === 'stalledOwner', `setup should detect stalled owner, got ${JSON.stringify(timeout.data)}`);
+  fs.rmSync(path.join(setup.fixmeDir, 'runs', setup.ownerStatusId), { recursive: true, force: true });
+  const recovered = run(`lifecycle dispatch stalled-owner recover --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(timeout.data.recovery.data)}'`);
+  assert(recovered.ok, `owner-stopped recovery should return lifecycle transition, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.transition === 'dispatchFailure', `owner-stopped recovery returns dispatchFailure, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.dispatchFailure.reason === 'ownerStoppedBeforeDispatchCompletion', `owner-stopped reason should be preserved, got ${JSON.stringify(recovered.data)}`);
+  const record = readJson(dispatchRecordPathForTest(setup.fixmeDir, setup.ownedPrepare.dispatchId));
+  assert(record.completion && record.completion.output.status === 'failed', 'owner-stopped recovery records dispatch failure through the normal completion boundary');
+});
+
+test('stalled-owner recover never spawns a fresh owner when the owner cannot resume', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-no-fresh');
+  markChildRunTerminal(setup, 'completed');
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok && timeout.data.transition === 'stalledOwner', `setup should detect stalled owner, got ${JSON.stringify(timeout.data)}`);
+  const beforeActions = listRuntimeActionFiles(setup.fixmeDir);
+  const recovered = run(`lifecycle dispatch stalled-owner recover --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(timeout.data.recovery.data)}'`);
+  assert(recovered.ok, `no-fresh recovery should return lifecycle transition, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.transition === 'dispatchFailure', `no-runtime owner returns dispatchFailure, got ${JSON.stringify(recovered.data)}`);
+  assert(!JSON.stringify(recovered.data).includes('spawnAgent'), `recovery must not offer fresh owner spawn, got ${JSON.stringify(recovered.data)}`);
+  assert(JSON.stringify(listRuntimeActionFiles(setup.fixmeDir)) === JSON.stringify(beforeActions), 'no-runtime owner must not persist a fresh runtime action');
 });
 
 test('dispatch complete rejects mismatched runtime handle before mutation', () => {
@@ -3367,19 +3774,29 @@ test('dispatch complete does not apply checkpointData when runtime preflight fai
 // Build a fully linked parent-driven child: prepare-child, checkpoint the linkage
 // continuation into the child state, and run invocation start so usageInvocationId
 // is persisted. Returns durable identifiers for finalizer tests.
-function setupParentDrivenChild(suffix, idempotencyKey) {
+function setupParentDrivenChild(suffix, idempotencyKey, options = {}) {
   const fixmeDir = makeFixmeDir();
   const projectRoot = path.dirname(fixmeDir);
+  if (typeof options.beforeBegin === 'function') {
+    options.beforeBegin(projectRoot);
+  }
   const payload = prepareChildPayload({ suffix });
   const payloadPath = writeJsonFixture(projectRoot, `prepare-child-${suffix}.json`, payload);
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
-  const activeChild = prepared.data.launch.activeChild;
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+    actionId: prepared.data.runtimeAction.actionId,
+    status: 'succeeded',
+    runtimeHandle: { kind: 'codexAgentId', id: `agent_${suffix.replace(/[^a-zA-Z0-9_-]/g, '_')}` },
+  })}'`);
+  assert(observed.ok, `spawn observation should succeed, got ${JSON.stringify(observed.data)}`);
+  const linkedParent = parentState(fixmeDir, prepared.data.parentRunId);
+  const activeChild = linkedParent.payload.activeChild;
   const continuation = prepared.data.launch.promptBlocks.parentContinuation;
   assert(continuation.childStatusId === activeChild.statusId, 'setup persists childStatusId from activeChild.statusId');
 
-  const checkpointed = runInDir(`task checkpoint --state "${activeChild.taskStatePath}" --data '${JSON.stringify({ parentContinuation: continuation })}'`, projectRoot);
-  assert(checkpointed.ok, `child state should accept the linkage continuation, got ${JSON.stringify(checkpointed.data)}`);
+  const began = runInDir(`lifecycle task begin --fixme-dir "${fixmeDir}" --launch-id "${prepared.data.launchId}"`, projectRoot);
+  assert(began.ok, `child task begin should acquire owner, got ${JSON.stringify(began.data)}`);
 
   const startData = JSON.stringify({
     skill: 'fixme-task',
@@ -3398,12 +3815,14 @@ function setupParentDrivenChild(suffix, idempotencyKey) {
     projectRoot,
     parentRunId: prepared.data.parentRunId,
     parentStatePath: prepared.data.parentStatePath,
+    launchId: prepared.data.launchId,
     dispatchId: prepared.data.dispatchId,
     statusId: prepared.data.statusId,
     activeChild,
     continuation: readJson(activeChild.taskStatePath).parentContinuation,
     taskStatePath: activeChild.taskStatePath,
     invocationId: started.data.invocationId,
+    ownerFence: began.data.ownerFence,
   };
 }
 
@@ -3412,8 +3831,70 @@ function completedFinalizePayload() {
 }
 
 function finalizeChild(setup, payload) {
-  const payloadPath = writeJsonFixture(setup.projectRoot, `finalize-${path.basename(setup.taskStatePath)}.json`, payload);
+  const payloadPath = writeJsonFixture(setup.projectRoot, `finalize-${path.basename(setup.taskStatePath)}.json`, {
+    ...payload,
+    ownerFence: payload.ownerFence || setup.ownerFence,
+  });
   return runInDir(`lifecycle child finalize --fixme-dir "${setup.fixmeDir}" --state "${setup.taskStatePath}" --data-file "${payloadPath}"`, setup.projectRoot);
+}
+
+function ensureTerminalResultForSetup(setup) {
+  const state = readJson(setup.taskStatePath);
+  if (state.terminalResult) {
+    return {
+      terminalResultId: state.terminalResult.terminalResultId,
+      resultSummaryPath: setup.taskStatePath.replace(/\.state\.json$/, '.result.json'),
+      status: state.terminalResult.status,
+    };
+  }
+  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify({
+    ...completedFinalizePayload(),
+    ownerFence: setup.ownerFence,
+  })}'`, setup.projectRoot);
+  assert(result.ok, `task result write should succeed for event payload setup, got ${JSON.stringify(result.data)}`);
+  return result.data;
+}
+
+function buildTaskEventRecordPayload(setup, overrides = {}) {
+  const result = ensureTerminalResultForSetup(setup);
+  return {
+    parentRunId: setup.parentRunId,
+    taskRunId: setup.continuation.taskRunId,
+    taskStatePath: setup.taskStatePath,
+    resultSummaryPath: result.resultSummaryPath,
+    terminalResultId: result.terminalResultId,
+    status: result.status || 'completed',
+    ownerFence: setup.ownerFence,
+    ...overrides,
+  };
+}
+
+function buildTaskEventConsumePayload(setup, overrides = {}) {
+  const recordPayload = buildTaskEventRecordPayload(setup, {
+    ownerFence: setup.ownerFence,
+    idempotencyKey: `task-event-record-for-consume-${path.basename(setup.taskStatePath)}`,
+  });
+  const recorded = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(recordPayload)}'`);
+  assert(recorded.ok, `task event record should succeed for consume payload setup, got ${JSON.stringify(recorded.data)}`);
+  return {
+    parentRunId: setup.parentRunId,
+    eventId: recorded.data.event.eventId,
+    next: true,
+    ownerFence: setup.ownerFence,
+    ...overrides,
+  };
+}
+
+function markActiveChildDispatchForSetup(setup, dispatch) {
+  const parent = parentState(setup.fixmeDir, setup.parentRunId);
+  parent.payload.activeChild = {
+    ...parent.payload.activeChild,
+    activeChildDispatch: {
+      taskOwnerGeneration: setup.ownerFence.taskOwnerGeneration,
+      ...dispatch,
+    },
+  };
+  writeParentState(setup.fixmeDir, setup.parentRunId, parent);
 }
 
 function projectUsageRowsForInvocation(fixmeDir, invocationId) {
@@ -3426,7 +3907,7 @@ function projectUsageRowsForInvocation(fixmeDir, invocationId) {
 
 test('task event record rejects taskRunId mismatch when parent active child is verifiable', () => {
   const setup = setupParentDrivenChild('terecord-mismatch', 'terecord-mismatch-start');
-  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify(completedFinalizePayload())}'`, setup.projectRoot);
+  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify({ ...completedFinalizePayload(), ownerFence: setup.ownerFence })}'`, setup.projectRoot);
   assert(result.ok, `result write should succeed, got ${JSON.stringify(result.data)}`);
   const recordData = JSON.stringify({
     parentRunId: setup.parentRunId,
@@ -3435,6 +3916,7 @@ test('task event record rejects taskRunId mismatch when parent active child is v
     resultSummaryPath: result.data.resultSummaryPath,
     terminalResultId: result.data.terminalResultId,
     status: 'completed',
+    ownerFence: setup.ownerFence,
   });
   const recorded = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${recordData}'`);
   assert(!recorded.ok, 'mismatched taskRunId should fail the record');
@@ -3447,7 +3929,7 @@ test('task event record skips taskRunId guard with warning when parent active ch
   const setup = setupParentDrivenChild('terecord-skip', 'terecord-skip-start');
   // Remove parent state so the guard is unverifiable.
   fs.rmSync(path.join(setup.fixmeDir, 'parents', setup.parentRunId), { recursive: true, force: true });
-  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify(completedFinalizePayload())}'`, setup.projectRoot);
+  const result = runInDir(`task result write --state "${setup.taskStatePath}" --data '${JSON.stringify({ ...completedFinalizePayload(), ownerFence: setup.ownerFence })}'`, setup.projectRoot);
   assert(result.ok, `result write should succeed, got ${JSON.stringify(result.data)}`);
   const recordData = JSON.stringify({
     parentRunId: setup.parentRunId,
@@ -3456,6 +3938,7 @@ test('task event record skips taskRunId guard with warning when parent active ch
     resultSummaryPath: result.data.resultSummaryPath,
     terminalResultId: result.data.terminalResultId,
     status: 'completed',
+    ownerFence: setup.ownerFence,
   });
   const recorded = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${recordData}'`);
   assert(recorded.ok, `record should succeed when parent identity unavailable, got ${JSON.stringify(recorded.data)}`);
@@ -3510,8 +3993,101 @@ test('lifecycle child finalize completes parent-driven child', () => {
   const childStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.childStatusId, 'status.json'));
   assert(childStatus.state === 'completed' && childStatus.checkpoint === 'done', 'child run closed completed/done');
   const parentStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.parentStatusId, 'status.json'));
-  assert(parentStatus.state === 'completed', 'parent run closed terminal');
+  assert(parentStatus.state === 'running', 'parent run returned to running');
   assert(projectUsageRowsForInvocation(setup.fixmeDir, setup.invocationId).length === 1, 'usage finished');
+});
+
+test('lifecycle child finalize atomically consumes parent event and clears parent wait', () => {
+  const setup = setupParentDrivenChild('finalize-atomic', 'finalize-atomic-start');
+  const finalize = finalizeChild(setup, { ...completedFinalizePayload(), ownerFence: setup.ownerFence });
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  assert(finalize.data.eventConsumed === true, `event consumed in finalizer, got ${JSON.stringify(finalize.data)}`);
+  const parent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(parent.status === 'running', `completed child should return parent to running, got ${JSON.stringify(parent)}`);
+  assert(['consumeTaskEvent', 'verify', 'dispatchFixmeTask'].includes(parent.cursor), `parent advanced out of awaitFixmeTask, got ${parent.cursor}`);
+  const event = readJson(path.join(setup.fixmeDir, 'task-events', setup.parentRunId, `${finalize.data.eventId}.json`));
+  assert(event.consumedAt && event.consumedBy === setup.parentRunId, `event consumed, got ${JSON.stringify(event)}`);
+});
+
+test('lifecycle child finalize rejects when current owner has active child dispatch', () => {
+  const setup = setupParentDrivenChild('finalize-active-dispatch', 'finalize-active-dispatch-start');
+  markActiveChildDispatchForSetup(setup, { dispatchId: 'dispatch_active_child', statusId: 'run_active_child' });
+  const finalize = finalizeChild(setup, { ...completedFinalizePayload(), ownerFence: setup.ownerFence });
+  assert(!finalize.ok && finalize.data.error.code === 'activeChildDispatch', `active dispatch should block finalize, got ${JSON.stringify(finalize.data)}`);
+});
+
+test('lifecycle child finalize reports complete changed files from git baseline', () => {
+  const setup = setupParentDrivenChild('finalize-git-changed-files', 'finalize-git-changed-files-start', {
+    beforeBegin(projectRoot) {
+      runShellInDir('git init', projectRoot);
+      runShellInDir('git config user.email "fixme@example.invalid"', projectRoot);
+      runShellInDir('git config user.name "Fixme Test"', projectRoot);
+      fs.writeFileSync(path.join(projectRoot, '.gitignore'), '.fixme/\nprepare-child-*.json\nfinalize-*.json\n');
+      fs.writeFileSync(path.join(projectRoot, 'tracked-file.txt'), 'before\n');
+      runShellInDir('git add .gitignore', projectRoot);
+      runShellInDir('git add tracked-file.txt', projectRoot);
+      runShellInDir('git commit -m "baseline"', projectRoot);
+    },
+  });
+  fs.writeFileSync(path.join(setup.projectRoot, 'tracked-file.txt'), 'after\n');
+  const finalize = finalizeChild(setup, { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [], ownerFence: setup.ownerFence });
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const summary = readJson(finalize.data.resultSummaryPath);
+  assert(summary.changedFiles.includes('tracked-file.txt'), `git changed file derived, got ${JSON.stringify(summary.changedFiles)}`);
+  assert(summary.changedFilesSource === 'gitStatus', `source gitStatus, got ${summary.changedFilesSource}`);
+  assert(summary.changedFilesComplete === true, `complete git changed file metadata, got ${JSON.stringify(summary)}`);
+  assert(!summary.changedFilesWarning, `complete git metadata should not warn, got ${JSON.stringify(summary.changedFilesWarning)}`);
+});
+
+test('lifecycle child finalize reports incomplete changed files for dirty git baseline', () => {
+  const setup = setupParentDrivenChild('finalize-dirty-baseline-changed-files', 'finalize-dirty-baseline-start', {
+    beforeBegin(projectRoot) {
+      runShellInDir('git init', projectRoot);
+      runShellInDir('git config user.email "fixme@example.invalid"', projectRoot);
+      runShellInDir('git config user.name "Fixme Test"', projectRoot);
+      fs.writeFileSync(path.join(projectRoot, '.gitignore'), '.fixme/\nprepare-child-*.json\nfinalize-*.json\n');
+      fs.writeFileSync(path.join(projectRoot, 'tracked-file.txt'), 'before\n');
+      runShellInDir('git add .gitignore', projectRoot);
+      runShellInDir('git add tracked-file.txt', projectRoot);
+      runShellInDir('git commit -m "baseline"', projectRoot);
+      fs.writeFileSync(path.join(projectRoot, 'preexisting-dirty.txt'), 'dirty before owner acquisition\n');
+    },
+  });
+  fs.writeFileSync(path.join(setup.projectRoot, 'tracked-file.txt'), 'after\n');
+  const finalize = finalizeChild(setup, { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [], ownerFence: setup.ownerFence });
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const summary = readJson(finalize.data.resultSummaryPath);
+  assert(summary.changedFilesComplete === false, `dirty baseline must be incomplete, got ${JSON.stringify(summary)}`);
+  assert(summary.changedFilesSource === 'incomplete', `source incomplete, got ${summary.changedFilesSource}`);
+  assert(summary.changedFilesWarning && summary.changedFilesWarning.reason === 'baselineDirty', `warning reason baselineDirty, got ${JSON.stringify(summary.changedFilesWarning)}`);
+  assert(summary.changedFilesWarning.baselineDirtyPaths.includes('preexisting-dirty.txt'), `warning includes dirty baseline path, got ${JSON.stringify(summary.changedFilesWarning)}`);
+});
+
+test('lifecycle child finalize reports incomplete changed files without git baseline', () => {
+  const setup = setupParentDrivenChild('finalize-non-git-changed-files', 'finalize-non-git-changed-files-start');
+  fs.writeFileSync(path.join(setup.projectRoot, 'changed-file.txt'), 'changed\n');
+  const finalize = finalizeChild(setup, { status: 'completed', summaryMarkdown: 'Done', changedFiles: [], artifactPaths: [], ownerFence: setup.ownerFence });
+  assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
+  const summary = readJson(finalize.data.resultSummaryPath);
+  assert(summary.changedFilesComplete === false, `non-git changed file metadata must be incomplete, got ${JSON.stringify(summary)}`);
+  assert(summary.changedFilesSource === 'incomplete', `source incomplete, got ${summary.changedFilesSource}`);
+  assert(summary.changedFilesWarning && summary.changedFilesWarning.reason, `incomplete metadata includes warning reason, got ${JSON.stringify(summary.changedFilesWarning)}`);
+  assert(String(summary.changedFilesWarning.reason).includes('git') || String(summary.changedFilesWarning.reason).includes('baseline'), `warning explains git/baseline failure, got ${JSON.stringify(summary.changedFilesWarning)}`);
+});
+
+test('task-event record consume and child finalize require current owner fence', () => {
+  const setup = setupParentDrivenChild('task-event-finalize-owner-fence', 'task-event-finalize-owner-fence-start');
+  const staleFence = { ...setup.ownerFence, taskOwnerGeneration: setup.ownerFence.taskOwnerGeneration + 1 };
+  const staleFinalize = finalizeChild(setup, { ...completedFinalizePayload(), ownerFence: staleFence, idempotencyKey: 'finalize-stale-owner' });
+  assert(!staleFinalize.ok && staleFinalize.data.error.code === 'staleTaskOwner', `stale finalize should reject, got ${JSON.stringify(staleFinalize.data)}`);
+
+  const eventPayload = buildTaskEventRecordPayload(setup, { ownerFence: staleFence, idempotencyKey: 'task-event-record-stale' });
+  const staleRecord = run(`lifecycle task-event record --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(eventPayload)}'`);
+  assert(!staleRecord.ok && staleRecord.data.error.code === 'staleTaskOwner', `stale task-event record should reject, got ${JSON.stringify(staleRecord.data)}`);
+
+  const consumePayload = buildTaskEventConsumePayload(setup, { ownerFence: staleFence, idempotencyKey: 'task-event-consume-stale' });
+  const staleConsume = run(`lifecycle task-event consume --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(consumePayload)}'`);
+  assert(!staleConsume.ok && staleConsume.data.error.code === 'staleTaskOwner', `stale task-event consume should reject, got ${JSON.stringify(staleConsume.data)}`);
 });
 
 test('lifecycle child finalize handles failed terminal', () => {
@@ -3608,7 +4184,7 @@ test('lifecycle child finalize closes child liveness by durable childStatusId', 
   const unrelatedStatus = readJson(unrelated.data.statusPath);
   assert(unrelatedStatus.state !== 'completed' && unrelatedStatus.state !== 'failed', 'unrelated run untouched');
   const parentStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.continuation.parentStatusId, 'status.json'));
-  assert(parentStatus.state === 'completed', 'parent closed by parentStatusId');
+  assert(parentStatus.state === 'running', 'parent returned to running by parentStatusId');
 });
 
 test('lifecycle child finalize rejects invalid terminal payloads', () => {
@@ -3656,11 +4232,47 @@ function attachChildRuntimeHandle(setup, handleId) {
     dispatchId: setup.dispatchId,
     statusId: setup.statusId,
     parentStatusId: setup.continuation.parentStatusId,
+    taskStatePath: setup.taskStatePath,
+    ownerFence: setup.ownerFence,
     runtime: 'codex',
     transport: 'agent',
     runtimeHandle: { kind: 'codexAgentId', id: handleId },
   })}'`);
   assert(attach.ok, `attach child runtime handle should succeed, got ${JSON.stringify(attach.data)}`);
+}
+
+function dispatchRecordPathForTest(fixmeDir, dispatchId) {
+  const dir = path.join(fixmeDir, 'dispatch', 'idempotency');
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith('.json')) continue;
+    const candidate = path.join(dir, file);
+    if (readJson(candidate).dispatchId === dispatchId) return candidate;
+  }
+  throw new Error(`dispatch record not found for ${dispatchId}`);
+}
+
+function clearActiveRuntimeForTest(setup) {
+  const dispatchPath = dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId);
+  const dispatchRecord = readJson(dispatchPath);
+  delete dispatchRecord.activeRuntime;
+  if (dispatchRecord.output && dispatchRecord.output.activeChild) {
+    delete dispatchRecord.output.activeChild.activeRuntime;
+  }
+  if (dispatchRecord.output && dispatchRecord.output.promptBlocks && dispatchRecord.output.promptBlocks.activeChild) {
+    delete dispatchRecord.output.promptBlocks.activeChild.activeRuntime;
+  }
+  fs.writeFileSync(dispatchPath, JSON.stringify(dispatchRecord, null, 2));
+
+  const statusPath = path.join(setup.fixmeDir, 'runs', setup.statusId, 'status.json');
+  const status = readJson(statusPath);
+  delete status.activeRuntime;
+  fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+
+  const parent = parentState(setup.fixmeDir, setup.parentRunId);
+  if (parent.payload && parent.payload.activeChild) {
+    delete parent.payload.activeChild.activeRuntime;
+    writeParentState(setup.fixmeDir, setup.parentRunId, parent);
+  }
 }
 
 function reconcileWait(setup, extraPayload = {}) {
@@ -3669,21 +4281,18 @@ function reconcileWait(setup, extraPayload = {}) {
   return run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${payloadPath}"`);
 }
 
-test('reconcile-wait returns runtimeOwned for active nonterminal runtime', () => {
+test('reconcile-wait returns runtimeWaitTimedOut for active nonterminal runtime', () => {
   const setup = setupParentDrivenChild('reconcile-owned', 'reconcile-owned-start');
-  attachChildRuntimeHandle(setup, 'agent_owned');
   const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
   assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
   const result = reconcileWait(setup);
-  assert(result.ok && result.data.transition === 'runtimeOwned', `expected runtimeOwned, got ${JSON.stringify(result.data)}`);
-  assert(result.data.status.currentCommand === 'test command', 'returns status currentCommand');
-  assert(isNonEmptyTestStr(result.data.status.updatedAt), 'returns updatedAt as status data');
-  assert(result.data.activeRuntime && result.data.activeRuntime.id === 'agent_owned', 'returns activeRuntime');
+  assert(result.ok && result.data.transition === 'runtimeWaitTimedOut', `expected runtimeWaitTimedOut, got ${JSON.stringify(result.data)}`);
+  assert(result.data.reason === 'runtimeLivenessUnknown', `reason should be runtimeLivenessUnknown, got ${JSON.stringify(result.data)}`);
+  assert(!JSON.stringify(result.data).includes('runtimeOwned'), `result must not mention runtimeOwned, got ${JSON.stringify(result.data)}`);
 });
 
 test('reconcile-wait returns terminalEvent with consumeTemplate', () => {
   const setup = setupParentDrivenChild('reconcile-terminal', 'reconcile-terminal-start');
-  attachChildRuntimeHandle(setup, 'agent_terminal');
   const finalize = finalizeChild(setup, completedFinalizePayload());
   assert(finalize.ok, `finalize should succeed, got ${JSON.stringify(finalize.data)}`);
   const result = reconcileWait(setup);
@@ -3695,7 +4304,6 @@ test('reconcile-wait returns terminalEvent with consumeTemplate', () => {
 
 test('reconcile-wait returns attention with brokerResumeTemplate', () => {
   const setup = setupParentDrivenChild('reconcile-attention', 'reconcile-attention-start');
-  attachChildRuntimeHandle(setup, 'agent_attention');
   const attentionData = JSON.stringify({
     ownerSkill: 'fixme-task', sourceSkill: 'fixme-handle-code-review', kind: 'reviewDecision',
     resumeRef: 'FIXME-1', taskStatePath: setup.taskStatePath, promptMarkdown: '## D', answerMode: 'freeform',
@@ -3711,7 +4319,7 @@ test('reconcile-wait returns attention with brokerResumeTemplate', () => {
 
 test('reconcile-wait returns dispatchFailure for missing or conflicting runtime evidence', () => {
   const setup = setupParentDrivenChild('reconcile-failure', 'reconcile-failure-start');
-  // No attach yet: activeRuntime is missing.
+  clearActiveRuntimeForTest(setup);
   const missing = reconcileWait(setup);
   assert(missing.ok && missing.data.transition === 'dispatchFailure', `expected dispatchFailure for missing activeRuntime, got ${JSON.stringify(missing.data)}`);
   assert(missing.data.dispatchFailure.reason === 'activeRuntimeMissing', `expected activeRuntimeMissing, got ${missing.data.dispatchFailure.reason}`);
@@ -3722,7 +4330,7 @@ test('reconcile-wait returns dispatchFailure for missing or conflicting runtime 
   assert(noDispatch.ok && noDispatch.data.dispatchFailure.reason === 'dispatchNotFound', `expected dispatchNotFound, got ${JSON.stringify(noDispatch.data)}`);
 
   // Runtime identity conflict: attach one handle, then mutate the run-status mirror.
-  attachChildRuntimeHandle(setup, 'agent_correct');
+  attachChildRuntimeHandle(setup, 'agent_reconcile-failure');
   const statusPath = path.join(setup.fixmeDir, 'runs', setup.statusId, 'status.json');
   const status = readJson(statusPath);
   status.activeRuntime = { dispatchId: setup.dispatchId, kind: 'codexAgentId', id: 'agent_wrong' };
@@ -3742,7 +4350,6 @@ test('reconcile-wait validates exact payload shape', () => {
   assert(!unknown.ok, 'unknown field should reject');
 
   const optional = writeJsonFixture(setup.projectRoot, 'reconcile-optional.json', { parentStatePath: setup.parentStatePath, childTaskStatePath: setup.taskStatePath, childSummaryPath: '/tmp/summary.json' });
-  attachChildRuntimeHandle(setup, 'agent_shape');
   const withOptional = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${optional}"`);
   assert(withOptional.ok, `optional fields should be accepted, got ${JSON.stringify(withOptional.data)}`);
 });
@@ -4148,20 +4755,20 @@ test('cli help emits command schemas before required validation', () => {
       optionalDataFields: [],
       enumChecks: [['answerKind', ['decision', 'clarificationRequest']]],
       audience: 'parent-facing',
-      guidanceIncludes: 'returns only the fixme-task resume message',
+      guidanceIncludes: 'persisted launch plan plus sealed runtimeAction',
     },
     {
       args: 'lifecycle attention broker acknowledge-resume --help',
       command: 'lifecycle attention broker acknowledge-resume',
       requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
-      requiredDataFields: ['resumeMessage', 'transport', 'runtime'],
+      requiredDataFields: ['resumeMessage', 'launchMode', 'transport', 'runtime', 'runtimeAction'],
       optionalDataFields: ['runtimeHandle'],
       enumChecks: [
         ['transport', ['agent', 'inline-skill', 'background', 'direct']],
         ['runtime', ['claude', 'codex']],
       ],
       audience: 'parent-facing',
-      guidanceIncludes: 'records resume-dispatch evidence and returns the parent to waitingForChild',
+      guidanceIncludes: 'must match activeChild.resumeLaunchPlan exactly',
     },
     {
       args: 'lifecycle attention open --help',
@@ -4431,6 +5038,125 @@ test('new lifecycle commands expose registry-backed help', () => {
   assert(typeof brokerResume.data.guidance === 'string' && brokerResume.data.guidance.includes('acknowledgeResumeTemplate'), 'broker resume help mentions acknowledgeResumeTemplate');
 });
 
+test('new lifecycle task and runtime-action commands are registered with complete help', () => {
+  for (const command of [
+    'lifecycle task begin',
+    'lifecycle task continue',
+    'lifecycle task retry',
+    'lifecycle task attention open',
+    'lifecycle runtime-action observe',
+    'lifecycle attention broker resume-failed',
+    'lifecycle dispatch release-complete',
+    'lifecycle dispatch stalled-owner recover',
+  ]) {
+    const help = run(`${command} --help`);
+    assert(help.ok, `${command} help should succeed, got ${JSON.stringify(help.data)}`);
+    assert(help.data.command === command, `${command} help command name, got ${JSON.stringify(help.data)}`);
+    assertNoSnakeCaseKeys(help.data, `${command} help`);
+  }
+
+  const beginHelp = run('lifecycle task begin --help');
+  const beginHelpText = JSON.stringify(beginHelp.data);
+  assert(beginHelpText.includes('pipelineResolutionFile'), `begin help documents pipelineResolutionFile, got ${beginHelpText}`);
+  assert(beginHelpText.includes('projectRoot'), `begin help documents projectRoot for direct creation, got ${beginHelpText}`);
+  assert(beginHelpText.includes('directBeginRequiresContinue'), `begin help documents existing-state continue route, got ${beginHelpText}`);
+  assert(!beginHelpText.includes('pipelineFlag') && !beginHelpText.includes('--pipeline '), `begin help must not advertise deprecated direct --pipeline input, got ${beginHelpText}`);
+
+  const markBadHelp = run('task producer-continuation mark-bad --help');
+  assert(markBadHelp.ok, `producer mark-bad help should succeed, got ${JSON.stringify(markBadHelp.data)}`);
+  const markBadHelpText = JSON.stringify(markBadHelp.data);
+  for (const field of ['dataFile', 'ownerFence', 'agentName', 'runtime', 'reason', 'idempotencyKey']) {
+    assert(markBadHelpText.includes(field), `mark-bad help documents ${field}, got ${markBadHelpText}`);
+  }
+
+  const attachHelp = run('lifecycle dispatch attach-runtime-handle --help');
+  assert(attachHelp.ok, `dispatch attach help should succeed, got ${JSON.stringify(attachHelp.data)}`);
+  const attachHelpText = JSON.stringify(attachHelp.data);
+  for (const field of ['dataFile', 'ownerFence', 'taskStatePath', 'dispatchId', 'statusId', 'runtime', 'transport', 'runtimeHandle', 'idempotencyKey']) {
+    assert(attachHelpText.includes(field), `attach-runtime-handle help documents ${field}, got ${attachHelpText}`);
+  }
+
+  const stalledOwnerRecoverHelp = run('lifecycle dispatch stalled-owner recover --help');
+  assert(stalledOwnerRecoverHelp.ok, `stalled-owner recover help should succeed, got ${JSON.stringify(stalledOwnerRecoverHelp.data)}`);
+  const stalledOwnerRecoverHelpText = JSON.stringify(stalledOwnerRecoverHelp.data);
+  for (const field of ['dataFile', 'recoveryId', 'parentStatePath', 'ownerStatusId', 'childStatusId', 'dispatchId', 'childAgent', 'terminalChildStatus', 'idempotencyKey']) {
+    assert(stalledOwnerRecoverHelpText.includes(field), `stalled-owner recover help documents ${field}, got ${stalledOwnerRecoverHelpText}`);
+  }
+  assert(stalledOwnerRecoverHelpText.includes('ownerStoppedBeforeDispatchCompletion'), `stalled-owner recover help documents stopped-owner failure, got ${stalledOwnerRecoverHelpText}`);
+
+  const taskInitHelp = run('task init --help');
+  assert(taskInitHelp.ok, `task init help should succeed, got ${JSON.stringify(taskInitHelp.data)}`);
+  const taskInitHelpText = JSON.stringify(taskInitHelp.data);
+  assert(taskInitHelpText.includes('attemptManagedStateRequiresLifecycleBeginOrContinue'), `task init help documents attempt-managed rejection, got ${taskInitHelpText}`);
+  assert(taskInitHelpText.includes('lifecycle task continue'), `task init help routes existing attempt-managed states to continue, got ${taskInitHelpText}`);
+
+  const lowLevelAttentionHelp = run('lifecycle attention open --help');
+  assert(lowLevelAttentionHelp.ok, `low-level attention help should succeed, got ${JSON.stringify(lowLevelAttentionHelp.data)}`);
+  const lowLevelAttentionHelpText = JSON.stringify(lowLevelAttentionHelp.data);
+  assert(lowLevelAttentionHelpText.includes('attemptManagedAttentionRequiresTaskAttentionOpen'), `low-level attention help documents attempt-managed rejection, got ${lowLevelAttentionHelpText}`);
+  assert(lowLevelAttentionHelpText.includes('lifecycle task attention open'), `low-level attention help routes attempt-managed states to task attention open, got ${lowLevelAttentionHelpText}`);
+});
+
+test('installed Codex skills and generated agent TOML keep runtime control dispatcher-owned', () => {
+  const dir = createTmpDir();
+  const codexDir = path.join(dir, '.codex');
+  const skillsSrc = path.join(repoRoot, '.claude', 'skills');
+  const agentsSrc = path.join(repoRoot, '.claude', 'agents');
+
+  const skillsInstall = runToolPath(TOOLS_PATH, `codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`, { cwd: repoRoot, timeout: 30000 });
+  assert(skillsInstall.ok, `codex-skills install should succeed, got ${JSON.stringify(skillsInstall)}`);
+  const agentsInstall = runToolPath(TOOLS_PATH, `codex-agents install --agents-src "${agentsSrc}" --codex-dir "${codexDir}"`, { cwd: repoRoot, timeout: 30000 });
+  assert(agentsInstall.ok, `codex-agents install should succeed, got ${JSON.stringify(agentsInstall)}`);
+
+  for (const skillName of ['fixme-task', 'fixme-pr-comments', 'fixme-session', 'fixme']) {
+    const skill = fs.readFileSync(path.join(codexDir, 'skills', skillName, 'SKILL.md'), 'utf8');
+    assert(skill.includes('lifecycle runtime-action observe'), `${skillName} installed skill observes sealed runtime actions`);
+    assert(skill.includes('execute exactly the returned runtimeAction'), `${skillName} installed skill executes returned runtimeAction exactly`);
+  }
+  for (const parentSkillName of ['fixme-pr-comments', 'fixme-session', 'fixme']) {
+    const skill = fs.readFileSync(path.join(codexDir, 'skills', parentSkillName, 'SKILL.md'), 'utf8');
+    assert(skill.includes('while lifecycle returns `status: "requiresRuntimeAction"`'), `${parentSkillName} installed skill loops on requiresRuntimeAction`);
+    assert(skill.includes('observe evidence by `actionId`'), `${parentSkillName} installed skill observes each action by actionId`);
+    assert(skill.includes('continue until lifecycle returns a non-action state'), `${parentSkillName} installed skill continues until non-action state`);
+  }
+
+  const taskToml = fs.readFileSync(path.join(codexDir, 'agents', 'fixme-task.toml'), 'utf8');
+  assert(taskToml.includes('lifecycle runtime-action observe'), 'fixme-task TOML observes sealed runtime actions');
+  assert(taskToml.includes('execute exactly the returned runtimeAction'), 'fixme-task TOML executes returned runtimeAction exactly');
+
+  const nonDispatcherNames = [
+    'fixme-write-product-spec',
+    'fixme-write-technical-spec',
+    'fixme-write-plan',
+    'fixme-execute-plan',
+    'fixme-review-spec',
+    'fixme-handle-spec-review',
+    'fixme-review-plan',
+    'fixme-handle-plan-review',
+    'fixme-plan-readiness',
+    'fixme-review-code',
+    'fixme-handle-code-review',
+    'fixme-investigate',
+    'fixme-research',
+    'fixme-browser-verify',
+  ];
+  const runtimeRecipes = ['spawn_agent(', 'resume_agent(', 'send_input(', 'wait_agent(', 'close_agent('];
+  for (const worker of nonDispatcherNames) {
+    const skill = fs.readFileSync(path.join(codexDir, 'skills', worker, 'SKILL.md'), 'utf8');
+    const toml = fs.readFileSync(path.join(codexDir, 'agents', `${worker}.toml`), 'utf8');
+    for (const [artifactName, artifactText] of [[`${worker} skill`, skill], [`${worker} TOML`, toml]]) {
+      for (const recipe of runtimeRecipes) {
+        assert(!artifactText.includes(recipe), `${artifactName} must omit runtime-control recipe ${recipe}`);
+      }
+      assert(
+        artifactText.includes('must not spawn, resume, message, wait on, or close agents') ||
+        artifactText.includes('does not dispatch, resume, message, wait on, or close agents'),
+        `${artifactName} keeps runtime-control prohibition`
+      );
+    }
+  }
+});
+
 function isNonEmptyTestString(value) {
   return typeof value === 'string' && value.length > 0;
 }
@@ -4664,6 +5390,266 @@ function makeFixmeDir() {
   fs.mkdirSync(fixmeDir, { recursive: true });
   return fixmeDir;
 }
+
+function runtimeActionsDir(fixmeDir) {
+  return path.join(fixmeDir, 'runtime-actions');
+}
+
+function listRuntimeActionFiles(fixmeDir) {
+  const dir = runtimeActionsDir(fixmeDir);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).sort();
+}
+
+function seedRuntimeActionFixture(fixmeDir, input) {
+  fs.mkdirSync(runtimeActionsDir(fixmeDir), { recursive: true });
+  const actionId = input.actionId || `runtimeAction_${String(listRuntimeActionFiles(fixmeDir).length + 1).padStart(4, '0')}`;
+  const action = {
+    schemaVersion: 1,
+    actionId,
+    status: 'pending',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...input,
+  };
+  fs.writeFileSync(path.join(runtimeActionsDir(fixmeDir), `${actionId}.json`), JSON.stringify(action, null, 2) + '\n');
+  return action;
+}
+
+test('lifecycle runtime-action observe accepts exact evidence and rejects drift', () => {
+  const fixmeDir = makeFixmeDir();
+  const action = seedRuntimeActionFixture(fixmeDir, {
+    owner: { parentRunId: 'parent_runtime_action', taskStatePath: path.join(fixmeDir, 'tasks', 'runtime-action.state.json') },
+    kind: 'spawnAgent',
+    runtime: 'codex',
+    transport: 'agent',
+    agentName: 'fixme-task',
+    message: 'lifecycle task begin --launch-id launch_runtime_action',
+    target: { targetAgentName: 'fixme-task', targetStatusId: 'run_child_runtime_action' },
+  });
+
+  const evidence = { actionId: action.actionId, status: 'succeeded', runtimeHandle: { kind: 'codexAgentId', id: 'agent_runtime_action' } };
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify(evidence)}'`);
+  assert(observed.ok, `observe should succeed, got ${JSON.stringify(observed.data)}`);
+  assert(observed.data.status === 'done', `observe completes action, got ${JSON.stringify(observed.data)}`);
+
+  const replay = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify(evidence)}'`);
+  assert(replay.ok && replay.data.status === 'done', `identical observe replays, got ${JSON.stringify(replay.data)}`);
+
+  const drift = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ ...evidence, runtimeHandle: { kind: 'codexAgentId', id: 'agent_different' } })}'`);
+  assert(!drift.ok && drift.data.error.code === 'conflictingDuplicate', `different evidence conflicts, got ${JSON.stringify(drift.data)}`);
+});
+
+test('dispatch prepare rejects self-target producer resume before returning runtime action', () => {
+  const { projectRoot, fixmeDir, statePath, prepare } = prepareResumableProducerDispatch('self-target-producer-resume', 'self-target-producer-initial');
+  attachResumableHandle(fixmeDir, prepare, projectRoot, 'agent_self_target_producer');
+  const complete = runInDir(
+    `lifecycle dispatch complete --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      dispatchId: prepare.data.dispatchId,
+      statusId: prepare.data.statusId,
+      status: 'completed',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_self_target_producer' },
+    })}'`,
+    projectRoot,
+  );
+  assert(complete.ok, `setup completion should succeed, got ${JSON.stringify(complete.data)}`);
+  const beforeActions = listRuntimeActionFiles(fixmeDir);
+  const prepared = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+    idempotencyKey: 'self-target-producer-resume',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    taskStatePath: statePath,
+    allowProducerContinuation: true,
+    promptInputs: { task: 'resume plan' },
+    callerStatusId: 'run_self_target_producer',
+    callerRuntimeHandle: { kind: 'codexAgentId', id: 'agent_self_target_producer' },
+  })}'`);
+  assert(!prepared.ok && prepared.data.error.code === 'runtimeSelfTarget', `producer self-target should reject, got ${JSON.stringify(prepared.data)}`);
+  assert(!prepared.data.runtimeAction, `self-target must not return action, got ${JSON.stringify(prepared.data)}`);
+  assert(JSON.stringify(listRuntimeActionFiles(fixmeDir)) === JSON.stringify(beforeActions), 'self-target producer resume must not persist runtime action');
+});
+
+test('attention broker resume rejects self-target owner resume before returning runtime action', () => {
+  const setup = setupParentDrivenChild('self-target-attention-resume', 'self-target-attention-start');
+  const activeChild = setup.activeChild;
+  const open = openTaskOwnedAttentionForSetup(setup, {
+    idempotencySuffix: 'self-target',
+    promptMarkdown: '## Decision\n\nChoose A or B.',
+  });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const attentionId = open.data.attentionId;
+  const beforeActions = listRuntimeActionFiles(setup.fixmeDir);
+  const resume = run(`lifecycle attention broker resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({
+    answer: 'A',
+    answeredBy: 'user',
+    answerKind: 'decision',
+    callerStatusId: 'run_self_target_attention',
+    callerRuntimeHandle: { kind: activeChild.activeRuntime.kind, id: activeChild.activeRuntime.id },
+  })}'`);
+  assert(!resume.ok && resume.data.error.code === 'runtimeSelfTarget', `attention self-target should reject, got ${JSON.stringify(resume.data)}`);
+  assert(!resume.data.runtimeAction, `self-target must not return action, got ${JSON.stringify(resume.data)}`);
+  assert(JSON.stringify(listRuntimeActionFiles(setup.fixmeDir)) === JSON.stringify(beforeActions), 'self-target attention resume must not persist runtime action');
+});
+
+test('waitAgent observation requires explicit waitOutcome evidence', () => {
+  const fixmeDir = makeFixmeDir();
+  const action = seedRuntimeActionFixture(fixmeDir, {
+    owner: { parentRunId: 'parent_wait_outcome', dispatchId: 'dispatch_wait_outcome', statusId: 'run_wait_owner' },
+    kind: 'waitAgent',
+    runtime: 'codex',
+    transport: 'agent',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_wait_outcome' },
+    target: {
+      targetAgentName: 'fixme-write-plan',
+      targetStatusId: 'run_wait_child',
+      targetRuntimeHandle: { kind: 'codexAgentId', id: 'agent_wait_outcome' },
+    },
+    timeoutMs: 300000,
+  });
+
+  const badGenericStatus = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ actionId: action.actionId, status: 'succeeded' })}'`);
+  assert(!badGenericStatus.ok && badGenericStatus.data.error.code === 'missingRequiredField', `wait action must require waitOutcome, got ${JSON.stringify(badGenericStatus.data)}`);
+
+  const badLiveOutcome = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ actionId: action.actionId, waitOutcome: 'live' })}'`);
+  assert(!badLiveOutcome.ok && badLiveOutcome.data.error.code === 'invalidInput', `wait action must reject live outcome, got ${JSON.stringify(badLiveOutcome.data)}`);
+
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({ actionId: action.actionId, waitOutcome: 'timeout' })}'`);
+  assert(observed.ok, `timeout wait outcome should be accepted by the generic observer shape, got ${JSON.stringify(observed.data)}`);
+});
+
+test('lifecycle task continue reports terminal state without acquiring a fresh owner', () => {
+  const init = initTaskState('continue-terminal');
+  const terminal = runInDir(`task result write --state "${init.statePath}" --data '${JSON.stringify({ status: 'failed', summaryMarkdown: 'failed once', changedFiles: [], artifactPaths: [], failure: { reason: 'runtimeError', message: 'old failure' } })}'`, init.projectRoot);
+  assert(terminal.ok, `setup terminal result should succeed, got ${JSON.stringify(terminal.data)}`);
+
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: false, idempotencyKey: 'continue-terminal' })}'`);
+  assert(continued.ok, `continue should succeed, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.action === 'alreadyCompleted', `terminal state should report alreadyCompleted, got ${JSON.stringify(continued.data)}`);
+  const state = readJson(init.statePath);
+  assert(state.terminalResult && state.terminalResult.terminalResultId === terminal.data.terminalResultId, 'terminal result remains unchanged');
+  assert(!state.taskOwner || state.taskOwner.state !== 'active', `terminal continue must not acquire active owner, got ${JSON.stringify(state.taskOwner)}`);
+});
+
+test('lifecycle task retry archives failed attempt and leaves new attempt ownerless until continue', () => {
+  const init = initTaskState('retry-terminal');
+  const terminal = runInDir(`task result write --state "${init.statePath}" --data '${JSON.stringify({ status: 'failed', summaryMarkdown: 'failed once', changedFiles: [], artifactPaths: [], failure: { reason: 'runtimeError', message: 'old failure' } })}'`, init.projectRoot);
+  assert(terminal.ok, `setup terminal result should succeed, got ${JSON.stringify(terminal.data)}`);
+
+  const retryPayloadPath = writeJsonFixture(init.projectRoot, 'retry-terminal-once.json', {
+    terminalResultId: terminal.data.terminalResultId,
+    reason: 'operator requested retry',
+    requestedBy: 'user',
+    idempotencyKey: 'retry-terminal-once',
+  });
+  const retry = run(`lifecycle task retry --fixme-dir "${init.fixmeDir}" --state "${init.statePath}" --data-file "${retryPayloadPath}"`);
+  assert(retry.ok, `retry should succeed, got ${JSON.stringify(retry.data)}`);
+  assert(retry.data.action === 'retryQueued', `retry returns queued action, got ${JSON.stringify(retry.data)}`);
+  assert(!retry.data.ownerFence, `retry must not return an owner fence, got ${JSON.stringify(retry.data)}`);
+  assert(retry.data.continueTemplate && retry.data.continueTemplate.command === 'lifecycle task continue', `retry returns continue template, got ${JSON.stringify(retry.data)}`);
+  let state = readJson(init.statePath);
+  assert(Array.isArray(state.attemptHistory) && state.attemptHistory.length === 1, `failed attempt archived, got ${JSON.stringify(state.attemptHistory)}`);
+  assert(state.currentAttempt && state.currentAttempt.attemptNumber === 2 && state.currentAttempt.state === 'queued', `new current attempt queued, got ${JSON.stringify(state.currentAttempt)}`);
+  assert(!state.currentAttempt.taskOwner, `queued retry attempt must not have taskOwner, got ${JSON.stringify(state.currentAttempt)}`);
+  assert(!state.taskOwner, `top-level taskOwner must be absent after retry, got ${JSON.stringify(state.taskOwner)}`);
+  assert(state.parentContinuation === null || state.parentContinuation === undefined, `parentContinuation cleared, got ${JSON.stringify(state.parentContinuation)}`);
+  assert(state.terminalResult === null, 'legacy terminalResult projection cleared only by explicit retry');
+
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: false, idempotencyKey: 'continue-queued-retry' })}'`);
+  assert(continued.ok, `continue should acquire retry owner, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.action === 'spawnFreshOwner' || continued.data.action === 'resumeExistingOwner', `continue returns executable owner contract, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.ownerFence && continued.data.ownerFence.taskOwnerGeneration === 2, `continue returns generation 2 owner fence, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.runtimeAction || continued.data.nextCommands, `continue returns sealed startup/runtime-action contract, got ${JSON.stringify(continued.data)}`);
+  state = readJson(init.statePath);
+  assert(state.currentAttempt && state.currentAttempt.attemptNumber === 2 && state.currentAttempt.state === 'running', `continue moves retry attempt to running, got ${JSON.stringify(state.currentAttempt)}`);
+  assert(state.currentAttempt.taskOwner && state.taskOwner && state.taskOwner.taskOwnerGeneration === 2, `continue installs generation 2 owner, got ${JSON.stringify(state.taskOwner)}`);
+});
+
+test('attempt-managed task checkpoint requires current owner fence and cannot reopen terminal result', () => {
+  const init = initTaskState('owner-fence-checkpoint');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'owner-fence-checkpoint' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+
+  const staleFence = { ...continued.data.ownerFence, taskOwnerGeneration: continued.data.ownerFence.taskOwnerGeneration + 1 };
+  const stale = runInDir(`task checkpoint --state "${init.statePath}" --data '${JSON.stringify({ status: 'running', ownerFence: staleFence })}'`, init.projectRoot);
+  assert(!stale.ok && cliErrorMessage(stale).includes('staleTaskOwner'), `stale fence should reject, got ${JSON.stringify(stale.data)}`);
+
+  const good = runInDir(`task checkpoint --state "${init.statePath}" --data '${JSON.stringify({ status: 'running', ownerFence: continued.data.ownerFence })}'`, init.projectRoot);
+  assert(good.ok, `current owner fence should pass, got ${JSON.stringify(good.data)}`);
+
+  const terminal = runInDir(`task result write --state "${init.statePath}" --data '${JSON.stringify({ ownerFence: continued.data.ownerFence, status: 'completed', summaryMarkdown: 'done', changedFiles: [], artifactPaths: [] })}'`, init.projectRoot);
+  assert(terminal.ok, `terminal result should write, got ${JSON.stringify(terminal.data)}`);
+  const reopen = runInDir(`task checkpoint --state "${init.statePath}" --data '${JSON.stringify({ ownerFence: continued.data.ownerFence, status: 'running', terminalResult: null })}'`, init.projectRoot);
+  assert(!reopen.ok && cliErrorMessage(reopen).includes('terminalResult'), `terminal absorption should reject reopen, got ${JSON.stringify(reopen.data)}`);
+});
+
+test('attempt-managed task decision append requires current owner fence with full decision record', () => {
+  const init = initTaskState('owner-fence-decision-append');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'owner-fence-decision-append' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+
+  const staleFence = { ...continued.data.ownerFence, taskOwnerGeneration: continued.data.ownerFence.taskOwnerGeneration + 1 };
+  const stalePayloadPath = writeJsonFixture(init.projectRoot, 'decision-append-stale.json', {
+    ownerFence: staleFence,
+    idempotencyKey: 'decision-append-stale',
+    ...completeDecisionObject('decision_owner_fence'),
+  });
+  const before = fs.readFileSync(init.statePath, 'utf8');
+  const stale = runInDir(`task decision append --state "${init.statePath}" --data-file "${stalePayloadPath}"`, init.projectRoot);
+  assert(!stale.ok && cliErrorMessage(stale).includes('staleTaskOwner'), `stale decision append should reject, got ${JSON.stringify(stale.data)}`);
+  assert(fs.readFileSync(init.statePath, 'utf8') === before, 'stale decision append must not mutate state');
+
+  const currentPayloadPath = writeJsonFixture(init.projectRoot, 'decision-append-current.json', {
+    ownerFence: continued.data.ownerFence,
+    idempotencyKey: 'decision-append-current',
+    ...completeDecisionObject('decision_owner_fence'),
+  });
+  const current = runInDir(`task decision append --state "${init.statePath}" --data-file "${currentPayloadPath}"`, init.projectRoot);
+  assert(current.ok, `current decision append should pass, got ${JSON.stringify(current.data)}`);
+  const state = readJson(init.statePath);
+  assert(state.decisions.some(decision => decision.id === 'decision_owner_fence'), `decision should persist, got ${JSON.stringify(state.decisions)}`);
+});
+
+test('producer continuation mark-bad requires owner-fenced data file contract', () => {
+  const init = initTaskState('owner-fence-producer-mark-bad');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'owner-fence-producer-mark-bad' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const checkpoint = runInDir(`task checkpoint --state "${init.statePath}" --data '${JSON.stringify({
+    ownerFence: continued.data.ownerFence,
+    producerContinuations: [{
+      agentName: 'fixme-write-plan',
+      runtime: 'codex',
+      runtimeHandle: { kind: 'codexAgentId', id: 'agent_to_mark_bad' },
+      status: 'available',
+      lastDispatchId: 'dispatch_to_mark_bad',
+      badReason: null,
+      updatedAt: '2026-06-12T00:00:00.000Z',
+    }],
+  })}'`, init.projectRoot);
+  assert(checkpoint.ok, `producer continuation setup should succeed, got ${JSON.stringify(checkpoint.data)}`);
+
+  const payloadPath = writeJsonFixture(init.projectRoot, 'mark-bad-current.json', {
+    ownerFence: continued.data.ownerFence,
+    agentName: 'fixme-write-plan',
+    runtime: 'codex',
+    reason: 'runtimeResumeFailed',
+    idempotencyKey: 'mark-bad-current',
+  });
+  const marked = runInDir(`task producer-continuation mark-bad --state "${init.statePath}" --data-file "${payloadPath}"`, init.projectRoot);
+  assert(marked.ok, `current fence should mark producer bad, got ${JSON.stringify(marked.data)}`);
+
+  const staleFence = { ...continued.data.ownerFence, taskOwnerGeneration: continued.data.ownerFence.taskOwnerGeneration + 1 };
+  const stalePayloadPath = writeJsonFixture(init.projectRoot, 'mark-bad-stale.json', {
+    ownerFence: staleFence,
+    agentName: 'fixme-write-plan',
+    runtime: 'codex',
+    reason: 'runtimeResumeFailed',
+    idempotencyKey: 'mark-bad-stale',
+  });
+  const before = fs.readFileSync(init.statePath, 'utf8');
+  const stale = runInDir(`task producer-continuation mark-bad --state "${init.statePath}" --data-file "${stalePayloadPath}"`, init.projectRoot);
+  assert(!stale.ok && cliErrorMessage(stale).includes('staleTaskOwner'), `stale producer mark-bad should reject, got ${JSON.stringify(stale.data)}`);
+  assert(fs.readFileSync(init.statePath, 'utf8') === before, 'stale producer mark-bad must not mutate state');
+});
 
 test('safe JSON sources support direct file stdin and reject ambiguous sources', () => {
   const projectRoot = createTmpDir();
@@ -4996,6 +5982,267 @@ function prepareChildPayload(overrides = {}) {
   };
 }
 
+function parentStateFilePath(fixmeDir, parentRunId) {
+  return path.join(fixmeDir, 'parents', parentRunId, 'state.json');
+}
+
+function observePreparedChildLaunchForTest(fixmeDir, prepared, handleId) {
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+    actionId: prepared.data.runtimeAction.actionId,
+    status: 'succeeded',
+    runtimeHandle: { kind: 'codexAgentId', id: handleId },
+  })}'`);
+  assert(observed.ok, `spawn observation should succeed, got ${JSON.stringify(observed.data)}`);
+  return parentState(fixmeDir, prepared.data.parentRunId).payload.activeChild;
+}
+
+test('parent prepare-child writes launch record and returns sealed spawn action before parent waits', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'launch-record' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-launch-record.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.status === 'requiresRuntimeAction', `prepare-child returns sealed action, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.runtimeAction.kind === 'spawnAgent', `spawn action returned, got ${JSON.stringify(prepared.data.runtimeAction)}`);
+  assert(prepared.data.launchId && prepared.data.taskBeginCommand.includes(prepared.data.launchId), `launch id and begin command returned, got ${JSON.stringify(prepared.data)}`);
+  assert(fs.existsSync(prepared.data.launchRecordPath), 'launch record persisted');
+  const parent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(parent.status !== 'waitingForChild', `parent must not wait before runtime action evidence, got ${JSON.stringify(parent)}`);
+  assert(prepared.data.runtimeAction.message.includes(prepared.data.taskBeginCommand), 'runtime action message contains executable begin command');
+});
+
+test('lifecycle task begin from launch id reuses persisted pipeline and creates owner fence', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'begin-launch' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-begin-launch.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+
+  const begin = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --launch-id ${prepared.data.launchId}`);
+  assert(begin.ok, `begin should succeed, got ${JSON.stringify(begin.data)}`);
+  assert(begin.data.task.taskStatePath === prepared.data.childTask.statePath, `begin returns child state, got ${JSON.stringify(begin.data.task)}`);
+  assert(begin.data.ownerFence && begin.data.ownerFence.taskRunId === prepared.data.activeChild.taskRunId, `owner fence uses launch taskRunId, got ${JSON.stringify(begin.data.ownerFence)}`);
+  const state = readJson(prepared.data.childTask.statePath);
+  assert(state.pipelineResolution.pipeline === payload.child.handoff.taskSaveData.pipelineResolution.pipeline, 'begin preserved persisted pipeline resolution');
+  assert(state.parentContinuation.taskRunId === prepared.data.activeChild.taskRunId, 'begin hydrated parentContinuation from launch record');
+});
+
+test('parent launch observe returns waitAgent as the next required runtime action', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'launch-observe-wait-loop' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-launch-observe-wait.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok && prepared.data.status === 'requiresRuntimeAction', `prepare-child should require spawn action, got ${JSON.stringify(prepared.data)}`);
+
+  const observed = run(`lifecycle runtime-action observe --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+    actionId: prepared.data.runtimeAction.actionId,
+    status: 'succeeded',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_launch_observe_wait' },
+  })}'`);
+  assert(observed.ok, `spawn observation should succeed, got ${JSON.stringify(observed.data)}`);
+  assert(observed.data.status === 'requiresRuntimeAction', `spawn observe returns next action, got ${JSON.stringify(observed.data)}`);
+  assert(observed.data.runtimeAction.kind === 'waitAgent', `next action waits on child, got ${JSON.stringify(observed.data.runtimeAction)}`);
+  assert(observed.data.runtimeAction.actionId, `wait action is sealed and persisted, got ${JSON.stringify(observed.data.runtimeAction)}`);
+  const parent = parentState(fixmeDir, prepared.data.parentRunId);
+  assert(parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask', `parent waits only after spawn evidence, got ${JSON.stringify(parent)}`);
+});
+
+test('lifecycle task begin direct creates absent state and only replays with stored begin record', () => {
+  const projectRoot = createTmpDir();
+  const fixmeDir = path.join(projectRoot, '.fixme');
+  const sessionDir = path.join(fixmeDir, 'sessions', 'test-session');
+  const ticketPath = createTicketFolder(sessionDir, '0001', 'begin-direct-pipeline-resolution', 'queued');
+  const standardResolutionPath = writeJsonFixture(projectRoot, 'begin-standard-pipeline-resolution.json', {
+    pipeline: 'standard',
+    source: 'default',
+    evidence: null,
+    reason: 'Test supplies an already resolved standard workflow object.',
+    candidates: [],
+  });
+
+  const first = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --ticket "${ticketPath}" --project-root "${projectRoot}" --pipeline-resolution-file "${standardResolutionPath}" --idempotency-key begin-direct-create`);
+  assert(first.ok, `first begin should create task state, got ${JSON.stringify(first.data)}`);
+  assert(first.data.task.pipelineResolution.pipeline === 'standard', `begin returns standard pipeline resolution, got ${JSON.stringify(first.data.task.pipelineResolution)}`);
+  assert(first.data.beginRecordPath && fs.existsSync(first.data.beginRecordPath), `direct begin record persisted, got ${JSON.stringify(first.data)}`);
+  const state = readJson(first.data.task.taskStatePath);
+  assert(state.pipelineResolution.pipeline === 'standard', `task state persisted standard pipeline, got ${JSON.stringify(state.pipelineResolution)}`);
+
+  const replay = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --ticket "${ticketPath}" --project-root "${projectRoot}" --pipeline-resolution-file "${standardResolutionPath}" --idempotency-key begin-direct-create`);
+  assert(replay.ok, `exact direct begin replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.replayed === true, `replay is explicit, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.task.taskStatePath === first.data.task.taskStatePath, `replay uses same task state, got ${JSON.stringify(replay.data.task)}`);
+
+  const bypass = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --ticket "${ticketPath}" --project-root "${projectRoot}" --idempotency-key begin-direct-bypass`);
+  assert(!bypass.ok && bypass.data.error.code === 'directBeginRequiresContinue', `existing state must route to continue, got ${JSON.stringify(bypass.data)}`);
+  assert(bypass.data.error.nextCommand === 'lifecycle task continue', `bypass error routes to continue, got ${JSON.stringify(bypass.data.error)}`);
+
+  const fullResolutionPath = writeJsonFixture(projectRoot, 'begin-full-pipeline-resolution.json', {
+    pipeline: 'full',
+    source: 'userProseIntent',
+    evidence: 'conflicting full workflow fixture',
+    reason: 'Conflicting resolved workflow for existing state.',
+    candidates: [],
+  });
+  const conflict = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --ticket "${ticketPath}" --project-root "${projectRoot}" --pipeline-resolution-file "${fullResolutionPath}" --idempotency-key begin-direct-create`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `changed replay input should reject before mutation, got ${JSON.stringify(conflict.data)}`);
+
+  const deprecatedPipelineFlag = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --ticket "${ticketPath}" --project-root "${projectRoot}" --pipeline full`);
+  assert(!deprecatedPipelineFlag.ok && cliErrorMessage(deprecatedPipelineFlag).includes('--pipeline'), `direct begin must not accept deprecated --pipeline, got ${JSON.stringify(deprecatedPipelineFlag.data)}`);
+});
+
+test('lifecycle task begin direct rejects existing non-creation states without mutation', () => {
+  const terminal = initTaskState('begin-direct-terminal');
+  const terminalResult = runInDir(`task result write --state "${terminal.statePath}" --data '${JSON.stringify({ status: 'completed', summaryMarkdown: 'done', changedFiles: [], artifactPaths: [] })}'`, terminal.projectRoot);
+  assert(terminalResult.ok, `terminal setup should succeed, got ${JSON.stringify(terminalResult.data)}`);
+
+  const active = initTaskState('begin-direct-active-owner');
+  const continued = run(`lifecycle task continue --fixme-dir "${active.fixmeDir}" --data '${JSON.stringify({ resumeRef: active.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'begin-direct-active-owner' })}'`);
+  assert(continued.ok, `active owner setup should succeed, got ${JSON.stringify(continued.data)}`);
+
+  const cases = [
+    { name: 'terminal', setup: terminal },
+    { name: 'active-owner', setup: active },
+  ];
+  for (const item of cases) {
+    const before = fs.readFileSync(item.setup.statePath, 'utf8');
+    const begin = run(`lifecycle task begin --fixme-dir "${item.setup.fixmeDir}" --state "${item.setup.statePath}" --project-root "${item.setup.projectRoot}" --idempotency-key "begin-direct-${item.name}"`);
+    assert(!begin.ok && begin.data.error.code === 'directBeginRequiresContinue', `${item.name} should route to continue, got ${JSON.stringify(begin.data)}`);
+    assert(begin.data.error.nextCommand === 'lifecycle task continue', `${item.name} error includes continue route, got ${JSON.stringify(begin.data.error)}`);
+    assert(fs.readFileSync(item.setup.statePath, 'utf8') === before, `${item.name} direct begin must not mutate task state`);
+  }
+});
+
+test('lifecycle task continue classifies existing state before acquiring owner', () => {
+  const pendingAttention = initTaskState('continue-pending-attention');
+  const pendingAttentionState = readJson(pendingAttention.statePath);
+  fs.writeFileSync(pendingAttention.statePath, JSON.stringify({
+    ...pendingAttentionState,
+    status: 'waiting',
+    pendingDecision: {
+      attentionId: 'attn_continue_pending',
+      sourceSkill: 'fixme-execute-plan',
+      kind: 'execution-ambiguity',
+      answerMode: 'decision-card',
+      status: 'pending',
+    },
+  }, null, 2));
+
+  const activeOwner = initTaskState('continue-active-owner');
+  const activeFirst = run(`lifecycle task continue --fixme-dir "${activeOwner.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: activeOwner.taskPath,
+    runtime: 'codex',
+    transport: 'agent',
+    topLevelInteractive: true,
+    idempotencyKey: 'continue-active-owner-first',
+  })}'`);
+  assert(activeFirst.ok, `active owner setup should acquire owner, got ${JSON.stringify(activeFirst.data)}`);
+
+  const parentEvent = initTaskState('continue-parent-terminal-event');
+  const parentEventState = readJson(parentEvent.statePath);
+  fs.writeFileSync(parentEvent.statePath, JSON.stringify({
+    ...parentEventState,
+    parentContinuation: {
+      parentSkill: 'fixme-pr-comments',
+      parentRunId: 'parent_continue_terminal_event',
+      transport: 'agent',
+      resumeStep: 'awaitFixmeTaskResult',
+      parentStatusId: 'run_parent_continue_terminal_event',
+      taskRunId: 'taskRun_continue_terminal_event',
+      childStatusId: 'run_child_continue_terminal_event',
+    },
+  }, null, 2));
+  const terminalParentResult = runInDir(`task result write --state "${parentEvent.statePath}" --data '${JSON.stringify({
+    status: 'completed',
+    summaryMarkdown: 'completed before parent event',
+    changedFiles: [],
+    artifactPaths: [],
+  })}'`, parentEvent.projectRoot);
+  assert(terminalParentResult.ok, `terminal parent result setup should pass, got ${JSON.stringify(terminalParentResult.data)}`);
+  const eventRecorded = run(`lifecycle task-event record --fixme-dir "${parentEvent.fixmeDir}" --data '${JSON.stringify({
+    parentRunId: 'parent_continue_terminal_event',
+    taskRunId: 'taskRun_continue_terminal_event',
+    status: 'completed',
+    terminalResultId: terminalParentResult.data.terminalResultId,
+    resultSummaryPath: terminalParentResult.data.resultSummaryPath,
+    taskStatePath: parentEvent.statePath,
+    idempotencyKey: 'continue-terminal-event-record',
+  })}'`);
+  assert(eventRecorded.ok, `terminal parent event setup should pass, got ${JSON.stringify(eventRecorded.data)}`);
+
+  const cases = [
+    {
+      name: 'pending-attention',
+      setup: pendingAttention,
+      data: { resumeRef: pendingAttention.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'continue-pending-attention' },
+      expectedAction: 'pendingAttention',
+    },
+    {
+      name: 'active-owner',
+      setup: activeOwner,
+      data: { resumeRef: activeOwner.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'continue-active-owner-second' },
+      expectedAction: 'activeOwner',
+    },
+    {
+      name: 'terminal-parent-event',
+      setup: parentEvent,
+      data: { resumeRef: parentEvent.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: true, idempotencyKey: 'continue-terminal-parent-event' },
+      expectedAction: 'terminalParentEvent',
+    },
+  ];
+
+  for (const item of cases) {
+    const before = fs.readFileSync(item.setup.statePath, 'utf8');
+    const continued = run(`lifecycle task continue --fixme-dir "${item.setup.fixmeDir}" --data '${JSON.stringify(item.data)}'`);
+    assert(continued.ok, `${item.name} continue should classify, got ${JSON.stringify(continued.data)}`);
+    assert(continued.data.action === item.expectedAction, `${item.name} action should be ${item.expectedAction}, got ${JSON.stringify(continued.data)}`);
+    assert(!continued.data.ownerFence, `${item.name} classification must not return an owner fence`);
+    assert(fs.readFileSync(item.setup.statePath, 'utf8') === before, `${item.name} classification must not mutate task state`);
+  }
+});
+
+test('lifecycle task retry is replay-safe before and after retry owner acquisition', () => {
+  const setup = initTaskState('retry-replay-safe');
+  const failed = runInDir(`task result write --state "${setup.statePath}" --data '${JSON.stringify({
+    status: 'failed',
+    summaryMarkdown: 'failed before retry',
+    failure: { reason: 'verificationFailed', message: 'verification failed before retry' },
+    changedFiles: [],
+    artifactPaths: [],
+  })}'`, setup.projectRoot);
+  assert(failed.ok, `failed result setup should pass, got ${JSON.stringify(failed.data)}`);
+  const terminalResultId = readJson(setup.statePath).terminalResult.terminalResultId;
+  const retryData = {
+    terminalResultId,
+    reason: 'review repair',
+    requestedBy: 'fixme-task',
+    idempotencyKey: 'retry-replay-safe',
+  };
+
+  const first = run(`lifecycle task retry --fixme-dir "${setup.fixmeDir}" --state "${setup.statePath}" --data '${JSON.stringify(retryData)}'`);
+  assert(first.ok && first.data.action === 'retryQueued', `first retry queues ownerless attempt, got ${JSON.stringify(first.data)}`);
+  const afterQueued = fs.readFileSync(setup.statePath, 'utf8');
+  const replayQueued = run(`lifecycle task retry --fixme-dir "${setup.fixmeDir}" --state "${setup.statePath}" --data '${JSON.stringify(retryData)}'`);
+  assert(replayQueued.ok && replayQueued.data.action === 'retryQueued', `identical queued retry should replay, got ${JSON.stringify(replayQueued.data)}`);
+  assert(fs.readFileSync(setup.statePath, 'utf8') === afterQueued, 'identical queued retry replay must not mutate state');
+
+  const conflict = run(`lifecycle task retry --fixme-dir "${setup.fixmeDir}" --state "${setup.statePath}" --data '${JSON.stringify({ ...retryData, reason: 'different repair' })}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting queued retry should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(fs.readFileSync(setup.statePath, 'utf8') === afterQueued, 'conflicting queued retry must reject before mutation');
+
+  const continued = run(`lifecycle task continue --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: setup.taskPath,
+    runtime: 'codex',
+    transport: 'agent',
+    topLevelInteractive: true,
+    idempotencyKey: 'retry-replay-safe-continue',
+  })}'`);
+  assert(continued.ok && continued.data.action === 'spawnFreshOwner', `queued retry should acquire owner through continue, got ${JSON.stringify(continued.data)}`);
+  const afterContinued = fs.readFileSync(setup.statePath, 'utf8');
+  const replayAfterContinue = run(`lifecycle task retry --fixme-dir "${setup.fixmeDir}" --state "${setup.statePath}" --data '${JSON.stringify(retryData)}'`);
+  assert(replayAfterContinue.ok && replayAfterContinue.data.action === 'retryAlreadyContinued', `retry replay after continue should be explicit, got ${JSON.stringify(replayAfterContinue.data)}`);
+  assert(fs.readFileSync(setup.statePath, 'utf8') === afterContinued, 'retry replay after continue must not mutate state');
+});
+
 test('parent prepare-child saves child handoff first and returns lightweight Codex agent launch', () => {
   const fixmeDir = makeFixmeDir();
   const payload = prepareChildPayload();
@@ -5024,12 +6271,12 @@ test('parent prepare-child saves child handoff first and returns lightweight Cod
   assert(!promptText.includes('"evidence"'), 'prompt blocks omit evidence arrays');
   assert(!Object.prototype.hasOwnProperty.call(first.data, 'promptBlocks'), 'prepare-child does not expose top-level promptBlocks');
   const parent = parentState(fixmeDir, first.data.parentRunId);
-  assert(parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask', `parent waits for child, got ${JSON.stringify(parent)}`);
-  assert(JSON.stringify(parent.payload.activeChild) === JSON.stringify(first.data.activeChild), 'parent persisted exact activeChild');
-  assert(JSON.stringify(parent.payload.flags) === JSON.stringify(payload.parent.payload.flags), 'parent await payload preserves PR-comment flags');
-  assert(JSON.stringify(parent.payload.reviewItems) === JSON.stringify(payload.parent.payload.reviewItems), 'parent await payload preserves review items');
-  assert(JSON.stringify(parent.payload.analysis) === JSON.stringify(payload.parent.payload.analysis), 'parent await payload preserves analysis');
-  assert(JSON.stringify(parent.payload.routedGroups) === JSON.stringify(payload.parent.payload.routedGroups), 'parent await payload preserves routed groups');
+  assert(parent.status === 'running' && parent.cursor === 'dispatchFixmeTask', `parent records dispatch intent before runtime evidence, got ${JSON.stringify(parent)}`);
+  assert(!parent.payload.activeChild, 'parent must not persist activeChild before spawn evidence');
+  assert(JSON.stringify(parent.payload.flags) === JSON.stringify(payload.parent.payload.flags), 'parent dispatch payload preserves PR-comment flags');
+  assert(JSON.stringify(parent.payload.reviewItems) === JSON.stringify(payload.parent.payload.reviewItems), 'parent dispatch payload preserves review items');
+  assert(JSON.stringify(parent.payload.analysis) === JSON.stringify(payload.parent.payload.analysis), 'parent dispatch payload preserves analysis');
+  assert(JSON.stringify(parent.payload.routedGroups) === JSON.stringify(payload.parent.payload.routedGroups), 'parent dispatch payload preserves routed groups');
 
   const replay = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(replay.ok, `prepare-child replay should succeed, got ${JSON.stringify(replay.data)}`);
@@ -5197,7 +6444,7 @@ test('parent prepare-child supports fixme router one-off launch with liveness', 
   assert(prepared.data.launch.promptBlocks.taskStateOwner.ownerSkill === 'fixme-task', 'taskStateOwner identifies fixme-task');
   const parent = parentState(fixmeDir, prepared.data.parentRunId);
   assert(parent.parentSkill === 'fixme', `parent skill should be fixme, got ${parent.parentSkill}`);
-  assert(parent.status === 'waitingForChild' && parent.cursor === 'awaitFixmeTask', `parent waits for child, got ${JSON.stringify(parent)}`);
+  assert(parent.status === 'running' && parent.cursor === 'dispatchFixmeTask', `parent records dispatch intent before runtime evidence, got ${JSON.stringify(parent)}`);
   const parentStatus = readJson(path.join(fixmeDir, 'runs', prepared.data.launch.promptBlocks.parentContinuation.parentStatusId, 'status.json'));
   assert(parentStatus.agent === 'fixme', `parent liveness owner should be fixme, got ${parentStatus.agent}`);
   assertNoSnakeCaseKeys(prepared.data, 'fixme router prepare-child output');
@@ -6454,6 +7701,138 @@ function consumeAttentionData(statusId, statePath, attentionId, mode, checkpoint
   return JSON.stringify(data);
 }
 
+function openTaskAttention(setup, overrides = {}) {
+  return run(`lifecycle task attention open --fixme-dir "${setup.fixmeDir}" --state "${setup.statePath}" --data '${JSON.stringify({
+    ownerFence: setup.ownerFence,
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    answerMode: 'decision-card',
+    promptMarkdown: '## Decision\n\nChoose A.',
+    resume: { cursor: setup.cursor, reason: 'childAttentionRequired', redispatch: { agentName: 'fixme-write-plan', sameInputs: true } },
+    routingContext: { artifactPaths: [] },
+    idempotencyKey: 'task-attention-open-key',
+    ...overrides,
+  })}'`);
+}
+
+function setupAttemptManagedAnsweredAttention(slug) {
+  const init = initTaskState(slug);
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: false, idempotencyKey: `${slug}-continue` })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const setup = {
+    ...init,
+    ownerFence: continued.data.ownerFence,
+    cursor: continued.data.task.cursor,
+  };
+  const opened = openTaskAttention(setup, { idempotencyKey: `${slug}-open` });
+  assert(opened.ok, `task attention open should succeed, got ${JSON.stringify(opened.data)}`);
+  const answer = run(`lifecycle attention broker answer --fixme-dir "${setup.fixmeDir}" --status-id ${opened.data.statusId} --attention-id ${opened.data.attentionId} --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(answer.ok, `broker answer should succeed, got ${JSON.stringify(answer.data)}`);
+  return {
+    ...setup,
+    statusId: opened.data.statusId,
+    attentionId: opened.data.attentionId,
+    attentionPath: opened.data.attentionPath,
+  };
+}
+
+test('lifecycle task continue returns consume template for answered attention resumes', () => {
+  const setup = setupAttemptManagedAnsweredAttention('continue-answered-attention-template');
+  const continued = run(`lifecycle task continue --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: setup.taskPath,
+    runtime: 'codex',
+    transport: 'agent',
+    topLevelInteractive: false,
+    answerAttentionId: setup.attentionId,
+    idempotencyKey: 'continue-answered-attention-template-resume',
+  })}'`);
+  assert(continued.ok, `answer-attention continue should succeed, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.action === 'pendingAttentionAnswer', `answer-attention continue should route to consume, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.ownerFence && continued.data.ownerFence.taskOwnerId === setup.ownerFence.taskOwnerId, `current owner fence returned, got ${JSON.stringify(continued.data.ownerFence)}`);
+  assert(continued.data.attentionConsumeTemplate, `consume template returned, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.attentionConsumeTemplate.command === 'lifecycle attention consume', `consume command named, got ${JSON.stringify(continued.data.attentionConsumeTemplate)}`);
+  assert(continued.data.attentionConsumeTemplate.data.statusId === setup.statusId, `consume status id from pendingDecision, got ${JSON.stringify(continued.data.attentionConsumeTemplate.data)}`);
+  assert(continued.data.attentionConsumeTemplate.data.taskStatePath === setup.statePath, `consume task state path returned, got ${JSON.stringify(continued.data.attentionConsumeTemplate.data)}`);
+  assert(continued.data.attentionConsumeTemplate.data.attentionId === setup.attentionId, `consume attention id returned, got ${JSON.stringify(continued.data.attentionConsumeTemplate.data)}`);
+  assert(JSON.stringify(continued.data.attentionConsumeTemplate.data.ownerFence) === JSON.stringify(setup.ownerFence), `consume owner fence returned, got ${JSON.stringify(continued.data.attentionConsumeTemplate.data.ownerFence)}`);
+  assert(continued.data.answeredAttention && continued.data.answeredAttention.answer.answer === 'A', `answered attention projection returned, got ${JSON.stringify(continued.data.answeredAttention)}`);
+});
+
+test('lifecycle task attention open builds pending decision liveness alert and directive', () => {
+  const init = initTaskState('task-attention-open');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: false, idempotencyKey: 'task-attention-open' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const requestPath = writeJsonFixture(init.projectRoot, 'task-attention-request.json', {
+    ownerFence: continued.data.ownerFence,
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    answerMode: 'decision-card',
+    promptMarkdown: '## Decision\n\nChoose A.',
+    resume: { cursor: continued.data.task.cursor, reason: 'childAttentionRequired', redispatch: { agentName: 'fixme-write-plan', sameInputs: true } },
+    routingContext: { artifactPaths: [] },
+    idempotencyKey: 'task-attention-open-key',
+  });
+  const opened = run(`lifecycle task attention open --fixme-dir "${init.fixmeDir}" --state "${init.statePath}" --data-file "${requestPath}"`);
+  assert(opened.ok, `attention open should succeed, got ${JSON.stringify(opened.data)}`);
+  assert(opened.data.directive.startsWith(`FIXME_ATTENTION_REQUIRED: ${opened.data.attentionId}`), `directive returned, got ${opened.data.directive}`);
+  const state = readJson(init.statePath);
+  assert(state.status === 'waitingForUser', `task status waitingForUser, got ${state.status}`);
+  assert(state.pendingDecision.attentionId === opened.data.attentionId, `pendingDecision built, got ${JSON.stringify(state.pendingDecision)}`);
+  const runStatus = run(`run status --fixme-dir "${init.fixmeDir}" --status-id ${opened.data.statusId}`);
+  assert(runStatus.data.currentCommand === `attention:${opened.data.attentionId}`, `liveness waits on attention, got ${JSON.stringify(runStatus.data)}`);
+});
+
+test('lifecycle task attention open rejects raw low-level fields', () => {
+  const init = initTaskState('task-attention-open-reject');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({ resumeRef: init.taskPath, runtime: 'codex', transport: 'agent', topLevelInteractive: false, idempotencyKey: 'task-attention-open-reject' })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+  const badRequestPath = writeJsonFixture(init.projectRoot, 'bad-task-attention-request.json', {
+    ownerFence: continued.data.ownerFence,
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    answerMode: 'decision-card',
+    promptMarkdown: '## Decision',
+    resume: { cursor: continued.data.task.cursor, reason: 'childAttentionRequired' },
+    routingContext: {},
+    idempotencyKey: 'task-attention-bad',
+    attentionId: 'attn_caller_supplied',
+    checkpointData: { status: 'waitingForUser' },
+    ownerSkill: 'fixme-task',
+    attentionStatusId: 'run_bad',
+  });
+  const rejected = run(`lifecycle task attention open --fixme-dir "${init.fixmeDir}" --state "${init.statePath}" --data-file "${badRequestPath}"`);
+  assert(!rejected.ok && rejected.data.error.code === 'unknownField', `raw fields should reject, got ${JSON.stringify(rejected.data)}`);
+  const state = readJson(init.statePath);
+  assert(state.pendingDecision === null, 'rejected open must not mutate task state');
+});
+
+test('attention open and consume require current owner fence without replacing semantic payloads', () => {
+  const setup = setupAttemptManagedAnsweredAttention('task-attention-owner-fence');
+  const staleFence = { ...setup.ownerFence, taskOwnerGeneration: setup.ownerFence.taskOwnerGeneration + 1 };
+  const staleOpen = openTaskAttention(setup, { ownerFence: staleFence, idempotencyKey: 'attention-open-stale' });
+  assert(!staleOpen.ok && staleOpen.data.error.code === 'staleTaskOwner', `stale task attention open should reject, got ${JSON.stringify(staleOpen.data)}`);
+
+  const decision = completeDecisionObject('decision_attention_consume_owner_fence', {
+    attentionId: setup.attentionId,
+    answer: 'A',
+    interpretation: 'Use option A.',
+  });
+  const consumePayload = {
+    ownerFence: setup.ownerFence,
+    idempotencyKey: 'attention-consume-current',
+    statusId: setup.statusId,
+    taskStatePath: setup.statePath,
+    attentionId: setup.attentionId,
+    mode: 'resolvedDecision',
+    checkpointData: { status: 'running', pendingDecision: null },
+    decisionRecords: [decision],
+  };
+  const staleConsume = run(`lifecycle attention consume --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({ ...consumePayload, ownerFence: staleFence, idempotencyKey: 'attention-consume-stale' })}'`);
+  assert(!staleConsume.ok && staleConsume.data.error.code === 'staleTaskOwner', `stale attention consume should reject, got ${JSON.stringify(staleConsume.data)}`);
+  const consumed = run(`lifecycle attention consume --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(consumePayload)}'`);
+  assert(consumed.ok, `current attention consume should succeed with full semantic payload, got ${JSON.stringify(consumed.data)}`);
+});
+
 test('attention open checkpoints first then creates attention', () => {
   const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-open');
   const r = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath)}'`);
@@ -6620,6 +7999,252 @@ test('attention broker answer replay does not expose task-owned decision state',
   }
 });
 
+function attachActiveRuntimeForSetup(setup, runtimeHandleId) {
+  const current = parentState(setup.fixmeDir, setup.parentRunId).payload.activeChild.activeRuntime;
+  if (current && current.id === runtimeHandleId) {
+    return { ok: true, data: { activeRuntime: current } };
+  }
+  const payloadPath = writeJsonFixture(setup.projectRoot, `attach-runtime-${runtimeHandleId}.json`, {
+    dispatchId: setup.dispatchId,
+    statusId: setup.activeChild.statusId,
+    parentStatusId: setup.continuation.parentStatusId,
+    runtime: 'codex',
+    transport: 'agent',
+    runtimeHandle: { kind: 'codexAgentId', id: runtimeHandleId },
+  });
+  return run(`lifecycle dispatch attach-runtime-handle --fixme-dir "${setup.fixmeDir}" --data-file "${payloadPath}"`);
+}
+
+function setupBrokerTaskOwnedChild(suffix, idempotencyKey) {
+  const fixmeDir = makeFixmeDir();
+  const projectRoot = path.dirname(fixmeDir);
+  const payload = prepareChildPayload({ suffix });
+  const payloadPath = writeJsonFixture(projectRoot, `prepare-child-${suffix}.json`, payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, `agent_${suffix.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+  const begin = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --launch-id ${prepared.data.launchId}`);
+  assert(begin.ok, `task begin should acquire parent child owner, got ${JSON.stringify(begin.data)}`);
+  return {
+    fixmeDir,
+    projectRoot,
+    parentRunId: prepared.data.parentRunId,
+    parentStatePath: prepared.data.parentStatePath,
+    launchId: prepared.data.launchId,
+    dispatchId: prepared.data.dispatchId,
+    statusId: prepared.data.statusId,
+    activeChild,
+    continuation: begin.data.task.parentContinuation,
+    taskStatePath: activeChild.taskStatePath,
+    ownerFence: begin.data.ownerFence,
+    idempotencyKey,
+  };
+}
+
+function openTaskOwnedAttentionForSetup(setup, overrides = {}) {
+  let ownerFence = setup.ownerFence;
+  let cursor = readJson(setup.taskStatePath).cursor;
+  if (!ownerFence) {
+    const begin = run(`lifecycle task begin --fixme-dir "${setup.fixmeDir}" --launch-id ${setup.launchId}`);
+    assert(begin.ok, `task begin should acquire parent child owner, got ${JSON.stringify(begin.data)}`);
+    ownerFence = begin.data.ownerFence;
+    cursor = begin.data.task.cursor;
+    setup.ownerFence = ownerFence;
+  }
+  const payload = {
+    ownerFence,
+    sourceSkill: 'fixme-write-plan',
+    kind: 'planDecision',
+    answerMode: 'decision-card',
+    promptMarkdown: '## Decision\n\nChoose A.',
+    resume: { cursor, reason: 'childAttentionRequired', redispatch: { agentName: 'fixme-write-plan', sameInputs: true } },
+    routingContext: { artifactPaths: [] },
+    idempotencyKey: `task-attention-${setup.parentRunId}-${overrides.idempotencySuffix || 'open'}`,
+    ...overrides,
+  };
+  delete payload.idempotencySuffix;
+  return run(`lifecycle task attention open --fixme-dir "${setup.fixmeDir}" --state "${setup.taskStatePath}" --data '${JSON.stringify(payload)}'`);
+}
+
+function brokerResumeDecision(setup, attentionId, answer = 'A') {
+  return run(`lifecycle attention broker resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ answer, answeredBy: 'user', answerKind: 'decision' })}'`);
+}
+
+test('attention broker resume returns resumeExisting when active runtime is proven', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_existing', 'broker-resume-existing-start');
+  const attach = attachActiveRuntimeForSetup(setup, 'agent_broker_existing');
+  assert(attach.ok, `attach should succeed, got ${JSON.stringify(attach.data)}`);
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'existing' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.status === 'requiresRuntimeAction', `broker returns sealed action, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.resume.launchMode === 'resumeExisting', `launch mode resumeExisting, got ${JSON.stringify(resume.data.resume)}`);
+  assert(resume.data.runtimeAction.kind === 'resumeAgentAndSendInput', `runtime action resumes and sends input, got ${JSON.stringify(resume.data.runtimeAction)}`);
+  assert(resume.data.runtimeAction.runtimeHandle.id === 'agent_broker_existing', 'uses proven owner runtime handle');
+  const parent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(parent.payload.activeChild.resumeLaunchPlan.launchMode === 'resumeExisting', `plan persisted, got ${JSON.stringify(parent.payload.activeChild.resumeLaunchPlan)}`);
+});
+
+test('attention broker acknowledge-resume rejects runtime handle drift', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_ack_drift', 'broker-ack-drift-start');
+  attachActiveRuntimeForSetup(setup, 'agent_broker_ack_drift');
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'ack-drift' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  const badAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify({
+    ...resume.data.acknowledgeResumeTemplate.data,
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_ack_drift_different' },
+  })}'`);
+  assert(!badAck.ok && badAck.data.error.code === 'conflictingDuplicate', `handle drift should reject, got ${JSON.stringify(badAck.data)}`);
+});
+
+test('attention broker resume-failed records failed handle before spawnFresh fallback', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_resume_failed', 'broker-resume-failed-start');
+  attachActiveRuntimeForSetup(setup, 'agent_broker_resume_failed');
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'resume-failed' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.data.resume.launchMode === 'resumeExisting', 'first plan resumes existing owner');
+
+  const failed = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify({
+    launchMode: 'resumeExisting',
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeAction: 'resumeAgentAndSendInput',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_failed' },
+    failureKind: 'runtimeHandleUnavailable',
+    failureMessage: 'runtime reported unavailable',
+  })}'`);
+  assert(failed.ok, `resume-failed should succeed, got ${JSON.stringify(failed.data)}`);
+  assert(failed.data.resume.launchMode === 'spawnFresh', `fallback is spawnFresh, got ${JSON.stringify(failed.data.resume)}`);
+  assert(failed.data.runtimeAction.kind === 'spawnAgent', `fallback action spawns fresh, got ${JSON.stringify(failed.data.runtimeAction)}`);
+  const parent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(parent.payload.activeChild.resumeFailures.length === 1, `failure recorded, got ${JSON.stringify(parent.payload.activeChild.resumeFailures)}`);
+});
+
+test('attention broker resume-failed replays exact evidence and rejects conflicting evidence before mutation', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_resume_failed_replay', 'broker-resume-failed-replay-start');
+  attachActiveRuntimeForSetup(setup, 'agent_broker_resume_failed_replay');
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'resume-failed-replay' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.data.resume.launchMode === 'resumeExisting', 'first plan resumes existing owner');
+
+  const failurePayload = {
+    launchMode: 'resumeExisting',
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeAction: 'resumeAgentAndSendInput',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_failed_replay' },
+    failureKind: 'runtimeHandleUnavailable',
+    failureMessage: 'runtime reported unavailable',
+  };
+  const first = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(failurePayload)}'`);
+  assert(first.ok, `first resume-failed should succeed, got ${JSON.stringify(first.data)}`);
+  const afterFirst = fs.readFileSync(setup.parentStatePath, 'utf8');
+
+  const replay = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(failurePayload)}'`);
+  assert(replay.ok, `exact resume-failed replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(fs.readFileSync(setup.parentStatePath, 'utf8') === afterFirst, 'exact replay must not append another failure or rewrite parent state');
+
+  const conflictPayload = {
+    ...failurePayload,
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_resume_failed_replay_conflict' },
+  };
+  const beforeConflict = fs.readFileSync(setup.parentStatePath, 'utf8');
+  const conflict = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(conflictPayload)}'`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting resume-failed should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(fs.readFileSync(setup.parentStatePath, 'utf8') === beforeConflict, 'conflicting resume-failed must reject before parent mutation');
+});
+
+test('attention broker resume-failed recovers an acknowledged resume dispatch that did not consume attention', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_resume_dispatch_failed', 'broker-resume-dispatch-failed-start');
+  attachActiveRuntimeForSetup(setup, 'agent_broker_resume_dispatch_failed');
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'resume-dispatch-failed' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.resume.launchMode === 'resumeExisting', `resume should target existing runtime, got ${JSON.stringify(resume.data.resume)}`);
+
+  const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(resume.data.acknowledgeResumeTemplate.data)}'`);
+  assert(acknowledged.ok, `acknowledge-resume should succeed, got ${JSON.stringify(acknowledged.data)}`);
+  const acknowledgedParent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(acknowledgedParent.status === 'waitingForChild' && acknowledgedParent.cursor === 'awaitFixmeTask', `acknowledged parent should wait on child, got ${JSON.stringify(acknowledgedParent)}`);
+  assert(!Object.prototype.hasOwnProperty.call(acknowledgedParent.payload.activeChild, 'resumeLaunchPlan'), `acknowledged dispatch should clear launch plan, got ${JSON.stringify(acknowledgedParent.payload.activeChild)}`);
+
+  const failurePayload = {
+    launchMode: 'resumeExisting',
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeAction: 'resumeAgentAndSendInput',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_dispatch_failed' },
+    failureKind: 'runtimeHandleDidNotConsumeAttention',
+    failureMessage: 'runtime accepted resume evidence but completed blocked without consuming the answered attention',
+  };
+  const payloadPath = writeJsonFixture(setup.projectRoot, 'broker-resume-dispatch-failed.json', failurePayload);
+  const failed = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data-file "${payloadPath}"`);
+  assert(failed.ok, `acknowledged resume dispatch failure should recover, got ${JSON.stringify(failed.data)}`);
+  assert(failed.data.status === 'requiresRuntimeAction', `recovery should return sealed runtime action, got ${JSON.stringify(failed.data)}`);
+  assert(failed.data.resume.launchMode === 'spawnFresh', `recovery should spawn fresh, got ${JSON.stringify(failed.data.resume)}`);
+  assert(failed.data.runtimeAction.kind === 'spawnAgent', `recovery action should spawn an agent, got ${JSON.stringify(failed.data.runtimeAction)}`);
+  assert(failed.data.resume.runtime === 'codex', `fallback preserves runtime, got ${JSON.stringify(failed.data.resume)}`);
+  assert(failed.data.resume.transport === 'agent', `fallback preserves transport, got ${JSON.stringify(failed.data.resume)}`);
+
+  const recoveredParent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(recoveredParent.status === 'waitingForUser' && recoveredParent.cursor === 'brokerChildAttention', `parent should return to broker attention state, got ${JSON.stringify(recoveredParent)}`);
+  assert(recoveredParent.payload.activeChild.resumeFailures.length === 1, `failure should be recorded once, got ${JSON.stringify(recoveredParent.payload.activeChild.resumeFailures)}`);
+  assert(recoveredParent.payload.activeChild.resumeLaunchPlan.launchMode === 'spawnFresh', `fresh fallback plan should be persisted, got ${JSON.stringify(recoveredParent.payload.activeChild.resumeLaunchPlan)}`);
+  assert(!Object.prototype.hasOwnProperty.call(recoveredParent.payload.activeChild, 'resumeDispatch'), `failed dispatch should be cleared, got ${JSON.stringify(recoveredParent.payload.activeChild)}`);
+  assert(!Object.prototype.hasOwnProperty.call(recoveredParent.payload.activeChild, 'activeRuntime'), `failed active runtime should not stay selectable, got ${JSON.stringify(recoveredParent.payload.activeChild)}`);
+
+  const attention = readJson(open.data.attentionPath);
+  assert(attention.status === 'answered', `raw answer should stay answered, got ${JSON.stringify(attention)}`);
+  assert(attention.answer.answer === 'A', `raw answer should be preserved, got ${JSON.stringify(attention.answer)}`);
+});
+
+test('attention broker resume-failed replays acknowledged dispatch failure and rejects stale acknowledged evidence before mutation', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_resume_dispatch_failed_replay', 'broker-resume-dispatch-failed-replay-start');
+  attachActiveRuntimeForSetup(setup, 'agent_broker_resume_dispatch_failed_replay');
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'resume-dispatch-failed-replay' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(resume.data.acknowledgeResumeTemplate.data)}'`);
+  assert(acknowledged.ok, `acknowledge-resume should succeed, got ${JSON.stringify(acknowledged.data)}`);
+
+  const failurePayload = {
+    launchMode: 'resumeExisting',
+    transport: 'agent',
+    runtime: 'codex',
+    runtimeAction: 'resumeAgentAndSendInput',
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_dispatch_failed_replay' },
+    failureKind: 'runtimeHandleDidNotConsumeAttention',
+    failureMessage: 'runtime accepted resume evidence but completed blocked without consuming the answered attention',
+    dispatchId: acknowledged.data.resumeDispatch.dispatchId,
+  };
+  const payloadPath = writeJsonFixture(setup.projectRoot, 'broker-resume-dispatch-failed-replay.json', failurePayload);
+  const first = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data-file "${payloadPath}"`);
+  assert(first.ok, `first acknowledged dispatch failure should recover, got ${JSON.stringify(first.data)}`);
+  const afterFirst = fs.readFileSync(setup.parentStatePath, 'utf8');
+
+  const replay = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data-file "${payloadPath}"`);
+  assert(replay.ok, `exact acknowledged dispatch failure replay should recover, got ${JSON.stringify(replay.data)}`);
+  assert(fs.readFileSync(setup.parentStatePath, 'utf8') === afterFirst, 'exact acknowledged failure replay must not append another failure or rewrite parent state');
+
+  const conflictPayload = {
+    ...failurePayload,
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_dispatch_failed_replay_conflict' },
+  };
+  const conflictPath = writeJsonFixture(setup.projectRoot, 'broker-resume-dispatch-failed-conflict.json', conflictPayload);
+  const beforeConflict = fs.readFileSync(setup.parentStatePath, 'utf8');
+  const conflict = run(`lifecycle attention broker resume-failed --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data-file "${conflictPath}"`);
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting acknowledged failure should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(fs.readFileSync(setup.parentStatePath, 'utf8') === beforeConflict, 'conflicting acknowledged failure must reject before parent mutation');
+});
+
 test('attention broker resume records raw answer and returns minimal existing-task launch', () => {
   const fixmeDir = makeFixmeDir();
   const payload = prepareChildPayload({ suffix: 'broker-resume-success' });
@@ -6627,7 +8252,7 @@ test('attention broker resume records raw answer and returns minimal existing-ta
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
 
-  const activeChild = prepared.data.activeChild;
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, 'agent_broker_resume_success_initial');
   const attentionId = 'attn_broker_resume_success';
   const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
     attention: {
@@ -6671,12 +8296,7 @@ test('attention broker resume records raw answer and returns minimal existing-ta
   assert(parent.status === 'waitingForUser' && parent.cursor === 'brokerChildAttention', `parent should checkpoint brokerChildAttention, got ${JSON.stringify(parent)}`);
   assert(parent.payload.activeChild.attentionId === attentionId, `parent activeChild should record attention id, got ${JSON.stringify(parent.payload.activeChild)}`);
 
-  const acknowledgementPayload = {
-    resumeMessage: resume.data.resume.message,
-    transport: 'agent',
-    runtime: 'codex',
-    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_success' },
-  };
+  const acknowledgementPayload = resume.data.acknowledgeResumeTemplate.data;
   const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(acknowledgementPayload)}'`);
   assert(acknowledged.ok, `acknowledge-resume should succeed after launch, got ${JSON.stringify(acknowledged.data)}`);
   const acknowledgedParent = parentState(fixmeDir, prepared.data.parentRunId);
@@ -6687,7 +8307,94 @@ test('attention broker resume records raw answer and returns minimal existing-ta
   assert(acknowledgedParent.payload.activeChild.resumeDispatch.attentionId === attentionId, `resumeDispatch should record attention id, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
   assert(acknowledgedParent.payload.activeChild.resumeDispatch.transport === 'agent', `resumeDispatch should record transport, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
   assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtime === 'codex', `resumeDispatch should record runtime, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
-  assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_success', `resumeDispatch should record runtime handle, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+  assert(acknowledgedParent.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_success_initial', `resumeDispatch should record runtime handle, got ${JSON.stringify(acknowledgedParent.payload.activeChild.resumeDispatch)}`);
+});
+
+test('attention broker acknowledge-resume creates dispatch-backed wait identity for spawnFresh resume', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_spawn_wait_identity', 'broker-spawn-wait-identity-start');
+  clearActiveRuntimeForTest({ ...setup, statusId: setup.activeChild.statusId });
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'spawn-wait-identity' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const resume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.resume.launchMode === 'spawnFresh', `resume should spawn fresh after active runtime is cleared, got ${JSON.stringify(resume.data.resume)}`);
+
+  const runtimeHandle = { kind: 'codexAgentId', id: 'agent_broker_spawn_wait_identity_fresh' };
+  const ackPayload = { ...resume.data.acknowledgeResumeTemplate.data, runtimeHandle };
+  const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(ackPayload)}'`);
+  assert(acknowledged.ok, `acknowledge-resume should succeed after fresh launch, got ${JSON.stringify(acknowledged.data)}`);
+
+  const resumeDispatch = acknowledged.data.resumeDispatch;
+  assert(isNonEmptyTestStr(resumeDispatch.dispatchId), `resumeDispatch must carry dispatchId for watchdog reconciliation, got ${JSON.stringify(resumeDispatch)}`);
+  assert(resumeDispatch.runtimeHandle.id === runtimeHandle.id, `resumeDispatch records fresh runtime handle, got ${JSON.stringify(resumeDispatch)}`);
+
+  const childStatus = readJson(path.join(setup.fixmeDir, 'runs', setup.activeChild.statusId, 'status.json'));
+  assert(childStatus.activeRuntime && childStatus.activeRuntime.dispatchId === resumeDispatch.dispatchId, `child run status mirrors broker dispatch activeRuntime, got ${JSON.stringify(childStatus)}`);
+  assert(childStatus.activeRuntime.id === runtimeHandle.id, `child run status mirrors fresh runtime handle, got ${JSON.stringify(childStatus.activeRuntime)}`);
+
+  const dispatchRecord = readJson(dispatchRecordPathForTest(setup.fixmeDir, resumeDispatch.dispatchId));
+  assert(dispatchRecord.activeRuntime.id === runtimeHandle.id, `broker dispatch record stores active runtime, got ${JSON.stringify(dispatchRecord.activeRuntime)}`);
+  assert(dispatchRecord.durableInputs.taskStatePath === setup.taskStatePath, `broker dispatch records task state path, got ${JSON.stringify(dispatchRecord.durableInputs)}`);
+
+  const payloadPath = writeJsonFixture(setup.projectRoot, 'reconcile-broker-spawn-wait-identity.json', { parentStatePath: setup.parentStatePath });
+  const reconcile = run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${resumeDispatch.dispatchId} --status-id ${setup.activeChild.statusId} --data-file "${payloadPath}"`);
+  assert(reconcile.ok && reconcile.data.transition === 'attention', `broker resume dispatch should reconcile through normal attention path, got ${JSON.stringify(reconcile.data)}`);
+  assert(reconcile.data.brokerResumeTemplate.attentionId === open.data.attentionId, `reconcile returns the pending attention id, got ${JSON.stringify(reconcile.data)}`);
+});
+
+test('attention broker resume clears stale dispatch when retrying same answered attention', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_same_attention_retry', 'broker-same-attention-retry-start');
+  clearActiveRuntimeForTest({ ...setup, statusId: setup.activeChild.statusId });
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'same-attention-retry' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const firstResume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(firstResume.ok, `first broker resume should succeed, got ${JSON.stringify(firstResume.data)}`);
+  const firstAckPayload = {
+    ...firstResume.data.acknowledgeResumeTemplate.data,
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_same_attention_retry_fresh' },
+  };
+  const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(firstAckPayload)}'`);
+  assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
+  assert(firstAck.data.resumeDispatch.launchMode === 'spawnFresh', `first dispatch is spawnFresh, got ${JSON.stringify(firstAck.data.resumeDispatch)}`);
+
+  const retryResume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(retryResume.ok, `retry broker resume should succeed, got ${JSON.stringify(retryResume.data)}`);
+  assert(retryResume.data.resume.launchMode === 'resumeExisting', `retry should use repaired active runtime, got ${JSON.stringify(retryResume.data.resume)}`);
+  const brokerParent = parentState(setup.fixmeDir, setup.parentRunId);
+  assert(brokerParent.status === 'waitingForUser' && brokerParent.cursor === 'brokerChildAttention', `retry should return parent to brokerChildAttention, got ${JSON.stringify(brokerParent)}`);
+  assert(!Object.prototype.hasOwnProperty.call(brokerParent.payload.activeChild, 'resumeDispatch'), `retry launch plan must clear stale same-attention dispatch, got ${JSON.stringify(brokerParent.payload.activeChild)}`);
+
+  const retryAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(retryResume.data.acknowledgeResumeTemplate.data)}'`);
+  assert(retryAck.ok, `retry acknowledgement should replace stale same-attention dispatch, got ${JSON.stringify(retryAck.data)}`);
+  assert(retryAck.data.resumeDispatch.launchMode === 'resumeExisting', `retry dispatch records resumeExisting, got ${JSON.stringify(retryAck.data.resumeDispatch)}`);
+});
+
+test('attention broker acknowledge-resume replaces legacy stale same-attention dispatch when retry plan exists', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_legacy_same_attention_retry', 'broker-legacy-same-attention-retry-start');
+  clearActiveRuntimeForTest({ ...setup, statusId: setup.activeChild.statusId });
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'legacy-same-attention-retry' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+
+  const firstResume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(firstResume.ok, `first broker resume should succeed, got ${JSON.stringify(firstResume.data)}`);
+  const firstAckPayload = {
+    ...firstResume.data.acknowledgeResumeTemplate.data,
+    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_legacy_same_attention_retry_fresh' },
+  };
+  const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(firstAckPayload)}'`);
+  assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
+
+  const retryResume = brokerResumeDecision(setup, open.data.attentionId, 'A');
+  assert(retryResume.ok, `retry broker resume should succeed, got ${JSON.stringify(retryResume.data)}`);
+  const legacyParent = parentState(setup.fixmeDir, setup.parentRunId);
+  legacyParent.payload.activeChild.resumeDispatch = firstAck.data.resumeDispatch;
+  writeParentState(setup.fixmeDir, setup.parentRunId, legacyParent);
+
+  const retryAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId} --data '${JSON.stringify(retryResume.data.acknowledgeResumeTemplate.data)}'`);
+  assert(retryAck.ok, `retry acknowledgement should replace legacy stale same-attention dispatch, got ${JSON.stringify(retryAck.data)}`);
+  assert(retryAck.data.resumeDispatch.launchMode === 'resumeExisting', `retry dispatch records resumeExisting, got ${JSON.stringify(retryAck.data.resumeDispatch)}`);
 });
 
 test('broker resume returns acknowledgeResumeTemplate', () => {
@@ -6696,7 +8403,7 @@ test('broker resume returns acknowledgeResumeTemplate', () => {
   const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-broker-ack-template.json', payload);
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
-  const activeChild = prepared.data.activeChild;
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, 'agent_broker_ack_template_initial');
   const attentionId = 'attn_broker_ack_template';
   const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
     attention: { resumeRef: activeChild.resumeRef, taskStatePath: activeChild.taskStatePath, promptMarkdown: '## Decide' },
@@ -6712,11 +8419,13 @@ test('broker resume returns acknowledgeResumeTemplate', () => {
   assert(template.statusId === activeChild.statusId, 'template carries statusId');
   assert(template.attentionId === attentionId, 'template carries attentionId');
   assert(template.data.resumeMessage === resume.data.resume.message, 'template data carries resumeMessage');
-  assert(!Object.prototype.hasOwnProperty.call(template.data, 'transport'), 'template data omits transport');
-  assert(!Object.prototype.hasOwnProperty.call(template.data, 'runtime'), 'template data omits runtime');
+  assert(template.data.launchMode === resume.data.resume.launchMode, 'template data carries launchMode');
+  assert(template.data.runtimeAction === resume.data.resume.runtimeAction, 'template data carries runtimeAction');
+  assert(template.data.transport === resume.data.resume.transport, 'template data carries transport');
+  assert(template.data.runtime === resume.data.resume.runtime, 'template data carries runtime');
 
-  // Copy .data and add only runtime-derived launch evidence.
-  const ackPayload = { ...template.data, transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_ack_template' } };
+  // Copy the persisted launch plan exactly for resumeExisting.
+  const ackPayload = { ...template.data };
   const acknowledged = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${template.parentRunId} --status-id ${template.statusId} --attention-id ${template.attentionId} --data '${JSON.stringify(ackPayload)}'`);
   assert(acknowledged.ok, `acknowledge-resume from template should succeed, got ${JSON.stringify(acknowledged.data)}`);
 });
@@ -6744,7 +8453,7 @@ test('attention broker resume replaces prior resume dispatch for second attentio
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
 
-  const activeChild = prepared.data.activeChild;
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, 'agent_broker_resume_second_initial');
   const firstAttentionId = 'attn_broker_resume_first';
   const firstOpen = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, firstAttentionId, {
     attention: {
@@ -6757,12 +8466,7 @@ test('attention broker resume replaces prior resume dispatch for second attentio
   const firstAnswerPayload = { answer: 'Need more context', answeredBy: 'user', answerKind: 'clarificationRequest' };
   const firstResume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${firstAttentionId} --data '${JSON.stringify(firstAnswerPayload)}'`);
   assert(firstResume.ok, `first broker resume should succeed, got ${JSON.stringify(firstResume.data)}`);
-  const firstAckPayload = {
-    resumeMessage: firstResume.data.resume.message,
-    transport: 'agent',
-    runtime: 'codex',
-    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_first' },
-  };
+  const firstAckPayload = firstResume.data.acknowledgeResumeTemplate.data;
   const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${firstAttentionId} --data '${JSON.stringify(firstAckPayload)}'`);
   assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
   const afterFirstAck = parentState(fixmeDir, prepared.data.parentRunId);
@@ -6794,18 +8498,13 @@ test('attention broker resume replaces prior resume dispatch for second attentio
   assert(brokerParent.payload.activeChild.attentionId === secondAttentionId, `activeChild should point at second attention, got ${JSON.stringify(brokerParent.payload.activeChild)}`);
   assert(!Object.prototype.hasOwnProperty.call(brokerParent.payload.activeChild, 'resumeDispatch'), `brokerChildAttention payload should not retain stale resumeDispatch, got ${JSON.stringify(brokerParent.payload.activeChild)}`);
 
-  const secondAckPayload = {
-    resumeMessage: secondResume.data.resume.message,
-    transport: 'agent',
-    runtime: 'codex',
-    runtimeHandle: { kind: 'codexAgentId', id: 'agent_broker_resume_second' },
-  };
+  const secondAckPayload = secondResume.data.acknowledgeResumeTemplate.data;
   const secondAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${secondAttentionId} --data '${JSON.stringify(secondAckPayload)}'`);
   assert(secondAck.ok, `second acknowledgement should replace prior dispatch evidence, got ${JSON.stringify(secondAck.data)}`);
   const afterSecondAck = parentState(fixmeDir, prepared.data.parentRunId);
   assert(afterSecondAck.status === 'waitingForChild' && afterSecondAck.cursor === 'awaitFixmeTask', `parent should return to awaitFixmeTask after second ack, got ${JSON.stringify(afterSecondAck)}`);
   assert(afterSecondAck.payload.activeChild.resumeDispatch.attentionId === secondAttentionId, `resumeDispatch should record second attention id, got ${JSON.stringify(afterSecondAck.payload.activeChild.resumeDispatch)}`);
-  assert(afterSecondAck.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_second', `resumeDispatch should record second runtime handle, got ${JSON.stringify(afterSecondAck.payload.activeChild.resumeDispatch)}`);
+  assert(afterSecondAck.payload.activeChild.resumeDispatch.runtimeHandle.id === 'agent_broker_resume_second_initial', `resumeDispatch should record second runtime handle, got ${JSON.stringify(afterSecondAck.payload.activeChild.resumeDispatch)}`);
 });
 
 test('attention broker resume is idempotent and fails closed for stale child state', () => {
@@ -6815,7 +8514,7 @@ test('attention broker resume is idempotent and fails closed for stale child sta
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
 
-  const activeChild = prepared.data.activeChild;
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, 'agent_broker_resume_idempotent_initial');
   const attentionId = 'attn_broker_resume_idempotent';
   const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, {
     attention: {
@@ -6832,16 +8531,18 @@ test('attention broker resume is idempotent and fails closed for stale child sta
   assert(replay.ok, `replayed broker resume should succeed, got ${JSON.stringify(replay.data)}`);
   assert(JSON.stringify(replay.data.resume) === JSON.stringify(first.data.resume), `replay should return same resume launch, got ${JSON.stringify(replay.data.resume)} vs ${JSON.stringify(first.data.resume)}`);
 
-  const ackPayload = { resumeMessage: first.data.resume.message, transport: 'background', runtime: 'claude', runtimeHandle: { kind: 'claudeAgentId', id: 'agent_broker_resume_idempotent' } };
+  const ackPayload = first.data.acknowledgeResumeTemplate.data;
   const malformedFirstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, resumeMessage: '--resume FIXME-wrong --answer-attention attn_wrong' })}'`);
-  assert(!malformedFirstAck.ok && malformedFirstAck.data.error.code === 'staleState', `malformed first acknowledgement should fail staleState, got ${JSON.stringify(malformedFirstAck.data)}`);
+  assert(!malformedFirstAck.ok && malformedFirstAck.data.error.code === 'conflictingDuplicate', `malformed first acknowledgement should fail conflictingDuplicate, got ${JSON.stringify(malformedFirstAck.data)}`);
   const firstAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(ackPayload)}'`);
   assert(firstAck.ok, `first acknowledgement should succeed, got ${JSON.stringify(firstAck.data)}`);
   const replayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(ackPayload)}'`);
   assert(replayAck.ok, `replayed acknowledgement should succeed, got ${JSON.stringify(replayAck.data)}`);
-  const reorderedHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, runtimeHandle: { id: 'agent_broker_resume_idempotent', kind: 'claudeAgentId' } })}'`);
+  const reorderedHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...ackPayload, runtimeHandle: { id: ackPayload.runtimeHandle.id, kind: ackPayload.runtimeHandle.kind } })}'`);
   assert(reorderedHandleReplayAck.ok, `replayed acknowledgement should accept semantically identical runtimeHandle with reordered keys, got ${JSON.stringify(reorderedHandleReplayAck.data)}`);
-  const missingHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ resumeMessage: first.data.resume.message, transport: 'background', runtime: 'claude' })}'`);
+  const missingHandlePayload = { ...ackPayload };
+  delete missingHandlePayload.runtimeHandle;
+  const missingHandleReplayAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify(missingHandlePayload)}'`);
   assert(!missingHandleReplayAck.ok && missingHandleReplayAck.data.error.code === 'conflictingDuplicate', `omitting a previously recorded runtimeHandle should conflict, got ${JSON.stringify(missingHandleReplayAck.data)}`);
   const replayedParent = parentState(fixmeDir, prepared.data.parentRunId);
   assert(replayedParent.status === 'waitingForChild' && replayedParent.cursor === 'awaitFixmeTask', `replayed ack should leave parent waiting for child, got ${JSON.stringify(replayedParent)}`);
@@ -10406,49 +12107,39 @@ test('fixme-task skill: uses data-file payloads for nested workflow JSON', () =>
   assert(skill.includes('task save --data-file <task-save.json>'), 'save mode should use data-file for nested save payloads');
   assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'checkpoint examples should use data-file for nested patches');
   assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>'), 'dispatch prepare should use data-file for nested prompt payloads');
-  assert(skill.includes('task init --state <activeChild.taskStatePath>'), 'parent-driven init should still use the reserved active child state path');
+  assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'parent-driven startup should use the lifecycle begin launch boundary');
+  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'existing task startup should use the lifecycle continue boundary');
 });
 
-test('fixme-task skill separates saved handoff task init from reserved state init', () => {
+test('fixme-task skill uses lifecycle begin and continue instead of reimplementing launch task init', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
   for (const required of [
-    'If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`',
-    'task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
-    'If `launch.promptBlocks.taskInput.source === "existingTask"`',
-    'If `launch.promptBlocks.taskInput.resolvedMode === "standalone"`',
-    'task init --task <taskPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
-    'If `launch.promptBlocks.taskInput.resolvedMode === "ticket"`',
-    'task init --ticket <ticketPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
-    'If `launch.promptBlocks.taskInput.resolvedMode === "reserved-state"`',
-    'task init --state <statePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
-    'Ticket existingTask initialization must be idempotent: it preserves the existing ticket-backed task state, merges only a matching parentContinuation, and rejects project, pipeline, or parentContinuation conflicts.',
-    'Otherwise, initialize the reserved state path',
-    'task init --state <activeChild.taskStatePath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>',
-    'Saved handoff children must not be initialized through `--state` because the reserved state path may collide with saved task markdown.',
-    'Reserved-state children must not call `task init --task` because no saved task markdown is the boundary.',
+    'Parent-driven launch: run `lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>` before manifest rebuild, liveness ping, dispatch, checkpoint, attention consume, or any child work.',
+    'The launch record owns saved handoff, existingTask ticket, existingTask standalone, and reserved-state selection; do not branch on `launch.promptBlocks.taskInput` to call `task init` directly.',
+    'Direct absent creation: run `lifecycle task begin --fixme-dir <fixme-dir> --ticket <ticket-path> --project-root <project-root> --pipeline-resolution-file <pipeline-resolution.json> --idempotency-key <key>`.',
+    'Direct absent saved task and reserved-state creation use the same begin boundary with `--task <task-path>` or `--state <task-state-path>` instead of ticket.',
+    'Existing saved task, `--resume`, pending attention answer, waiting state, active owner, terminal state, and retry acquisition: run `lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>` before any manifest rebuild or task-state mutation.',
+    'If direct begin returns `directBeginRequiresContinue`, stop the begin path and call `lifecycle task continue`; do not fall back to `task init`.',
   ]) {
-    assert(skill.includes(required), `fixme-task should document boundary: ${required}`);
+    assert(skill.includes(required), `fixme-task should document lifecycle startup boundary: ${required}`);
   }
 
-  const savedIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "savedTaskWithHandoffPayload"`');
-  const existingIndex = skill.indexOf('If `launch.promptBlocks.taskInput.source === "existingTask"`');
-  const reservedIndex = skill.indexOf('Otherwise, initialize the reserved state path');
-  assert(savedIndex !== -1 && reservedIndex !== -1 && savedIndex < reservedIndex, 'saved handoff branch should be documented before reserved-state fallback');
-  assert(existingIndex !== -1 && savedIndex < existingIndex && existingIndex < reservedIndex, 'existingTask branch should be documented between saved handoff and reserved-state fallback');
+  assert(!skill.includes('--parent-continuation-file <parent-continuation.json>'), 'fixme-task runtime paths should not use parent-continuation task init');
+  assert(!skill.includes('task init --state <activeChild.taskStatePath>'), 'parent-driven runtime paths should not call low-level task init directly');
 });
 
-test('fixme-task skill allowlist permits parent-driven existingTask ticket init', () => {
+test('fixme-task skill allowlist permits lifecycle task begin and continue startup', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   const allowlistMatch = skill.match(/## Orchestrator Tool Allowlist[\s\S]*?Any Bash command with a literal `\.fixme\/` argument is forbidden\./);
-  const documentedTicketCommand = 'task init --ticket <ticketPath> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>';
-  const allowlistedTicketCommand = 'task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root> --parent-continuation-file <parent-continuation.json>';
 
   assert(allowlistMatch, 'fixme-task should have an extractable orchestrator allowlist section');
-  assert(skill.includes(documentedTicketCommand), 'existingTask ticket documentation should include parentContinuation');
-  assert(allowlistMatch[0].includes(allowlistedTicketCommand), 'orchestrator allowlist should permit the parent-driven existingTask ticket init command');
+  assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'startup documentation should include parent launch begin');
+  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'startup documentation should include task continue');
+  assert(allowlistMatch[0].includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'orchestrator allowlist should permit parent launch begin');
+  assert(allowlistMatch[0].includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'orchestrator allowlist should permit task continue');
 });
 
 test('review synthesize-clean-handler emits deterministic clean routing blocks', () => {
@@ -10657,7 +12348,7 @@ test('fixme-task skill routes plan readiness before optional full plan review', 
   assert(skill.includes('READINESS_RESULT: FULL_PLAN_REVIEW` advances to `fixme-review-plan`'), 'FULL_PLAN_REVIEW should preserve full plan review escalation');
   assert(skill.includes('READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode'), 'REVISE_PLAN should use the writer readiness-revision contract');
   assert(skill.includes('readiness blocking findings are not handler-classified FIX items'), 'fixme-task should not pass readiness findings as handler output');
-  assert(skill.includes('READINESS_RESULT: ASK_USER` stores the readiness decision prompt through `lifecycle attention open`'), 'ASK_USER should use durable task-owned attention');
+  assert(skill.includes('READINESS_RESULT: ASK_USER` stores the readiness decision prompt through `lifecycle task attention open`'), 'ASK_USER should use durable task-owned attention');
   assert(includesNormalized('Step 2 [plan/readiness] Dispatch fixme-plan-readiness'), 'default manifest should include readiness before full plan review');
   assert(includesNormalized('Step 3 [plan/readiness] Route on READINESS_RESULT'), 'default manifest should include readiness route');
   assert(includesNormalized('Step 4 [plan/review] Dispatch fixme-review-plan'), 'default manifest should keep full plan review after readiness');
@@ -10729,7 +12420,9 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
 
   const taskSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-task/SKILL.md'), 'utf8');
   assert(taskSkill.includes('--pipeline-resolution-file <pipeline-resolution.json>'), 'fixme-task should prefer pipeline-resolution file flag');
-  assert(taskSkill.includes('--parent-continuation-file <parent-continuation.json>'), 'fixme-task should prefer parent-continuation file flag');
+  assert(taskSkill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'fixme-task should prefer lifecycle task begin for parent launch');
+  assert(taskSkill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'fixme-task should prefer lifecycle task continue for existing state classification');
+  assert(!taskSkill.includes('--parent-continuation-file <parent-continuation.json>'), 'fixme-task should not document parent-continuation task init as a runtime path');
   assert(taskSkill.includes('Parent-driven transports are `agent` and `background`'), 'fixme-task should list only agent/background parent-driven transports');
   assert(!taskSkill.includes('inline-skill`, `agent`, and `background`'), 'fixme-task should not list inline-skill as a parent-driven transport');
   assert(taskSkill.includes('Claude Code >= 2.1.172'), 'fixme-task should document the Claude nesting runtime requirement');
@@ -10812,6 +12505,9 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(!skill.includes('store the complete Review Classification block with `run attention set`, checkpoint'), 'review decision instructions should not expose attention before checkpointing');
   assert(skill.includes('Load the answered attention record from `pendingDecision.attentionStatusId`'), 'answer resume should load attention from task state, not implicit current status');
   assert(skill.includes('If `status` is `waitingForUser` and `answerAttentionId` is present, follow Durable Attention Requests instead of presenting `pendingDecision` directly.'), 'answer-attention resumes should not present pendingDecision directly');
+  assert(skill.includes('When `lifecycle task continue` returns `action: "pendingAttentionAnswer"`'), 'answer-attention resumes should document the task-owned consume branch');
+  assert(skill.includes('copy `attentionConsumeTemplate.data` exactly, add only `mode`, `checkpointData`, and `decisionRecords` after interpreting the answered attention, then call `lifecycle attention consume` before any broker resume, liveness ping, status reset, or child dispatch'), 'answer-attention resumes should use the runtime consume template instead of rebuilding consume inputs');
+  assert(skill.includes('Do not call `lifecycle attention broker show`, `lifecycle attention broker resume`, or `lifecycle attention broker acknowledge-resume` from this branch'), 'answer-attention resumes should forbid owner-side broker loops');
   assert(skill.includes('Consume `--answer-attention` before any normal liveness ping, Agent dispatch, or status reset so the runtime does not reject the liveness update while the active `currentCommand: attention:<attention-id>` marker is still pending'), 'answer resume should clear pending attention before normal liveness resumes');
   assert(skill.includes('lifecycle attention consume --fixme-dir <fixme-dir>'), 'answer resume should use the owner-only consume helper');
   assert(skill.includes('persist decision records through `lifecycle attention consume` for every answered attention decision that constrains task behavior'), 'answer resume should persist task-constraining child decisions through consume');
@@ -10821,9 +12517,9 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('Use `answer.answerKind` to distinguish `decision` from `clarificationRequest`'), 'answer resume should use explicit answer kind');
   assert(skill.includes('If the answered attention record contains `answerKind: "clarificationRequest"`, treat it as Discussion Mode input.'), 'answer resume should support clarification turns without treating them as decisions');
   assert(skill.includes('clear the consumed attention before creating the replacement attention'), 'clarification replacement attention should avoid overlapping pending attention');
-  assert(skill.includes('For a clarification turn, build the replacement prompt and open the replacement attention with another `lifecycle attention open`, and return'), 'clarification turns should re-prompt through checkpoint-first durable attention');
+  assert(skill.includes('For a clarification turn, build the replacement prompt and open the replacement attention with another `lifecycle task attention open`, and return'), 'clarification turns should re-prompt through checkpoint-first durable attention');
   assert(skill.includes('If `answer.answerKind` is `decision` but only some decision points are resolved, keep the parsed partial answers in `pendingDecision.partialAnswers`'), 'partial attention decisions should be preserved before re-prompting unresolved points');
-  assert(skill.includes('For partial decision answers, build the replacement prompt for only the unresolved decision points and open the replacement attention with another `lifecycle attention open`, and return'), 'partial attention decisions should re-prompt through checkpoint-first durable attention');
+  assert(skill.includes('For partial decision answers, build the replacement prompt for only the unresolved decision points and open the replacement attention with another `lifecycle task attention open`, and return'), 'partial attention decisions should re-prompt through checkpoint-first durable attention');
   assert(!skill.includes('Then create a new durable attention prompt with the clarification answer plus the still-unresolved decision points, checkpoint'), 'clarification turns should not create replacement attention before checkpointing');
   assert(!skill.includes('clear the consumed attention before creating a replacement prompt for only the unresolved decision points, checkpoint'), 'partial decisions should not create replacement attention before checkpointing');
   assert(skill.includes('resume an existing task continuation, never save a new task'), 'resume mode should forbid duplicate saved-task creation');
@@ -10831,11 +12527,13 @@ test('fixme-task skill: owns durable attention requests and answer resume', () =
   assert(skill.includes('Attention examples use the same checkpoint-first order'), 'fixme-task examples should explicitly preserve checkpoint-first ordering');
   assert(!skill.includes('Then it checkpoints `pendingDecision.attentionId` and returns:'), 'fixme-task examples should not checkpoint after exposing attention');
   assert(skill.includes('lifecycle attention broker resume'), 'fixme-task should document broker resume as the parent answer path');
-  assert(skill.includes('returns `resume.message`'), 'fixme-task should say the broker helper returns resume.message');
-  assert(skill.includes('with the returned `resume.message` only'), 'fixme-task should launch only the helper-returned resume message');
+  assert(skill.includes('returns a runtime-action loop contract'), 'fixme-task should say broker resume returns a runtime-action contract');
+  assert(skill.includes('execute exactly the returned `runtimeAction`'), 'fixme-task should execute the returned runtimeAction');
+  assert(skill.includes('lifecycle runtime-action observe'), 'fixme-task should observe broker runtime actions');
+  assert(!skill.includes('with the returned `resume.message` only'), 'fixme-task should not keep launch-only resume.message wording');
   assert(skill.includes('lifecycle attention broker acknowledge-resume'), 'fixme-task should document post-launch acknowledgement');
   assert(skill.includes('activeChild.resumeDispatch'), 'fixme-task should document resume-dispatch evidence');
-  assert(skill.includes('Parent brokers do not hand-compose the message'), 'fixme-task should forbid hand-composed resume messages');
+  assert(skill.includes('Parent brokers do not hand-compose resume messages'), 'fixme-task should forbid hand-composed resume messages');
   assert(!skill.includes('Skill("fixme-task", "--resume FIXME-13 --answer-attention attn_review_123")'), 'fixme-task should not keep the old Claude inline hand-composed resume assertion');
   assert(!skill.includes('--nested'), 'fixme-task should no longer reference --nested');
   assert(!skill.includes('Legacy installed-skill resume references may mention `$HOME/.codex/skills/fixme-task/SKILL.md`; parent-driven Codex execution now uses the registered agent transport.'), 'fixme-task should not keep the old Codex installed-skill hand-composed resume assertion');
@@ -10850,14 +12548,14 @@ test('fixme-task skill: native ASK_USER pauses use durable attention when not us
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('If `fixme-task` is running in a non-user-facing context, do not wait on normal text output.'), 'non-user-facing native ASK_USER should not wait on hidden output');
-  assert(skill.includes('When a current fixme-task liveness status id is available, use the `lifecycle attention open` path below to store the complete prompt durably'), 'native ASK_USER should store the full prompt through checkpoint-first attention');
+  assert(skill.includes('When a current fixme-task liveness status id is available, use the `lifecycle task attention open` path below to store the complete prompt durably'), 'native ASK_USER should store the full prompt through checkpoint-first attention');
   assert(skill.includes('Only a genuine top-level interactive `/fixme-task` session (the user reads stdout directly) may print the block and wait normally.'), 'direct fixme-task should still allow normal user-facing prompts');
   assert(skill.includes('Residual no-liveness case: if a user-facing pause prompt must be returned but no fixme-task liveness status id can be obtained to open durable attention'), 'residual no-liveness native ASK_USER should use the envelope path');
   assert(skill.includes('`FIXME_ATTENTION_BLOCKED` is only for a failed required attention-open attempt after `fixme-task` has a liveness status id'), 'attentionBlocked should be limited to failed attention-open attempts');
-  assert(skill.includes('After a successful `lifecycle attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
+  assert(skill.includes('After a successful `lifecycle task attention open`, do not send any ordinary `run ping` before returning `FIXME_ATTENTION_REQUIRED`'), 'attention mode should not ping over an active attention marker');
   assert(skill.includes('In attention mode, `--answer-attention` supplies the answer for ASK_USER Batching'), 'answer-attention should feed native ASK_USER batching');
-  assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'agent escalation should use checkpoint-first durable attention when parent-driven');
-  assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the `lifecycle attention open` path'), 'loop guard escalation should use checkpoint-first durable attention when parent-driven');
+  assert(skill.includes('Agent escalation prompts are user-input prompts. In attention mode, use the `lifecycle task attention open` path'), 'agent escalation should use checkpoint-first durable attention when parent-driven');
+  assert(skill.includes('Loop guard escalations are user-input prompts. In attention mode, use the `lifecycle task attention open` path'), 'loop guard escalation should use checkpoint-first durable attention when parent-driven');
   assert(skill.includes('A loop guard escalation in parent-driven mode returns `FIXME_ATTENTION_REQUIRED: <attention-id>`, not a Run Summary'), 'parent-driven loop guard should not output a hidden run summary');
   assert(skill.includes('or after a loop guard triggers in direct standalone mode'), 'top-level run-summary rule should not imply nested loop guards emit summaries');
   assert(skill.includes('Missing parent liveness only skips parent heartbeat pings while no user-input prompt is pending.'), 'missing parent liveness should only skip heartbeat pings while no prompt is pending');
@@ -10873,7 +12571,7 @@ test('fixme-task skill: converts child attention requests into owned durable att
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('FIXME_CHILD_ATTENTION_REQUIRED'), 'fixme-task should define child attention request directives');
-  assert(skill.includes('convert the child request into `lifecycle attention open`'), 'fixme-task should create durable attention for child requests');
+  assert(skill.includes('convert the child request into `lifecycle task attention open`'), 'fixme-task should create durable attention for child requests');
   assert(skill.includes('Child skills never persist task-owned decisions'), 'child skills should not own decision persistence');
 });
 
@@ -10883,7 +12581,9 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(skill.includes('If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED`'), 'PR comments should detect child task attention directives');
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>'), 'PR comments should render attention through the lifecycle broker');
   assert(skill.includes('lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId>'), 'PR comments should answer and resume through broker resume');
-  assert(skill.includes('Launch `fixme-task` with the returned `resume.message` only'), 'PR comments should launch only the helper-returned resume message');
+  assert(skill.includes('Execute exactly the returned `runtimeAction`'), 'PR comments should execute returned runtime actions');
+  assert(skill.includes('lifecycle runtime-action observe'), 'PR comments should observe returned runtime actions');
+  assert(!skill.includes('Launch `fixme-task` with the returned `resume.message` only'), 'PR comments should not keep launch-only resume.message wording');
   assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId>'), 'PR comments should acknowledge launched resume messages');
   assert(skill.includes('Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand'), 'PR comments should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'PR comments must not expect broker show to return resumeRef');
@@ -11008,9 +12708,9 @@ test('documentation: durable attention broker and owner boundaries are consisten
   const ownerConsumeRule = '`fixme-task` must consume answered attention with `lifecycle attention consume` before any liveness ping, status reset, or child dispatch.';
   const brokerResumeCommand = 'lifecycle attention broker resume';
   const brokerAckCommand = 'lifecycle attention broker acknowledge-resume';
-  const brokerResumeRule = 'Parent brokers answer attention through `lifecycle attention broker resume`, launch the returned `resume.message`, then call `lifecycle attention broker acknowledge-resume` to persist resume-dispatch evidence.';
-  const dataFlowBoundary = 'The broker answer path is `lifecycle attention broker resume` followed by `lifecycle attention broker acknowledge-resume`';
-  const codexBrokerRule = 'When acting as a Fixme attention broker, call `lifecycle attention broker resume` to record or reuse the raw answer, launch the returned `fixme-task` resume message, then call `lifecycle attention broker acknowledge-resume`.';
+  const brokerResumeRule = 'Parent brokers answer attention through `lifecycle attention broker resume`, execute exactly the returned `runtimeAction`, observe it through `lifecycle runtime-action observe`, and repeat until lifecycle returns a non-action state; then they call `lifecycle attention broker acknowledge-resume` to persist resume-dispatch evidence.';
+  const dataFlowBoundary = 'The broker answer path is `lifecycle attention broker resume` followed by `lifecycle runtime-action observe` and `lifecycle attention broker acknowledge-resume`';
+  const codexBrokerRule = 'When acting as a Fixme attention broker, call `lifecycle attention broker resume` to record or reuse the raw answer, execute exactly the returned runtimeAction, observe it through `lifecycle runtime-action observe`, then call `lifecycle attention broker acknowledge-resume`.';
 
   const fixmeSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md'), 'utf8');
   const sessionSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md'), 'utf8');
@@ -11070,7 +12770,9 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   assert(skill.includes('lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <activeRunStatusId>'), 'session should render attention through the lifecycle broker');
   assert(skill.includes('activeParentRunId'), 'session should persist the parent run id returned by prepare-child');
   assert(skill.includes('lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId>'), 'session should answer and resume through broker resume');
-  assert(skill.includes('Launch the background `fixme-task` with the returned `resume.message` only'), 'session should launch only the helper-returned resume message');
+  assert(skill.includes('Execute exactly the returned `runtimeAction`'), 'session should execute returned runtime actions');
+  assert(skill.includes('lifecycle runtime-action observe'), 'session should observe returned runtime actions');
+  assert(!skill.includes('Launch the background `fixme-task` with the returned `resume.message` only'), 'session should not keep launch-only resume.message wording');
   assert(skill.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId>'), 'session should acknowledge launched resume messages');
   assert(skill.includes('Do not compose `--resume <active_task> --answer-attention <attention-id>` by hand'), 'session should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session must not expect broker show to return resumeRef');
@@ -11368,7 +13070,7 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('Do not compress a rich discussion into only a title and one-sentence goal.'), 'save mode should forbid lossy save summaries');
   assert(skill.includes('The CLI rejects skeletal handoffs that omit concrete `settledSolutionShape`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`.'), 'save mode should document the CLI fail-closed guard');
   assert(skill.includes('It also rejects non-empty `openQuestions`.'), 'save mode should document unresolved question rejection');
-  assert(skill.includes('task init --ticket <ticket-path> --pipeline-resolution-file <pipeline-resolution.json> --project-root <project-root>'), 'ticket mode should initialize task state through fixme-tools with a data-file');
+  assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --ticket <ticket-path> --project-root <project-root> --pipeline-resolution-file <pipeline-resolution.json> --idempotency-key <key>'), 'ticket mode should create absent task state through lifecycle begin with a data-file');
   assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'fixme-task should checkpoint resumable state through fixme-tools with a data-file');
   assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');
   assert(skill.includes('camelCase JSON keys only'), 'task state JSON requirement should be explicit');
@@ -11380,9 +13082,9 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the user only asks to save, write the saved task brief and stop before manifest creation, config loading, ticket transitions, or agent dispatch.'), 'save-only instructions should remain terminal');
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
   assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
-  assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `agent`/`background` with `parentContinuation`), must still create or reuse durable task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
-  assert(skill.includes('task init --state <activeChild.taskStatePath>'), 'parent-driven no-ticket runs should materialize the reserved activeChild task state');
-  assert(skill.includes('Use `activeChild.resumeRef` for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the activeChild boundary');
+  assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `agent`/`background` with a lifecycle launch id), must still begin or continue durable task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
+  assert(skill.includes('Parent-driven launch: run `lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>`'), 'parent-driven no-ticket runs should materialize through lifecycle begin');
+  assert(skill.includes('Use the `resumeRef` and `taskStatePath` returned by begin or continue for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the lifecycle task boundary');
   assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
   assert(skill.includes('TASK_PATH: <absolute path to saved task brief>'), 'save mode should output a task path directive');
   assert(skill.includes('Label: `FIXME-<number>`'), 'save mode should generate a visible task label');
@@ -11513,11 +13215,23 @@ test('fixme-pr-comments skill: fetches three GitHub surfaces and normalizes revi
   assert(skill.includes('gh api repos/{owner}/{repo}/issues/{number}/comments --paginate --slurp | jq'), 'skill should aggregate paginated issue comments before local jq filtering');
   assert(skill.includes('gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --slurp | jq'), 'skill should aggregate paginated PR reviews before local jq filtering');
   assert(!skill.includes('--slurp --jq'), 'skill should not combine gh api --slurp with --jq');
-  assert(skill.includes('Normalize every fetched container into `review_item` records'), 'skill should normalize fetched containers before analysis');
+  assert(skill.includes('feedbackContainer'), 'skill should distinguish fetched containers from extracted findings before analysis');
   assert(skill.includes('chatgpt-codex-connector[bot]'), 'Codex connector reviews should be explicitly covered');
   assert(skill.includes('pull_request_review: reply target is the PR issue comment stream'), 'reply table should include PR review body handling');
   assert(!skill.includes('Source E:'), 'skill should not grow the old source taxonomy');
   assert(!skill.includes('Fetch Sources A-E'), 'manifest should not use source-letter fetching');
+});
+
+test('fixme-pr-comments instructions distinguish containers from replyable review items', () => {
+  const skill = fs.readFileSync(path.join(repoRoot, '.claude', 'skills', 'fixme-pr-comments', 'SKILL.md'), 'utf8');
+  for (const phrase of ['feedbackContainer', 'reviewItem', 'replyableReviewItem', 'containerAccounting']) {
+    assert(skill.includes(phrase), `fixme-pr-comments SKILL.md must define ${phrase}`);
+  }
+  assert(skill.includes('wrapperOnly'), 'wrapper-only PR reviews are accounted without replies');
+  assert(skill.includes('coveredByInlineThreads'), 'PR reviews covered by inline threads are accounted without replies');
+  assert(skill.includes('must not yield a `REJECT_FALSE_POSITIVE` reviewItem just to prove it was seen'), 'container accounting must not force rejected findings');
+  assert(skill.includes('The table has one row per replyableReviewItem'), 'Step 14 rows are replyable-item based');
+  assert(skill.includes('If `replyRequired: false`, command type is `none`'), 'non-reply rows cannot post commands');
 });
 
 test('fixme-pr-comments skill: triages comments by risk, complexity, confidence, and route', () => {
@@ -13674,6 +15388,97 @@ test('prepare-child auto-recovers a consumed-terminal-child parent for a distinc
   assert(abandoned.failure.reason === 'staleParentConsumedTaskEvent', `stale reason should persist, got ${JSON.stringify(abandoned.failure)}`);
 });
 
+test('prepare-child repairs same-key stale parent to current pending task attention', () => {
+  const init = initTaskState('prepare-child-pending-attention-repair');
+  const lookupInput = { routeRef: `resume:${init.taskPath}`, pipeline: 'auto' };
+  const staleCreate = run(`lifecycle parent create --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    parentSkill: 'fixme',
+    idempotencyKey: 'pending-attention-stale-parent',
+    lookupInput,
+    status: 'running',
+    cursor: 'dispatchFixmeTask',
+    payload: {
+      fixBatches: [{ id: 'old-batch', summary: 'old prompt' }],
+      activeBatchIndex: 0,
+      parentContinuation: {
+        parentSkill: 'fixme',
+        parentRunId: 'parent_pending',
+        transport: 'agent',
+        resumeStep: 'awaitFixmeTaskResult',
+      },
+    },
+  })}'`);
+  assert(staleCreate.ok, `seed parent should create, got ${JSON.stringify(staleCreate.data)}`);
+
+  const staleState = parentState(init.fixmeDir, staleCreate.data.parentRunId);
+  staleState.status = 'waitingForChild';
+  staleState.cursor = 'awaitFixmeTask';
+  staleState.payload = {
+    fixBatches: [{ id: 'old-batch', summary: 'old prompt' }],
+    activeBatchIndex: 0,
+    activeChild: {
+      statusId: 'run_old_attention_owner',
+      taskRunId: 'taskRun_old_attention_owner',
+      taskStatePath: init.statePath,
+      resumeRef: init.taskPath,
+      attentionId: 'attn_old_attention',
+    },
+  };
+  staleState.updatedAt = new Date().toISOString();
+  writeParentState(init.fixmeDir, staleCreate.data.parentRunId, staleState);
+
+  const currentRun = run(`run start --fixme-dir "${init.fixmeDir}" --agent fixme-task`);
+  assert(currentRun.ok, `current attention run should start, got ${JSON.stringify(currentRun.data)}`);
+  const currentAttentionId = 'attn_current_pending_attention';
+  const opened = run(`lifecycle attention open --fixme-dir "${init.fixmeDir}" --data '${ownerAttentionOpenData(currentRun.data.statusId, init.statePath, currentAttentionId, {
+    attention: {
+      resumeRef: init.taskPath,
+      taskStatePath: init.statePath,
+      promptMarkdown: '## Continue\n\nRetry review.',
+    },
+  })}'`);
+  assert(opened.ok, `current task attention should open, got ${JSON.stringify(opened.data)}`);
+
+  const payload = prepareChildPayload({
+    suffix: 'pending-attention-repair',
+    parentSkill: 'fixme',
+    lookupInput,
+  });
+  payload.child.handoff = {
+    mode: 'existingTask',
+    resumeRef: init.taskPath,
+  };
+  payload.child.promptInputs = {
+    summary: 'Resume task with pending attention',
+    source: 'fixme',
+    route: 'savedTask',
+    resumeRef: init.taskPath,
+  };
+  payload.await = {
+    fixBatches: [{ id: 'new-batch', summary: 'new prompt that would otherwise conflict' }],
+    activeBatchIndex: 0,
+    ledger: {},
+  };
+  const payloadPath = writeJsonFixture(init.projectRoot, 'prepare-child-pending-attention-repair.json', payload);
+  const repaired = run(`lifecycle parent prepare-child --fixme-dir "${init.fixmeDir}" --data-file "${payloadPath}"`);
+  assert(repaired.ok, `prepare-child should repair pending attention instead of conflicting, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.status === 'pendingAttention', `prepare-child should report pendingAttention, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.parentRunId === staleCreate.data.parentRunId, 'repair keeps the existing parent run as broker owner');
+  assert(repaired.data.attentionId === currentAttentionId, `repair returns current attention id, got ${JSON.stringify(repaired.data)}`);
+  assert(repaired.data.statusId === currentRun.data.statusId, `repair returns current attention status id, got ${JSON.stringify(repaired.data)}`);
+
+  const repairedParent = parentState(init.fixmeDir, staleCreate.data.parentRunId);
+  assert(repairedParent.status === 'waitingForUser' && repairedParent.cursor === 'brokerChildAttention', `parent should broker current attention, got ${JSON.stringify(repairedParent)}`);
+  assert(repairedParent.payload.activeChild.statusId === currentRun.data.statusId, `activeChild should point at current attention run, got ${JSON.stringify(repairedParent.payload.activeChild)}`);
+  assert(repairedParent.payload.activeChild.attentionId === currentAttentionId, `activeChild should point at current attention, got ${JSON.stringify(repairedParent.payload.activeChild)}`);
+  assert(repairedParent.payload.activeChild.taskStatePath === init.statePath, `activeChild should preserve task state, got ${JSON.stringify(repairedParent.payload.activeChild)}`);
+  assert(repairedParent.payload.activeChild.resumeRef === init.taskPath, `activeChild should use attention resumeRef, got ${JSON.stringify(repairedParent.payload.activeChild)}`);
+
+  const resume = run(`lifecycle attention broker resume --fixme-dir "${init.fixmeDir}" --parent-run-id ${staleCreate.data.parentRunId} --status-id ${currentRun.data.statusId} --attention-id ${currentAttentionId} --data '${JSON.stringify({ answer: '1', answeredBy: 'user', answerKind: 'decision' })}'`);
+  assert(resume.ok, `broker resume should work after repair, got ${JSON.stringify(resume.data)}`);
+  assert(resume.data.status === 'requiresRuntimeAction', `broker resume should return runtime action, got ${JSON.stringify(resume.data)}`);
+});
+
 test('prepare-child still blocks recovery over live unconsumed child work', () => {
   const fixmeDir = makeFixmeDir();
   const liveCreate = run(`lifecycle parent create --fixme-dir "${fixmeDir}" --data '${parentCreateData({
@@ -14208,14 +16013,14 @@ test('broker acknowledge-resume shares the runtime-handle validation helper', ()
   const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-attach-shared.json', payload);
   const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
   assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
-  const activeChild = prepared.data.activeChild;
+  const activeChild = observePreparedChildLaunchForTest(fixmeDir, prepared, 'agent_attach_shared_handle_validation_initial');
   const attentionId = 'attn_attach_shared';
   const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${ownerAttentionOpenData(activeChild.statusId, activeChild.taskStatePath, attentionId, { attention: { resumeRef: activeChild.resumeRef, taskStatePath: activeChild.taskStatePath } })}'`);
   assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
   const resume = run(`lifecycle attention broker resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ answer: 'A', answeredBy: 'user', answerKind: 'decision' })}'`);
   assert(resume.ok, `broker resume should succeed, got ${JSON.stringify(resume.data)}`);
   // Wrong runtimeHandle.kind for the declared runtime must be rejected by the shared validator.
-  const badAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ resumeMessage: resume.data.resume.message, transport: 'agent', runtime: 'codex', runtimeHandle: { kind: 'claudeAgentId', id: 'agent_wrong_kind' } })}'`);
+  const badAck = run(`lifecycle attention broker acknowledge-resume --fixme-dir "${fixmeDir}" --parent-run-id ${prepared.data.parentRunId} --status-id ${activeChild.statusId} --attention-id ${attentionId} --data '${JSON.stringify({ ...resume.data.acknowledgeResumeTemplate.data, runtimeHandle: { kind: 'claudeAgentId', id: 'agent_wrong_kind' } })}'`);
   assert(!badAck.ok, `wrong runtimeHandle kind must fail, got ${JSON.stringify(badAck.data)}`);
   assert(cliErrorMessage(badAck).includes('runtimeHandle.kind must be codexAgentId'), `should fail with shared kind-by-runtime message, got ${cliErrorMessage(badAck)}`);
 });
@@ -14232,6 +16037,9 @@ test('fixme-task instructions document release, attach, watchdog wait, owner att
   assert(skill.includes('completiontemplates.failed'), 'fixme-task SKILL.md should document failed completion template');
   assert(skill.includes('do not add `runtime`, `transport`, or `result`'), 'fixme-task SKILL.md should forbid invalid completion fields');
   assert(skill.includes('300000') || skill.includes('5-minute watchdog'), 'fixme-task SKILL.md should document the watchdog timeout');
+  assert(skill.includes('stalledowner'), 'fixme-task SKILL.md should document stalledOwner timeout classification');
+  assert(skill.includes('lifecycle dispatch stalled-owner recover'), 'fixme-task SKILL.md should document stalled-owner recovery command');
+  assert(skill.includes('ownerstoppedbeforedispatchcompletion'), 'fixme-task SKILL.md should document owner-stopped dispatch failure');
 });
 
 test('pr-comments prepare-child sample includes settledSolutionShape and passes task save', () => {
@@ -14269,6 +16077,11 @@ test('orchestrators document watchdog waits and quiet command output', () => {
   for (const name of watchdogSkills) {
     const content = fs.readFileSync(skillPath(name), 'utf8');
     assert(content.includes('5-minute watchdog') || content.includes('300000'), `${name} should document the watchdog wait`);
+  }
+  for (const name of ['fixme-pr-comments', 'fixme-session', 'fixme']) {
+    const content = fs.readFileSync(skillPath(name), 'utf8');
+    assert(content.includes('stalledOwner'), `${name} should branch on stalledOwner`);
+    assert(content.includes('lifecycle dispatch stalled-owner recover'), `${name} should document stalled-owner recovery`);
   }
   const quietSkills = ['fixme-pr-comments', 'fixme-session', 'fixme', 'fixme-brainstorm', 'fixme-rebase'];
   for (const name of quietSkills) {

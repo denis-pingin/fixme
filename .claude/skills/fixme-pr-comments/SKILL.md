@@ -1,6 +1,6 @@
 ---
 name: fixme-pr-comments
-description: Fetch PR feedback from the three GitHub API surfaces, normalize every fetched container into review_item records, analyze EVERY item individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
+description: Fetch PR feedback from the three GitHub API surfaces, separate feedbackContainer accounting from concrete reviewItem and replyableReviewItem records, analyze EVERY item individually with exact verdicts, fix valid issues via fixme-task pipeline, verify, commit/push, and resolve addressed conversations. For non-issues or unfixable items, comment without resolving.
 argument-hint: "[--pause] [--skip-push] [--skip-commit] [--skip-resolve] [--skip-response]"
 ---
 
@@ -40,10 +40,10 @@ If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED` or `run status` reports
 1. Call `lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>`, then read the returned `promptMarkdown` and `renderContract` and present the prompt according to the Boundary Delivery Contract in `fixme-howto-present-decisions`.
 2. If the user response is a decision answer, call `lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
 3. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
-4. Launch `fixme-task` with the returned `resume.message` only. The returned `resume.liveness.statusId` must equal `<fixmeTaskStatusId>` and remains context for the resumed invocation, not a command-line flag. Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand, do not re-pass routed PR fix item text, and do not include the user's answer as a locked decision in a fresh prompt. The status id is context, not a command-line flag.
-5. After the launch call succeeds, copy the `acknowledgeResumeTemplate.data` returned by `lifecycle attention broker resume`, add only the runtime-derived launch evidence (`transport`, `runtime`, optional `runtimeHandle`), and call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with that payload. Use the actual runtime transport and runtime used for the launch. Include `runtimeHandle` only when the launch returned one.
+4. Execute exactly the returned `runtimeAction`, then call `lifecycle runtime-action observe` with evidence for that `actionId`; repeat while lifecycle returns `status: "requiresRuntimeAction"`. The returned `resume.liveness.statusId` must equal `<fixmeTaskStatusId>` and remains context for the resumed invocation, not a command-line flag. Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand, do not re-pass routed PR fix item text, and do not include the user's answer as a locked decision in a fresh prompt. The status id is context, not a command-line flag.
+5. After lifecycle observes successful runtime launch evidence, copy the `acknowledgeResumeTemplate.data` returned by `lifecycle attention broker resume`, add only runtime evidence requested by the template, and call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with that payload.
 
-If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again. Call `lifecycle attention broker resume` with the returned `answer` object, launch `fixme-task` with the returned `resume.message` only, then call `lifecycle attention broker acknowledge-resume` with the same post-launch evidence shape.
+If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again. Call `lifecycle attention broker resume` with the returned `answer` object, execute the returned runtime-action loop, then call `lifecycle attention broker acknowledge-resume` with the same observed-launch evidence shape.
 
 If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"` and resume `fixme-task` exactly the same way. Do not answer the clarification in this parent skill. If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way.
 
@@ -310,7 +310,16 @@ Known parser hints for this surface:
 
 #### Normalize fetched containers
 
-Normalize every fetched container into `review_item` records before analysis:
+Normalize fetched GitHub data into four distinct concepts before analysis:
+
+- `feedbackContainer`: one fetched GitHub object from `inline_review_threads`, `issue_comments`, or `pull_request_reviews`.
+- `reviewItem`: one concrete extracted finding with specific text that can be analyzed and assigned a verdict.
+- `replyableReviewItem`: a `reviewItem` that requires a public PR issue comment or inline review-thread reply.
+- `containerAccounting`: proof that every `feedbackContainer` was considered, including containers that yield zero findings.
+
+Containers may yield zero findings. A wrapper-only top-level `pull_request_review` body, or a review body whose actionable details are `coveredByInlineThreads`, produces `containerAccounting.reason` such as `wrapperOnly` or `coveredByInlineThreads` and no reply row. Container accounting must not yield a `REJECT_FALSE_POSITIVE` reviewItem just to prove it was seen.
+
+Rejected or already-fixed `reviewItem` records require concrete finding text. Metadata such as "generated comments", review-state wrappers, or a generic note that a bot submitted a review is not a finding.
 
 | Field | Meaning |
 |-------|---------|
@@ -324,13 +333,13 @@ Normalize every fetched container into `review_item` records before analysis:
 | `reply_strategy` | `inline_thread_reply` or `issue_comment_reply` |
 | `resolve_strategy` | `resolve_review_thread` or `none` |
 
-One fetched container may yield multiple `review_item` records when its body contains multiple findings. Every fetched container must either produce finding records or produce one `REJECT_FALSE_POSITIVE` record that explains why the body contains no actionable finding.
+One `feedbackContainer` may yield multiple `reviewItem` records when its body contains multiple concrete findings.
 
-For each specific `review_item`, check whether a later issue comment already addresses it. A later reply counts only if it was posted after the source container and explicitly references the same title, file path, or description plus a commit SHA or fixed/resolved wording. A reply for item X never addresses item Y by implication.
+For each specific `reviewItem`, check whether a later issue comment already addresses it. A later reply counts only if it was posted after the source container and explicitly references the same title, file path, or description plus a commit SHA or fixed/resolved wording. A reply for item X never addresses item Y by implication.
 
 #### Do not print the normalized items list at this stage
 
-Normalize every fetched container into `review_item` records internally, but do not enumerate them in the user-visible output. The Accounting Ledger at the end of the analysis report enumerates every container by ID (`T*`, `I*`, `R*`) and proves nothing was skipped. Printing the full list before analysis is pure duplication.
+Normalize every fetched container into `feedbackContainer`, `reviewItem`, and `containerAccounting` records internally, but do not enumerate them in the user-visible output. The Accounting Ledger at the end of the analysis report enumerates every container by ID (`T*`, `I*`, `R*`) and proves nothing was skipped. Printing the full list before analysis is pure duplication.
 
 **Do not skip analysis based on source or author.** `ROUTE` is assigned only after Step 3 analysis. After Step 3, if every `review_item` has route `FOLLOWUP` or `NO_ACTION`, report "No current PR fixes to dispatch" and proceed to Step 14 if replies are needed.
 
@@ -1056,7 +1065,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch rec
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next
 ```
 
-The reconcile-wait payload carries `{ "parentStatePath": "<parent state.json>" }` (optionally `childTaskStatePath`/`childSummaryPath`). Branch on its `transition`: `runtimeOwned` re-enters the wait silently; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, run exactly `lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next`. A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10 with `payload.childResultSummaryPaths`, `payload.flags`, `payload.routedGroups`, and the consumed task event already present. Continue directly to Step 10 using that returned parent state. If the child failed, the same command persists a failed parent at `summarize` with reason `childFailed`; stop and report the child failure.
+The reconcile-wait payload carries `{ "parentStatePath": "<parent state.json>" }` (optionally `childTaskStatePath`/`childSummaryPath`). Branch on its `transition`: `runtimeWaitTimedOut` means host-runtime liveness is unknown and must be reported or recovered through lifecycle instead of silently re-waited; `stalledOwner` means a terminal child run was observed but the owning dispatcher did not consume completion, so run `lifecycle dispatch stalled-owner recover` with the returned recovery data and then either execute the returned owner resume runtime action or treat `ownerStoppedBeforeDispatchCompletion` as the child dispatch failure; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, run exactly `lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next`. A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10 with `payload.childResultSummaryPaths`, `payload.flags`, `payload.routedGroups`, and the consumed task event already present. Continue directly to Step 10 using that returned parent state. If the child failed, the same command persists a failed parent at `summarize` with reason `childFailed`; stop and report the child failure.
 
 Do not call `lifecycle parent checkpoint` to reconstruct `consumeTaskEvent`, `verify`, `commit`, `push`, `replyComments`, `resolveThreads`, or `summarize`. That command is a low-level runtime primitive, not a PR-comments recovery path. If `lifecycle task-event consume --next` fails with a missing parent payload field, stop with a runtime contract blocker that names the missing field, `parentRunId`, and `fixmeTaskStatusId`; do not inspect `<fixme-dir>` files, infer payload fields, or replay checkpoints by hand. A correct run that followed `lifecycle parent prepare-child` has the required fields already.
 
@@ -1110,14 +1119,27 @@ git push
 #### Reply Execution Table (REQUIRED)
 
 Before posting any reply or resolving any thread, materialize a reply execution table with one
-row per `review_item` or grouped container. Do not run `gh api` or `gh pr comment` until
+row per `replyableReviewItem`, or a group of `replyableReviewItem` records that share the same target and required body prefix. Do not create grouped container rows for `wrapperOnly` or `coveredByInlineThreads` containers. Do not run `gh api` or `gh pr comment` until
 every row has all required fields.
 
 Required columns:
 
 ```
-ID | surface | parser_hint | verdict | reply target | required body prefix | resolve action | command type
+ID | sourceItemIds | sourceContainerId | surface | parser_hint | verdict | replyRequired | replyTarget | requiredBodyPrefix | replyBody | skipReason | resolve action | command type
 ```
+
+The table has one row per replyableReviewItem. Non-reply accounting rows are allowed only to document why no command will run.
+
+Every row must carry `sourceItemIds`, `sourceContainerId`, `replyRequired`, `replyTarget`, `requiredBodyPrefix`, `replyBody`, and `skipReason`.
+
+Before any `gh api` or `gh pr comment`, assert all of the following:
+
+- `replyRequired === true`.
+- At least one `sourceItemId` is present.
+- A non-empty concrete finding summary is present.
+- The reply target is valid for the source surface.
+
+If `replyRequired: false`, command type is `none`, `replyBody` is empty, and any reply target is an error.
 
 Use these surface-specific values:
 
@@ -1127,7 +1149,7 @@ Use these surface-specific values:
 - `issue_comment`: reply target is the PR issue comment stream; required body prefix depends on
   `parser_hint`; resolve action is `none`.
 - `pull_request_review`: reply target is the PR issue comment stream; required body prefix
-  references the review ID or reviewer; resolve action is `none`.
+  uses `Reviewed review {review_id}:` only for rejected standalone pull-request-review findings; resolve action is `none`.
 
 Parser-specific issue-comment prefixes:
 
