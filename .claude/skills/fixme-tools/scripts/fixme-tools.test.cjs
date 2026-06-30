@@ -626,6 +626,34 @@ test('next: returns null when no queued tickets', () => {
 });
 
 // ============================================================================
+// Test Suite: ticket summary (new layout)
+// ============================================================================
+
+console.log('\n=== ticket summary tests (ticket-centric layout) ===\n');
+
+test('summary: returns ticket metadata for ticket path or folder path', () => {
+  const sessionDir = createTmpDir();
+  const ticketPath = createTicketFolder(sessionDir, '0007', 'summary-bug', 'plan');
+  setTicketFrontmatterField(ticketPath, 'pipeline', 'standard');
+
+  const byFile = run(`ticket summary "${ticketPath}"`);
+  assert(byFile.ok, `Expected success for file path, got: ${JSON.stringify(byFile.data)}`);
+  assert(byFile.data.number === '0007', `number should be 0007, got ${byFile.data.number}`);
+  assert(byFile.data.slug === 'summary-bug', `slug should be summary-bug, got ${byFile.data.slug}`);
+  assert(byFile.data.state === 'plan', `state should be plan, got ${byFile.data.state}`);
+  assert(byFile.data.pipeline === 'standard', `pipeline should be standard, got ${byFile.data.pipeline}`);
+  assert(byFile.data.title === 'Summary Bug', `title should be Summary Bug, got ${byFile.data.title}`);
+  assert(Array.isArray(byFile.data.filesChanged), 'filesChanged should be an array');
+  assert(byFile.data.path === ticketPath, `path should be ${ticketPath}, got ${byFile.data.path}`);
+  assert(byFile.data.dir === path.dirname(ticketPath), `dir should be ${path.dirname(ticketPath)}, got ${byFile.data.dir}`);
+  assertNoSnakeCaseKeys(byFile.data, 'ticket summary output');
+
+  const byDir = run(`ticket summary "${path.dirname(ticketPath)}"`);
+  assert(byDir.ok, `Expected success for dir path, got: ${JSON.stringify(byDir.data)}`);
+  assert(byDir.data.path === ticketPath, `folder input should resolve to ticket.md, got ${byDir.data.path}`);
+});
+
+// ============================================================================
 // Test Suite: ticket rename (new layout -- renames parent directory)
 // ============================================================================
 
@@ -1021,6 +1049,19 @@ test('run ping and status: updates and reads current liveness status', () => {
   assert(read.data.checkpoint === 'working', `checkpoint should be working, got ${read.data.checkpoint}`);
   assert(read.data.currentCommand === 'yarn test', `currentCommand should be yarn test, got ${read.data.currentCommand}`);
   assert(read.data.updatedAt >= started.data.updatedAt, 'updatedAt should not move backwards');
+  assert(read.data.workerHeartbeat, `run ping should record child-owned workerHeartbeat, got ${JSON.stringify(read.data)}`);
+  assert(read.data.workerHeartbeat.source === 'worker', `workerHeartbeat source should be worker, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(read.data.workerHeartbeat.statusId === started.data.statusId, `workerHeartbeat statusId should match, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(read.data.workerHeartbeat.agent === 'fixme-execute-plan', `workerHeartbeat agent should match, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(read.data.workerHeartbeat.checkpoint === 'working', `workerHeartbeat checkpoint should match ping, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(read.data.workerHeartbeat.currentCommand === 'yarn test', `workerHeartbeat command should match ping, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(read.data.workerHeartbeat.sequence === 1, `first ping should set workerHeartbeat sequence 1, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+  assert(typeof read.data.workerHeartbeat.observedAt === 'string' && !Number.isNaN(Date.parse(read.data.workerHeartbeat.observedAt)), `workerHeartbeat observedAt should be ISO, got ${JSON.stringify(read.data.workerHeartbeat)}`);
+
+  const secondPing = run(`run ping --fixme-dir "${fixmeDir}" --status-id ${started.data.statusId} --state running --checkpoint working --current-command null`);
+  assert(secondPing.ok, `second run ping should succeed, got: ${JSON.stringify(secondPing.data)}`);
+  assert(secondPing.data.workerHeartbeat.sequence === 2, `second ping should increment workerHeartbeat sequence, got ${JSON.stringify(secondPing.data.workerHeartbeat)}`);
+  assert(secondPing.data.workerHeartbeat.currentCommand === null, `second ping should store null command in workerHeartbeat, got ${JSON.stringify(secondPing.data.workerHeartbeat)}`);
 });
 
 test('obsolete liveness ping alias maps to run ping and infers fixmeDir from cwd', () => {
@@ -3295,6 +3336,11 @@ test('dispatch prepare returns sealed spawn action with dispatch identity block'
   assert(prepared.data.runtimeAction.kind === 'spawnAgent', `fresh producer spawns, got ${JSON.stringify(prepared.data.runtimeAction)}`);
   assert(prepared.data.runtimeAction.message.includes('<dispatch-identity>'), 'message contains dispatch identity block');
   assert(prepared.data.runtimeAction.message.includes('mayUseRuntimeControlTools: false'), 'producer dispatch identity forbids runtime control');
+  assert(prepared.data.runtimeAction.message.includes('<project>'), 'message contains literal project block for child liveness instructions');
+  assert(prepared.data.runtimeAction.message.includes(`Fixme dir: ${init.fixmeDir}`), 'project block exposes exact fixme dir');
+  assert(prepared.data.runtimeAction.message.includes('<liveness>'), 'message contains literal liveness block');
+  assert(prepared.data.runtimeAction.message.includes(`statusId: ${prepared.data.statusId}`), 'liveness block exposes exact statusId');
+  assert(prepared.data.runtimeAction.message.includes('run ping --fixme-dir'), 'liveness block includes exact ping command');
 });
 
 test('dispatch prepare attach and complete require current owner fence', () => {
@@ -3354,6 +3400,10 @@ function observeSpawnForDispatch(setup, handleId) {
 function observeWaitForDispatch(setup, evidence) {
   const actionId = evidence.actionId || setup.waitActionId;
   return run(`lifecycle runtime-action observe --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({ ...evidence, actionId })}'`);
+}
+
+function readRuntimeActionForTest(fixmeDir, actionId) {
+  return readJson(path.join(fixmeDir, 'runtime-actions', `${actionId}.json`));
 }
 
 function snapshotTaskDispatch(setup) {
@@ -3450,24 +3500,44 @@ test('completed wait observation returns closeAgent release plan and release-com
   assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'conflicting release-complete must reject before mutation');
 });
 
-test('wait timeout with only runtime identity returns runtimeWaitTimedOut', () => {
-  const setup = prepareResumableProducerDispatch('wait-timeout-liveness-unknown', 'wait-timeout-liveness-unknown-prepare');
-  observeSpawnForDispatch(setup, 'agent_wait_timeout_unknown');
+test('wait timeout records non-terminal watchdog event and late completion still completes dispatch', () => {
+  const setup = prepareResumableProducerDispatch('wait-timeout-continue-wait', 'wait-timeout-continue-wait-prepare');
+  observeSpawnForDispatch(setup, 'agent_wait_timeout_continue');
   const before = snapshotTaskDispatch(setup);
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.transition === 'runtimeWaitTimedOut', `timeout should not return runtimeOwned, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.reason === 'runtimeLivenessUnknown', `timeout reason should be runtimeLivenessUnknown, got ${JSON.stringify(timeout.data)}`);
-  assert(!JSON.stringify(timeout.data).includes('runtimeOwned'), `timeout response must not mention runtimeOwned, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'continueWait', `timeout should re-arm the wait instead of terminalizing it, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.liveness.state === 'heartbeatMissing', `missing heartbeat should be reported as liveness detail, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.wait.actionId === setup.waitActionId, `continueWait should carry the same wait action, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.wait.timeoutMs === 300000, `continueWait should preserve timeoutMs, got ${JSON.stringify(timeout.data)}`);
+  assert(!JSON.stringify(timeout.data).includes('runtimeWaitTimedOut'), `timeout response must not expose old timeout transition, got ${JSON.stringify(timeout.data)}`);
   const after = snapshotTaskDispatch(setup);
-  assert(after.task === before.task, 'runtimeWaitTimedOut must not mutate task state');
-  assert(after.dispatch === before.dispatch, 'runtimeWaitTimedOut must not mutate dispatch state');
+  assert(after.task === before.task, 'continueWait timeout must not mutate task state');
+  assert(after.dispatch === before.dispatch, 'continueWait timeout must not mutate dispatch state');
   const status = run(`run status --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId}`);
-  assert(status.ok, `run status should expose timeout label, got ${JSON.stringify(status.data)}`);
-  assert(status.data.userStatus === 'owned, wait timed out, liveness unknown', `timeout userStatus should distinguish runtime liveness, got ${JSON.stringify(status.data)}`);
+  assert(status.ok, `run status should remain readable, got ${JSON.stringify(status.data)}`);
+  assert(status.data.userStatus === undefined, `timeout should not write stale userStatus to child status, got ${JSON.stringify(status.data)}`);
+  const actionAfterTimeout = readRuntimeActionForTest(setup.fixmeDir, setup.waitActionId);
+  assert(actionAfterTimeout.status === 'pending', `timeout must leave wait action pending, got ${JSON.stringify(actionAfterTimeout)}`);
+  assert(!actionAfterTimeout.observation, `timeout must not consume terminal observation slot, got ${JSON.stringify(actionAfterTimeout)}`);
+  assert(Array.isArray(actionAfterTimeout.watchdogEvents) && actionAfterTimeout.watchdogEvents.length === 1, `timeout should append one watchdog event, got ${JSON.stringify(actionAfterTimeout)}`);
+
+  const completed = observeWaitForDispatch(setup, {
+    waitOutcome: 'completed',
+    result: { status: 'completed', output: 'PLAN_PATH: /tmp/late-plan.md' },
+    checkpointData: { artifacts: { planPath: '/tmp/late-plan.md' } },
+  });
+  assert(completed.ok, `late completed wait observation should succeed after timeout, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.status === 'completed', `late completion should terminalize dispatch, got ${JSON.stringify(completed.data)}`);
+  const actionAfterCompletion = readRuntimeActionForTest(setup.fixmeDir, setup.waitActionId);
+  assert(actionAfterCompletion.status === 'observed', `late completion should observe wait action, got ${JSON.stringify(actionAfterCompletion)}`);
+  assert(actionAfterCompletion.observation.evidence.waitOutcome === 'completed', `terminal observation should be completed evidence, got ${JSON.stringify(actionAfterCompletion.observation)}`);
+  assert(actionAfterCompletion.watchdogEvents.length === 1, `late completion should preserve watchdog history, got ${JSON.stringify(actionAfterCompletion)}`);
+  const taskAfterCompletion = readJson(setup.taskStatePath);
+  assert(taskAfterCompletion.artifacts.planPath === '/tmp/late-plan.md', `late completion checkpointData should apply, got ${JSON.stringify(taskAfterCompletion.artifacts)}`);
 });
 
-test('wait timeout observation returns pending attention before runtimeWaitTimedOut', () => {
+test('wait timeout observation returns pending attention before continueWait', () => {
   const setup = prepareResumableProducerDispatch('wait-timeout-attention', 'wait-timeout-attention-prepare');
   observeSpawnForDispatch(setup, 'agent_wait_timeout_attention');
   const attentionData = JSON.stringify({
@@ -3484,7 +3554,7 @@ test('wait timeout observation returns pending attention before runtimeWaitTimed
   const before = snapshotTaskDispatch(setup);
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.transition === 'attention', `pending attention should win over runtimeWaitTimedOut, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'attention', `pending attention should win over continueWait, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.attentionId === opened.data.attentionId, `attention id should be returned, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.brokerResumeTemplate.statusId === setup.statusId, 'brokerResumeTemplate carries statusId');
   assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(before), 'attention timeout classification must not mutate task or dispatch state');
@@ -3823,6 +3893,7 @@ function setupParentDrivenChild(suffix, idempotencyKey, options = {}) {
     taskStatePath: activeChild.taskStatePath,
     invocationId: started.data.invocationId,
     ownerFence: began.data.ownerFence,
+    waitActionId: observed.data.runtimeAction && observed.data.runtimeAction.actionId,
   };
 }
 
@@ -4281,14 +4352,59 @@ function reconcileWait(setup, extraPayload = {}) {
   return run(`lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${payloadPath}"`);
 }
 
-test('reconcile-wait returns runtimeWaitTimedOut for active nonterminal runtime', () => {
+function probeDispatch(setup, extraPayload = {}) {
+  const payload = {
+    parentStatePath: setup.parentStatePath,
+    waitActionId: setup.waitActionId,
+    watchdogMs: 300000,
+    probeReason: 'waitWatchdogTimeout',
+    ...extraPayload,
+  };
+  const payloadPath = writeJsonFixture(setup.projectRoot, `probe-${path.basename(setup.taskStatePath)}.json`, payload);
+  return run(`lifecycle dispatch probe --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${payloadPath}"`);
+}
+
+test('dispatch probe returns continueWait with child-owned heartbeat for active nonterminal runtime', () => {
+  const setup = setupParentDrivenChild('probe-owned', 'probe-owned-start');
+  const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
+  assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
+  const result = probeDispatch(setup);
+  assert(result.ok && result.data.transition === 'continueWait', `expected continueWait, got ${JSON.stringify(result.data)}`);
+  assert(result.data.liveness.state === 'heartbeatRecent', `expected heartbeatRecent, got ${JSON.stringify(result.data)}`);
+  assert(result.data.liveness.workerHeartbeat.currentCommand === 'test command', `probe should return child heartbeat, got ${JSON.stringify(result.data)}`);
+  assert(result.data.wait.actionId === setup.waitActionId, `probe should carry waitActionId, got ${JSON.stringify(result.data)}`);
+  assert(!JSON.stringify(result.data).includes('runtimeOwned'), `result must not mention runtimeOwned, got ${JSON.stringify(result.data)}`);
+
+  const statusPath = path.join(setup.fixmeDir, 'runs', setup.statusId, 'status.json');
+  const status = readJson(statusPath);
+  status.workerHeartbeat.runtimeHandle = { kind: 'claudeAgentId', id: status.workerHeartbeat.runtimeHandle.id };
+  fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+  const stale = probeDispatch(setup);
+  assert(stale.ok && stale.data.liveness.state === 'heartbeatStale', `runtime handle kind mismatch should be heartbeatStale, got ${JSON.stringify(stale.data)}`);
+  assert(stale.data.liveness.reason === 'runtimeHandleMismatch', `stale heartbeat should name runtimeHandleMismatch, got ${JSON.stringify(stale.data)}`);
+});
+
+test('dispatch probe rejects wait actions that do not belong to the dispatch', () => {
+  const setup = setupParentDrivenChild('probe-dispatch-mismatch', 'probe-dispatch-mismatch-start');
+  const actionPath = path.join(setup.fixmeDir, 'runtime-actions', `${setup.waitActionId}.json`);
+  const action = readJson(actionPath);
+  action.owner.dispatchId = 'dispatch_wrong_owner';
+  fs.writeFileSync(actionPath, JSON.stringify(action, null, 2));
+
+  const result = probeDispatch(setup);
+
+  assert(!result.ok, `mismatched wait action dispatch should reject, got ${JSON.stringify(result.data)}`);
+  assert(result.data.error.code === 'runtimeTargetUnproven', `mismatch should fail as runtimeTargetUnproven, got ${JSON.stringify(result.data)}`);
+});
+
+test('reconcile-wait compatibility returns continueWait with heartbeat detail', () => {
   const setup = setupParentDrivenChild('reconcile-owned', 'reconcile-owned-start');
   const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
   assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
   const result = reconcileWait(setup);
-  assert(result.ok && result.data.transition === 'runtimeWaitTimedOut', `expected runtimeWaitTimedOut, got ${JSON.stringify(result.data)}`);
-  assert(result.data.reason === 'runtimeLivenessUnknown', `reason should be runtimeLivenessUnknown, got ${JSON.stringify(result.data)}`);
-  assert(!JSON.stringify(result.data).includes('runtimeOwned'), `result must not mention runtimeOwned, got ${JSON.stringify(result.data)}`);
+  assert(result.ok && result.data.transition === 'continueWait', `expected continueWait, got ${JSON.stringify(result.data)}`);
+  assert(result.data.liveness.state === 'heartbeatRecent', `expected heartbeatRecent, got ${JSON.stringify(result.data)}`);
+  assert(result.data.liveness.workerHeartbeat.currentCommand === 'test command', `reconcile should return child heartbeat, got ${JSON.stringify(result.data)}`);
 });
 
 test('reconcile-wait returns terminalEvent with consumeTemplate', () => {
@@ -4854,8 +4970,9 @@ test('cli help emits command schemas before required validation', () => {
       args: 'lifecycle task-event consume --help',
       command: 'lifecycle task-event consume',
       requiredFlags: ['fixme-dir', 'parent-run-id'],
+      optionalFlags: ['event-id', 'next'],
       requiredDataFields: [],
-      optionalDataFields: ['event-id', 'next'],
+      optionalDataFields: ['ownerFence', 'idempotencyKey'],
     },
   ];
 
@@ -4872,6 +4989,9 @@ test('cli help emits command schemas before required validation', () => {
     assert(isPlainObjectForTest(result.data.example), `${item.command} help example object`);
     for (const field of item.requiredFlags) {
       assert(result.data.requiredFlags.includes(field), `${item.command} help missing required flag ${field}`);
+    }
+    for (const field of (item.optionalFlags || [])) {
+      assert(result.data.optionalFlags.includes(field), `${item.command} help missing optional flag ${field}`);
     }
     for (const field of item.requiredDataFields) {
       assert(result.data.requiredDataFields.includes(field), `${item.command} help missing required data field ${field}`);
@@ -4963,6 +5083,7 @@ test('all registered commands have complete help', () => {
     const help = entry.help;
     assert(help && help.command === entry.path, `entry ${entry.path} help command matches path, got ${help && help.command}`);
     assert(Array.isArray(help.requiredFlags), `entry ${entry.path} has requiredFlags`);
+    assert(Array.isArray(help.optionalFlags), `entry ${entry.path} has optionalFlags`);
     assert(Array.isArray(help.requiredDataFields), `entry ${entry.path} has requiredDataFields`);
     assert(Array.isArray(help.optionalDataFields), `entry ${entry.path} has optionalDataFields`);
     assert(help.example && typeof help.example === 'object', `entry ${entry.path} has at least one example`);
@@ -4982,6 +5103,129 @@ test('cli help is registry backed', () => {
     assert(result.data.command === entry.path, `${entry.path} --help command should equal registry path, got ${result.data.command}`);
     assert(result.data.example && Object.keys(result.data.example).length > 0, `${entry.path} --help includes example`);
   }
+});
+
+test('cli rejects flags outside the registered command contract before dispatch', () => {
+  const result = run('root --not-a-real-flag');
+  assert(!result.ok, 'root with an unsupported flag should fail');
+  assert(result.data && result.data.error, `unsupported flag should return an error payload, got ${JSON.stringify(result.data)}`);
+  assert(result.data.error.includes('Unsupported flag --not-a-real-flag for root'), `error should name unsupported flag and command, got ${result.data.error}`);
+});
+
+function auditMarkdownFilesForFixmeToolsCommands() {
+  const roots = [
+    path.join(repoRoot, '.claude', 'skills'),
+    path.join(repoRoot, '.claude', 'agents'),
+  ];
+  const files = [];
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (/\.md$/i.test(entry.name)) {
+        files.push(fullPath);
+      }
+    }
+  };
+  for (const rootDir of roots) {
+    if (fs.existsSync(rootDir)) walk(rootDir);
+  }
+  for (const fileName of ['README.md', 'CLAUDE.md']) {
+    const fullPath = path.join(repoRoot, fileName);
+    if (fs.existsSync(fullPath)) files.push(fullPath);
+  }
+  return files.sort();
+}
+
+function shellWordsForAudit(value) {
+  return value.match(/'[^']*'|"[^"]*"|\S+/g) || [];
+}
+
+function documentedFixmeToolsInvocationsForAudit() {
+  const invocations = [];
+  const commandLine = /^\s*(?:\$ +)?node\s+(?:"[^"]*fixme-tools\.cjs"|~\/\.claude\/skills\/fixme-tools\/scripts\/fixme-tools\.cjs|~\/\.codex\/skills\/fixme-tools\/scripts\/fixme-tools\.cjs|\$HOME\/\.codex\/skills\/fixme-tools\/scripts\/fixme-tools\.cjs|[^\s`]*fixme-tools\.cjs)\s+(.+?)\s*$/;
+  for (const filePath of auditMarkdownFilesForFixmeToolsCommands()) {
+    const relPath = path.relative(repoRoot, filePath);
+    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      const match = lines[index].match(commandLine);
+      if (!match) continue;
+      let commandText = match[1].trim();
+      commandText = commandText.replace(/\s+\\$/, '').trim();
+      const tokens = shellWordsForAudit(commandText);
+      const commandTokens = [];
+      const flags = [];
+      let commandClosed = false;
+      for (const token of tokens) {
+        if (token === '&&' || token === '||' || token === ';' || token === '|' || token === '\\') break;
+        if (token.startsWith('--')) {
+          flags.push(token.slice(2).split('=')[0]);
+          commandClosed = true;
+          continue;
+        }
+        if (token.startsWith('<') || token.startsWith('[')) {
+          commandClosed = true;
+          continue;
+        }
+        if (commandClosed) continue;
+        commandTokens.push(token);
+      }
+      invocations.push({
+        filePath: relPath,
+        line: index + 1,
+        commandText,
+        commandTokens,
+        flags,
+      });
+    }
+  }
+  return invocations;
+}
+
+function bestRegisteredCommandForTokens(tokens, registry) {
+  let best = null;
+  for (const entry of registry) {
+    const entryTokens = entry.path.split(' ');
+    if (entryTokens.length > tokens.length) continue;
+    if (!entryTokens.every((token, index) => tokens[index] === token)) continue;
+    if (!best || entryTokens.length > best.path.split(' ').length) {
+      best = entry;
+    }
+  }
+  return best;
+}
+
+function requiredFlagGroupsForAudit(requiredFlags) {
+  return requiredFlags.map(flag => String(flag).split('|').map(part => part.trim()).filter(Boolean));
+}
+
+test('documented fixme-tools commands in Fixme skills match registered command contracts', () => {
+  const { listRegisteredCommandsForTest } = require(TOOLS_PATH);
+  const registry = listRegisteredCommandsForTest();
+  const invocations = documentedFixmeToolsInvocationsForAudit();
+  assert(invocations.length > 0, 'audit should find documented fixme-tools commands');
+  const failures = [];
+  for (const invocation of invocations) {
+    const entry = bestRegisteredCommandForTokens(invocation.commandTokens, registry);
+    const location = `${invocation.filePath}:${invocation.line}`;
+    if (!entry) {
+      failures.push(`${location}: undocumented command path '${invocation.commandTokens.join(' ')}' in '${invocation.commandText}'`);
+      continue;
+    }
+    const allowedFlags = new Set([...(entry.help.requiredFlags || []), ...(entry.help.optionalFlags || [])].flatMap(flag => String(flag).split('|').map(part => part.trim()).filter(Boolean)));
+    for (const flag of invocation.flags) {
+      if (!allowedFlags.has(flag)) {
+        failures.push(`${location}: '${entry.path}' uses unsupported flag --${flag}; allowed flags: ${[...allowedFlags].sort().join(', ') || '(none)'}`);
+      }
+    }
+    for (const group of requiredFlagGroupsForAudit(entry.help.requiredFlags || [])) {
+      if (group.length > 0 && !group.some(flag => invocation.flags.includes(flag))) {
+        failures.push(`${location}: '${entry.path}' is missing required flag ${group.join(' | ')} in '${invocation.commandText}'`);
+      }
+    }
+  }
+  assert(failures.length === 0, `documented fixme-tools command contract mismatches:\n${failures.slice(0, 50).join('\n')}${failures.length > 50 ? `\n... ${failures.length - 50} more` : ''}`);
 });
 
 test('every registered command routes to a real handler', () => {
@@ -5022,6 +5266,9 @@ test('new lifecycle commands expose registry-backed help', () => {
 
   const reconcile = run('lifecycle dispatch reconcile-wait --help');
   assert(reconcile.ok && reconcile.data.command === 'lifecycle dispatch reconcile-wait', `reconcile help, got ${JSON.stringify(reconcile.data)}`);
+  const probe = run('lifecycle dispatch probe --help');
+  assert(probe.ok && probe.data.command === 'lifecycle dispatch probe', `probe help, got ${JSON.stringify(probe.data)}`);
+  assert(probe.data.requiredDataFields.includes('waitActionId'), `probe help should document waitActionId, got ${JSON.stringify(probe.data)}`);
 
   const prepare = run('lifecycle dispatch prepare --help');
   assert(prepare.ok, `prepare help, got ${JSON.stringify(prepare.data)}`);
@@ -12111,6 +12358,23 @@ test('fixme-task skill: uses data-file payloads for nested workflow JSON', () =>
   assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'existing task startup should use the lifecycle continue boundary');
 });
 
+test('fixme-task skill: documents exact lifecycle task continue payload contract', () => {
+  const taskSkillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
+  const toolsSkillPath = path.resolve(__dirname, '..', '..', 'fixme-tools', 'SKILL.md');
+  const taskSkill = fs.readFileSync(taskSkillPath, 'utf8');
+  const toolsSkill = fs.readFileSync(toolsSkillPath, 'utf8');
+
+  for (const [name, content] of [['fixme-task', taskSkill], ['fixme-tools', toolsSkill]]) {
+    assert(content.includes('Required task-continue JSON fields: `resumeRef`, `runtime`, `transport`, and `idempotencyKey`.'), `${name} should list required lifecycle task continue fields`);
+    assert(content.includes('Optional task-continue JSON fields: `topLevelInteractive`, `parentRunId`, `parentStatusId`, and `answerAttentionId`.'), `${name} should list optional lifecycle task continue fields`);
+    assert(content.includes('Do not include `taskStatePath`, `projectRoot`, `currentStatusId`, or `usageInvocationId` in `lifecycle task continue` JSON.'), `${name} should forbid unsupported lifecycle task continue fields`);
+    assert(content.includes('"resumeRef": "FIXME-14"'), `${name} should include a copy-ready FIXME resume payload shape`);
+    assert(content.includes('"runtime": "codex"'), `${name} should include Codex runtime in the payload example`);
+    assert(content.includes('"transport": "direct"'), `${name} should include direct transport in the direct resume payload example`);
+    assert(content.includes('"idempotencyKey": "continue-FIXME-14-<stable-attempt-key>"'), `${name} should include a stable idempotency key placeholder`);
+  }
+});
+
 test('fixme-task skill uses lifecycle begin and continue instead of reimplementing launch task init', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -12829,9 +13093,10 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(skill.includes('If `lifecycle task-event consume --next` fails with a missing parent payload field, stop with a runtime contract blocker'), 'PR comments should fail closed on impossible post-child payloads');
   assert(skill.includes('fixmeTaskStatusId'), 'PR comments should name the child fixme-task status id');
   assert(skill.includes('statusId: <fixmeTaskStatusId>'), 'child fixme-task args should include statusId');
-  assert(skill.includes('lifecycle dispatch reconcile-wait --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId>'), 'parent wait loop should reconcile child fixme-task wait by transition');
+  assert(skill.includes('lifecycle dispatch probe --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId>'), 'parent wait loop should probe child fixme-task wait by transition');
   assert(skill.includes('`run status.updatedAt` is the last status write, not a heartbeat'), 'parent wait loop should not treat updatedAt as a heartbeat');
-  assert(skill.includes('`attention` brokers the prompt using the returned `brokerResumeTemplate`'), 'parent wait loop should broker attention via reconcile-wait transition');
+  assert(skill.includes('`run status.workerHeartbeat.observedAt` is child-owned liveness'), 'parent wait loop should distinguish child-owned heartbeat');
+  assert(skill.includes('`attention` brokers the prompt using the returned `brokerResumeTemplate`'), 'parent wait loop should broker attention via probe transition');
 });
 
 test('fixme-brainstorm skill: tracks selected downstream fixme-task liveness', () => {

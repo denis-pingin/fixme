@@ -58,7 +58,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session list .fixme/se
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs session summary <session-dir>
 
 # Ticket management
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> --slug <slug>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket next <session-dir>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket list <session-dir>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket transition <ticket.md> <state> [--pipeline <name>] [--reason <reason>]

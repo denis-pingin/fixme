@@ -29,7 +29,7 @@ All operations are dispatched to the backend skill via the Agent tool. Pass the 
 
 | Operation | Arguments | Description |
 |-----------|-----------|-------------|
-| `create` | `<session-dir> [--slug <slug>]` | Create a new ticket in the session |
+| `create` | `<session-dir> --slug <slug>` | Create a new ticket in the session |
 | `transition` | `<ticket.md> <state> [--reason <reason>] [--pipeline <name>]` | Transition a ticket to a new state |
 | `list` | `<session-dir>` | List all tickets in the session |
 | `next` | `<session-dir>` | Get the next queued ticket |

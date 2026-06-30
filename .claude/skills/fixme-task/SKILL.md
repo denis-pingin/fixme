@@ -86,7 +86,9 @@ Standalone `fixme-task` has no incoming `pipelineRunId`; the helper returns `pip
 On completion run:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <usageInvocationId> --outcome <complete|failed|aborted>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <usageInvocationId> --outcome complete
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <usageInvocationId> --outcome failed --reason <verification_failed|user_aborted|usage_tracking_failed|runtime_error|dispatch_failed|timeout|invalid_usage_request|unknown>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <usageInvocationId> --outcome aborted --reason <verification_failed|user_aborted|usage_tracking_failed|runtime_error|dispatch_failed|timeout|invalid_usage_request|unknown>
 ```
 
 **Finish-before-wake-up ordering:** emit the usage report line from `lifecycle invocation finish` BEFORE any `FIXME_ATTENTION_REQUIRED` directive or terminal task-event notification. Never invent a report line when reporting is suppressed.
@@ -966,6 +968,28 @@ No-ticket mode, including parent-driven dispatches (transport `agent`/`backgroun
 - Existing saved task, `--resume`, pending attention answer, waiting state, active owner, terminal state, and retry acquisition: run `lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>` before any manifest rebuild or task-state mutation.
 
   Use the `resumeRef` and `taskStatePath` returned by begin or continue for later `--answer-attention` resumes.
+
+  Required task-continue JSON fields: `resumeRef`, `runtime`, `transport`, and `idempotencyKey`.
+  Optional task-continue JSON fields: `topLevelInteractive`, `parentRunId`, `parentStatusId`, and `answerAttentionId`.
+  Do not include `taskStatePath`, `projectRoot`, `currentStatusId`, or `usageInvocationId` in `lifecycle task continue` JSON. The command resolves the task state from `resumeRef`; the invocation id and liveness status stay in the caller's live context, not this payload.
+
+  Direct top-level resume payload shape:
+
+  ```json
+  {
+    "resumeRef": "FIXME-14",
+    "runtime": "codex",
+    "transport": "direct",
+    "topLevelInteractive": true,
+    "idempotencyKey": "continue-FIXME-14-<stable-attempt-key>"
+  }
+  ```
+
+  Direct top-level resume command shape:
+
+  ```bash
+  node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>
+  ```
 - **Direct no-ticket without `--resume`:** first create a saved task with `task save --data-file <task-save.json>`, then continue through the lifecycle task boundary before manifest creation. This saved task is the `resumeRef` boundary for later `--answer-attention` resumes.
 
 No-ticket task state is mandatory so another session can resume without chat history.
@@ -1010,7 +1034,9 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task result write --state <task-state-path> --data-file <task-result.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task producer-continuation mark-bad --state <task-state-path> --data-file <mark-bad.json>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation start --fixme-dir <fixme-dir> --data-file <invocation-start.json>`
-  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <id> --outcome <complete|failed|aborted>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <id> --outcome complete`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <id> --outcome failed --reason <verification_failed|user_aborted|usage_tracking_failed|runtime_error|dispatch_failed|timeout|invalid_usage_request|unknown>`
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle invocation finish --fixme-dir <fixme-dir> --invocation-id <id> --outcome aborted --reason <verification_failed|user_aborted|usage_tracking_failed|runtime_error|dispatch_failed|timeout|invalid_usage_request|unknown>`
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>` (before each Agent dispatch; installed Codex skills use the `.codex` tool path)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <fixme-dir> --data-file <dispatch-complete.json>` (after each dispatched agent returns)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task attention open --fixme-dir <fixme-dir> --state <task-state-path> --data-file <attention-open.json>`
@@ -1018,6 +1044,7 @@ The orchestrator may ONLY use these tools:
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review validate-plan-readiness --data-file <readiness-validation.json>` (installed Codex skills use the `.codex` tool path)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event record --fixme-dir <fixme-dir> --data-file <task-event.json>` (granular; the parent-driven terminal path uses `lifecycle child finalize` instead)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --data-file <task-event-consume.json>` (recovery only)
+  - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch probe --fixme-dir <fixme-dir> --dispatch-id <dispatch-id> --status-id <status-id> --data-file <dispatch-probe.json>` (watchdog-timeout wait probe)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch reconcile-wait --fixme-dir <fixme-dir> --dispatch-id <dispatch-id> --status-id <status-id> --data-file <reconcile-wait.json>` (watchdog-timeout wait reconciliation)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch attach-runtime-handle --fixme-dir <fixme-dir> --data-file <attach-runtime-handle.json>` (after a child is running, before waiting)
   - `node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle runtime-action observe --fixme-dir <fixme-dir> --data-file <runtime-action-observe.json>`
@@ -1322,7 +1349,7 @@ For a running child, follow: `lifecycle dispatch prepare` -> spawn or resume the
 
 #### Watchdog wait policy
 
-Replace routine polling with one durable wait marker (prefer `lifecycle dispatch prepare` or one quiet `run ping --quiet --current-command waiting-for:<child-name>`), then wait on the runtime wait primitive with a 5-minute watchdog. For Codex agents use `wait_agent({ targets: [id], timeout_ms: 300000 })`. On watchdog timeout, report explicit `waitOutcome: "timeout"` through `lifecycle runtime-action observe` or call compatibility `lifecycle dispatch reconcile-wait --dispatch-id <id> --status-id <child-status> --data-file <payload-with-parentStatePath>`. Branch only on lifecycle's returned transition: `runtimeWaitTimedOut` means host-runtime liveness is unknown and must be surfaced as a lifecycle wait timeout, not silently re-waited; `stalledOwner` means a terminal child run was observed but the owning dispatcher did not consume completion, so run `lifecycle dispatch stalled-owner recover` with the returned recovery data and then either execute the returned owner resume runtime action or treat `ownerStoppedBeforeDispatchCompletion` as a dispatch failure; `terminalEvent` proceeds to consume the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. Do not hand-roll `run status` age thresholds. No repeated "still running" prose, no repeated identical `run ping`, no `run status` polling during a live wait. Explicit user status requests read liveness once.
+Replace routine polling with one durable wait marker (prefer `lifecycle dispatch prepare` or one quiet `run ping --quiet --current-command waiting-for:<child-name>`), then wait on the runtime wait primitive with a 5-minute watchdog. For Codex agents use `wait_agent({ targets: [id], timeout_ms: 300000 })`. On watchdog timeout, call `lifecycle dispatch probe --fixme-dir <fixme-dir> --dispatch-id <dispatch-id> --status-id <child-status> --data-file <dispatch-probe.json>` with payload `{ "parentStatePath": "<parent-state-path>", "waitActionId": "<wait-action-id>", "watchdogMs": 300000, "probeReason": "waitWatchdogTimeout" }`, or report explicit `waitOutcome: "timeout"` through `lifecycle runtime-action observe` for the sealed wait action. Branch only on lifecycle's returned transition: `continueWait` means the timeout was only a parent watchdog wakeup and carries child-owned `workerHeartbeat` detail, so re-arm the same runtime wait action; `stalledOwner` means a terminal child run was observed but the owning dispatcher did not consume completion, so run `lifecycle dispatch stalled-owner recover` with the returned recovery data and then either execute the returned owner resume runtime action or treat `ownerStoppedBeforeDispatchCompletion` as a dispatch failure; `terminalEvent` proceeds to consume the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. Do not hand-roll `run status` age thresholds. `updatedAt` is any status-file write; only `workerHeartbeat.observedAt` is child-owned liveness. No repeated "still running" prose, no repeated identical `run ping`, no `run status` polling during a live wait. Explicit user status requests read liveness once.
 
 #### Codex child usage source
 
@@ -1339,7 +1366,7 @@ Fresh fallback mechanics:
 
 - Complete the failed resume dispatch before marking the handle bad.
 - If runtime resume fails before a child response, call `lifecycle dispatch complete` for the resume attempt by copying `completionTemplates.failed` and adding `failure: { "reason": "runtimeResumeFailed", "message": "<short concrete runtime failure>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }`.
-- After failed completion succeeds, call `task producer-continuation mark-bad --state <task-state-path> --agent-name <agent> --runtime <runtime> --reason "<same concrete reason>"`.
+- After failed completion succeeds, write a mark-bad payload containing `ownerFence`, `agentName`, `runtime`, `reason`, and `idempotencyKey`, then call `task producer-continuation mark-bad --state <task-state-path> --data-file <mark-bad.json>`.
 - Then prepare a fresh fallback with a new idempotency key and `forceFreshReason: "runtimeResumeFailed"`.
 - If a resumed producer returns `PRODUCER_CONTINUATION_REJECTED`, first call `lifecycle dispatch complete` for the resumed dispatch by copying `completionTemplates.failed` and adding `failure: { "reason": "producerContinuationRejected", "message": "<short concrete producer rejection>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>" } }`, then use `task producer-continuation mark-bad`, then run one fresh fallback with the same current durable inputs and a new idempotency key.
 - If the fresh fallback also fails, handle it with the existing failure path.

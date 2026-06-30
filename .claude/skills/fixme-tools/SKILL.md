@@ -122,7 +122,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --ticket <ti
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --task <task.md> --pipeline-resolution-file <absolute-json-file> --parent-continuation-file <absolute-json-file> --project-root <project-root>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task init --state <task.state.json> --pipeline-resolution-file <absolute-json-file> --parent-continuation-file <absolute-json-file> --project-root <project-root>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state.json> --data-file <absolute-json-file>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task producer-continuation mark-bad --state <task-state.json> --agent-name <resumable-producer> --runtime <claude|codex> --reason <reason>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task producer-continuation mark-bad --state <task-state.json> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task supersede --task <FIXME-N|task.md|state.json> --by <replacement-ref> --reason <reason>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task attach-artifact --task <FIXME-N|task.md|state.json|ticket.md|ticket-folder> --data-file <absolute-json-file>
@@ -130,7 +130,29 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task attach-artifact -
 
 JSON-bearing inputs accept exactly one direct/file/stdin source per logical argument: `--data`, `--data-file`, or `--data-stdin`; `--pipeline-resolution`, `--pipeline-resolution-file`, or `--pipeline-resolution-stdin`; and `--parent-continuation`, `--parent-continuation-file`, or `--parent-continuation-stdin`. File paths must be absolute. Only one logical JSON argument may use stdin in a single command.
 
+The `task producer-continuation mark-bad --data-file` payload must include `ownerFence`, `agentName`, `runtime`, `reason`, and `idempotencyKey`. Legacy flag-only `--agent-name`, `--runtime`, and `--reason` remain accepted only for ownerless states; current attempt-managed task paths use the owner-fenced JSON form.
+
 `pipeline resolve` selects one pipeline from eligible user/artifact candidates and returns a camelCase `pipelineResolution` object. Assistant-authored candidates are ignored. `task save` creates a standalone task brief at `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`, creates its sibling `.state.json`, and returns `taskRef`, `taskPath`, and `statePath`. `task save` rejects skeletal inputs that are not self-contained handoffs with concrete settled solution shape, approach, behavior, scope, and planning notes. It also rejects non-empty `openQuestions`; callers must resolve questions, integrate the answers into the task payload, and retry with `openQuestions` omitted or empty. `task save` and `task init` both require the caller to pass a resolved `pipelineResolution`; they do not infer a default workflow. `task init` creates resumable state for an existing saved task or ticket and rejects superseded saved tasks. `task init --task` is idempotent for existing saved task state: it validates compatible `projectRoot`, `pipeline`, and `pipelineResolution`, merges a provided `parentContinuation` only when the existing value is null, rejects conflicting parent continuation, and preserves existing cursor, artifacts, handoff, loops, decisions, producer continuations, and terminal result. Task state may include `producerContinuations`, an exact-handle, task-local, producer-only cache of runtime handles. `task checkpoint` atomically merges allowed camelCase JSON state fields, validates `status`, `cursor`, `loops`, `pendingDecision`, and `producerContinuations` resume-control shapes, and rejects live or derived task-state fields such as `currentSpecificationPath`, `currentStep`, and `manifest` at any depth. `task producer-continuation mark-bad` updates one exact `agentName` plus `runtime` continuation entry to bad while preserving sibling entries. `task resolve` converts a user-facing ref or path into canonical `taskPath`, `ticketPath`, and `statePath` values. `task supersede` durably marks a standalone saved task as replaced in both markdown frontmatter and sibling state JSON so stale saved tasks do not resume as active work. `task attach-artifact` indexes a generated preparation artifact on the resolved task markdown under `Preparation Artifacts` and mirrors it into task state as `artifacts.preparationArtifacts`.
+
+`lifecycle task continue` classifies an existing task state and acquires a task owner only when lifecycle evidence permits it. Required task-continue JSON fields: `resumeRef`, `runtime`, `transport`, and `idempotencyKey`. Optional task-continue JSON fields: `topLevelInteractive`, `parentRunId`, `parentStatusId`, and `answerAttentionId`. Do not include `taskStatePath`, `projectRoot`, `currentStatusId`, or `usageInvocationId` in `lifecycle task continue` JSON. The command resolves task state from `resumeRef`; caller liveness and usage context remain outside the continue payload.
+
+Direct top-level resume payload shape:
+
+```json
+{
+  "resumeRef": "FIXME-14",
+  "runtime": "codex",
+  "transport": "direct",
+  "topLevelInteractive": true,
+  "idempotencyKey": "continue-FIXME-14-<stable-attempt-key>"
+}
+```
+
+Direct top-level resume command shape:
+
+```bash
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>
+```
 
 ## Review Helper Commands
 
@@ -146,6 +168,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs review synthesize-clea
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch prepare --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch attach-runtime-handle --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch complete --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch probe --fixme-dir <absolute-fixme-dir> --dispatch-id <dispatch-id> --status-id <status-id> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch reconcile-wait --fixme-dir <absolute-fixme-dir> --dispatch-id <dispatch-id> --status-id <status-id> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch stalled-owner recover --fixme-dir <absolute-fixme-dir> --data-file <absolute-json-file>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle child finalize --fixme-dir <absolute-fixme-dir> --state <task-state.json> --data-file <absolute-json-file>
@@ -161,7 +184,9 @@ Prepare output also returns `attachRuntimeHandleTemplate`, a copy-ready payload 
 
 `lifecycle dispatch complete` is terminal-only. Build the payload from prepare output `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. Follow `completionRuntimeHandlePolicy`: when it is `"persistProducerContinuation"`, a successful resumable producer completion may persist a producer continuation, but only when the completion `runtimeHandle` matches the dispatch-owned `activeRuntime` from a prior attach; omit `runtimeHandle` to derive the attached handle. When the policy is `"omit"`, do not include `runtimeHandle`. A supplied handle that does not match the attached `activeRuntime`, or a supplied handle on a current-format resumable producer that has no attached `activeRuntime`, fails closed before any run status update, dispatch completion record, checkpoint patch, or producer continuation write. Complete also accepts an optional `checkpointData` field that applies a post-completion task checkpoint patch after the accepted terminal completion is recorded; it is never applied on the mismatch/fail-closed path and participates in completion idempotency.
 
-`lifecycle dispatch reconcile-wait` is the read-only runtime-result-driven wait reconciler. A parent calls it once after a runtime wait watchdog timeout and branches only on the returned `transition`, which is exactly one of `terminalEvent`, `attention`, `stalledOwner`, `runtimeWaitTimedOut`, `blockedStateConflict`, or `dispatchFailure`. It reads durable state only and mutates nothing. `terminalEvent` carries the event fields plus a `consumeTemplate`; `attention` carries a `brokerResumeTemplate`; `stalledOwner` carries the terminal child status and `lifecycle dispatch stalled-owner recover` data; `runtimeWaitTimedOut` carries `runtimeObservation` and user status `owned, wait timed out, liveness unknown`. `run status.updatedAt` is the last status write, not a heartbeat: an old timestamp with an attached active runtime and no terminal/attention evidence is not proof of live host-runtime work.
+`lifecycle dispatch probe` is the parent wait watchdog probe. A parent calls it after a runtime wait watchdog timeout with a payload containing `parentStatePath`, `waitActionId`, `watchdogMs`, and `probeReason: "waitWatchdogTimeout"`, then branches only on the returned `transition`, which is exactly one of `terminalEvent`, `attention`, `stalledOwner`, `continueWait`, or `dispatchFailure`. It reads durable terminal events, attention state, stalled-owner facts, and child-owned `workerHeartbeat` data. `continueWait` means the timeout was only a parent watchdog wakeup; it carries `liveness.state` (`heartbeatRecent`, `heartbeatStale`, or `heartbeatMissing`) and a `wait` block with the same wait action and timeout. A timeout is not terminal runtime evidence and does not consume the runtime-action `observation` slot. `lifecycle runtime-action observe` with `waitOutcome: "timeout"` records a non-terminal watchdog event and returns the same probe-shaped result; a later `completed` or `failed` wait observation for the same action still completes the dispatch. `lifecycle dispatch reconcile-wait` is compatibility-only and returns the same durable transitions without requiring `waitActionId`.
+
+`run status.updatedAt` is the last status-file write by any actor, not a heartbeat. `run status.workerHeartbeat.observedAt` is the child-owned liveness timestamp written only by `run ping`; parent lifecycle writes preserve it but never refresh it. An old or missing `workerHeartbeat` with an attached active runtime is not proof of dead host-runtime work.
 
 `lifecycle dispatch stalled-owner recover` revalidates the stalled-owner facts before mutation: owner wait marker, terminal child run, matching dispatch id, and missing dispatch completion. If the owner runtime is resumable, it returns a sealed `resumeAgentAndSendInput` runtime action for the owning dispatcher. If the owner stopped before it consumed completion, it records `ownerStoppedBeforeDispatchCompletion` through the dispatch failure boundary and does not fresh-spawn a replacement owner.
 

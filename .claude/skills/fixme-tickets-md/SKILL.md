@@ -29,7 +29,7 @@ See [references/state-machine.md](references/state-machine.md) for the full tran
 **create** - Create a new ticket in a session
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> [--slug <slug>] [--max-attempts <n>]
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs ticket create <session-dir> --slug <slug> [--max-attempts <n>]
 ```
 
 Creates a numbered ticket folder with `ticket.md`, plus `assets/`, `research/`, `plans/`, and `verifications/` subdirectories. Auto-increments the ticket number.

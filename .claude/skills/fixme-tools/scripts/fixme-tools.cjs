@@ -284,7 +284,19 @@ const RUN_STATUS_FIELDS = new Set([
   'activeRuntime',
   'runtimeObservation',
   'userStatus',
+  'workerHeartbeat',
   'updatedAt',
+]);
+const RUN_WORKER_HEARTBEAT_FIELDS = new Set([
+  'source',
+  'statusId',
+  'agent',
+  'dispatchId',
+  'runtimeHandle',
+  'checkpoint',
+  'currentCommand',
+  'observedAt',
+  'sequence',
 ]);
 const RUN_ATTENTION_RECORD_FIELDS = new Set([
   'attentionId',
@@ -3055,6 +3067,41 @@ function ticketNext(sessionDir) {
 
   const next = queued[0];
   return output({ path: next.path, dir: next.dir, number: next.number, slug: next.slug, title: next.title });
+}
+
+function ticketSummary(ticketPath) {
+  ticketPath = resolveTicketPath(ticketPath);
+  if (!fs.existsSync(ticketPath)) {
+    return error(`Ticket file not found: ${ticketPath}`);
+  }
+
+  const content = fs.readFileSync(ticketPath, 'utf8');
+  const { frontmatter: fm, body } = parseFrontmatter(content);
+  const ticketDir = path.dirname(ticketPath);
+  const folderMatch = path.basename(ticketDir).match(/^(\d+)-(.+)$/);
+  const slug = fm.slug || (folderMatch ? folderMatch[2] : path.basename(ticketDir));
+
+  return output({
+    path: ticketPath,
+    dir: ticketDir,
+    number: fm.number || (folderMatch ? folderMatch[1] : '0000'),
+    slug,
+    state: fm.state || 'unknown',
+    title: extractTitle(body, slug),
+    session: fm.session || null,
+    pipeline: fm.pipeline || null,
+    created: fm.created || null,
+    updated: fm.updated || null,
+    url: fm.url || null,
+    commitHash: fm.commit_hash || null,
+    failureReason: fm.failure_reason || null,
+    related: Array.isArray(fm.related) ? fm.related : [],
+    maxAttempts: fm.max_attempts || 3,
+    currentAttempt: fm.current_attempt || 0,
+    filesChanged: Array.isArray(fm.files_changed) ? fm.files_changed : [],
+    transitions: Array.isArray(fm.transitions) ? fm.transitions : [],
+    durations: fm.durations && typeof fm.durations === 'object' ? fm.durations : {},
+  });
 }
 
 function ticketRename(ticketPath, flags) {
@@ -7577,6 +7624,73 @@ function normalizeRunCurrentCommand(rawCurrentCommand) {
   return String(rawCurrentCommand);
 }
 
+function normalizeWorkerHeartbeat(rawHeartbeat, expectedStatusId, expectedAgent) {
+  if (!isPlainObject(rawHeartbeat)) {
+    throw new Error('run status workerHeartbeat must be an object');
+  }
+  assertKnownJsonFields(rawHeartbeat, 'run status workerHeartbeat', RUN_WORKER_HEARTBEAT_FIELDS);
+  if (rawHeartbeat.source !== 'worker') {
+    throw new Error('run status workerHeartbeat source must be worker');
+  }
+  if (rawHeartbeat.statusId !== expectedStatusId) {
+    throw new Error('run status workerHeartbeat statusId does not match run statusId');
+  }
+  if (rawHeartbeat.agent !== expectedAgent) {
+    throw new Error('run status workerHeartbeat agent does not match run agent');
+  }
+  if (rawHeartbeat.dispatchId !== undefined && rawHeartbeat.dispatchId !== null && !isNonEmptyString(rawHeartbeat.dispatchId)) {
+    throw new Error('run status workerHeartbeat dispatchId must be a non-empty string or null');
+  }
+  let runtimeHandle;
+  if (rawHeartbeat.runtimeHandle !== undefined) {
+    const handle = rawHeartbeat.runtimeHandle;
+    const validKinds = new Set(Object.values(RUNTIME_HANDLE_KINDS_BY_RUNTIME));
+    if (handle !== null && (!isPlainObject(handle) || !validKinds.has(handle.kind) || !isNonEmptyString(handle.id))) {
+      throw new Error('run status workerHeartbeat runtimeHandle must be null or an object with valid kind and id');
+    }
+    runtimeHandle = handle === null ? null : { kind: handle.kind, id: handle.id };
+  }
+  if (!RUN_CHECKPOINTS.includes(rawHeartbeat.checkpoint)) {
+    throw new Error(`Unsupported run status workerHeartbeat checkpoint: ${rawHeartbeat.checkpoint}`);
+  }
+  if (rawHeartbeat.currentCommand !== null && typeof rawHeartbeat.currentCommand !== 'string') {
+    throw new Error('run status workerHeartbeat currentCommand must be a string or null');
+  }
+  if (typeof rawHeartbeat.observedAt !== 'string' || Number.isNaN(Date.parse(rawHeartbeat.observedAt))) {
+    throw new Error('run status workerHeartbeat observedAt must be an ISO timestamp');
+  }
+  if (!isPositiveInteger(rawHeartbeat.sequence)) {
+    throw new Error('run status workerHeartbeat sequence must be a positive integer');
+  }
+  const normalized = {
+    source: 'worker',
+    statusId: rawHeartbeat.statusId,
+    agent: rawHeartbeat.agent,
+    checkpoint: rawHeartbeat.checkpoint,
+    currentCommand: rawHeartbeat.currentCommand,
+    observedAt: rawHeartbeat.observedAt,
+    sequence: rawHeartbeat.sequence,
+  };
+  if (rawHeartbeat.dispatchId !== undefined) {
+    normalized.dispatchId = rawHeartbeat.dispatchId;
+  }
+  if (runtimeHandle !== undefined) {
+    normalized.runtimeHandle = runtimeHandle;
+  }
+  return normalized;
+}
+
+function preserveRunStatusRuntimeFields(previous, next) {
+  const preserved = { ...next };
+  if (previous.activeRuntime !== undefined) {
+    preserved.activeRuntime = previous.activeRuntime;
+  }
+  if (previous.workerHeartbeat !== undefined) {
+    preserved.workerHeartbeat = previous.workerHeartbeat;
+  }
+  return preserved;
+}
+
 function runStatusPath(fixmeDir, statusId) {
   return path.join(fixmeDir, 'runs', statusId, 'status.json');
 }
@@ -7640,6 +7754,9 @@ function normalizeRunStatusRecord(rawStatus, expectedStatusId = null) {
   }
   if (activeRuntime !== undefined) {
     normalized.activeRuntime = activeRuntime;
+  }
+  if (rawStatus.workerHeartbeat !== undefined) {
+    normalized.workerHeartbeat = normalizeWorkerHeartbeat(rawStatus.workerHeartbeat, rawStatus.statusId, rawStatus.agent);
   }
   if (rawStatus.runtimeObservation !== undefined) {
     if (!isPlainObject(rawStatus.runtimeObservation)) {
@@ -7877,6 +7994,21 @@ function runPing(flags) {
 
   const previous = readRunStatusFile(statusPath, statusId);
   requireRunPingCanUpdate(previous, state, currentCommand);
+  const updatedAt = new Date().toISOString();
+  const activeRuntime = previous.activeRuntime;
+  const workerHeartbeat = {
+    source: 'worker',
+    statusId,
+    agent: validateRunAgent(previous.agent),
+    checkpoint,
+    currentCommand,
+    observedAt: updatedAt,
+    sequence: previous.workerHeartbeat ? previous.workerHeartbeat.sequence + 1 : 1,
+  };
+  if (activeRuntime !== undefined) {
+    workerHeartbeat.dispatchId = activeRuntime.dispatchId;
+    workerHeartbeat.runtimeHandle = { kind: activeRuntime.kind, id: activeRuntime.id };
+  }
   const next = {
     schemaVersion: 1,
     statusId,
@@ -7884,10 +8016,11 @@ function runPing(flags) {
     state,
     checkpoint,
     currentCommand,
-    updatedAt: new Date().toISOString(),
+    workerHeartbeat,
+    updatedAt,
   };
-  if (previous.activeRuntime !== undefined) {
-    next.activeRuntime = previous.activeRuntime;
+  if (activeRuntime !== undefined) {
+    next.activeRuntime = activeRuntime;
   }
   return outputMaybeQuiet(writeRunStatus(statusPath, next), flags);
 }
@@ -8075,7 +8208,7 @@ function runAttentionSetCore(flags) {
 
   writeJsonAtomic(attentionPath, record);
   try {
-    writeRunStatus(statusPath, {
+    writeRunStatus(statusPath, preserveRunStatusRuntimeFields(status, {
       schemaVersion: 1,
       statusId,
       agent: validateRunAgent(status.agent),
@@ -8083,7 +8216,7 @@ function runAttentionSetCore(flags) {
       checkpoint: 'waiting',
       currentCommand: attentionCommand,
       updatedAt: new Date().toISOString(),
-    });
+    }));
   } catch (error) {
     try {
       fs.rmSync(attentionPath, { force: true });
@@ -8178,7 +8311,7 @@ function runAttentionClearCore(flags) {
   }
 
   const statusPath = runStatusPath(fixmeDir, statusId);
-  writeRunStatus(statusPath, {
+  writeRunStatus(statusPath, preserveRunStatusRuntimeFields(runStatus, {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(runStatus.agent),
@@ -8186,7 +8319,7 @@ function runAttentionClearCore(flags) {
     checkpoint: 'working',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  });
+  }));
   const warnings = [];
   let recordRemoved = true;
   try {
@@ -10639,6 +10772,48 @@ function stalledOwnerRecoveryPayload({ dispatchRecord, parentStatePath, ownerSta
   };
 }
 
+function workerHeartbeatLiveness(status, activeRuntime) {
+  const heartbeat = status.workerHeartbeat;
+  if (!heartbeat) {
+    return { state: 'heartbeatMissing', workerHeartbeat: null };
+  }
+  if (isNonEmptyString(heartbeat.dispatchId) && heartbeat.dispatchId !== activeRuntime.dispatchId) {
+    return { state: 'heartbeatStale', reason: 'dispatchIdMismatch', workerHeartbeat: heartbeat };
+  }
+  if (
+    isPlainObject(heartbeat.runtimeHandle) &&
+    (heartbeat.runtimeHandle.kind !== activeRuntime.kind || heartbeat.runtimeHandle.id !== activeRuntime.id)
+  ) {
+    return { state: 'heartbeatStale', reason: 'runtimeHandleMismatch', workerHeartbeat: heartbeat };
+  }
+  return { state: 'heartbeatRecent', workerHeartbeat: heartbeat };
+}
+
+function continueWaitPayload({ dispatchId, statusId, status, activeRuntime, waitActionId = null, watchdogMs = null, probeReason = null }) {
+  const liveness = workerHeartbeatLiveness(status, activeRuntime);
+  return {
+    transition: 'continueWait',
+    dispatchId,
+    statusId,
+    liveness: {
+      ...liveness,
+      status: {
+        state: status.state,
+        checkpoint: status.checkpoint,
+        currentCommand: status.currentCommand,
+        updatedAt: status.updatedAt,
+      },
+      activeRuntime,
+    },
+    wait: {
+      actionId: waitActionId || null,
+      timeoutMs: isPositiveInteger(watchdogMs) ? watchdogMs : 300000,
+      probeReason: probeReason || null,
+      runtimeHandle: { kind: activeRuntime.kind, id: activeRuntime.id },
+    },
+  };
+}
+
 function recordOwnerStoppedBeforeDispatchCompletion(fixmeDir, dispatchRecord, data, message) {
   if (dispatchRecord.record.completion !== undefined) {
     return dispatchRecord.record.completion.output;
@@ -10673,7 +10848,15 @@ function recordOwnerStoppedBeforeDispatchCompletion(fixmeDir, dispatchRecord, da
   return outputData;
 }
 
-function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, { dispatchId, statusId, parentStatePath = null, markRuntimeTimeout = false }) {
+function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
+  dispatchId,
+  statusId,
+  parentStatePath = null,
+  markRuntimeTimeout = false,
+  waitActionId = null,
+  watchdogMs = null,
+  probeReason = null,
+}) {
   if (!dispatchRecord) {
     return dispatchWaitFailure('dispatchNotFound', `Prepared dispatch not found: ${dispatchId}`);
   }
@@ -10789,32 +10972,15 @@ function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, { dispatchId, stat
     return dispatchWaitFailure('invalidStatus', `Run ${statusId} is terminal (${status.state}) with no durable task event for the parent active child`);
   }
 
-  if (markRuntimeTimeout && fs.existsSync(statusPath)) {
-    writeRunStatus(statusPath, {
-      ...status,
-      runtimeObservation: {
-        transition: 'runtimeWaitTimedOut',
-        reason: 'runtimeLivenessUnknown',
-        observedAt: new Date().toISOString(),
-      },
-      userStatus: 'owned, wait timed out, liveness unknown',
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
-  return {
-    transition: 'runtimeWaitTimedOut',
-    reason: 'runtimeLivenessUnknown',
+  return continueWaitPayload({
     dispatchId,
     statusId,
-    runtimeObservation: {
-      state: status.state,
-      checkpoint: status.checkpoint,
-      currentCommand: status.currentCommand,
-      updatedAt: status.updatedAt,
-      activeRuntime,
-    },
-  };
+    status,
+    activeRuntime,
+    waitActionId,
+    watchdogMs,
+    probeReason,
+  });
 }
 
 function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
@@ -10830,6 +10996,9 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
     return classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
       dispatchId,
       statusId: dispatchRecord.record.statusId,
+      waitActionId: action.actionId,
+      watchdogMs: action.timeoutMs,
+      probeReason: 'waitWatchdogTimeout',
       markRuntimeTimeout: true,
     });
   }
@@ -10861,7 +11030,7 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
   if (isRunAttentionCommand(previous.currentCommand)) {
     lifecycleError('activeAttention', `Child run has pending attention: ${previous.currentCommand}`);
   }
-  const nextStatus = {
+  const nextStatus = preserveRunStatusRuntimeFields(previous, {
     schemaVersion: 1,
     statusId: dispatchRecord.record.statusId,
     agent: validateRunAgent(previous.agent),
@@ -10869,7 +11038,7 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
     checkpoint: 'done',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  };
+  });
   if (completionInputs.failure) nextStatus.failure = completionInputs.failure;
   const producerContinuationPreflight = status === 'completed'
     ? preflightProducerContinuationFromCompletion(dispatchRecord, completionInputs.runtimeHandle, new Date().toISOString())
@@ -10949,6 +11118,22 @@ function lifecycleRuntimeActionObserve(flags) {
   const action = readJsonFileStrict(actionPath);
   validateRuntimeActionEvidence(action, evidence);
   const evidenceDigest = runtimeActionEvidenceDigest(action, evidence);
+  if (action.kind === 'waitAgent' && evidence.waitOutcome === 'timeout') {
+    if (action.observation) {
+      return lifecycleOk(action.observation.output);
+    }
+    const outputData = runtimeActionObservedOutput(fixmeDir, action, evidence);
+    const watchdogEvents = Array.isArray(action.watchdogEvents) ? action.watchdogEvents : [];
+    watchdogEvents.push({
+      observedAt: new Date().toISOString(),
+      evidence,
+      evidenceDigest,
+      output: outputData,
+    });
+    action.watchdogEvents = watchdogEvents;
+    writeJsonAtomic(actionPath, action);
+    return lifecycleOk(outputData);
+  }
   if (action.observation) {
     if (action.observation.evidenceDigest !== evidenceDigest) {
       lifecycleError('conflictingDuplicate', `runtime action ${evidence.actionId} already observed with different evidence`);
@@ -11552,6 +11737,10 @@ function assertDispatchOwnerFenceForMutation(statePath, data, commandName) {
   assertOwnerFenceForMutation(resolved, state, data, commandName);
 }
 
+function shellDoubleQuote(value) {
+  return `"${String(value).replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
 function buildDispatchRuntimeMessage(out) {
   const identity = {
     dispatchId: out.dispatchId,
@@ -11560,8 +11749,31 @@ function buildDispatchRuntimeMessage(out) {
     transport: out.transport,
     mayUseRuntimeControlTools: false,
   };
+  const promptBlocks = out.promptBlocks || {};
+  const project = promptBlocks.project || {};
+  const liveness = promptBlocks.liveness || {};
+  const runtimeToolPath = out.runtime === 'codex'
+    ? '~/.codex/skills/fixme-tools/scripts/fixme-tools.cjs'
+    : '~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs';
+  const fixmeDir = project.fixmeDir || out.fixmeDir;
+  const statusId = liveness.statusId || out.statusId;
+  const statusPath = liveness.statusPath || out.statusPath;
   return [
     out.bannerMarkdown || `Dispatch ${out.agentName}`,
+    '',
+    '<project>',
+    `Project root: ${project.projectRoot || path.dirname(fixmeDir)}`,
+    `Fixme dir: ${fixmeDir}`,
+    '</project>',
+    '',
+    '<liveness>',
+    `statusId: ${statusId}`,
+    `statusPath: ${statusPath}`,
+    'Initial ping command:',
+    `node ${runtimeToolPath} run ping --fixme-dir ${shellDoubleQuote(fixmeDir)} --status-id ${statusId} --state running --checkpoint started --current-command null`,
+    'Working ping command shape:',
+    `node ${runtimeToolPath} run ping --fixme-dir ${shellDoubleQuote(fixmeDir)} --status-id ${statusId} --state running --checkpoint working --current-command "<current work>"`,
+    '</liveness>',
     '',
     '<dispatch-identity>',
     'mayUseRuntimeControlTools: false',
@@ -11569,7 +11781,7 @@ function buildDispatchRuntimeMessage(out) {
     '</dispatch-identity>',
     '',
     'Prompt input:',
-    JSON.stringify(out.promptBlocks || {}, null, 2),
+    JSON.stringify(promptBlocks, null, 2),
   ].join('\n');
 }
 
@@ -11690,13 +11902,13 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     };
   }
 
-  // Parent heartbeat: only ping when the parent is not on an attention marker.
+  // Parent wait marker: this is an audit/status update, not child liveness.
   if (isNonEmptyString(data.parentStatusId)) {
     const parentPath = runStatusPath(fixmeDir, data.parentStatusId);
     if (fs.existsSync(parentPath)) {
       const parentStatus = readRunStatusFile(parentPath, data.parentStatusId);
       if (!isRunAttentionCommand(parentStatus.currentCommand)) {
-        writeRunStatus(parentPath, {
+        writeRunStatus(parentPath, preserveRunStatusRuntimeFields(parentStatus, {
           schemaVersion: 1,
           statusId: data.parentStatusId,
           agent: validateRunAgent(parentStatus.agent),
@@ -11704,7 +11916,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
           checkpoint: 'working',
           currentCommand: `dispatching ${data.agentName}`,
           updatedAt: new Date().toISOString(),
-        });
+        }));
       }
     }
   }
@@ -11746,6 +11958,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     dispatchId,
     fixmeDir,
     agentName: data.agentName,
+    runtime,
     transport: data.transport,
     statusId: child.statusId,
     statusPath: child.statusPath,
@@ -12001,7 +12214,7 @@ function lifecycleDispatchComplete(flags) {
     lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot mark ${data.status}`);
   }
 
-  const nextStatus = {
+  const nextStatus = preserveRunStatusRuntimeFields(previous, {
     schemaVersion: 1,
     statusId: data.statusId,
     agent: validateRunAgent(previous.agent),
@@ -12009,7 +12222,7 @@ function lifecycleDispatchComplete(flags) {
     checkpoint: 'done',
     currentCommand: completionInputs.currentCommand,
     updatedAt: new Date().toISOString(),
-  };
+  });
   if (completionInputs.failure !== null) {
     nextStatus.failure = completionInputs.failure;
   }
@@ -12263,6 +12476,7 @@ function lifecycleDispatchAttachRuntimeHandle(flags) {
 }
 
 const LIFECYCLE_RECONCILE_WAIT_FIELDS = new Set(['parentStatePath', 'childTaskStatePath', 'childSummaryPath']);
+const LIFECYCLE_DISPATCH_PROBE_FIELDS = new Set(['parentStatePath', 'waitActionId', 'watchdogMs', 'probeReason']);
 const LIFECYCLE_DISPATCH_STALLED_OWNER_RECOVER_FIELDS = new Set([
   'recoveryId', 'parentStatePath', 'ownerStatusId', 'childStatusId', 'dispatchId',
   'childAgent', 'terminalChildStatus', 'idempotencyKey',
@@ -12306,6 +12520,63 @@ function lifecycleDispatchReconcileWait(flags) {
     dispatchId,
     statusId,
     parentStatePath: data.parentStatePath,
+    watchdogMs: 300000,
+    probeReason: 'compatReconcileWait',
+  }));
+}
+
+function lifecycleDispatchProbe(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const dispatchId = flags['dispatch-id'];
+  const statusId = flags['status-id'];
+  if (!isNonEmptyString(dispatchId)) {
+    lifecycleError('invalidInput', '--dispatch-id is required');
+  }
+  if (!isNonEmptyString(statusId)) {
+    lifecycleError('invalidInput', '--status-id is required');
+  }
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch probe', LIFECYCLE_DISPATCH_PROBE_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  for (const field of ['parentStatePath', 'waitActionId', 'probeReason']) {
+    if (!isNonEmptyString(data[field])) {
+      lifecycleError('missingRequiredField', `${field} is required`);
+    }
+  }
+  if (!isPositiveInteger(data.watchdogMs)) {
+    lifecycleError('invalidInput', 'watchdogMs must be a positive integer');
+  }
+
+  const actionPath = runtimeActionPath(fixmeDir, data.waitActionId);
+  if (!fs.existsSync(actionPath)) {
+    lifecycleError('stateNotFound', `Runtime action not found: ${data.waitActionId}`);
+  }
+  const action = readJsonFileStrict(actionPath);
+  if (action.kind !== 'waitAgent') {
+    lifecycleError('invalidInput', `Runtime action ${data.waitActionId} is not a waitAgent action`);
+  }
+  const actionDispatchIds = [
+    action.owner && action.owner.dispatchId,
+    action.continuation && action.continuation.dispatchId,
+  ].filter(isNonEmptyString);
+  if (actionDispatchIds.length > 0 && !actionDispatchIds.includes(dispatchId)) {
+    lifecycleError('runtimeTargetUnproven', `Runtime action ${data.waitActionId} dispatch ownership does not match ${dispatchId}`);
+  }
+  if (action.target && isNonEmptyString(action.target.targetStatusId) && action.target.targetStatusId !== statusId) {
+    lifecycleError('runtimeTargetUnproven', `Runtime action ${data.waitActionId} target status does not match ${statusId}`);
+  }
+
+  const dispatchRecord = findDispatchRecordById(fixmeDir, dispatchId);
+  return lifecycleOk(classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
+    dispatchId,
+    statusId,
+    parentStatePath: data.parentStatePath,
+    waitActionId: data.waitActionId,
+    watchdogMs: data.watchdogMs,
+    probeReason: data.probeReason,
   }));
 }
 
@@ -12512,7 +12783,7 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
   if (!fs.existsSync(parentPath)) return;
   const parentStatus = readRunStatusFile(parentPath, parentStatusId);
   if (isRunAttentionCommand(parentStatus.currentCommand)) return;
-  const cleared = {
+  const cleared = preserveRunStatusRuntimeFields(parentStatus, {
     schemaVersion: 1,
     statusId: parentStatusId,
     agent: validateRunAgent(parentStatus.agent),
@@ -12520,10 +12791,7 @@ function clearDispatchParentWaitMarker(fixmeDir, parentStatusId) {
     checkpoint: 'working',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  };
-  if (parentStatus.activeRuntime !== undefined) {
-    cleared.activeRuntime = parentStatus.activeRuntime;
-  }
+  });
   writeRunStatus(parentPath, cleared);
 }
 
@@ -14054,7 +14322,7 @@ function lifecycleWaitBegin(flags) {
   if (status.currentCommand !== null && status.currentCommand !== label) {
     lifecycleError('staleState', `Run already waiting on a different command: ${status.currentCommand}`);
   }
-  const beginStatus = {
+  const beginStatus = preserveRunStatusRuntimeFields(status, {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(status.agent),
@@ -14062,10 +14330,7 @@ function lifecycleWaitBegin(flags) {
     checkpoint: 'working',
     currentCommand: String(label),
     updatedAt: new Date().toISOString(),
-  };
-  if (status.activeRuntime !== undefined) {
-    beginStatus.activeRuntime = status.activeRuntime;
-  }
+  });
   const next = writeRunStatus(statusPath, beginStatus);
   if (flags.quiet === true || flags.quiet === '') {
     process.exit(0);
@@ -14083,7 +14348,7 @@ function lifecycleWaitEnd(flags) {
   if (isRunAttentionCommand(status.currentCommand)) {
     lifecycleError('activeAttention', `Run has pending attention: ${status.currentCommand}`);
   }
-  const endStatus = {
+  const endStatus = preserveRunStatusRuntimeFields(status, {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(status.agent),
@@ -14091,10 +14356,7 @@ function lifecycleWaitEnd(flags) {
     checkpoint: 'working',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  };
-  if (status.activeRuntime !== undefined) {
-    endStatus.activeRuntime = status.activeRuntime;
-  }
+  });
   const next = writeRunStatus(statusPath, endStatus);
   if (flags.quiet === true || flags.quiet === '') {
     process.exit(0);
@@ -15599,7 +15861,7 @@ function closeRunStatusTerminal(fixmeDir, statusId, terminalState) {
   const statusPath = runStatusPath(fixmeDir, statusId);
   if (!fs.existsSync(statusPath)) return;
   const previous = readRunStatusFile(statusPath, statusId);
-  writeRunStatus(statusPath, {
+  writeRunStatus(statusPath, preserveRunStatusRuntimeFields(previous, {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(previous.agent),
@@ -15607,7 +15869,7 @@ function closeRunStatusTerminal(fixmeDir, statusId, terminalState) {
     checkpoint: 'done',
     currentCommand: null,
     updatedAt: new Date().toISOString(),
-  });
+  }));
 }
 
 function updateParentRunStatusAfterChildFinalize(fixmeDir, statusId, nextParent) {
@@ -15616,7 +15878,7 @@ function updateParentRunStatusAfterChildFinalize(fixmeDir, statusId, nextParent)
   if (!fs.existsSync(statusPath)) return null;
   const previous = readRunStatusFile(statusPath, statusId);
   const terminal = nextParent.status === 'failed';
-  const nextStatus = {
+  const nextStatus = preserveRunStatusRuntimeFields(previous, {
     schemaVersion: 1,
     statusId,
     agent: validateRunAgent(previous.agent),
@@ -15624,10 +15886,7 @@ function updateParentRunStatusAfterChildFinalize(fixmeDir, statusId, nextParent)
     checkpoint: terminal ? 'done' : 'working',
     currentCommand: terminal ? null : nextParent.cursor,
     updatedAt: new Date().toISOString(),
-  };
-  if (previous.activeRuntime !== undefined) {
-    nextStatus.activeRuntime = previous.activeRuntime;
-  }
+  });
   return writeRunStatus(statusPath, nextStatus);
 }
 
@@ -16972,9 +17231,18 @@ function setValues(setOrArray) {
   return Array.from(setOrArray);
 }
 
+const JSON_DATA_FLAGS = ['data', 'data-file', 'data-stdin'];
+const PIPELINE_RESOLUTION_FLAGS = ['pipeline-resolution', 'pipeline-resolution-file', 'pipeline-resolution-stdin'];
+const PARENT_CONTINUATION_FLAGS = ['parent-continuation', 'parent-continuation-file', 'parent-continuation-stdin'];
+
+function uniqueValues(values) {
+  return [...new Set(values)];
+}
+
 function commandHelpPayload({
   command,
   requiredFlags = [],
+  optionalFlags = [],
   requiredDataFields = [],
   optionalDataFields = [],
   requiredNestedFields = null,
@@ -16987,6 +17255,7 @@ function commandHelpPayload({
     ok: true,
     command,
     requiredFlags,
+    optionalFlags,
     requiredDataFields,
     optionalDataFields,
     enumValues,
@@ -17007,27 +17276,345 @@ function commandHelpPayload({
 // the same paths; help output and coverage tests both derive from this registry
 // so command schemas cannot drift. Adding a command requires one registry entry.
 function buildCommandRegistry() {
-  return [
+  const entries = [
+    { path: 'root', kind: 'flags', help: commandHelpPayload({
+      command: 'root',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Resolves the project Fixme root from cwd and returns fixmeRoot plus fixmeDir.',
+    }) },
+    { path: 'alert', kind: 'flags', help: commandHelpPayload({
+      command: 'alert',
+      requiredFlags: [],
+      optionalFlags: ['resolve', 'list-sounds'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { event: setValues(ALERT_EVENTS) },
+      example: { args: ['user_input'], flags: { resolve: true } },
+      guidance: 'Invoke as `alert <user_input|task_finished|task_failed> [--resolve]` or `alert --list-sounds`.',
+    }) },
+    { path: 'resolve-model', kind: 'flags', help: commandHelpPayload({
+      command: 'resolve-model',
+      requiredFlags: [],
+      optionalFlags: ['runtime'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { runtime: setValues(VALID_RUNTIME_VALUES) },
+      example: { args: ['fixme-task'], flags: { runtime: 'codex' } },
+      guidance: 'Invoke as `resolve-model <agent-name> [--runtime claude|codex]`.',
+    }) },
+    { path: 'config ensure', kind: 'flags', help: commandHelpPayload({
+      command: 'config ensure',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Ensures current config exists and is migrated. Alias of config migrate.',
+    }) },
+    { path: 'config migrate', kind: 'flags', help: commandHelpPayload({
+      command: 'config migrate',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Creates or migrates the project config at the resolved Fixme root.',
+    }) },
+    { path: 'config get', kind: 'flags', help: commandHelpPayload({
+      command: 'config get',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['review.level'] },
+      guidance: 'Invoke as `config get [key.path]`. Without a key, returns the full config.',
+    }) },
+    { path: 'config set', kind: 'flags', help: commandHelpPayload({
+      command: 'config set',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['review.level', '"strict"'] },
+      guidance: 'Invoke as `config set <key.path> <json-value>`. The value must be valid JSON.',
+    }) },
+    { path: 'config workflow configure', kind: 'json', help: commandHelpPayload({
+      command: 'config workflow configure',
+      requiredFlags: [],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: [],
+      optionalDataFields: ['phases', 'review', 'outerMaxCycles'],
+      example: { args: ['standard'], flags: { dataFile: '/absolute/workflow.json' } },
+      guidance: 'Invoke as `config workflow configure <workflow> --data-file <json>` or `--data <json>`.',
+    }) },
+    { path: 'config review-level resolve', kind: 'flags', help: commandHelpPayload({
+      command: 'config review-level resolve',
+      requiredFlags: [],
+      optionalFlags: ['workflow', 'phase', 'path'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { level: setValues(REVIEW_LEVELS) },
+      example: { flags: { workflow: 'standard', phase: 'plan' } },
+      guidance: 'Resolve review level by workflow/phase or by a direct config path such as pullRequestComments.',
+    }) },
+    { path: 'context detect', kind: 'flags', help: commandHelpPayload({
+      command: 'context detect',
+      requiredFlags: [],
+      optionalFlags: ['project-dir'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Detects project commands and dev server settings.',
+    }) },
+    { path: 'context load', kind: 'flags', help: commandHelpPayload({
+      command: 'context load',
+      requiredFlags: [],
+      optionalFlags: ['project-dir'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Loads saved project context from config.',
+    }) },
+    { path: 'context save', kind: 'json', help: commandHelpPayload({
+      command: 'context save',
+      requiredFlags: [],
+      optionalFlags: ['project-dir', ...JSON_DATA_FLAGS],
+      requiredDataFields: [],
+      optionalDataFields: ['commands', 'devServer'],
+      example: { flags: { dataFile: '/absolute/project-context.json' } },
+      guidance: 'Saves project context JSON under config.project.',
+    }) },
+    { path: 'pipeline resolve', kind: 'json', help: commandHelpPayload({
+      command: 'pipeline resolve',
+      requiredFlags: [],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: ['candidates'],
+      optionalDataFields: [],
+      example: { flags: { dataFile: '/absolute/pipeline-candidates.json' }, data: { candidates: [] } },
+      guidance: 'Resolves workflow pipeline from eligible candidates. Assistant-authored candidates are ignored.',
+    }) },
+    { path: 'review synthesize-clean-handler', kind: 'flags', help: commandHelpPayload({
+      command: 'review synthesize-clean-handler',
+      requiredFlags: ['kind'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { kind: setValues(REVIEW_HANDLER_KINDS) },
+      example: { flags: { kind: 'code' } },
+      guidance: 'Synthesizes deterministic clean handler routing only after a reviewer machine footer proves zero findings and zero questions.',
+    }) },
+    { path: 'review validate-plan-readiness', kind: 'json', help: commandHelpPayload({
+      command: 'review validate-plan-readiness',
+      requiredFlags: [],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: ['output'],
+      optionalDataFields: [],
+      example: { flags: { dataFile: '/absolute/readiness-validation.json' }, data: { output: 'READINESS_RESULT: EXECUTE' } },
+      guidance: 'Validates plan-readiness routing output before fixme-task routes from it.',
+    }) },
+    { path: 'claude-skills install', kind: 'flags', help: commandHelpPayload({
+      command: 'claude-skills install',
+      requiredFlags: ['skills-src', 'claude-dir'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: { skillsSrc: '/absolute/.claude/skills', claudeDir: '/absolute/.claude' } },
+      guidance: 'Installs source Fixme skills into a Claude skills directory and registers managed hooks.',
+    }) },
+    { path: 'codex-skills install', kind: 'flags', help: commandHelpPayload({
+      command: 'codex-skills install',
+      requiredFlags: ['skills-src', 'codex-dir'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: { skillsSrc: '/absolute/.claude/skills', codexDir: '/absolute/.codex' } },
+      guidance: 'Installs Codex-adapted source Fixme skills into a Codex skills directory.',
+    }) },
+    { path: 'codex-agents install', kind: 'flags', help: commandHelpPayload({
+      command: 'codex-agents install',
+      requiredFlags: ['agents-src', 'codex-dir'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: { agentsSrc: '/absolute/.claude/agents', codexDir: '/absolute/.codex' } },
+      guidance: 'Generates Codex agent TOML files and registers them in the Codex config.',
+    }) },
+    { path: 'session create', kind: 'flags', help: commandHelpPayload({
+      command: 'session create',
+      requiredFlags: [],
+      optionalFlags: ['name'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/.fixme/sessions'], flags: { name: 'bug-session' } },
+      guidance: 'Invoke as `session create <base-dir> [--name <name>]`.',
+    }) },
+    { path: 'session list', kind: 'flags', help: commandHelpPayload({
+      command: 'session list',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/.fixme/sessions'] },
+      guidance: 'Invoke as `session list <base-dir>`.',
+    }) },
+    { path: 'session summary', kind: 'flags', help: commandHelpPayload({
+      command: 'session summary',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/.fixme/sessions/session'] },
+      guidance: 'Invoke as `session summary <session-dir>`.',
+    }) },
+    { path: 'ticket create', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket create',
+      requiredFlags: ['slug'],
+      optionalFlags: ['max-attempts'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/session-dir'], flags: { slug: 'login-bug' } },
+      guidance: 'Invoke as `ticket create <session-dir> --slug <slug> [--max-attempts <n>]`.',
+    }) },
+    { path: 'ticket transition', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket transition',
+      requiredFlags: [],
+      optionalFlags: ['reason', 'pipeline'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/ticket.md', 'plan'], flags: { pipeline: 'standard' } },
+      guidance: 'Invoke as `ticket transition <ticket.md|ticket-folder> <state> [--pipeline <name>] [--reason <reason>]`. Backward transitions require reason.',
+    }) },
+    { path: 'ticket list', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket list',
+      requiredFlags: [],
+      optionalFlags: ['state'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/session-dir'] },
+      guidance: 'Invoke as `ticket list <session-dir> [--state <state>]`.',
+    }) },
+    { path: 'ticket next', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket next',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/session-dir'] },
+      guidance: 'Invoke as `ticket next <session-dir>`.',
+    }) },
+    { path: 'ticket rename', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket rename',
+      requiredFlags: ['slug'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/ticket.md'], flags: { slug: 'new-slug' } },
+      guidance: 'Invoke as `ticket rename <ticket.md|ticket-folder> --slug <new-slug>`.',
+    }) },
+    { path: 'ticket summary', kind: 'flags', help: commandHelpPayload({
+      command: 'ticket summary',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['/absolute/ticket.md'] },
+      guidance: 'Invoke as `ticket summary <ticket.md|ticket-folder>`.',
+    }) },
+    { path: 'task save', kind: 'json', help: commandHelpPayload({
+      command: 'task save',
+      requiredFlags: [],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: ['title', 'taskGoal', 'settledSolutionShape', 'agreedApproach', 'userVisibleBehavior', 'scope', 'laterPlanningNotes', 'pipelineResolution'],
+      optionalDataFields: ['lockedDecisions', 'constraints', 'knownContext', 'source', 'tags'],
+      example: { flags: { dataFile: '/absolute/task-save.json' } },
+      guidance: 'Creates a standalone saved task brief and sibling task state. Pipeline resolution is required and openQuestions must be omitted or empty.',
+    }) },
+    { path: 'task checkpoint', kind: 'json', help: commandHelpPayload({
+      command: 'task checkpoint',
+      requiredFlags: ['state'],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: [],
+      optionalDataFields: ['status', 'cursor', 'artifacts', 'handoff', 'loops', 'pendingDecision', 'parentContinuation', 'producerContinuations', 'decisions', 'terminalResult'],
+      example: { flags: { state: '/absolute/task.state.json', dataFile: '/absolute/checkpoint.json' } },
+      guidance: 'Atomically merges allowed task-state fields only. Rejects derived/live fields such as currentStep and manifest.',
+    }) },
+    { path: 'task resolve', kind: 'flags', help: commandHelpPayload({
+      command: 'task resolve',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { args: ['FIXME-14'] },
+      guidance: 'Invoke as `task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>`.',
+    }) },
+    { path: 'task attach-artifact', kind: 'json', help: commandHelpPayload({
+      command: 'task attach-artifact',
+      requiredFlags: ['task'],
+      optionalFlags: JSON_DATA_FLAGS,
+      requiredDataFields: ['artifactType', 'artifactPath', 'title', 'summary', 'sourceSkill'],
+      optionalDataFields: ['status'],
+      example: { flags: { task: 'FIXME-14', dataFile: '/absolute/artifact.json' } },
+      guidance: 'Attaches an explicit preparation artifact to a saved task and mirrors it into task state.',
+    }) },
     { path: 'run start', kind: 'flags', help: commandHelpPayload({
       command: 'run start',
       requiredFlags: ['fixme-dir', 'agent'],
+      optionalFlags: [],
       requiredDataFields: [],
       optionalDataFields: [],
       enumValues: { agent: setValues(KNOWN_FIXME_AGENTS) },
       example: { flags: { fixmeDir: '/absolute/.fixme', agent: 'fixme-task' } },
       guidance: 'Creates a liveness record for explicit agent dispatches. Parent prepare-child creates child liveness itself.',
     }) },
+    { path: 'run ping', kind: 'flags', help: commandHelpPayload({
+      command: 'run ping',
+      requiredFlags: ['fixme-dir', 'status-id', 'state', 'checkpoint', 'current-command'],
+      optionalFlags: ['quiet'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { state: setValues(RUN_STATES), checkpoint: setValues(RUN_CHECKPOINTS) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', state: 'running', checkpoint: 'working', currentCommand: 'null' } },
+      guidance: 'Writes child-owned liveness and workerHeartbeat. currentCommand null must be passed as the literal string null.',
+    }) },
     { path: 'run status', kind: 'flags', help: commandHelpPayload({
       command: 'run status',
       requiredFlags: ['fixme-dir', 'status-id'],
+      optionalFlags: [],
       requiredDataFields: [],
       optionalDataFields: [],
       example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...' } },
-      guidance: 'Reads durable workflow state plus host-runtime evidence. Prefer userStatus/runtimeObservation when present, for example owned, wait timed out, liveness unknown, or stalled owner: child completed but owner did not consume completion.',
+      guidance: 'Reads durable workflow state plus host-runtime evidence. updatedAt is any status-file write; workerHeartbeat.observedAt is the child-owned liveness timestamp. Prefer userStatus/runtimeObservation when present, for example stalled owner: child completed but owner did not consume completion.',
+    }) },
+    { path: 'run attention set', kind: 'json', help: commandHelpPayload({
+      command: 'run attention set',
+      requiredFlags: ['fixme-dir', 'status-id'],
+      requiredDataFields: ['ownerSkill', 'kind', 'promptMarkdown'],
+      optionalDataFields: ['attentionId', 'sourceSkill', 'parentSkill', 'resumeRef', 'taskStatePath', 'answerMode', 'metadata'],
+      enumValues: { answerMode: setValues(RUN_ATTENTION_ANSWER_MODES) },
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', dataFile: '/absolute/attention.json' }, data: { ownerSkill: 'fixme-task', kind: 'reviewDecision', promptMarkdown: '## Decision' } },
+      guidance: 'Stores a pending attention record and moves the run to waiting on attention:<attentionId>.',
+    }) },
+    { path: 'run attention show', kind: 'flags', help: commandHelpPayload({
+      command: 'run attention show',
+      requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' } },
+      guidance: 'Reads the attention currently referenced by the run status.',
     }) },
     { path: 'task init', kind: 'flags', help: commandHelpPayload({
       command: 'task init',
       requiredFlags: ['ticket | task | state', 'pipeline-resolution-file | pipeline-resolution', 'project-root'],
+      optionalFlags: [
+        ...PIPELINE_RESOLUTION_FLAGS,
+        ...PARENT_CONTINUATION_FLAGS,
+        'pipeline',
+      ],
       requiredDataFields: [],
       optionalDataFields: ['parentContinuation', 'ownerFence'],
       example: { flags: { state: '/absolute/.fixme/tasks/task.state.json', pipelineResolutionFile: '/absolute/pipeline.json', projectRoot: '/absolute/project' } },
@@ -17036,6 +17623,7 @@ function buildCommandRegistry() {
     { path: 'task producer-continuation mark-bad', kind: 'json', help: commandHelpPayload({
       command: 'task producer-continuation mark-bad',
       requiredFlags: ['state'],
+      optionalFlags: ['agent-name', 'runtime', 'reason'],
       requiredDataFields: ['ownerFence', 'agentName', 'runtime', 'reason', 'idempotencyKey'],
       optionalDataFields: [],
       enumValues: { runtime: setValues(VALID_RUNTIME_VALUES), reason: ['runtimeResumeFailed'] },
@@ -17053,6 +17641,7 @@ function buildCommandRegistry() {
     { path: 'task decision append', kind: 'json', help: commandHelpPayload({
       command: 'task decision append',
       requiredFlags: ['state'],
+      optionalFlags: ['compact'],
       requiredDataFields: [
         ...DECISION_REQUIRED_STRING_FIELDS,
         'status',
@@ -17091,9 +17680,59 @@ function buildCommandRegistry() {
       audience: 'owner/internal',
       guidance: 'Owner/internal API. Parent brokers should record raw user answers with lifecycle attention broker answer instead.',
     }) },
+    { path: 'run attention clear', kind: 'flags', help: commandHelpPayload({
+      command: 'run attention clear',
+      requiredFlags: ['fixme-dir', 'status-id', 'attention-id'],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: { fixmeDir: '/absolute/.fixme', statusId: 'run_...', attentionId: 'attn_...' } },
+      audience: 'owner/internal',
+      guidance: 'Clears an answered attention record that is still referenced by currentCommand.',
+    }) },
+    { path: 'usage start', kind: 'flags', help: commandHelpPayload({
+      command: 'usage start',
+      requiredFlags: ['skill'],
+      optionalFlags: ['runtime', 'role', 'fixme-dir', 'project-root', 'pipeline-run-id', 'parent-invocation-id', 'source-path', 'task'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { runtime: setValues(USAGE_RUNTIMES), role: setValues(USAGE_ROLES) },
+      example: { flags: { skill: 'fixme-task', runtime: 'codex', role: 'orchestrator' } },
+      guidance: 'Starts usage tracking. The --task flag is reserved and deliberately rejected by the handler.',
+    }) },
+    { path: 'usage finish', kind: 'flags', help: commandHelpPayload({
+      command: 'usage finish',
+      requiredFlags: ['invocation-id', 'outcome'],
+      optionalFlags: ['fixme-dir', 'reason', 'quiet'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { outcome: setValues(USAGE_OUTCOMES), reason: setValues(USAGE_REASON_VALUES) },
+      example: { flags: { invocationId: 'usage_...', outcome: 'failed', reason: 'runtime_error' } },
+      guidance: '`--outcome complete` forbids `--reason`; failed and aborted outcomes require a closed reason enum value.',
+    }) },
+    { path: 'usage report', kind: 'flags', help: commandHelpPayload({
+      command: 'usage report',
+      requiredFlags: [],
+      optionalFlags: ['scope', 'format', 'limit', 'skill', 'pipeline-run-id', 'since', 'until', 'view', 'fixme-dir'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { scope: ['project', 'global'], format: ['json', 'text'], view: setValues(TRACE_REPORT_VIEWS) },
+      example: { flags: { scope: 'project', format: 'json', limit: 20 } },
+      guidance: 'Reports usage events and trace-backed bucket views.',
+    }) },
+    { path: 'usage claude-hook', kind: 'flags', help: commandHelpPayload({
+      command: 'usage claude-hook',
+      requiredFlags: [],
+      optionalFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      example: { flags: {} },
+      guidance: 'Managed Claude UserPromptSubmit hook entry point. Reads hook JSON from stdin.',
+    }) },
     { path: 'lifecycle invocation start', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle invocation start',
       requiredFlags: [],
+      optionalFlags: ['fixme-dir'],
       requiredDataFields: ['idempotencyKey', 'skill'],
       optionalDataFields: setValues(LIFECYCLE_INVOCATION_START_FIELDS).filter(f => !['idempotencyKey', 'skill'].includes(f)),
       enumValues: { runtime: setValues(VALID_RUNTIME_VALUES) },
@@ -17102,12 +17741,13 @@ function buildCommandRegistry() {
     }) },
     { path: 'lifecycle invocation finish', kind: 'flags', help: commandHelpPayload({
       command: 'lifecycle invocation finish',
-      requiredFlags: ['invocation-id'],
+      requiredFlags: ['invocation-id', 'outcome'],
+      optionalFlags: ['fixme-dir', 'reason'],
       requiredDataFields: [],
       optionalDataFields: [],
       enumValues: { outcome: setValues(USAGE_OUTCOMES) },
-      example: { flags: { fixmeDir: '/absolute/.fixme', invocationId: 'usage_...', outcome: 'complete' } },
-      guidance: 'Direct and granular usage finish. Parent-driven terminal runs finish usage through lifecycle child finalize instead.',
+      example: { flags: { fixmeDir: '/absolute/.fixme', invocationId: 'usage_...', outcome: 'failed', reason: 'runtime_error' } },
+      guidance: 'Direct and granular usage finish. Parent-driven terminal runs finish usage through lifecycle child finalize instead. `--outcome complete` forbids `--reason`; `--outcome failed` and `--outcome aborted` require `--reason` with one of: verification_failed, user_aborted, usage_tracking_failed, runtime_error, dispatch_failed, timeout, invalid_usage_request, unknown.',
     }) },
     { path: 'lifecycle task continue', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle task continue',
@@ -17121,6 +17761,12 @@ function buildCommandRegistry() {
     { path: 'lifecycle task begin', kind: 'flags', help: commandHelpPayload({
       command: 'lifecycle task begin',
       requiredFlags: ['fixme-dir', 'launch-id | ticket | task | state'],
+      optionalFlags: [
+        'project-root',
+        'idempotency-key',
+        'pipeline',
+        ...PIPELINE_RESOLUTION_FLAGS,
+      ],
       requiredDataFields: [],
       optionalDataFields: [],
       example: {
@@ -17182,7 +17828,20 @@ function buildCommandRegistry() {
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', dataFile: '/absolute/reconcile.json' }, data: { parentStatePath: '/absolute/parent/state.json' } },
       audience: 'parent-facing',
-      guidance: 'Read-only runtime-result-driven wait reconciliation. Call once after a runtime wait watchdog timeout and branch only on the returned transition (runtimeWaitTimedOut, terminalEvent, attention, dispatchFailure). updatedAt is the last status write, not a heartbeat.',
+      guidance: 'Compatibility wait reconciliation. Prefer lifecycle dispatch probe. Nonterminal active children return continueWait with child-owned workerHeartbeat detail; updatedAt is the last status write, not a heartbeat.',
+    }) },
+    { path: 'lifecycle dispatch probe', kind: 'json', help: commandHelpPayload({
+      command: 'lifecycle dispatch probe',
+      requiredFlags: ['fixme-dir', 'dispatch-id', 'status-id'],
+      requiredDataFields: setValues(LIFECYCLE_DISPATCH_PROBE_FIELDS),
+      optionalDataFields: [],
+      enumValues: { probeReason: ['waitWatchdogTimeout'] },
+      example: {
+        flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', dataFile: '/absolute/probe.json' },
+        data: { parentStatePath: '/absolute/parent/state.json', waitActionId: 'runtimeAction_...', watchdogMs: 300000, probeReason: 'waitWatchdogTimeout' },
+      },
+      audience: 'parent-facing',
+      guidance: 'Parent wait watchdog probe. Read durable terminal events, attention, stalled-owner state, and child-owned workerHeartbeat. Nonterminal active children return continueWait; timeout is not terminal evidence.',
     }) },
     { path: 'lifecycle runtime-action observe', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle runtime-action observe',
@@ -17370,6 +18029,7 @@ function buildCommandRegistry() {
     { path: 'lifecycle parent resolve', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle parent resolve',
       requiredFlags: ['fixme-dir'],
+      optionalFlags: ['parent-run-id'],
       requiredDataFields: [],
       optionalDataFields: ['parentSkill', 'lookupInput'],
       enumValues: {},
@@ -17407,14 +18067,16 @@ function buildCommandRegistry() {
     { path: 'lifecycle task-event consume', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle task-event consume',
       requiredFlags: ['fixme-dir', 'parent-run-id'],
+      optionalFlags: ['event-id', 'next'],
       requiredDataFields: [],
-      optionalDataFields: ['event-id', 'next'],
+      optionalDataFields: ['ownerFence', 'idempotencyKey'],
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', next: true } },
     }) },
     { path: 'lifecycle wait begin', kind: 'flags', help: commandHelpPayload({
       command: 'lifecycle wait begin',
       requiredFlags: ['fixme-dir', 'status-id', 'label'],
+      optionalFlags: ['quiet'],
       requiredDataFields: [],
       optionalDataFields: [],
       enumValues: {},
@@ -17424,6 +18086,7 @@ function buildCommandRegistry() {
     { path: 'lifecycle wait end', kind: 'flags', help: commandHelpPayload({
       command: 'lifecycle wait end',
       requiredFlags: ['fixme-dir', 'status-id'],
+      optionalFlags: ['quiet'],
       requiredDataFields: [],
       optionalDataFields: [],
       enumValues: {},
@@ -17443,6 +18106,7 @@ function buildCommandRegistry() {
     { path: 'task decision list', kind: 'flags', help: commandHelpPayload({
       command: 'task decision list',
       requiredFlags: ['state'],
+      optionalFlags: ['format', 'fixme-dir', 'include-superseded', 'task-owned-only'],
       requiredDataFields: [],
       optionalDataFields: [],
       enumValues: {},
@@ -17468,6 +18132,16 @@ function buildCommandRegistry() {
       guidance: 'Managed runtime hook entry point. Reads runtime hook JSON from stdin, resolves the Fixme directory from the hook cwd, and appends one normalized trace event. Never stores raw command strings, output, or transcript bodies.',
     }) },
   ];
+  return entries.map(entry => {
+    if (entry.kind !== 'json') return entry;
+    return {
+      ...entry,
+      help: {
+        ...entry.help,
+        optionalFlags: uniqueValues([...(entry.help.optionalFlags || []), ...JSON_DATA_FLAGS]),
+      },
+    };
+  });
 }
 
 const COMMANDS = buildCommandRegistry();
@@ -17482,7 +18156,7 @@ function listRegisteredCommandsForTest() {
   }));
 }
 
-function commandHelpSchema(command, subcommand, args) {
+function registeredCommandEntry(command, subcommand, args) {
   const parts = [command, subcommand, ...args].filter(part => isNonEmptyString(part));
   // Longest-path match so 'lifecycle attention broker resume' wins over shorter prefixes.
   let best = null;
@@ -17494,7 +18168,12 @@ function commandHelpSchema(command, subcommand, args) {
       best = entry;
     }
   }
-  return best ? best.help : null;
+  return best;
+}
+
+function commandHelpSchema(command, subcommand, args) {
+  const entry = registeredCommandEntry(command, subcommand, args);
+  return entry ? entry.help : null;
 }
 
 function maybeShowCommandHelp(command, subcommand, args, flags) {
@@ -17507,6 +18186,23 @@ function maybeShowCommandHelp(command, subcommand, args, flags) {
   }
   output(schema);
   return true;
+}
+
+function flagAlternatives(flagText) {
+  return String(flagText).split('|').map(part => part.trim()).filter(Boolean);
+}
+
+function validateFlagsAgainstRegisteredCommand(command, subcommand, args, flags) {
+  const entry = registeredCommandEntry(command, subcommand, args);
+  if (!entry) return;
+  const allowedFlags = new Set([
+    ...(entry.help.requiredFlags || []),
+    ...(entry.help.optionalFlags || []),
+  ].flatMap(flagAlternatives));
+  const unknownFlags = Object.keys(flags).filter(flag => flag !== 'help' && !allowedFlags.has(flag));
+  if (unknownFlags.length === 0) return;
+  const allowedList = [...allowedFlags].sort().join(', ') || '(none)';
+  throw new Error(`Unsupported flag --${unknownFlags[0]} for ${entry.path}. Allowed flags: ${allowedList}`);
 }
 
 function rootCommand() {
@@ -17524,8 +18220,10 @@ function main() {
   }
 
   const command = allArgs[0];
-  const subcommand = allArgs[1] || '';
-  const { args, flags } = parseArgs(allArgs.slice(2));
+  const parsed = parseArgs(allArgs.slice(1));
+  const subcommand = parsed.args[0] || '';
+  const args = parsed.args.slice(1);
+  const flags = parsed.flags;
 
   try {
     let resolvedFixmeRoot = null;
@@ -17539,6 +18237,7 @@ function main() {
     if (maybeShowCommandHelp(command, subcommand, args, flags)) {
       return;
     }
+    validateFlagsAgainstRegisteredCommand(command, subcommand, args, flags);
 
     switch (command) {
       case 'ticket':
@@ -17551,10 +18250,12 @@ function main() {
             return ticketList(args[0], flags);
           case 'next':
             return ticketNext(args[0]);
+          case 'summary':
+            return ticketSummary(args[0]);
           case 'rename':
             return ticketRename(args[0], flags);
           default:
-            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, rename`);
+            return error(`Unknown ticket subcommand: '${subcommand}'. Valid: create, transition, list, next, summary, rename`);
         }
 
       case 'task':
@@ -17646,6 +18347,8 @@ function main() {
                 }
               case 'reconcile-wait':
                 return lifecycleDispatchReconcileWait(flags);
+              case 'probe':
+                return lifecycleDispatchProbe(flags);
               default:
                 return lifecycleError('unsupportedCommand', `Unknown lifecycle dispatch action: '${args[0] || ''}'`);
             }
@@ -17861,7 +18564,7 @@ function main() {
         return rootCommand();
 
       case 'alert': {
-        if (subcommand === '--list-sounds') {
+        if (flags['list-sounds'] === true || flags['list-sounds'] === '') {
           return output(listAlertSounds());
         }
         const event = subcommand;
