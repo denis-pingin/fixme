@@ -16917,6 +16917,14 @@ test('orchestrators document watchdog waits and quiet command output', () => {
     assert(content.includes('stalledOwner'), `${name} should branch on stalledOwner`);
     assert(content.includes('lifecycle dispatch stalled-owner recover'), `${name} should document stalled-owner recovery`);
   }
+  for (const name of ['fixme-pr-comments', 'fixme-session', 'fixme-task', 'fixme']) {
+    const content = fs.readFileSync(skillPath(name), 'utf8');
+    assert(content.includes('lifecycle dispatch probe --fixme-dir'), `${name} should document the executable dispatch probe command`);
+    assert(content.includes('--dispatch-id <dispatch-id>') || content.includes('--dispatch-id <dispatchId>'), `${name} dispatch probe command should include --dispatch-id`);
+    assert(content.includes('--status-id <child-status-id>') || content.includes('--status-id <status-id>') || content.includes('--status-id <fixmeTaskStatusId>'), `${name} dispatch probe command should include --status-id`);
+    assert(content.includes('"waitActionId":"<wait-action-id>"'), `${name} dispatch probe payload should include waitActionId`);
+    assert(content.includes('"probeReason":"waitWatchdogTimeout"'), `${name} dispatch probe payload should include probeReason`);
+  }
   const quietSkills = ['fixme-pr-comments', 'fixme-session', 'fixme', 'fixme-brainstorm', 'fixme-rebase'];
   for (const name of quietSkills) {
     const content = fs.readFileSync(skillPath(name), 'utf8');
