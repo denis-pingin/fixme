@@ -4991,6 +4991,14 @@ test('task decision list without fixme-dir reads parent project decisions for su
 test('cli help emits command schemas before required validation', () => {
   const cases = [
     {
+      args: 'config get --help',
+      command: 'config get',
+      requiredFlags: [],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      guidanceIncludes: 'config get workflows',
+    },
+    {
       args: 'task decision append --help',
       command: 'task decision append',
       requiredFlags: ['state'],
@@ -11005,6 +11013,26 @@ test('config read commands reject obsolete config keys without conversion', () =
     assert(result.data.configPath === 'pipelines', `${command} should report pipelines path: ${JSON.stringify(result.data)}`);
     assert(before === after, `${command} should not write config`);
   }
+});
+
+test('config get workflows reads workflow aggregate without allowing aggregate writes', () => {
+  const tmp = createTmpDir();
+  writeProjectConfig(tmp, {
+    workflows: {
+      standard: workflowWithPhases([{ name: 'plan', skills: ['fixme-write-plan'] }]),
+      quick: workflowWithPhases([{ name: 'implement', skills: ['fixme-execute-plan'] }]),
+    },
+  });
+
+  const readResult = runInDir('config get workflows', tmp);
+  assert(readResult.ok, `config get workflows should succeed: ${JSON.stringify(readResult.data)}`);
+  assert(readResult.data.key === 'workflows', `read key should be workflows, got ${JSON.stringify(readResult.data)}`);
+  assert(readResult.data.value.standard.phases[0].name === 'plan', 'standard workflow should be returned');
+  assert(readResult.data.value.quick.phases[0].name === 'implement', 'quick workflow should be returned');
+
+  const writeResult = runInDir(`config set workflows '{"custom":{"phases":[{"name":"plan","skills":["fixme-write-plan"]}]}}'`, tmp);
+  assert(!writeResult.ok, 'config set workflows aggregate replacement should remain unsupported');
+  assert(writeResult.data.error.includes('Unsupported config key'), `aggregate write should report unsupported key: ${JSON.stringify(writeResult.data)}`);
 });
 
 test('config migrate rejects non-final full workflow shapes without conversion', () => {

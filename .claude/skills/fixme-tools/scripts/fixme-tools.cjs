@@ -1918,6 +1918,47 @@ function isSupportedConfigKey(parts) {
   return false;
 }
 
+function isSupportedConfigReadKey(parts) {
+  const [top, second, third] = parts;
+
+  if (isSupportedConfigKey(parts)) return true;
+  if (top === ['fix', 'Scope'].join('')) return false;
+
+  if (top === 'review') {
+    return parts.length === 1;
+  }
+
+  if (top === 'pullRequestComments') {
+    return parts.length === 1 || (parts.length === 2 && second === 'review');
+  }
+
+  if (top === 'models') {
+    if (parts.length === 1) return true;
+    return second === 'overrides' && parts.length === 2;
+  }
+
+  if (top === 'workflows') {
+    if (parts.length === 1) return true;
+    if (!isWorkflowName(second)) return false;
+    if (isRemovedWorkflowName(second)) return false;
+    return parts.length === 3 && third === 'review';
+  }
+
+  if (top === 'linear') {
+    return parts.length === 1;
+  }
+
+  if (top === 'ticketTemplate') {
+    return parts.length === 1;
+  }
+
+  if (top === 'usage') {
+    return parts.length === 1;
+  }
+
+  return false;
+}
+
 function parseConfigValue(rawValue) {
   if (rawValue === undefined) {
     throw new Error('Config value is required');
@@ -2237,7 +2278,7 @@ function configGet(keyPath, fixmeRoot) {
   }
 
   const parts = splitConfigKey(keyPath);
-  if (!isSupportedConfigKey(parts)) {
+  if (!isSupportedConfigReadKey(parts)) {
     throw new Error(`Unsupported config key: ${keyPath}`);
   }
 
@@ -17538,7 +17579,7 @@ function buildCommandRegistry() {
       requiredDataFields: [],
       optionalDataFields: [],
       example: { args: ['review.level'] },
-      guidance: 'Invoke as `config get [key.path]`. Without a key, returns the full config.',
+      guidance: 'Invoke as `config get [key.path]`. Without a key, returns the full config. Aggregate reads such as `config get workflows`, `config get workflows.standard.review`, `config get models`, and `config get linear` are supported; aggregate writes such as `config set workflows <json-value>` remain unsupported unless documented by config set.',
     }) },
     { path: 'config set', kind: 'flags', help: commandHelpPayload({
       command: 'config set',
