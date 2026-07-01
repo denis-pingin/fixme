@@ -11,7 +11,7 @@ This skill does not interact with `<fixme-dir>` directly outside the carve-outs 
 1. Fetching PR comments
 2. Analyzing each comment
 3. Consulting the user on ambiguous fixes
-4. Preparing a saved child `fixme-task` handoff with `lifecycle parent prepare-child --data-file`
+4. Preparing a saved child `fixme-task` handoff with `lifecycle parent prepare-child --data-stdin`
 5. Verifying, committing, replying to comments, resolving threads
 
 **Never use a literal `.fixme/` path or any task-owned `<fixme-dir>/` path in any tool except for the lifecycle, liveness, and attention brokering commands listed below.** Resolution rules and the full prohibition list are in `fixme-howto-find-fixme-dir` (read at `~/.claude/skills/fixme-howto-find-fixme-dir/SKILL.md`). If you find yourself about to read `<fixme-dir>/decisions.md`, write `<fixme-dir>/plans/...`, list `<fixme-dir>`, or check whether `<fixme-dir>/config.json` exists, STOP. That is `fixme-task`'s job. Put the routed current PR fix groups in `child.handoff.payload`, let `lifecycle parent prepare-child` save the child task boundary, and let `fixme-task` handle all pipeline state from that saved reference.
@@ -20,12 +20,70 @@ Parent run state (via `lifecycle parent *`), liveness, and attention brokering a
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent resolve --fixme-dir <fixme-dir> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent resolve --fixme-dir <fixme-dir> --data '{"parentSkill":"fixme-pr-comments","lookupInput":{"pullRequestRef":{"host":"github.com","owner":"<owner>","repo":"<repo>","number":123},"normalizedFlags":{"pause":false,"skipCommit":false,"skipPush":false,"skipResolve":false,"skipResponse":false}}}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin <<'JSON'
+{
+  "parent": {
+    "parentSkill": "fixme-pr-comments",
+    "idempotencyKey": "pr-comments:<resume-ref-or-task-slug>:parent",
+    "lookupInput": {
+      "pullRequestRef": {
+        "host": "github.com",
+        "owner": "<owner>",
+        "repo": "<repo>",
+        "number": 123
+      },
+      "normalizedFlags": {
+        "pause": false,
+        "skipCommit": false,
+        "skipPush": false,
+        "skipResolve": false,
+        "skipResponse": false
+      }
+    },
+    "payload": {"source":"fixme-pr-comments","flags":{},"reviewItems":{"currentPrFix":[]},"analysis":{},"routedGroups":[]}
+  },
+  "child": {
+    "idempotencyKey": "pr-comments:<resume-ref-or-task-slug>:child",
+    "agentName": "fixme-task",
+    "runtime": "codex",
+    "transport": "agent",
+    "parentInvocationId": "<parent-usage-invocation-id>",
+    "pipelineRunId": "<pipeline-run-id>",
+    "parentStatusId": "<parent-status-id>",
+    "handoff": {
+      "mode": "createOrReuse",
+      "taskSaveData": {
+        "title": "<short saved task title>",
+        "taskGoal": "<goal>",
+        "settledSolutionShape": "<shape>",
+        "agreedApproach": "<approach>",
+        "userVisibleBehavior": "<behavior>",
+        "scope": {"inScope":["<current PR review fixes>"],"outOfScope":[]},
+        "laterPlanningNotes": ["<durable PR comment payload location>"],
+        "pipelineResolution": {
+          "pipeline": "standard",
+          "source": "userProseIntent",
+          "evidence": "Parent PR-comments workflow selected standard before save-first child handoff.",
+          "reason": "The parent-provided PR-comment handoff is the user-visible intent for this saved child task."
+        }
+      },
+      "payload": {"source":"fixme-pr-comments","routedFixGroups":[]}
+    },
+    "promptInputs": {"summary":"<current PR review fixes>","routedFixGroupsCount":0}
+  },
+  "parentContinuation": {"resumeStep":"awaitFixmeTaskResult"},
+  "await": {"fixBatches":[],"activeBatchIndex":0,"ledger":{}},
+  "recoverStaleParent": true
+}
+JSON
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs run status --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId>
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '<json-object>'
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '<json-object>'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '{"answer":"<raw user answer or broker-show answer.answer>","answeredBy":"user","answerKind":"decision"}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '{"answer":"<raw user clarification question>","answeredBy":"user","answerKind":"clarificationRequest"}'
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data-stdin <<'JSON'
+<acknowledgeResumeTemplate.data plus runtimeHandle only when returned by runtime-action observe>
+JSON
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next
 ```
 
@@ -38,10 +96,16 @@ Parent brokers must not run `task decision append`, `task checkpoint`, `run atte
 If child `fixme-task` returns `FIXME_ATTENTION_REQUIRED` or `run status` reports `currentCommand` in the form `attention:<attention-id>`, this skill becomes only the user-facing broker for that prompt:
 
 1. Call `lifecycle attention broker show --fixme-dir <fixme-dir> --status-id <fixmeTaskStatusId> --attention-id <attention-id>`, then read the returned `promptMarkdown` and `renderContract` and present the prompt according to the Boundary Delivery Contract in `fixme-howto-present-decisions`.
-2. If the user response is a decision answer, call `lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.
-3. If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.
+2. If the user response is a decision answer, run:
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '{"answer":"<raw user answer>","answeredBy":"user","answerKind":"decision"}'
+   ```
+3. If the user response is a clarifying question, run:
+   ```bash
+   node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle attention broker resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id> --data '{"answer":"<raw user clarification question>","answeredBy":"user","answerKind":"clarificationRequest"}'
+   ```
 4. Execute exactly the returned `runtimeAction`, then call `lifecycle runtime-action observe` with evidence for that `actionId`; repeat while lifecycle returns `status: "requiresRuntimeAction"`. The returned `resume.liveness.statusId` must equal `<fixmeTaskStatusId>` and remains context for the resumed invocation, not a command-line flag. Do not compose `--resume <activeChild.resumeRef> --answer-attention <attention-id>` by hand, do not re-pass routed PR fix item text, and do not include the user's answer as a locked decision in a fresh prompt. The status id is context, not a command-line flag.
-5. After lifecycle observes successful runtime launch evidence, copy the `acknowledgeResumeTemplate.data` returned by `lifecycle attention broker resume`, add only runtime evidence requested by the template, and call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with that payload.
+5. After lifecycle observes successful runtime launch evidence, copy `acknowledgeResumeTemplate.data` exactly, add only the observed `runtimeHandle` when the runtime action returned one, and call `lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --status-id <fixmeTaskStatusId> --attention-id <attention-id>` with that payload.
 
 If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again. Call `lifecycle attention broker resume` with the returned `answer` object, execute the returned runtime-action loop, then call `lifecycle attention broker acknowledge-resume` with the same observed-launch evidence shape.
 
@@ -878,10 +942,15 @@ Build one prepare-child payload file and let the CLI perform the stable parent-s
 
 ```bash
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin <<'JSON'
+<prepare-child-payload>
+JSON
 ```
 
-Do not call lifecycle `--help` during normal execution. This section is the command contract; build this payload and call the documented command directly.
+prepare-child output fields: `parentRunId`, `statusId`, `launch.transport`, `launch.promptBlocks`, `launch.usageContext`, `runtimeAction`, and `activeChild`.
+The parent lookup is always `lookupInput.pullRequestRef`; never use a string lookup placeholder for PR-comment parent resolution or prepare-child.
+After broker resume, copy `acknowledgeResumeTemplate.data` exactly and add only the observed `runtimeHandle` when the runtime action returned one.
+Do not run `--help` to discover the payload for this path.
 
 The payload must use this shape. Keep group ids as JSON values, never object keys:
 
@@ -1058,14 +1127,14 @@ The sample `child.handoff.taskSaveData` includes a concrete `settledSolutionShap
 
 Launch and wait by the documented sequence: `lifecycle parent prepare-child` -> spawn or resume the child `fixme-task` -> when the child is running, copy the `attachRuntimeHandleTemplate` from the prepare/launch output, add only `runtimeHandle`, and call `lifecycle dispatch attach-runtime-handle` before waiting -> block on the runtime wait primitive -> terminal `lifecycle dispatch complete` only after the child returns. The parent never calls `lifecycle dispatch complete` with `status: "running"`.
 
-When waiting, write one durable wait marker and block silently on the runtime wait primitive with a 5-minute watchdog (`wait_agent({ targets: [id], timeout_ms: 300000 })` for Codex agents). On watchdog timeout, call `lifecycle dispatch probe` and branch only on the returned `transition`; do not hand-roll `run status` age thresholds. `run status.updatedAt` is the last status write, not a heartbeat; only `run status.workerHeartbeat.observedAt` is child-owned liveness. An old or missing heartbeat with an attached active runtime and no terminal/attention evidence is a `continueWait` state, not failure. `awaitFixmeTask` is the watchdog fallback / resume recovery / attention brokering / explicit status path, not a routine polling loop; on the fallback path it advances to `brokerChildAttention` on a pending attention, re-arms the same wait action on `continueWait`, or advances to `consumeTaskEvent` when a durable task event exists for the active batch:
+When waiting, write one durable wait marker and block silently on the runtime wait primitive with a 5-minute watchdog (`wait_agent({ targets: [id], timeout_ms: 300000 })` for Codex agents). On watchdog timeout, call `lifecycle dispatch probe` and branch only on the returned `transition`; do not hand-roll `run status` age thresholds. `run status.updatedAt` is the last status write, not a heartbeat; only `run status.workerHeartbeat.observedAt` is child-owned liveness detail. An old or missing heartbeat with an attached active runtime and no terminal/attention evidence is `runtimeWaitTimedOut` with `reason: "runtimeLivenessUnknown"`, not proof of live work. `awaitFixmeTask` is the watchdog fallback / resume recovery / attention brokering / explicit status path, not a routine polling loop; on the fallback path it advances to `brokerChildAttention` on a pending attention, reports `runtimeWaitTimedOut` as blocked host-runtime liveness unknown, or advances to `consumeTaskEvent` when a durable task event exists for the active batch:
 
 ```bash
-node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch probe --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId> --data-file <dispatch-probe.json>
+node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle dispatch probe --fixme-dir <fixme-dir> --dispatch-id <dispatchId> --status-id <fixmeTaskStatusId> --data '{"parentStatePath":"<absolute-parent-state-path>","waitActionId":"<wait-action-id>","watchdogMs":300000,"probeReason":"waitWatchdogTimeout"}'
 node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next
 ```
 
-The dispatch-probe payload carries `{ "parentStatePath": "<parent state.json>", "waitActionId": "<wait-action-id>", "watchdogMs": 300000, "probeReason": "waitWatchdogTimeout" }`. Branch on its `transition`: `continueWait` means the timeout was only a parent watchdog wakeup and the same runtime wait action must be re-armed; `stalledOwner` means a terminal child run was observed but the owning dispatcher did not consume completion, so run `lifecycle dispatch stalled-owner recover` with the returned recovery data and then either execute the returned owner resume runtime action or treat `ownerStoppedBeforeDispatchCompletion` as the child dispatch failure; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, run exactly `lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next`. A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10 with `payload.childResultSummaryPaths`, `payload.flags`, `payload.routedGroups`, and the consumed task event already present. Continue directly to Step 10 using that returned parent state. If the child failed, the same command persists a failed parent at `summarize` with reason `childFailed`; stop and report the child failure.
+The dispatch-probe payload carries `{ "parentStatePath": "<parent state.json>", "waitActionId": "<wait-action-id>", "watchdogMs": 300000, "probeReason": "waitWatchdogTimeout" }`. Branch on its `transition`: `runtimeWaitTimedOut` means lifecycle found no terminal event, attention, stalled owner, or dispatch failure and host-runtime liveness is unknown, so report the returned reason/status and stop the current wait path; `stalledOwner` means a terminal child run was observed but the owning dispatcher did not consume completion, so run `lifecycle dispatch stalled-owner recover` with the returned recovery data and then either execute the returned owner resume runtime action or treat `ownerStoppedBeforeDispatchCompletion` as the child dispatch failure; `terminalEvent` consumes the durable event; `attention` brokers the prompt using the returned `brokerResumeTemplate`; `dispatchFailure` enters the failure/recovery path. When a durable task event exists for the active child, run exactly `lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next`. A completed child with no remaining fix batches returns `nextParent.cursor: "verify"` and persists the parent at Step 10 with `payload.childResultSummaryPaths`, `payload.flags`, `payload.routedGroups`, and the consumed task event already present. Continue directly to Step 10 using that returned parent state. If the child failed, the same command persists a failed parent at `summarize` with reason `childFailed`; stop and report the child failure.
 
 Do not call `lifecycle parent checkpoint` to reconstruct `consumeTaskEvent`, `verify`, `commit`, `push`, `replyComments`, `resolveThreads`, or `summarize`. That command is a low-level runtime primitive, not a PR-comments recovery path. If `lifecycle task-event consume --next` fails with a missing parent payload field, stop with a runtime contract blocker that names the missing field, `parentRunId`, and `fixmeTaskStatusId`; do not inspect `<fixme-dir>` files, infer payload fields, or replay checkpoints by hand. A correct run that followed `lifecycle parent prepare-child` has the required fields already.
 

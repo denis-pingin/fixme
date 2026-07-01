@@ -3264,6 +3264,32 @@ function prepareResumableProducerDispatch(slug, idempotencyKey) {
   };
 }
 
+function prepareNonProducerDispatch(slug, idempotencyKey, agentName = 'fixme-plan-readiness') {
+  const { projectRoot, fixmeDir, statePath } = initTaskState(slug);
+  const prepare = runInDir(
+    `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
+      idempotencyKey,
+      agentName,
+      transport: 'agent',
+      runtime: 'codex',
+      taskStatePath: statePath,
+      promptInputs: { mode: 'readiness' },
+    })}'`,
+    projectRoot,
+  );
+  assert(prepare.ok, `expected non-producer prepare to pass: ${prepare.stderr || prepare.stdout}`);
+  return {
+    projectRoot,
+    fixmeDir,
+    statePath,
+    taskStatePath: statePath,
+    prepare,
+    dispatchId: prepare.data.dispatchId,
+    statusId: prepare.data.statusId,
+    statusPath: prepare.data.statusPath,
+  };
+}
+
 function attachResumableHandle(fixmeDir, prepare, projectRoot, handleId) {
   const attach = runInDir(
     `lifecycle dispatch attach-runtime-handle --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
@@ -3447,6 +3473,25 @@ test('wait completed observation applies checkpointData through runtime-action o
   assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'conflicting completed wait must reject before mutation');
 });
 
+test('non-producer wait completed observation omits producer runtime handle persistence', () => {
+  const setup = prepareNonProducerDispatch('wait-completed-non-producer', 'wait-completed-non-producer-prepare');
+  const started = observeSpawnForDispatch(setup, 'agent_wait_completed_non_producer');
+  assert(started.data.runtimeAction.kind === 'waitAgent', `spawn observe should return wait action, got ${JSON.stringify(started.data)}`);
+
+  const completed = observeWaitForDispatch(setup, {
+    waitOutcome: 'completed',
+    result: { status: 'completed', output: 'READINESS_RESULT: EXECUTE\nBLOCKING_FINDING_COUNT: 0\nQUESTION_COUNT: 0\nRISK_LEVEL: low' },
+    checkpointData: { handoff: { reviewFindings: 'Readiness passed.' } },
+  });
+
+  assert(completed.ok, `non-producer wait completion should succeed, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.status === 'completed', `non-producer wait should complete dispatch, got ${JSON.stringify(completed.data)}`);
+  assert(!completed.data.producerContinuation, `non-producer wait must not persist producer continuation, got ${JSON.stringify(completed.data)}`);
+  const record = readJson(dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId));
+  assert(record.completion.inputs.runtimeHandle === null, `non-producer completion runtimeHandle should be null, got ${JSON.stringify(record.completion.inputs)}`);
+  assert(!record.releaseState || record.releaseState.status === 'notRequired', `non-producer release should not be pending, got ${JSON.stringify(record.releaseState)}`);
+});
+
 test('wait failed observation records dispatch failure through runtime-action observe', () => {
   const setup = prepareResumableProducerDispatch('wait-failed-observe', 'wait-failed-observe-prepare');
   const started = observeSpawnForDispatch(setup, 'agent_wait_failed_observe');
@@ -3500,23 +3545,24 @@ test('completed wait observation returns closeAgent release plan and release-com
   assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirst), 'conflicting release-complete must reject before mutation');
 });
 
-test('wait timeout records non-terminal watchdog event and late completion still completes dispatch', () => {
+test('wait timeout records liveness-unknown watchdog event and late completion still completes dispatch', () => {
   const setup = prepareResumableProducerDispatch('wait-timeout-continue-wait', 'wait-timeout-continue-wait-prepare');
   observeSpawnForDispatch(setup, 'agent_wait_timeout_continue');
   const before = snapshotTaskDispatch(setup);
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.transition === 'continueWait', `timeout should re-arm the wait instead of terminalizing it, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'runtimeWaitTimedOut', `timeout should report liveness unknown instead of re-arming the wait, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.reason === 'runtimeLivenessUnknown', `timeout reason should be runtimeLivenessUnknown, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.liveness.state === 'heartbeatMissing', `missing heartbeat should be reported as liveness detail, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.wait.actionId === setup.waitActionId, `continueWait should carry the same wait action, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.wait.timeoutMs === 300000, `continueWait should preserve timeoutMs, got ${JSON.stringify(timeout.data)}`);
-  assert(!JSON.stringify(timeout.data).includes('runtimeWaitTimedOut'), `timeout response must not expose old timeout transition, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.wait.actionId === setup.waitActionId, `timeout diagnostic should carry the same wait action, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.wait.timeoutMs === 300000, `timeout diagnostic should preserve timeoutMs, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition !== 'continue' + 'Wait', `timeout response must not expose automatic re-wait transition, got ${JSON.stringify(timeout.data)}`);
   const after = snapshotTaskDispatch(setup);
-  assert(after.task === before.task, 'continueWait timeout must not mutate task state');
-  assert(after.dispatch === before.dispatch, 'continueWait timeout must not mutate dispatch state');
+  assert(after.task === before.task, 'runtimeWaitTimedOut must not mutate task state');
+  assert(after.dispatch === before.dispatch, 'runtimeWaitTimedOut must not mutate dispatch state');
   const status = run(`run status --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId}`);
   assert(status.ok, `run status should remain readable, got ${JSON.stringify(status.data)}`);
-  assert(status.data.userStatus === undefined, `timeout should not write stale userStatus to child status, got ${JSON.stringify(status.data)}`);
+  assert(status.data.userStatus === 'owned, wait timed out, liveness unknown', `timeout should label host-runtime liveness as unknown, got ${JSON.stringify(status.data)}`);
   const actionAfterTimeout = readRuntimeActionForTest(setup.fixmeDir, setup.waitActionId);
   assert(actionAfterTimeout.status === 'pending', `timeout must leave wait action pending, got ${JSON.stringify(actionAfterTimeout)}`);
   assert(!actionAfterTimeout.observation, `timeout must not consume terminal observation slot, got ${JSON.stringify(actionAfterTimeout)}`);
@@ -3537,7 +3583,39 @@ test('wait timeout records non-terminal watchdog event and late completion still
   assert(taskAfterCompletion.artifacts.planPath === '/tmp/late-plan.md', `late completion checkpointData should apply, got ${JSON.stringify(taskAfterCompletion.artifacts)}`);
 });
 
-test('wait timeout observation returns pending attention before continueWait', () => {
+test('wait timeout with fresh worker heartbeat returns another sealed wait action', () => {
+  const setup = prepareResumableProducerDispatch('wait-timeout-fresh-heartbeat', 'wait-timeout-fresh-heartbeat-prepare');
+  observeSpawnForDispatch(setup, 'agent_wait_timeout_fresh_heartbeat');
+  const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "still planning"`);
+  assert(ping.ok, `worker heartbeat ping should succeed, got ${JSON.stringify(ping.data)}`);
+  const before = snapshotTaskDispatch(setup);
+
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+
+  assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.status === 'requiresRuntimeAction', `fresh heartbeat should return a runtime action, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'runtimeWaitContinues', `fresh heartbeat should continue wait, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.reason === 'workerHeartbeatRecent', `fresh heartbeat reason should be workerHeartbeatRecent, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.liveness.state === 'heartbeatRecent', `fresh heartbeat liveness should be reported, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.runtimeAction.kind === 'waitAgent', `next action should wait on same agent, got ${JSON.stringify(timeout.data.runtimeAction)}`);
+  assert(timeout.data.runtimeAction.actionId !== setup.waitActionId, `continued wait should use a new sealed action, got ${JSON.stringify(timeout.data.runtimeAction)}`);
+  assert(timeout.data.runtimeAction.runtimeHandle.id === 'agent_wait_timeout_fresh_heartbeat', `continued wait should target the same runtime handle, got ${JSON.stringify(timeout.data.runtimeAction)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(before), 'fresh heartbeat timeout must not mutate task or dispatch completion state');
+
+  const originalAction = readRuntimeActionForTest(setup.fixmeDir, setup.waitActionId);
+  assert(Array.isArray(originalAction.watchdogEvents) && originalAction.watchdogEvents.length === 1, `original wait should record watchdog history, got ${JSON.stringify(originalAction)}`);
+
+  setup.waitActionId = timeout.data.runtimeAction.actionId;
+  const completed = observeWaitForDispatch(setup, {
+    waitOutcome: 'completed',
+    result: { status: 'completed', output: 'PLAN_PATH: /tmp/fresh-heartbeat-plan.md' },
+    checkpointData: { artifacts: { planPath: '/tmp/fresh-heartbeat-plan.md' } },
+  });
+  assert(completed.ok && completed.data.status === 'completed', `continued wait completion should complete dispatch, got ${JSON.stringify(completed.data)}`);
+  assert(readJson(setup.taskStatePath).artifacts.planPath === '/tmp/fresh-heartbeat-plan.md', 'continued wait completion applies checkpointData');
+});
+
+test('wait timeout observation returns pending attention before liveness-unknown timeout', () => {
   const setup = prepareResumableProducerDispatch('wait-timeout-attention', 'wait-timeout-attention-prepare');
   observeSpawnForDispatch(setup, 'agent_wait_timeout_attention');
   const attentionData = JSON.stringify({
@@ -3554,7 +3632,7 @@ test('wait timeout observation returns pending attention before continueWait', (
   const before = snapshotTaskDispatch(setup);
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
-  assert(timeout.data.transition === 'attention', `pending attention should win over continueWait, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'attention', `pending attention should win over liveness-unknown timeout, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.attentionId === opened.data.attentionId, `attention id should be returned, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.brokerResumeTemplate.statusId === setup.statusId, 'brokerResumeTemplate carries statusId');
   assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(before), 'attention timeout classification must not mutate task or dispatch state');
@@ -3644,6 +3722,8 @@ test('stalled-owner recover returns sealed owner resume after revalidating durab
   assert(recovered.data.status === 'requiresRuntimeAction', 'recover returns a sealed runtime action');
   assert(recovered.data.runtimeAction.kind === 'resumeAgentAndSendInput', `recover action resumes owner, got ${JSON.stringify(recovered.data.runtimeAction)}`);
   assert(recovered.data.runtimeAction.runtimeHandle.id === 'agent_stalled_owner_recover_owner', 'recover targets the owner runtime handle');
+  assert(recovered.data.runtimeAction.agentName === 'fixme-task', `recover action must name the owner agent, got ${JSON.stringify(recovered.data.runtimeAction)}`);
+  assert(recovered.data.runtimeAction.target.targetAgentName === 'fixme-task', `recover target must name the owner agent, got ${JSON.stringify(recovered.data.runtimeAction)}`);
   assert(recovered.data.runtimeAction.continuation.mode === 'stalledOwnerRecover', 'recover action carries stalledOwnerRecover continuation');
 });
 
@@ -3661,17 +3741,68 @@ test('stalled-owner recover records owner stopped when durable facts no longer m
   assert(record.completion && record.completion.output.status === 'failed', 'owner-stopped recovery records dispatch failure through the normal completion boundary');
 });
 
-test('stalled-owner recover never spawns a fresh owner when the owner cannot resume', () => {
-  const setup = prepareDispatchWithOwnerStatus('stalled-owner-no-fresh');
+test('stalled-owner recover returns direct owner completion when owner is still waiting without runtime handle', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-direct-owner');
   markChildRunTerminal(setup, 'completed');
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok && timeout.data.transition === 'stalledOwner', `setup should detect stalled owner, got ${JSON.stringify(timeout.data)}`);
   const beforeActions = listRuntimeActionFiles(setup.fixmeDir);
   const recovered = run(`lifecycle dispatch stalled-owner recover --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(timeout.data.recovery.data)}'`);
-  assert(recovered.ok, `no-fresh recovery should return lifecycle transition, got ${JSON.stringify(recovered.data)}`);
-  assert(recovered.data.transition === 'dispatchFailure', `no-runtime owner returns dispatchFailure, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.ok, `direct-owner recovery should return lifecycle transition, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.transition === 'directOwnerCompletion', `no-runtime owner returns directOwnerCompletion, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.status !== 'requiresRuntimeAction', `direct owner must not require runtime action, got ${JSON.stringify(recovered.data)}`);
   assert(!JSON.stringify(recovered.data).includes('spawnAgent'), `recovery must not offer fresh owner spawn, got ${JSON.stringify(recovered.data)}`);
-  assert(JSON.stringify(listRuntimeActionFiles(setup.fixmeDir)) === JSON.stringify(beforeActions), 'no-runtime owner must not persist a fresh runtime action');
+  assert(JSON.stringify(listRuntimeActionFiles(setup.fixmeDir)) === JSON.stringify(beforeActions), 'direct owner recovery must not persist a fresh runtime action');
+  assert(recovered.data.completionTemplates.completed.status === 'completed', `direct owner gets completion template, got ${JSON.stringify(recovered.data)}`);
+
+  const completed = run(`lifecycle dispatch complete --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(recovered.data.completionTemplates.completed)}'`);
+  assert(completed.ok && completed.data.status === 'completed', `direct owner should complete dispatch after recovery, got ${JSON.stringify(completed.data)}`);
+});
+
+test('stalled-owner recover repairs legacy false owner-stopped completion for direct owner', () => {
+  const setup = prepareDispatchWithOwnerStatus('stalled-owner-legacy-direct');
+  markChildRunTerminal(setup, 'completed');
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok && timeout.data.transition === 'stalledOwner', `setup should detect stalled owner, got ${JSON.stringify(timeout.data)}`);
+  const recordPath = dispatchRecordPathForTest(setup.fixmeDir, setup.ownedPrepare.dispatchId);
+  const record = readJson(recordPath);
+  record.completion = {
+    inputs: {
+      status: 'failed',
+      currentCommand: null,
+      failure: {
+        reason: 'ownerStoppedBeforeDispatchCompletion',
+        message: `Owner status ${setup.ownerStatusId} has no resumable runtime handle before dispatch completion was consumed`,
+      },
+      runtimeHandle: null,
+      checkpointData: null,
+    },
+    output: {
+      dispatchId: setup.ownedPrepare.dispatchId,
+      statusId: setup.ownedPrepare.statusId,
+      status: 'failed',
+      currentCommand: null,
+      statusPath: setup.ownedPrepare.statusPath,
+      failure: {
+        reason: 'ownerStoppedBeforeDispatchCompletion',
+        message: `Owner status ${setup.ownerStatusId} has no resumable runtime handle before dispatch completion was consumed`,
+      },
+      releaseState: { status: 'notRequired', reason: 'failedDispatch' },
+    },
+    completedAt: new Date().toISOString(),
+  };
+  record.releaseState = { status: 'notRequired', reason: 'failedDispatch' };
+  fs.writeFileSync(recordPath, JSON.stringify(record, null, 2) + '\n');
+
+  const recovered = run(`lifecycle dispatch stalled-owner recover --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(timeout.data.recovery.data)}'`);
+  assert(recovered.ok, `legacy direct-owner recovery should return lifecycle transition, got ${JSON.stringify(recovered.data)}`);
+  assert(recovered.data.transition === 'directOwnerCompletion', `legacy false failure should repair to directOwnerCompletion, got ${JSON.stringify(recovered.data)}`);
+  const repairedRecord = readJson(recordPath);
+  assert(repairedRecord.completion === undefined, `legacy false failure completion should be removed, got ${JSON.stringify(repairedRecord.completion)}`);
+  assert(repairedRecord.releaseState === undefined, `legacy false failure releaseState should be removed, got ${JSON.stringify(repairedRecord.releaseState)}`);
+
+  const completed = run(`lifecycle dispatch complete --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify(recovered.data.completionTemplates.completed)}'`);
+  assert(completed.ok && completed.data.status === 'completed', `direct owner should complete after legacy repair, got ${JSON.stringify(completed.data)}`);
 });
 
 test('dispatch complete rejects mismatched runtime handle before mutation', () => {
@@ -3713,6 +3844,9 @@ test('dispatch complete derives omitted runtime handle from activeRuntime', () =
     projectRoot,
   );
   assert(complete.ok, `omitted-handle completion should succeed, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.releaseState === 'pending', `manual dispatch complete should attach the same producer release plan as wait observation, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.runtimeReleasePlan.runtimeAction.kind === 'closeAgent', `manual dispatch complete should return closeAgent release action, got ${JSON.stringify(complete.data)}`);
+  assert(complete.data.releaseCompleteTemplate.data.runtimeHandle.id === 'agent_derived', `release template should use attached runtime handle, got ${JSON.stringify(complete.data)}`);
   const state = readJson(statePath);
   assert(state.producerContinuations.length === 1, 'producer continuation stored from derived handle');
   assert(state.producerContinuations[0].runtimeHandle.id === 'agent_derived', 'derived handle id matches attached activeRuntime');
@@ -4364,16 +4498,18 @@ function probeDispatch(setup, extraPayload = {}) {
   return run(`lifecycle dispatch probe --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-file "${payloadPath}"`);
 }
 
-test('dispatch probe returns continueWait with child-owned heartbeat for active nonterminal runtime', () => {
+test('dispatch probe returns runtimeWaitTimedOut with child-owned heartbeat detail', () => {
   const setup = setupParentDrivenChild('probe-owned', 'probe-owned-start');
   const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
   assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
   const result = probeDispatch(setup);
-  assert(result.ok && result.data.transition === 'continueWait', `expected continueWait, got ${JSON.stringify(result.data)}`);
+  assert(result.ok && result.data.transition === 'runtimeWaitContinues', `expected runtimeWaitContinues, got ${JSON.stringify(result.data)}`);
+  assert(result.data.reason === 'workerHeartbeatRecent', `expected workerHeartbeatRecent, got ${JSON.stringify(result.data)}`);
   assert(result.data.liveness.state === 'heartbeatRecent', `expected heartbeatRecent, got ${JSON.stringify(result.data)}`);
   assert(result.data.liveness.workerHeartbeat.currentCommand === 'test command', `probe should return child heartbeat, got ${JSON.stringify(result.data)}`);
   assert(result.data.wait.actionId === setup.waitActionId, `probe should carry waitActionId, got ${JSON.stringify(result.data)}`);
-  assert(!JSON.stringify(result.data).includes('runtimeOwned'), `result must not mention runtimeOwned, got ${JSON.stringify(result.data)}`);
+  assert(result.data.runtimeAction.kind === 'waitAgent', `probe should return sealed wait action, got ${JSON.stringify(result.data)}`);
+  assert(!JSON.stringify(result.data).includes('runtime' + 'Owned'), `result must not mention obsolete runtime-owned state, got ${JSON.stringify(result.data)}`);
 
   const statusPath = path.join(setup.fixmeDir, 'runs', setup.statusId, 'status.json');
   const status = readJson(statusPath);
@@ -4397,14 +4533,32 @@ test('dispatch probe rejects wait actions that do not belong to the dispatch', (
   assert(result.data.error.code === 'runtimeTargetUnproven', `mismatch should fail as runtimeTargetUnproven, got ${JSON.stringify(result.data)}`);
 });
 
-test('reconcile-wait compatibility returns continueWait with heartbeat detail', () => {
+test('reconcile-wait compatibility returns runtimeWaitTimedOut with heartbeat detail', () => {
   const setup = setupParentDrivenChild('reconcile-owned', 'reconcile-owned-start');
   const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
   assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
   const result = reconcileWait(setup);
-  assert(result.ok && result.data.transition === 'continueWait', `expected continueWait, got ${JSON.stringify(result.data)}`);
+  assert(result.ok && result.data.transition === 'runtimeWaitContinues', `expected runtimeWaitContinues, got ${JSON.stringify(result.data)}`);
+  assert(result.data.reason === 'workerHeartbeatRecent', `expected workerHeartbeatRecent, got ${JSON.stringify(result.data)}`);
   assert(result.data.liveness.state === 'heartbeatRecent', `expected heartbeatRecent, got ${JSON.stringify(result.data)}`);
   assert(result.data.liveness.workerHeartbeat.currentCommand === 'test command', `reconcile should return child heartbeat, got ${JSON.stringify(result.data)}`);
+  assert(result.data.runtimeAction.kind === 'waitAgent', `reconcile should return sealed wait action, got ${JSON.stringify(result.data)}`);
+});
+
+test('reconcile-wait accepts generated stdin JSON payloads', () => {
+  const setup = setupParentDrivenChild('reconcile-stdin', 'reconcile-stdin-start');
+  const ping = run(`run ping --fixme-dir "${setup.fixmeDir}" --status-id ${setup.statusId} --state running --checkpoint working --current-command "test command"`);
+  assert(ping.ok, `ping should succeed, got ${JSON.stringify(ping.data)}`);
+  const payload = JSON.stringify({ parentStatePath: setup.parentStatePath });
+  const result = runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle dispatch reconcile-wait --fixme-dir "${setup.fixmeDir}" --dispatch-id ${setup.dispatchId} --status-id ${setup.statusId} --data-stdin`,
+    payload,
+    { cwd: setup.projectRoot },
+  );
+  assert(result.ok && result.data.transition === 'runtimeWaitContinues', `stdin reconcile should execute, got ${JSON.stringify(result.data)}`);
+  assert(result.data.reason === 'workerHeartbeatRecent', `stdin reconcile should return workerHeartbeatRecent, got ${JSON.stringify(result.data)}`);
+  assert(result.data.runtimeAction.kind === 'waitAgent', `stdin reconcile should return sealed wait action, got ${JSON.stringify(result.data)}`);
 });
 
 test('reconcile-wait returns terminalEvent with consumeTemplate', () => {
@@ -4868,7 +5022,7 @@ test('cli help emits command schemas before required validation', () => {
       command: 'lifecycle attention broker resume',
       requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
       requiredDataFields: ['answer', 'answeredBy', 'answerKind'],
-      optionalDataFields: [],
+      optionalDataFields: ['callerStatusId', 'callerRuntimeHandle'],
       enumChecks: [['answerKind', ['decision', 'clarificationRequest']]],
       audience: 'parent-facing',
       guidanceIncludes: 'persisted launch plan plus sealed runtimeAction',
@@ -5315,6 +5469,7 @@ test('new lifecycle task and runtime-action commands are registered with complet
   for (const field of ['dataFile', 'ownerFence', 'agentName', 'runtime', 'reason', 'idempotencyKey']) {
     assert(markBadHelpText.includes(field), `mark-bad help documents ${field}, got ${markBadHelpText}`);
   }
+  assert(markBadHelpText.includes('runtimeLivenessUnknown'), `mark-bad help documents runtimeLivenessUnknown reason, got ${markBadHelpText}`);
 
   const attachHelp = run('lifecycle dispatch attach-runtime-handle --help');
   assert(attachHelp.ok, `dispatch attach help should succeed, got ${JSON.stringify(attachHelp.data)}`);
@@ -5330,6 +5485,18 @@ test('new lifecycle task and runtime-action commands are registered with complet
     assert(stalledOwnerRecoverHelpText.includes(field), `stalled-owner recover help documents ${field}, got ${stalledOwnerRecoverHelpText}`);
   }
   assert(stalledOwnerRecoverHelpText.includes('ownerStoppedBeforeDispatchCompletion'), `stalled-owner recover help documents stopped-owner failure, got ${stalledOwnerRecoverHelpText}`);
+
+  const runtimeObserveHelp = run('lifecycle runtime-action observe --help');
+  assert(runtimeObserveHelp.ok, `runtime-action observe help should succeed, got ${JSON.stringify(runtimeObserveHelp.data)}`);
+  const runtimeObserveHelpText = JSON.stringify(runtimeObserveHelp.data).replace(/\\"/g, '"');
+  for (const phrase of [
+    '"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"failed","failure":{"reason":"childFailed","message":"<short failure message>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"timeout"',
+  ]) {
+    assert(runtimeObserveHelpText.includes(phrase), `runtime-action observe help documents exact payload ${phrase}, got ${runtimeObserveHelpText}`);
+  }
 
   const taskInitHelp = run('task init --help');
   assert(taskInitHelp.ok, `task init help should succeed, got ${JSON.stringify(taskInitHelp.data)}`);
@@ -5878,11 +6045,12 @@ test('producer continuation mark-bad requires owner-fenced data file contract', 
     ownerFence: continued.data.ownerFence,
     agentName: 'fixme-write-plan',
     runtime: 'codex',
-    reason: 'runtimeResumeFailed',
+    reason: 'runtimeLivenessUnknown',
     idempotencyKey: 'mark-bad-current',
   });
   const marked = runInDir(`task producer-continuation mark-bad --state "${init.statePath}" --data-file "${payloadPath}"`, init.projectRoot);
   assert(marked.ok, `current fence should mark producer bad, got ${JSON.stringify(marked.data)}`);
+  assert(marked.data.updatedEntry.badReason === 'runtimeLivenessUnknown', `mark-bad should preserve runtimeLivenessUnknown reason, got ${JSON.stringify(marked.data)}`);
 
   const staleFence = { ...continued.data.ownerFence, taskOwnerGeneration: continued.data.ownerFence.taskOwnerGeneration + 1 };
   const stalePayloadPath = writeJsonFixture(init.projectRoot, 'mark-bad-stale.json', {
@@ -5915,7 +6083,9 @@ test('safe JSON sources support direct file stdin and reject ambiguous sources',
 
   const ambiguous = runInDir(`pipeline resolve --data '${JSON.stringify(directPayload)}' --data-file "${payloadPath}"`, projectRoot);
   assert(!ambiguous.ok, 'direct plus file should fail');
-  assert(cliErrorMessage(ambiguous).includes('Only one JSON source is allowed for --data'), `ambiguous error should name data source, got ${JSON.stringify(ambiguous.data)}`);
+  assert(ambiguous.data?.error?.code === 'ambiguousPayloadSource', `ambiguous error should be structured, got ${JSON.stringify(ambiguous.data)}`);
+  assert(cliErrorMessage(ambiguous).includes('pipeline resolve accepts exactly one JSON payload source'), `ambiguous error should name command, got ${JSON.stringify(ambiguous.data)}`);
+  assert(ambiguous.data.mutation === 'none', `ambiguous error should state no mutation, got ${JSON.stringify(ambiguous.data)}`);
   const relative = runInDir('pipeline resolve --data-file pipeline-payload.json', projectRoot);
   assert(!relative.ok, 'relative data-file should fail');
   assert(cliErrorMessage(relative).includes('--data-file must be an absolute path'), `relative path error should name data-file, got ${JSON.stringify(relative.data)}`);
@@ -5990,6 +6160,61 @@ test('dispatch prepare honors explicit Codex runtime in durable payload', () => 
   const conflictData = JSON.stringify({ idempotencyKey: 'd1-codex', agentName: 'fixme-write-plan', transport: 'agent', runtime: 'claude', promptInputs: {} });
   const conflict = run(`lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${conflictData}'`);
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `runtime mismatch should conflict, got ${JSON.stringify(conflict.data)}`);
+});
+
+test('dispatch prepare accepts current owner fence from resumed task', () => {
+  const init = initTaskState('dispatch-prepare-owner-fence');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: init.taskPath,
+    runtime: 'codex',
+    transport: 'direct',
+    topLevelInteractive: true,
+    idempotencyKey: 'dispatch-prepare-owner-fence-continue',
+  })}'`);
+  assert(continued.ok && continued.data.ownerFence, `continue should return owner fence, got ${JSON.stringify(continued.data)}`);
+
+  const missingFencePayload = {
+    idempotencyKey: 'dispatch-prepare-owner-fence-missing',
+    agentName: 'fixme-write-plan',
+    transport: 'agent',
+    runtime: 'codex',
+    promptInputs: {},
+    taskStatePath: init.statePath,
+    allowProducerContinuation: true,
+  };
+  const missingFence = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify(missingFencePayload)}'`);
+  assert(!missingFence.ok && missingFence.data.error.code === 'staleTaskOwner', `missing owner fence should fail closed, got ${JSON.stringify(missingFence.data)}`);
+
+  const currentFencePayload = {
+    ...missingFencePayload,
+    idempotencyKey: 'dispatch-prepare-owner-fence-current',
+    ownerFence: continued.data.ownerFence,
+  };
+  const prepared = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify(currentFencePayload)}'`);
+  assert(prepared.ok, `current owner fence should prepare dispatch, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.dispatchId && prepared.data.statusId, `dispatch prepare should return child dispatch identity, got ${JSON.stringify(prepared.data)}`);
+  assert(prepared.data.promptBlocks.taskStateOwner && prepared.data.promptBlocks.taskStateOwner.taskStatePath === init.statePath, `task-bound dispatch should expose taskStateOwner, got ${JSON.stringify(prepared.data.promptBlocks)}`);
+  assert(prepared.data.runtimeAction && prepared.data.runtimeAction.message.includes('"taskStateOwner": {'), `runtime action prompt should carry taskStateOwner, got ${prepared.data.runtimeAction && prepared.data.runtimeAction.message}`);
+
+  const idempotencyDir = path.join(init.fixmeDir, 'dispatch', 'idempotency');
+  const recordPath = fs.readdirSync(idempotencyDir)
+    .map(name => path.join(idempotencyDir, name))
+    .find(candidate => readJson(candidate).dispatchId === prepared.data.dispatchId);
+  assert(recordPath, `dispatch idempotency record should exist for ${prepared.data.dispatchId}`);
+  const legacyRecord = readJson(recordPath);
+  legacyRecord.output.promptBlocks.taskStateOwner = null;
+  legacyRecord.output.runtimeAction.message = 'legacy message without task owner';
+  fs.writeFileSync(recordPath, JSON.stringify(legacyRecord, null, 2) + '\n');
+  const actionPath = path.join(init.fixmeDir, 'runtime-actions', `${prepared.data.runtimeAction.actionId}.json`);
+  const legacyAction = readJson(actionPath);
+  legacyAction.message = 'legacy message without task owner';
+  fs.writeFileSync(actionPath, JSON.stringify(legacyAction, null, 2) + '\n');
+
+  const replay = run(`lifecycle dispatch prepare --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify(currentFencePayload)}'`);
+  assert(replay.ok, `replay should repair legacy prepare output, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.promptBlocks.taskStateOwner && replay.data.promptBlocks.taskStateOwner.taskStatePath === init.statePath, `replay should expose taskStateOwner, got ${JSON.stringify(replay.data.promptBlocks)}`);
+  assert(replay.data.runtimeAction.message.includes('"taskStateOwner": {'), `replay runtime action prompt should carry taskStateOwner, got ${replay.data.runtimeAction.message}`);
+  assert(readJson(actionPath).message.includes('"taskStateOwner": {'), 'persisted runtime action message should be repaired on replay');
 });
 
 test('dispatch prepare propagates Codex usage source from parent invocation to inline-skill prompts', () => {
@@ -6229,6 +6454,46 @@ function prepareChildPayload(overrides = {}) {
   };
 }
 
+function extractJsonHeredocAfter(content, marker) {
+  const markerIndex = content.indexOf(marker);
+  assert(markerIndex >= 0, `missing documented marker: ${marker}`);
+  const heredocIndex = content.indexOf("<<'JSON'", markerIndex);
+  assert(heredocIndex >= 0, `missing JSON heredoc after marker: ${marker}`);
+  const jsonStart = content.indexOf('\n', heredocIndex) + 1;
+  const jsonEnd = content.indexOf('\nJSON', jsonStart);
+  assert(jsonEnd > jsonStart, `missing JSON heredoc terminator after marker: ${marker}`);
+  return JSON.parse(content.slice(jsonStart, jsonEnd).trim());
+}
+
+function documentedCheckpointPayloadForTest(ownerFence) {
+  return {
+    ownerFence,
+    idempotencyKey: 'documented-checkpoint-plan-review-cycle-2',
+    loops: { phaseReviewCycles: [{ phase: 'plan', cycles: 2 }] },
+  };
+}
+
+function documentedFinalizePayloadForTest(ownerFence) {
+  return {
+    ownerFence,
+    idempotencyKey: 'documented-finalize-completed',
+    status: 'completed',
+    summaryMarkdown: 'Done',
+    changedFiles: [],
+    artifactPaths: [],
+  };
+}
+
+function assertPipelineResolutionContract(pipelineResolution, label) {
+  assert(pipelineResolution && pipelineResolution.pipeline === 'standard', `${label} pipelineResolution.pipeline should be standard`);
+  assert(pipelineResolution.source === 'userProseIntent', `${label} pipelineResolution.source should be userProseIntent`);
+  assert(isNonEmptyTestStr(pipelineResolution.evidence), `${label} pipelineResolution.evidence should be executable non-empty text`);
+  assert(isNonEmptyTestStr(pipelineResolution.reason), `${label} pipelineResolution.reason should be executable non-empty text`);
+  assert(!Object.prototype.hasOwnProperty.call(pipelineResolution, 'workflow'), `${label} must not use obsolete workflow`);
+  assert(!Object.prototype.hasOwnProperty.call(pipelineResolution, 'workflowSource'), `${label} must not use obsolete workflowSource`);
+  assert(!Object.prototype.hasOwnProperty.call(pipelineResolution, 'phases'), `${label} must not use obsolete phases`);
+}
+
 function parentStateFilePath(fixmeDir, parentRunId) {
   return path.join(fixmeDir, 'parents', parentRunId, 'state.json');
 }
@@ -6256,6 +6521,102 @@ test('parent prepare-child writes launch record and returns sealed spawn action 
   const parent = parentState(fixmeDir, prepared.data.parentRunId);
   assert(parent.status !== 'waitingForChild', `parent must not wait before runtime action evidence, got ${JSON.stringify(parent)}`);
   assert(prepared.data.runtimeAction.message.includes(prepared.data.taskBeginCommand), 'runtime action message contains executable begin command');
+  const runtimeActions = fs.readdirSync(path.join(fixmeDir, 'runtime-actions')).map(file => readJson(path.join(fixmeDir, 'runtime-actions', file)));
+  assert(runtimeActions.length === 1, `prepare-child must persist exactly one returned launch action, got ${JSON.stringify(runtimeActions)}`);
+  assert(runtimeActions[0].actionId === prepared.data.runtimeAction.actionId, `only persisted action should be the returned parent launch action, got ${JSON.stringify(runtimeActions)}`);
+  assert(runtimeActions[0].continuation.mode === 'parentLaunch', `prepare-child must not persist an unreturned dispatchStart action, got ${JSON.stringify(runtimeActions)}`);
+});
+
+test('documented task-save snippets execute through task save', () => {
+  const taskSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md'), 'utf8');
+  const payload = extractJsonHeredocAfter(taskSkill, 'task save --data-stdin');
+  assertPipelineResolutionContract(payload.pipelineResolution, 'fixme-task task save');
+  const fixmeDir = makeFixmeDir();
+  const saved = runToolPathWithInput(TOOLS_PATH, 'task save --data-stdin', JSON.stringify(payload), { cwd: path.dirname(fixmeDir) });
+  assert(saved.ok, `documented task-save payload should execute, got ${JSON.stringify(saved.data)}`);
+  assert(saved.data.taskRef && saved.data.taskPath && saved.data.statePath, `task save returns handoff paths, got ${JSON.stringify(saved.data)}`);
+});
+
+test('documented owner-fenced checkpoint payload executes against attempt-managed task', () => {
+  const init = initTaskState('documented-owner-fenced-checkpoint');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: init.taskPath,
+    runtime: 'codex',
+    transport: 'agent',
+    topLevelInteractive: true,
+    idempotencyKey: 'documented-owner-fenced-checkpoint',
+  })}'`);
+  assert(continued.ok, `continue should acquire owner, got ${JSON.stringify(continued.data)}`);
+
+  const payload = documentedCheckpointPayloadForTest(continued.data.ownerFence);
+  const checkpoint = runToolPathWithInput(
+    TOOLS_PATH,
+    `task checkpoint --state "${init.statePath}" --data-stdin`,
+    JSON.stringify(payload),
+    { cwd: init.projectRoot },
+  );
+
+  assert(checkpoint.ok, `documented checkpoint payload should execute, got ${JSON.stringify(checkpoint.data)}`);
+  const state = readJson(init.statePath);
+  assert(state.loops && state.loops.phaseReviewCycles[0].cycles === 2, `checkpoint persisted documented loop patch, got ${JSON.stringify(state.loops)}`);
+});
+
+test('documented owner-fenced child finalize payload executes against parent-driven task', () => {
+  const setup = setupParentDrivenChild('documented-finalize', 'documented-finalize-start');
+  const payload = documentedFinalizePayloadForTest(setup.ownerFence);
+  const finalize = runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle child finalize --fixme-dir "${setup.fixmeDir}" --state "${setup.taskStatePath}" --data-stdin`,
+    JSON.stringify(payload),
+    { cwd: setup.projectRoot },
+  );
+
+  assert(finalize.ok, `documented finalize payload should execute, got ${JSON.stringify(finalize.data)}`);
+  assert(isNonEmptyTestStr(finalize.data.terminalResultId), 'finalize returns terminalResultId');
+  assert(isNonEmptyTestStr(finalize.data.resultSummaryPath), 'finalize returns resultSummaryPath');
+  assert(isNonEmptyTestStr(finalize.data.eventId), 'finalize returns eventId');
+  assert(isNonEmptyTestStr(finalize.data.changedFilesSource), 'finalize returns changedFilesSource');
+  assert(typeof finalize.data.changedFilesComplete === 'boolean', 'finalize returns changedFilesComplete');
+  assert(Object.prototype.hasOwnProperty.call(finalize.data, 'usageReportLine'), 'finalize returns usageReportLine');
+  const summary = readJson(finalize.data.resultSummaryPath);
+  assert(Array.isArray(summary.changedFiles), `result summary stores derived changedFiles array, got ${JSON.stringify(summary)}`);
+  assert(summary.changedFilesSource === finalize.data.changedFilesSource, `summary changedFilesSource matches stdout, got ${JSON.stringify(summary)}`);
+  assert(summary.changedFilesComplete === finalize.data.changedFilesComplete, `summary changedFilesComplete matches stdout, got ${JSON.stringify(summary)}`);
+  if (summary.changedFilesComplete === false) {
+    assert(summary.changedFilesWarning && summary.changedFilesWarning.reason, `incomplete changed-file metadata persists warning, got ${JSON.stringify(summary.changedFilesWarning)}`);
+  }
+});
+
+test('documented prepare-child snippets parse or execute from skill text', () => {
+  const prCommentsSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md'), 'utf8');
+  const fixmeSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md'), 'utf8');
+
+  const prPayload = extractJsonHeredocAfter(prCommentsSkill, 'lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin');
+  assert(prPayload.parent.lookupInput && prPayload.parent.lookupInput.pullRequestRef, 'PR-comments prepare-child uses lookupInput.pullRequestRef');
+  assert(!isNonEmptyTestStr(prPayload.parent.lookupInput), 'PR-comments lookupInput is not a string placeholder');
+  assertPipelineResolutionContract(prPayload.child.handoff.taskSaveData.pipelineResolution, 'PR-comments prepare-child taskSaveData');
+  const prFixmeDir = makeFixmeDir();
+  const prPrepared = runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle parent prepare-child --fixme-dir "${prFixmeDir}" --data-stdin`,
+    JSON.stringify(prPayload),
+    { cwd: path.dirname(prFixmeDir) },
+  );
+  assert(prPrepared.ok, `documented PR-comments prepare-child payload should execute, got ${JSON.stringify(prPrepared.data)}`);
+  assert(prPrepared.data.launch && prPrepared.data.launch.promptBlocks && prPrepared.data.activeChild, `PR-comments prepare-child returns launch contract, got ${JSON.stringify(prPrepared.data)}`);
+
+  const routerPayload = extractJsonHeredocAfter(fixmeSkill, 'lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin');
+  assert(routerPayload.parent.lookupInput && routerPayload.parent.lookupInput.routeRef, 'router prepare-child uses lookupInput.routeRef');
+  assertPipelineResolutionContract(routerPayload.child.handoff.taskSaveData.pipelineResolution, 'router prepare-child taskSaveData');
+  const routerFixmeDir = makeFixmeDir();
+  const routerPrepared = runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle parent prepare-child --fixme-dir "${routerFixmeDir}" --data-stdin`,
+    JSON.stringify(routerPayload),
+    { cwd: path.dirname(routerFixmeDir) },
+  );
+  assert(routerPrepared.ok, `documented router prepare-child payload should execute, got ${JSON.stringify(routerPrepared.data)}`);
+  assert(routerPrepared.data.launch && routerPrepared.data.launch.promptBlocks && routerPrepared.data.activeChild, `router prepare-child returns launch contract, got ${JSON.stringify(routerPrepared.data)}`);
 });
 
 test('lifecycle task begin from launch id reuses persisted pipeline and creates owner fence', () => {
@@ -8167,6 +8528,28 @@ test('attention broker show and answer record answer without interpreting', () =
   assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting answer, got ${JSON.stringify(conflict.data)}`);
 });
 
+test('attention broker answer rejects broker resume caller evidence', () => {
+  const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-answer-raw-only');
+  const open = run(`lifecycle attention open --fixme-dir "${fixmeDir}" --data '${attentionOpenData(statusId, statePath, { attentionId: 'attn_raw_only1' })}'`);
+  assert(open.ok, `open should succeed, got: ${JSON.stringify(open.data)}`);
+  const beforeAttention = fs.readFileSync(open.data.attentionPath, 'utf8');
+  const beforeTaskState = fs.readFileSync(statePath, 'utf8');
+  const payload = {
+    answer: 'A',
+    answeredBy: 'user',
+    answerKind: 'decision',
+    callerStatusId: 'run_parent',
+    callerRuntimeHandle: { kind: 'codexAgentId', id: 'agent_parent' },
+  };
+
+  const rejected = run(`lifecycle attention broker answer --fixme-dir "${fixmeDir}" --status-id ${statusId} --attention-id attn_raw_only1 --data '${JSON.stringify(payload)}'`);
+
+  assert(!rejected.ok, 'broker answer with resume evidence should fail');
+  assert(rejected.data.error.code === 'unknownField', `broker answer should reject caller evidence at the broker contract, got ${JSON.stringify(rejected.data)}`);
+  assert(fs.readFileSync(open.data.attentionPath, 'utf8') === beforeAttention, 'attention record unchanged after rejected broker answer');
+  assert(fs.readFileSync(statePath, 'utf8') === beforeTaskState, 'task state unchanged after rejected broker answer');
+});
+
 test('attention broker show does not expose task-owned decision state', () => {
   const { fixmeDir, statePath, statusId } = initTaskWithRunStatus('attn-broker-leak');
   // The open carries checkpointData with a pendingDecision; it is persisted on
@@ -8332,6 +8715,33 @@ test('attention broker resume returns resumeExisting when active runtime is prov
   assert(resume.data.runtimeAction.runtimeHandle.id === 'agent_broker_existing', 'uses proven owner runtime handle');
   const parent = parentState(setup.fixmeDir, setup.parentRunId);
   assert(parent.payload.activeChild.resumeLaunchPlan.launchMode === 'resumeExisting', `plan persisted, got ${JSON.stringify(parent.payload.activeChild.resumeLaunchPlan)}`);
+});
+
+test('attention broker resume without payload returns command-local contract and mutates nothing', () => {
+  const setup = setupBrokerTaskOwnedChild('broker_missing_payload', 'broker-missing-payload-start');
+  const attach = attachActiveRuntimeForSetup(setup, 'agent_broker_missing_payload');
+  assert(attach.ok, `attach should succeed, got ${JSON.stringify(attach.data)}`);
+  const open = openTaskOwnedAttentionForSetup(setup, { idempotencySuffix: 'missing-payload' });
+  assert(open.ok, `attention open should succeed, got ${JSON.stringify(open.data)}`);
+  const beforeParent = fs.readFileSync(setup.parentStatePath, 'utf8');
+  const beforeAttention = fs.readFileSync(open.data.attentionPath, 'utf8');
+
+  const missing = run(`lifecycle attention broker resume --fixme-dir "${setup.fixmeDir}" --parent-run-id ${setup.parentRunId} --status-id ${setup.activeChild.statusId} --attention-id ${open.data.attentionId}`);
+
+  assert(!missing.ok, 'broker resume without payload must fail');
+  assert(missing.data?.ok === false, `missing payload should return JSON error envelope, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.error.code === 'missingRequiredPayload', `missing payload code should be missingRequiredPayload, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.error.message.includes('lifecycle attention broker resume requires one JSON payload source'), `message should name command and payload sources, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.error.message.includes('--data') && missing.data.error.message.includes('--data-file') && missing.data.error.message.includes('--data-stdin'), `message should list accepted payload transports, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.requiredData.answer === '<raw user answer>', `requiredData should describe answer, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.requiredData.answeredBy === 'user', `requiredData should describe answeredBy, got ${JSON.stringify(missing.data)}`);
+  assert(missing.data.requiredData.answerKind === 'decision|clarificationRequest', `requiredData should describe answerKind enum, got ${JSON.stringify(missing.data)}`);
+  assert(!Object.prototype.hasOwnProperty.call(missing.data.requiredData, 'callerStatusId'), `callerStatusId must not be required, got ${JSON.stringify(missing.data)}`);
+  assert(!Object.prototype.hasOwnProperty.call(missing.data.requiredData, 'callerRuntimeHandle'), `callerRuntimeHandle must not be required, got ${JSON.stringify(missing.data)}`);
+  assert(JSON.stringify(missing.data.optionalDataFields) === JSON.stringify(['callerStatusId', 'callerRuntimeHandle']), `caller evidence should be optional resume metadata, got ${JSON.stringify(missing.data.optionalDataFields)}`);
+  assert(missing.data.mutation === 'none', `missing payload must state no mutation, got ${JSON.stringify(missing.data)}`);
+  assert(fs.readFileSync(setup.parentStatePath, 'utf8') === beforeParent, 'parent state unchanged after missing payload');
+  assert(fs.readFileSync(open.data.attentionPath, 'utf8') === beforeAttention, 'attention record unchanged after missing payload');
 });
 
 test('attention broker acknowledge-resume rejects runtime handle drift', () => {
@@ -9531,6 +9941,24 @@ test('task-event consume --next advances completed parent to verify with exact p
   assert(Array.isArray(parent.data.payload.routedGroups) && parent.data.payload.routedGroups[0].groupId === 'G1', 'verify payload preserves routed groups');
   assert(parent.data.payload.flags && parent.data.payload.flags.skipCommit === false, 'verify payload preserves normalized flags');
   assert(parent.data.payload.consumedTaskEvent.eventId === consume.data.event.eventId, 'verify payload preserves consumed task event');
+});
+
+test('task-event consume accepts stdin JSON payloads', () => {
+  const { statePath, fixmeDir, parentRunId, resultSummaryPath, terminalResultId } = setupTaskEventScenario('te-consume-stdin');
+  const recordData = JSON.stringify({
+    parentRunId, taskRunId: 'taskRun_x', taskStatePath: statePath,
+    resultSummaryPath, terminalResultId, status: 'completed',
+  });
+  run(`lifecycle task-event record --fixme-dir "${fixmeDir}" --data '${recordData}'`);
+
+  const consume = runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle task-event consume --fixme-dir "${fixmeDir}" --data-stdin`,
+    JSON.stringify({ parentRunId, next: true }),
+    { cwd: path.dirname(fixmeDir) },
+  );
+  assert(consume.ok, `stdin consume should succeed, got ${JSON.stringify(consume.data)}`);
+  assert(consume.data.nextParent && consume.data.nextParent.cursor === 'verify', `stdin consume should advance parent, got ${JSON.stringify(consume.data)}`);
 });
 
 test('task-event consume with no pending event returns noPendingEvent', () => {
@@ -11907,6 +12335,7 @@ test('codex-skills install: writes Codex-adapted skills and cleans stale copies'
   assert(installedHandler.includes('run ping --fixme-dir <fixme-dir> --status-id <statusId>'), 'handler liveness block should use run ping');
   assert(installedHandler.includes('If the dispatch prompt does not include `statusId`, skip this liveness block.'), 'handler liveness block should be optional when no statusId exists');
   assert(installedHandler.includes('If `run status` shows `currentCommand` starting with `attention:`'), 'handler liveness block should not ping over active attention');
+  assert(installedHandler.includes('Do not let active non-shell work run longer than 120 seconds without a fresh `run ping`'), 'handler liveness block should require bounded heartbeats during long non-shell work');
   assert(installedHandler.includes('--runtime codex'), 'handler usage block should pass --runtime codex');
   assert(installedHandler.includes('--pipeline-run-id <pipelineRunId>'), 'handler usage block should map camelCase prompt metadata to CLI flag');
   assert(installedHandler.includes('If it includes a non-empty `usageSourcePath`, include `--source-path <usageSourcePath>`'), 'handler usage block should propagate runtime counter source paths');
@@ -11971,6 +12400,8 @@ test('claude-skills install: writes Claude skills with usage tracking and cleans
   assert(handler.includes('Run `usage finish` and relay any returned `reportLine` before writing any required final routing or status directive.'), 'handler usage report line must come before terminal directives');
   assert(reviewer.includes('## Fixme Agent Liveness'), 'reviewer should include liveness block');
   assert(handler.includes('## Fixme Agent Liveness'), 'handler should include liveness block');
+  assert(reviewer.includes('Do not let active non-shell work run longer than 120 seconds without a fresh `run ping`'), 'reviewer liveness block should require bounded heartbeats during long non-shell work');
+  assert(handler.includes('Do not let active non-shell work run longer than 120 seconds without a fresh `run ping`'), 'handler liveness block should require bounded heartbeats during long non-shell work');
   assert(reference.includes('--role reference'), 'fixme-howto-* role mapping');
   assert(reference.includes('Only run this block when `fixme-howto-code-map` is the active skill invocation.'), 'reference guard');
   assert(!fs.existsSync(path.join(claudeSkillsDir, 'fixme-tickets-md', 'scripts')), 'fixme-tickets-md scripts should not install');
@@ -12252,6 +12683,18 @@ test('fixme-task skill documents exact producer continuation with fresh fallback
     'fixme-task should document full missingProducerDirective failure payload with message',
   );
   assert(
+    skill.includes('runtimeWaitTimedOut` with `reason: "runtimeLivenessUnknown"`'),
+    'fixme-task should document stale resumed-producer liveness timeout recovery',
+  );
+  assert(
+    skill.includes('failure: { "reason": "runtimeLivenessUnknown", "message": "<short concrete liveness failure>", "details": { "agentName": "<agent>", "runtime": "<runtime>", "handleId": "<id>", "statusId": "<statusId>", "livenessState": "<heartbeatMissing|heartbeatStale>" } }'),
+    'fixme-task should document full runtimeLivenessUnknown failure payload with message',
+  );
+  assert(
+    skill.includes('forceFreshReason: "runtimeLivenessUnknown"'),
+    'fixme-task should document fresh fallback after stale resumed-producer liveness timeout',
+  );
+  assert(
     skill.includes('Reviewers, handlers, investigation, research, browser verification, and `fixme-task` stay fresh'),
     'fixme-task should document non-resumable roles',
   );
@@ -12313,11 +12756,17 @@ test('fixme-task skill: refreshes its own liveness while waiting on dispatched a
 test('fixme-task skill: documents dispatch prepare payload contract without response-only inputs', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
+  const dispatchSection = skill.slice(
+    skill.indexOf('Step 1 - Prepare the dispatch'),
+    skill.indexOf('### Producer Continuation')
+  );
 
-  assert(skill.includes('Dispatch prepare request payload has exactly these required fields:'), 'fixme-task should define the dispatch prepare request contract');
-  assert(skill.includes('Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.'), 'fixme-task should list the exact required dispatch prepare inputs');
-  assert(skill.includes('Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`'), 'fixme-task should identify response-only dispatch prepare fields');
-  assert(skill.includes('Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload.'), 'fixme-task should forbid response-only fields as inputs');
+  assert(dispatchSection.includes('Dispatch prepare request payload has exactly these required fields:'), 'fixme-task should define the dispatch prepare request contract');
+  assert(dispatchSection.includes('Required: `idempotencyKey`, `agentName`, `transport`, `promptInputs`.'), 'fixme-task should list the exact required dispatch prepare inputs');
+  assert(dispatchSection.includes('"ownerFence": {"taskStatePath":"<task-state-path>","taskOwnerId":"<task-owner-id>","taskOwnerGeneration":1,"taskRunId":"<task-run-id>"}'), 'fixme-task should include current ownerFence in task-bound dispatch prepare payloads');
+  assert(dispatchSection.includes('When `taskStatePath` belongs to an owner-managed task attempt, copy the current `ownerFence` returned by `lifecycle task begin` or `lifecycle task continue` into every `lifecycle dispatch prepare` payload.'), 'fixme-task should explain owner fence source for dispatch prepare');
+  assert(dispatchSection.includes('Response-only: `usageContext`, `promptBlocks`, `activeChild`, `runtimeSettings`'), 'fixme-task should identify response-only dispatch prepare fields');
+  assert(dispatchSection.includes('Never pass `usageContext` or `promptBlocks` inside the dispatch prepare request payload.'), 'fixme-task should forbid response-only fields as inputs');
 });
 
 test('fixme-task skill: keeps dispatch idempotency stable across validation retries', () => {
@@ -12334,7 +12783,11 @@ test('fixme-task skill: requires a complete terminal child lifecycle before fina
 
   // Parent-driven terminal handoff is now the single lifecycle child finalize command.
   assert(skill.includes('Before calling `lifecycle child finalize`, verify exactly one terminal child handoff sequence has completed'), 'fixme-task should gate the terminal finalize on a complete terminal handoff');
-  assert(skill.includes('lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-file <terminal-payload.json>'), 'fixme-task should document the single terminal finalize command');
+  assert(skill.includes("lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-stdin <<'JSON'"), 'fixme-task should document the single terminal finalize command with stdin payload');
+  assert(skill.includes('The caller `changedFiles` field is required for compatibility and should normally be `[]`.'), 'fixme-task should document caller changedFiles as compatibility input');
+  assert(skill.includes('Authoritative changed files are runtime-derived from the task-owner baseline.'), 'fixme-task should document runtime-derived authoritative changed files');
+  assert(skill.includes('Successful finalize returns `terminalResultId`, `resultSummaryPath`, `eventId`, `eventConsumed`, `changedFilesSource`, `changedFilesComplete`, `wakeDirective`, and `usageReportLine`'), 'fixme-task should document changed-file success metadata');
+  assert(skill.includes('When derived changed-file metadata is incomplete, `changedFilesWarning` is persisted in the terminal result summary'), 'fixme-task should document persisted changedFilesWarning');
   assert(skill.includes('runs a single parent-linkage gate before any terminal write'), 'fixme-task should document the parent-linkage gate before terminal writes');
   for (const command of [
     'lifecycle dispatch complete',
@@ -12346,16 +12799,29 @@ test('fixme-task skill: requires a complete terminal child lifecycle before fina
   assert(skill.includes('replay is idempotent; do not print another terminal directive'), 'fixme-task should forbid duplicate terminal directive output');
 });
 
-test('fixme-task skill: uses data-file payloads for nested workflow JSON', () => {
+test('fixme-task skill: uses executable JSON source contracts for generated payloads', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
 
-  assert(skill.includes('Inline `--data` JSON is allowed only for tiny flat examples; workflow payloads with nested objects or arrays must be written to an absolute JSON file and passed with `--data-file`.'), 'fixme-task should require data-file payloads for nested workflow JSON');
-  assert(skill.includes('task save --data-file <task-save.json>'), 'save mode should use data-file for nested save payloads');
-  assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'checkpoint examples should use data-file for nested patches');
-  assert(skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-file <dispatch-prepare.json>'), 'dispatch prepare should use data-file for nested prompt payloads');
+  assert(skill.includes('Generated flat JSON payloads use `--data \'<compact-json>\'`.'), 'fixme-task should prefer inline data for generated flat payloads');
+  assert(skill.includes("Generated nested or multiline JSON payloads use `--data-stdin <<'JSON'`."), 'fixme-task should prefer stdin for generated nested payloads');
+  assert(skill.includes('Use `--data-file <absolute-json-file>` only when the JSON file already exists as a durable artifact from a previous command or explicit preparation step.'), 'fixme-task should reserve data-file for durable existing JSON artifacts');
+  assert(skill.includes("task save --data-stdin <<'JSON'"), 'save mode should include a copy-ready stdin payload command');
+  assert(skill.includes('"settledSolutionShape": "<complete solution shape from the task brief>"'), 'save mode should include settledSolutionShape in the copy-ready payload');
+  assert(/"pipelineResolution"\s*:\s*\{[\s\S]*"pipeline"\s*:\s*"standard"[\s\S]*"source"\s*:\s*"userProseIntent"[\s\S]*"evidence"\s*:/.test(skill), 'save mode should include executable pipelineResolution fields');
+  assert(!/"workflowSource"\s*:/.test(skill), 'save mode should not document obsolete workflowSource pipelineResolution fields');
+  assert(skill.includes("task checkpoint --state <task-state-path> --data-stdin <<'JSON'"), 'checkpoint examples should use stdin for generated patches');
+  assert(/"ownerFence"\s*:\s*\{\s*"taskStatePath"\s*:\s*"<task-state-path>"\s*,\s*"taskOwnerId"\s*:\s*"<task-owner-id>"\s*,\s*"taskOwnerGeneration"\s*:\s*1\s*,\s*"taskRunId"\s*:\s*"<task-run-id>"\s*\}/.test(skill), 'checkpoint and finalize examples should include the current owner fence');
+  assert(skill.includes('"idempotencyKey":"checkpoint:<task-run-id>:plan-review-cycle-2"'), 'checkpoint example should include a deterministic idempotency key');
+  assert(skill.includes('"idempotencyKey":"finalize:<task-run-id>:completed"'), 'finalize example should include a deterministic idempotency key');
+  assert(skill.includes('"changedFiles":[]'), 'finalize examples should send changedFiles as required compatibility data');
+  assert(skill.includes('The caller `changedFiles` field is required for compatibility and should normally be `[]`.'), 'finalize docs should distinguish caller compatibility input from authoritative data');
+  assert(skill.includes('Authoritative changed files are runtime-derived from the task-owner baseline.'), 'finalize docs should identify the authoritative changed-file source');
+  assert(skill.includes('`changedFilesSource`') && skill.includes('`changedFilesComplete`') && skill.includes('`changedFilesWarning`'), 'finalize docs should include changed-file result metadata and warnings');
+  assert(skill.includes("lifecycle dispatch prepare --fixme-dir <fixme-dir> --data-stdin <<'JSON'"), 'dispatch prepare should use stdin for generated nested prompt payloads');
+  assert(skill.includes("lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-stdin <<'JSON'"), 'terminal finalize should use stdin for generated terminal payloads');
   assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'parent-driven startup should use the lifecycle begin launch boundary');
-  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'existing task startup should use the lifecycle continue boundary');
+  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data \'<task-continue-json>\''), 'existing task startup should use inline lifecycle continue payloads');
 });
 
 test('fixme-task skill: documents exact lifecycle task continue payload contract', () => {
@@ -12384,7 +12850,7 @@ test('fixme-task skill uses lifecycle begin and continue instead of reimplementi
     'The launch record owns saved handoff, existingTask ticket, existingTask standalone, and reserved-state selection; do not branch on `launch.promptBlocks.taskInput` to call `task init` directly.',
     'Direct absent creation: run `lifecycle task begin --fixme-dir <fixme-dir> --ticket <ticket-path> --project-root <project-root> --pipeline-resolution-file <pipeline-resolution.json> --idempotency-key <key>`.',
     'Direct absent saved task and reserved-state creation use the same begin boundary with `--task <task-path>` or `--state <task-state-path>` instead of ticket.',
-    'Existing saved task, `--resume`, pending attention answer, waiting state, active owner, terminal state, and retry acquisition: run `lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>` before any manifest rebuild or task-state mutation.',
+    'Existing saved task, `--resume`, pending attention answer, waiting state, active owner, terminal state, and retry acquisition: run `lifecycle task continue --fixme-dir <fixme-dir> --data \'<task-continue-json>\'` before any manifest rebuild or task-state mutation.',
     'If direct begin returns `directBeginRequiresContinue`, stop the begin path and call `lifecycle task continue`; do not fall back to `task init`.',
   ]) {
     assert(skill.includes(required), `fixme-task should document lifecycle startup boundary: ${required}`);
@@ -12401,9 +12867,9 @@ test('fixme-task skill allowlist permits lifecycle task begin and continue start
 
   assert(allowlistMatch, 'fixme-task should have an extractable orchestrator allowlist section');
   assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'startup documentation should include parent launch begin');
-  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'startup documentation should include task continue');
+  assert(skill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data \'<task-continue-json>\''), 'startup documentation should include task continue');
   assert(allowlistMatch[0].includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'orchestrator allowlist should permit parent launch begin');
-  assert(allowlistMatch[0].includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'orchestrator allowlist should permit task continue');
+  assert(allowlistMatch[0].includes('lifecycle task continue --fixme-dir <fixme-dir> --data \'<task-continue-json>\''), 'orchestrator allowlist should permit task continue');
 });
 
 test('review synthesize-clean-handler emits deterministic clean routing blocks', () => {
@@ -12606,8 +13072,8 @@ test('fixme-task skill routes plan readiness before optional full plan review', 
   assert(skill.includes('fixme-plan-readiness'), 'fixme-task should dispatch the plan readiness checker');
   assert(skill.includes('READINESS_RESULT: EXECUTE | REVISE_PLAN | ASK_USER | FULL_PLAN_REVIEW'), 'fixme-task should document readiness routes');
   assert(allowlistMatch, 'fixme-task should have an extractable orchestrator allowlist section');
-  assert(allowlistMatch[0].includes('review validate-plan-readiness --data-file <readiness-validation.json>'), 'fixme-task Bash allowlist should permit readiness validation');
-  assert(skill.includes('review validate-plan-readiness --data-file <readiness-validation.json>'), 'fixme-task should validate readiness output through the CLI helper');
+  assert(allowlistMatch[0].includes("review validate-plan-readiness --data-stdin <<'JSON'"), 'fixme-task Bash allowlist should permit readiness validation');
+  assert(skill.includes("review validate-plan-readiness --data-stdin <<'JSON'"), 'fixme-task should validate readiness output through the CLI helper');
   assert(skill.includes('READINESS_RESULT: EXECUTE` marks the full plan review steps completed as skipped by readiness'), 'EXECUTE should skip full plan review only through an explicit readiness route');
   assert(skill.includes('READINESS_RESULT: FULL_PLAN_REVIEW` advances to `fixme-review-plan`'), 'FULL_PLAN_REVIEW should preserve full plan review escalation');
   assert(skill.includes('READINESS_RESULT: REVISE_PLAN` re-dispatches `fixme-write-plan` in readiness revision mode'), 'REVISE_PLAN should use the writer readiness-revision contract');
@@ -12630,7 +13096,7 @@ test('fixme-task scopes reviewer footer validation to built-in reviewers', () =>
 
 test('source skills document prepare-child handoff and safe JSON contracts', () => {
   const prSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-pr-comments/SKILL.md'), 'utf8');
-  assert(prSkill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'PR comments should use prepare-child data-file handoff');
+  assert(prSkill.includes("lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin <<'JSON'"), 'PR comments should use prepare-child stdin handoff');
   assert(!prSkill.includes('Codex inline mode'), 'PR comments should not describe Codex inline mode');
   assert(!prSkill.includes('launch.transport == "inline-skill"'), 'PR comments should not preserve Claude inline launch wording');
   assert(!prSkill.includes('skill="fixme-task"'), 'PR comments should not launch fixme-task through the Skill tool');
@@ -12641,7 +13107,7 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
   assert(prSkill.includes('child.handoff.taskSaveData'), 'PR comments should document saved task handoff data');
   assert(prSkill.includes('child.handoff.payload'), 'PR comments should document durable sidecar payload');
   assert(prSkill.includes('child-handoff-payload'), 'PR comments should document child handoff payload artifact');
-  assert(prSkill.includes('Do not call lifecycle `--help` during normal execution'), 'PR comments should not probe lifecycle help during normal execution');
+  assert(prSkill.includes('Do not run `--help` to discover the payload for this path.'), 'PR comments should not probe lifecycle help during normal execution');
   assert(prSkill.includes('`await.ledger` MUST be `{}` at launch'), 'PR comments should keep prepare-child launch ledger empty');
   assert(prSkill.includes('Do not put `currentPrFixGroups`, `mustResolveThreadIds`, or any other ad hoc routing keys under `await.ledger`'), 'PR comments should route fix metadata through child handoff payload, not await ledger');
   assert(prSkill.includes('MUST contain full routed group objects, not group IDs'), 'PR comments should forbid id-only child routedFixGroups');
@@ -12685,7 +13151,7 @@ test('source skills document prepare-child handoff and safe JSON contracts', () 
   const taskSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/fixme-task/SKILL.md'), 'utf8');
   assert(taskSkill.includes('--pipeline-resolution-file <pipeline-resolution.json>'), 'fixme-task should prefer pipeline-resolution file flag');
   assert(taskSkill.includes('lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>'), 'fixme-task should prefer lifecycle task begin for parent launch');
-  assert(taskSkill.includes('lifecycle task continue --fixme-dir <fixme-dir> --data-file <task-continue.json>'), 'fixme-task should prefer lifecycle task continue for existing state classification');
+  assert(taskSkill.includes("lifecycle task continue --fixme-dir <fixme-dir> --data '<task-continue-json>'"), 'fixme-task should prefer lifecycle task continue for existing state classification');
   assert(!taskSkill.includes('--parent-continuation-file <parent-continuation.json>'), 'fixme-task should not document parent-continuation task init as a runtime path');
   assert(taskSkill.includes('Parent-driven transports are `agent` and `background`'), 'fixme-task should list only agent/background parent-driven transports');
   assert(!taskSkill.includes('inline-skill`, `agent`, and `background`'), 'fixme-task should not list inline-skill as a parent-driven transport');
@@ -12717,7 +13183,7 @@ test('fixme-task skill: checkpoints review loop counters under loops', () => {
   const skillPath = path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
   assert(skill.includes('Persist review loop counters only under `loops.phaseReviewCycles`; never send a top-level `phaseReviewCycles` field to `task checkpoint`.'), 'fixme-task should forbid top-level phaseReviewCycles checkpoints');
-  assert(skill.includes('{"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}}'), 'fixme-task should show the supported phaseReviewCycles checkpoint shape');
+  assert(skill.includes('"loops":{"phaseReviewCycles":[{"phase":"plan","cycles":2}]}'), 'fixme-task should show the supported phaseReviewCycles checkpoint shape');
 });
 
 test('fixme workflow manifests use runtime-neutral live task-list tooling', () => {
@@ -12854,7 +13320,8 @@ test('fixme-pr-comments skill: brokers nested fixme-task attention without ownin
   assert(!skill.includes('call `lifecycle attention broker answer` with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }`.'), 'PR comments should not document manual broker answer as the normal path');
   assert(!skill.includes('--nested'), 'PR comments should no longer reference --nested');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'PR comments should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a clarifying question, call the same command with `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }`.'), 'PR comments should scope clarification requests at the answer-write step');
+  assert(skill.includes('--data \'{"answer":"<raw user answer>","answeredBy":"user","answerKind":"decision"}\''), 'PR comments should include the complete decision broker resume payload');
+  assert(skill.includes('--data \'{"answer":"<raw user clarification question>","answeredBy":"user","answerKind":"clarificationRequest"}\''), 'PR comments should include the complete clarification broker resume payload');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'PR comments should broker clarification requests without answering them');
   assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again.'), 'PR comments should resume already answered attention instead of re-prompting');
   assert(skill.includes('If the resumed `fixme-task` returns another `FIXME_ATTENTION_REQUIRED`, broker that new prompt the same way'), 'PR comments should broker clarification follow-up attention prompts');
@@ -12877,6 +13344,60 @@ test('fixme-pr-comments skill: dispatches fixme-task with returned prompt blocks
   assert(dispatchSection.includes('Do not reconstruct these blocks manually from project, liveness, or fix-item fields'), 'dispatch should forbid manual reconstruction of returned prompt blocks');
   assert(dispatchSection.includes('Persist exactly the returned `activeChild` handle before advancing parent state to `awaitFixmeTask`'), 'dispatch should persist the exact returned activeChild before awaitFixmeTask');
   assert(!dispatchSection.includes('<liveness>\n      statusId: <fixmeTaskStatusId>\n      </liveness>'), 'dispatch should not hand-render the child liveness block');
+});
+
+test('Fixme skills document executable JSON payload contracts for active lifecycle paths', () => {
+  const taskSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-task', 'SKILL.md'), 'utf8');
+  const prCommentsSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-pr-comments', 'SKILL.md'), 'utf8');
+  const sessionSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme-session', 'SKILL.md'), 'utf8');
+  const fixmeSkill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'fixme', 'SKILL.md'), 'utf8');
+  const toolsSkill = fs.readFileSync(path.resolve(__dirname, '..', 'SKILL.md'), 'utf8');
+
+  for (const [name, content] of [
+    ['fixme-task', taskSkill],
+    ['fixme-pr-comments', prCommentsSkill],
+    ['fixme-session', sessionSkill],
+    ['fixme router', fixmeSkill],
+    ['fixme-tools', toolsSkill],
+  ]) {
+    assert(content.includes('Do not run `--help` to discover the payload for this path'), `${name} should make local command contracts authoritative`);
+    assert(content.includes('--data \'{"answer":"<raw user answer>","answeredBy":"user","answerKind":"decision"}\''), `${name} should include copy-ready broker decision payload`);
+    assert(content.includes('--data \'{"answer":"<raw user clarification question>","answeredBy":"user","answerKind":"clarificationRequest"}\''), `${name} should include copy-ready broker clarification payload`);
+    assert(!content.includes('lifecycle attention broker resume') || !content.includes('"callerStatusId":"<'), `${name} normal broker resume examples must not include caller evidence`);
+  }
+
+  for (const [name, content] of [
+    ['fixme-pr-comments', prCommentsSkill],
+    ['fixme-session', sessionSkill],
+    ['fixme router', fixmeSkill],
+    ['fixme-tools', toolsSkill],
+  ]) {
+    assert(content.includes('lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir>'), `${name} should document acknowledge-resume command`);
+    assert(content.includes('copy `acknowledgeResumeTemplate.data` exactly'), `${name} should document the acknowledge template copy rule`);
+    assert(content.includes('add only the observed `runtimeHandle` when the runtime action returned one'), `${name} should document the only allowed acknowledge-resume addition`);
+    assert(!content.includes("lifecycle attention broker acknowledge-resume --fixme-dir <fixme-dir> --parent-run-id <activeParentRunId> --status-id <activeRunStatusId> --attention-id <attention-id> --data '<json-object>'"), `${name} should not leave a generic acknowledge-resume payload placeholder on the active path`);
+  }
+
+  assert(prCommentsSkill.includes('lifecycle parent resolve --fixme-dir <fixme-dir> --data \'{"parentSkill":"fixme-pr-comments","lookupInput":{"pullRequestRef":'), 'PR comments should document exact parent resolve payload with lookupInput.pullRequestRef');
+  assert(taskSkill.includes('Parent broker decision answer:'), 'fixme-task should document parent broker decision answer command');
+  assert(taskSkill.includes('Parent broker clarifying question:'), 'fixme-task should document parent broker clarification command');
+  assert(taskSkill.includes('These broker resume commands are for parent brokers only, after `lifecycle attention broker show`; they are not for the task-owner `--answer-attention` branch.'), 'fixme-task should guard parent-broker commands from task-owner branch use');
+  assert(prCommentsSkill.includes('prepare-child output fields: `parentRunId`, `statusId`, `launch.transport`, `launch.promptBlocks`, `launch.usageContext`, `runtimeAction`, and `activeChild`.'), 'PR comments should document prepare-child success fields');
+  assert(sessionSkill.includes('Use the `answer` object returned by broker show unchanged when `status` is `answered`.'), 'session should document already-answered broker-show reuse');
+  assert(fixmeSkill.includes("lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin <<'JSON'"), 'fixme router should document prepare-child stdin payload');
+  assert(fixmeSkill.includes('"parent":{"parentSkill":"fixme","idempotencyKey":'), 'fixme router prepare-child payload should include parent.idempotencyKey');
+  assert(fixmeSkill.includes('"child":{"idempotencyKey":'), 'fixme router prepare-child payload should include child.idempotencyKey');
+  assert(fixmeSkill.includes('"handoff":{"mode":"createOrReuse"'), 'fixme router prepare-child payload should include child.handoff.mode');
+  assert(fixmeSkill.includes('"promptInputs":{'), 'fixme router prepare-child payload should include child.promptInputs');
+  assert(fixmeSkill.includes('"parentContinuation":{"resumeStep":"awaitFixmeTaskResult"}'), 'fixme router prepare-child payload should include parentContinuation');
+  assert(fixmeSkill.includes('"await":{"fixBatches":'), 'fixme router prepare-child payload should include await');
+  assert(fixmeSkill.includes('"recoverStaleParent":true'), 'fixme router prepare-child payload should include recoverStaleParent');
+  const forbiddenPrepareChildPointer = 'prepare-child payload documented in ' + 'Step 4';
+  assert(!prCommentsSkill.includes(forbiddenPrepareChildPointer), 'PR comments Step 7 must not point prepare-child at the task-save Step 4 payload');
+  assert(toolsSkill.includes('Required broker-resume data fields: `answer`, `answeredBy`, and `answerKind`.'), 'tools skill should define broker resume required fields');
+  assert(toolsSkill.includes('Optional broker-resume runtime evidence fields: `callerStatusId` and `callerRuntimeHandle`; normal parent skill examples omit them.'), 'tools skill should define optional caller evidence');
+  assert(toolsSkill.includes('Caller `changedFiles` in `lifecycle child finalize` is required compatibility data and should normally be `[]`; authoritative changed files are derived from the task-owner baseline.'), 'tools skill should define terminal finalize changed-file authority');
+  assert(toolsSkill.includes('Successful child finalize returns `changedFilesSource` and `changedFilesComplete` and persists `changedFilesWarning` when derived metadata is incomplete.'), 'tools skill should define terminal finalize changed-file metadata');
 });
 
 test('fixme-task skill: task-state docs include the durable runtime fields', () => {
@@ -13041,7 +13562,8 @@ test('fixme-session skill: brokers background fixme-task attention without ownin
   assert(skill.includes('Do not compose `--resume <active_task> --answer-attention <attention-id>` by hand'), 'session should not hand-compose resume messages');
   assert(!skill.includes('Use the `resumeRef` returned by `lifecycle attention broker show`'), 'session must not expect broker show to return resumeRef');
   assert(skill.includes('The status id is context, not a command-line flag.'), 'session should clarify liveness status is not a CLI argument');
-  assert(skill.includes('If the user response is a clarifying question, write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "clarificationRequest" }` with the same command.'), 'session should scope clarification requests at the answer-write step');
+  assert(skill.includes('--data \'{"answer":"<raw user answer>","answeredBy":"user","answerKind":"decision"}\''), 'session should include the complete decision broker resume payload');
+  assert(skill.includes('--data \'{"answer":"<raw user clarification question>","answeredBy":"user","answerKind":"clarificationRequest"}\''), 'session should include the complete clarification broker resume payload');
   assert(!skill.includes('write `{ "answer": "<user answer>", "answeredBy": "user", "answerKind": "decision" }` with `lifecycle attention broker answer`.'), 'session should not document manual broker answer as the normal path');
   assert(skill.includes('If the user asks a clarifying question instead of giving a decision, record it with `answerKind: "clarificationRequest"`'), 'session should broker clarification requests without answering them');
   assert(skill.includes('If `lifecycle attention broker show` returns `status: "answered"`, do not print the prompt again.'), 'session should resume already answered attention instead of re-prompting');
@@ -13084,7 +13606,7 @@ test('fixme-pr-comments skill: tracks nested fixme-task liveness status id', () 
   assert(!skill.includes('except for the liveness carve-out'), 'PR comments should not keep stale liveness-only carve-out prose');
   assert(!skill.includes('except for liveness carve-out'), 'PR comments should not keep stale liveness-only hard-constraint prose');
   assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs root'), 'PR comments should resolve the fixme dir for liveness');
-  assert(skill.includes('lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-file <prepare-child-payload.json>'), 'PR comments should persist parent state and prepare child launch through prepare-child');
+  assert(skill.includes("lifecycle parent prepare-child --fixme-dir <fixme-dir> --data-stdin <<'JSON'"), 'PR comments should persist parent state and prepare child launch through prepare-child');
   assert(!skill.includes('run start --fixme-dir <fixme-dir> --agent fixme-task'), 'PR comments should not pre-create child liveness outside prepare-child');
   assert(!skill.includes('lifecycle dispatch prepare --fixme-dir <fixme-dir>'), 'PR comments should not dispatch fixme-task through manual dispatch prepare');
   assert(skill.includes('lifecycle task-event consume --fixme-dir <fixme-dir> --parent-run-id <parentRunId> --next'), 'PR comments should consume terminal task events');
@@ -13328,7 +13850,8 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('## Save Mode'), 'fixme-task should document save mode');
   assert(skill.includes('/fixme-task --save'), 'save mode invocation should be documented');
   assert(skill.includes('Save to `<fixme-dir>/tasks/<date>-FIXME-<number>-<slug>.md`'), 'saved tasks should include the FIXME label in the filename');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>'), 'save mode should delegate saved task writes to fixme-tools with a data-file');
+  assert(skill.includes("node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-stdin <<'JSON'"), 'save mode should delegate generated saved task writes to fixme-tools with stdin');
+  assert(!skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>'), 'save mode should not use generated task-save data-file placeholders');
   assert(skill.includes('### Save Mode Lossless Handoff Gate'), 'save mode should define the lossless handoff gate');
   assert(skill.includes('### Save Mode Question Resolution Gate'), 'save mode should define question resolution before saving');
   assert(skill.includes('A future run must be able to plan and execute from the task file alone, with no chat history.'), 'save mode should state the task file is the context boundary');
@@ -13336,7 +13859,8 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('The CLI rejects skeletal handoffs that omit concrete `settledSolutionShape`, `agreedApproach`, `userVisibleBehavior`, `scope.inScope`, or `laterPlanningNotes`.'), 'save mode should document the CLI fail-closed guard');
   assert(skill.includes('It also rejects non-empty `openQuestions`.'), 'save mode should document unresolved question rejection');
   assert(skill.includes('lifecycle task begin --fixme-dir <fixme-dir> --ticket <ticket-path> --project-root <project-root> --pipeline-resolution-file <pipeline-resolution.json> --idempotency-key <key>'), 'ticket mode should create absent task state through lifecycle begin with a data-file');
-  assert(skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'fixme-task should checkpoint resumable state through fixme-tools with a data-file');
+  assert(skill.includes("task checkpoint --state <task-state-path> --data-stdin <<'JSON'"), 'fixme-task should checkpoint generated resumable state through fixme-tools with stdin');
+  assert(!skill.includes('task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'fixme-task should not leave generated checkpoint data-file placeholders');
   assert(skill.includes('task resolve <FIXME-N|task.md|state.json|ticket.md|ticket-folder>'), 'resume mode should resolve task references through fixme-tools');
   assert(skill.includes('camelCase JSON keys only'), 'task state JSON requirement should be explicit');
   assert(skill.includes('Do not persist `currentSpecificationPath`, numbered manifest steps, or `currentStep`'), 'task state should exclude derived aliases and numbered manifest data');
@@ -13348,6 +13872,7 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the user explicitly asks to continue, proceed, run, plan, execute, implement, or otherwise continue the workflow after saving, write the saved task brief first, then continue into the selected or auto-detected pipeline using the saved task brief as task context.'), 'save-and-continue instructions should continue after saving');
   assert(skill.includes('If save intent and continuation intent are ambiguous, stop and ask the user which behavior they want. Do not guess.'), 'ambiguous save instructions should ask instead of guessing');
   assert(skill.includes('No-ticket mode, including parent-driven dispatches (transport `agent`/`background` with a lifecycle launch id), must still begin or continue durable task state before the first phase dispatch.'), 'no-ticket parent-driven dispatches should still have durable task state');
+  assert(skill.includes('Direct no-ticket without `--resume`: first create a saved task with the save-mode `task save --data-stdin` payload contract'), 'direct no-ticket mode should reuse the save-mode stdin contract');
   assert(skill.includes('Parent-driven launch: run `lifecycle task begin --fixme-dir <fixme-dir> --launch-id <launchId>`'), 'parent-driven no-ticket runs should materialize through lifecycle begin');
   assert(skill.includes('Use the `resumeRef` and `taskStatePath` returned by begin or continue for later `--answer-attention` resumes.'), 'nested no-ticket attention should resume from the lifecycle task boundary');
   assert(skill.includes('Do not dispatch agents, create a manifest, transition tickets, or enter Config Loading only when save is terminal.'), 'terminal save output should be conditional');
@@ -13358,8 +13883,8 @@ test('fixme-task skill: --save stops only when no continue intent is present', (
   assert(skill.includes('If the counter file is missing, the CLI uses `1` as the next number.'), 'save mode should initialize missing counters');
   assert(skill.includes('If the counter file exists but is not a positive integer, the CLI aborts'), 'save mode should not guess on corrupt counters');
   assert(skill.includes('Saved [FIXME-<number>](<absolute path to saved task brief>)'), 'save mode should print a clickable label link');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task save --data-file <task-save.json>'), 'orchestrator allowlist should permit task save through data-file');
-  assert(skill.includes('node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-file <checkpoint.json>'), 'orchestrator allowlist should permit task checkpoint through data-file');
+  assert(skill.includes("node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs task checkpoint --state <task-state-path> --data-stdin <<'JSON'"), 'orchestrator allowlist should permit generated checkpoint payloads through stdin');
+  assert(skill.includes("node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs lifecycle child finalize --fixme-dir <fixme-dir> --state <task-state-path> --data-stdin <<'JSON'"), 'orchestrator allowlist should permit parent-driven terminal finalize through stdin');
 });
 
 test('fixme-rebase skill: clean verified rebase pushes by default unless --no-push is set', () => {
@@ -16052,6 +16577,8 @@ test('generated Codex adapter is role-aware', () => {
       assert(!toml.includes(recipe), `${nonDispatcher} TOML omits ${recipe}`);
     }
     assert(toml.includes('does not dispatch, resume, message, wait on, or close agents'), `${nonDispatcher} TOML includes non-dispatch line`);
+    assert(toml.includes('sandbox_mode = "workspace-write"'), `${nonDispatcher} TOML must allow mandatory run ping heartbeat writes`);
+    assert(toml.includes('workspace-write is granted only so the liveness `run ping` command can update `.fixme/runs`'), `${nonDispatcher} TOML explains narrow liveness write grant`);
   }
 
   // Installed-skill adapter path.
@@ -16305,6 +16832,20 @@ test('fixme-task instructions document release, attach, watchdog wait, owner att
   assert(skill.includes('stalledowner'), 'fixme-task SKILL.md should document stalledOwner timeout classification');
   assert(skill.includes('lifecycle dispatch stalled-owner recover'), 'fixme-task SKILL.md should document stalled-owner recovery command');
   assert(skill.includes('ownerstoppedbeforedispatchcompletion'), 'fixme-task SKILL.md should document owner-stopped dispatch failure');
+});
+
+test('fixme-task instructions include exact runtime-action observe payloads', () => {
+  const skill = fs.readFileSync(path.join(repoRoot, '.claude', 'skills', 'fixme-task', 'SKILL.md'), 'utf8');
+  for (const phrase of [
+    '"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"failed","failure":{"reason":"childFailed","message":"<short failure message>"}',
+    '"actionId":"<wait-action-id>","waitOutcome":"timeout"',
+    '"actionId":"<close-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}',
+    'In the sealed runtimeAction path, the successful spawn or resume observation is the active runtime attachment.',
+  ]) {
+    assert(skill.includes(phrase), `fixme-task SKILL.md should document exact runtime-action observe payload phrase: ${phrase}`);
+  }
 });
 
 test('pr-comments prepare-child sample includes settledSolutionShape and passes task save', () => {

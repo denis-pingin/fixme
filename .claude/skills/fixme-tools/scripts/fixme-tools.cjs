@@ -3594,15 +3594,25 @@ function parseTaskData(rawData) {
 let stdinJsonArgumentName = null;
 let stdinJsonCache = null;
 
+function jsonSourceFlagsFor(flags, logicalName) {
+  return [logicalName, `${logicalName}-file`, `${logicalName}-stdin`]
+    .filter(flag => Object.prototype.hasOwnProperty.call(flags, flag) && flags[flag] !== undefined);
+}
+
+function hasJsonArgumentSource(flags, logicalName = 'data') {
+  return jsonSourceFlagsFor(flags, logicalName).length > 0;
+}
+
 function resolveJsonArgument(flags, logicalName, options = {}) {
   const directFlag = logicalName;
   const fileFlag = `${logicalName}-file`;
   const stdinFlag = `${logicalName}-stdin`;
   const display = `--${logicalName}`;
-  const sources = [];
-  if (Object.prototype.hasOwnProperty.call(flags, directFlag) && flags[directFlag] !== undefined) sources.push('direct');
-  if (Object.prototype.hasOwnProperty.call(flags, fileFlag) && flags[fileFlag] !== undefined) sources.push('file');
-  if (Object.prototype.hasOwnProperty.call(flags, stdinFlag) && flags[stdinFlag] !== undefined) sources.push('stdin');
+  const sources = jsonSourceFlagsFor(flags, logicalName).map(flag => {
+    if (flag === directFlag) return 'direct';
+    if (flag === fileFlag) return 'file';
+    return 'stdin';
+  });
 
   if (sources.length === 0) {
     if (options.required === false) return undefined;
@@ -4984,7 +4994,7 @@ function taskProducerContinuationMarkBad(flags) {
   if (!fs.existsSync(statePath)) {
     throw new Error(`Task state file not found: ${statePath}`);
   }
-  const data = flags['data-file'] || flags.data
+  const data = hasJsonArgumentSource(flags)
     ? resolveLifecycleData(flags)
     : {
         agentName: flags['agent-name'] && flags['agent-name'] !== true ? String(flags['agent-name']) : null,
@@ -5860,9 +5870,11 @@ function codexFullAgentDispatchLines() {
     '- `resume_agent` resumes a previously closed agent so it can receive `send_input` and `wait_agent` calls.',
     '- When `lifecycle dispatch prepare` returns `continuation.mode: "resume"` and `runtimeHandle.kind: "codexAgentId"`, call `resume_agent({ id })`, then `send_input({ target: id, message })`, then `wait_agent({ targets: [id] })`.',
     '- while lifecycle returns `status: "requiresRuntimeAction"`, execute exactly the returned runtimeAction, then call `lifecycle runtime-action observe` to observe evidence by `actionId`; continue until lifecycle returns a non-action state.',
-    '- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. Build terminal completion from `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. On completed dispatch, add `runtimeHandle` only when prepare returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.',
+    '- In the sealed runtimeAction path, observe a successful spawn or resume with `{"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}}`; that observation is the active runtime attachment. Use `lifecycle dispatch attach-runtime-handle` only for documented compatibility paths that did not return a sealed dispatch-start runtimeAction.',
+    '- Observe completed waits with `{"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}}`, failed waits with `{"actionId":"<wait-action-id>","waitOutcome":"failed","failure":{"reason":"childFailed","message":"<short failure message>"}}`, and watchdog timeouts with `{"actionId":"<wait-action-id>","waitOutcome":"timeout"}`. `waitAgent` evidence never accepts `status`.',
+    '- Build terminal completion from `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. On completed dispatch, add `runtimeHandle` only when prepare returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.',
     '- Release a completed resumable producer only when lifecycle returns a `closeAgent` runtimeAction; call `close_agent({ target: id })`, then observe the release by `actionId` or through `lifecycle dispatch release-complete` as directed.',
-    '- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.',
+    '- On runtime resume failure, or on `runtimeWaitTimedOut` with `reason: "runtimeLivenessUnknown"` from a resumed producer, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.',
     '- If the requested Fixme agent type is unavailable, use the workflow documented fallback. If no fallback is documented, stop with a dispatch blocker.',
     '',
     '## Attention Brokers',
@@ -5880,6 +5892,7 @@ function codexParentBrokerDispatchLines() {
     '',
     '- Launch the child `fixme-task` from the `lifecycle parent prepare-child` output: resolve Codex runtime settings with `resolve-model fixme-task --runtime codex`, then `spawn_agent(agent_type="fixme-task", reasoning_effort="{resolved}", message="{launch}")`.',
     '- while lifecycle returns `status: "requiresRuntimeAction"`, execute exactly the returned runtimeAction, then call `lifecycle runtime-action observe` to observe evidence by `actionId`; continue until lifecycle returns a non-action state.',
+    '- Observe spawn/resume success with `{"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}}`; observe wait completion with `{"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}}`; observe wait timeout with `{"actionId":"<wait-action-id>","waitOutcome":"timeout"}`.',
     '- Wait on the child through the Codex runtime wait primitive (`wait_agent`); do not poll child liveness.',
     '- When the user answers an attention, broker it: call `lifecycle attention broker resume` to record or reuse the raw answer, execute exactly the returned runtimeAction, observe it through `lifecycle runtime-action observe`, then call `lifecycle attention broker acknowledge-resume`.',
     '- Execute only the sealed runtimeAction returned by lifecycle; do not synthesize a fresh task prompt or selected answer prose.',
@@ -5892,6 +5905,7 @@ function codexRouterDispatchLines() {
     '',
     '- When Fixme source instructions say `Skill("name", args)`, load `$HOME/.codex/skills/name/SKILL.md` and run that documented routing workflow with the same arguments.',
     '- while lifecycle returns `status: "requiresRuntimeAction"`, execute exactly the returned runtimeAction, then call `lifecycle runtime-action observe` to observe evidence by `actionId`; continue until lifecycle returns a non-action state.',
+    '- Observe spawn/resume success with `{"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}}`; observe wait completion with `{"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}}`; observe wait timeout with `{"actionId":"<wait-action-id>","waitOutcome":"timeout"}`.',
     '- When a documented route dispatches a registered Fixme agent (for example optional `fixme-research`, `fixme-write-plan`, or `fixme-task` routes), resolve its Codex runtime settings with `resolve-model <agent> --runtime codex` and `spawn_agent` it; otherwise run the routed skill workflow inline.',
   ];
 }
@@ -6007,7 +6021,8 @@ function getUsageTrackingBlock(skillName, runtime) {
     'Use only these states: `running`, `waiting`, `blocked`, `completed`, `failed`.',
     'Use only these checkpoints: `dispatched`, `started`, `working`, `waiting`, `finalizing`, `done`.',
     '',
-    'Ping `running/working` before main work. Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
+    'Ping `running/working` before main work. During long reading, reasoning, planning, review, or artifact-editing work, refresh `running/working` liveness after each bounded unit of work and before starting the next unit. Do not let active non-shell work run longer than 120 seconds without a fresh `run ping`; if a unit may take longer, ping before it, split it, and ping again as soon as the unit completes.',
+    'Before any shell command that may take more than a few seconds, ping `running/working` with `--current-command "<command>"`; after it finishes, ping again with `--current-command null`.',
     'Before waiting on any Agent, Skill, or child dispatch, ping `running/working` with `--current-command waiting-for:<child-name>`; after the child returns, ping again with `--current-command null`.',
     '',
     'If `run status` shows `currentCommand` starting with `attention:`, do not send ordinary `run ping` until the owning skill consumes the answer with `run attention clear`. Attention records own their waiting status; after `run attention set` succeeds, return or broker the attention directive directly.',
@@ -6131,7 +6146,10 @@ function copyClaudeSkillDir(sourceDir, targetDir, skillName) {
   }
 }
 
-function codexSandboxForAgent(frontmatter) {
+function codexSandboxForAgent(frontmatter, resolvedAgentName = '') {
+  if (String(resolvedAgentName || frontmatter.name || '').startsWith('fixme-')) {
+    return 'workspace-write';
+  }
   const tools = normalizeAgentList(frontmatter.tools);
   const writeTools = new Set(['Write', 'Edit', 'Agent', 'TodoWrite']);
   return tools.some(tool => writeTools.has(tool)) ? 'workspace-write' : 'read-only';
@@ -6149,6 +6167,9 @@ function codexDeveloperInstructions(agentContent, resolvedAgentName) {
   const lines = [];
 
   lines.push('<codex_runtime>');
+  if (agentName.startsWith('fixme-')) {
+    lines.push('- Codex workspace-write is granted only so the liveness `run ping` command can update `.fixme/runs`; read-only role boundaries still apply and this grant does not permit source, plan, spec, or task edits beyond the agent\'s documented role.');
+  }
   if (grantsFullDispatch) {
     lines.push('- When Fixme source instructions say `Agent(...)` or `subagent_type`, resolve Codex runtime settings with `node $HOME/.codex/skills/fixme-tools/scripts/fixme-tools.cjs resolve-model <agent-name> --runtime codex`, then use Codex `spawn_agent(agent_type=..., reasoning_effort=..., message=...)` with the same agent name and task prompt.');
     lines.push('- Always omit Claude `model` arguments in Codex dispatch calls so the user-selected Codex model prevails. Omit `reasoning_effort` only when the resolver returns `null`.');
@@ -6158,7 +6179,7 @@ function codexDeveloperInstructions(agentContent, resolvedAgentName) {
     lines.push('- While lifecycle returns `status: "requiresRuntimeAction"`, execute exactly the returned runtimeAction, then call `lifecycle runtime-action observe` to observe evidence by `actionId`; continue until lifecycle returns a non-action state.');
     lines.push('- After spawning any child, attach its handle with `lifecycle dispatch attach-runtime-handle`. Build terminal completion from `completionTemplates.completed` or `completionTemplates.failed`; do not add `runtime`, `transport`, or `result`. On completed dispatch, add `runtimeHandle` only when prepare returned `completionRuntimeHandlePolicy: "persistProducerContinuation"`; when it returned `"omit"`, do not include `runtimeHandle`.');
     lines.push('- Release a completed resumable producer only when lifecycle returns a `closeAgent` runtimeAction; call `close_agent({ target: id })`, then observe the release by `actionId` or through `lifecycle dispatch release-complete` as directed.');
-    lines.push('- On runtime resume failure, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.');
+    lines.push('- On runtime resume failure, or on `runtimeWaitTimedOut` with `reason: "runtimeLivenessUnknown"` from a resumed producer, call `lifecycle dispatch complete` with `status: "failed"` and a concrete `failure` payload, then mark the handle bad via `task producer-continuation mark-bad`, then prepare a fresh fallback with `forceFreshReason`.');
   } else if (role === 'producer') {
     lines.push(CODEX_PRODUCER_PROHIBITION_LINE);
   } else {
@@ -6202,7 +6223,7 @@ function generateCodexAgentToml(agentName, agentContent) {
   return [
     `name = ${JSON.stringify(resolvedName)}`,
     `description = ${JSON.stringify(description)}`,
-    `sandbox_mode = ${JSON.stringify(codexSandboxForAgent(frontmatter))}`,
+    `sandbox_mode = ${JSON.stringify(codexSandboxForAgent(frontmatter, resolvedName))}`,
     `model_reasoning_effort = ${JSON.stringify(codexDefaultReasoningEffortForAgent(resolvedName))}`,
     tomlLiteral('developer_instructions', instructions),
   ].join('\n') + '\n';
@@ -10388,6 +10409,22 @@ function validateRuntimeActionTarget(action) {
   }
 }
 
+function runtimeActionDigest(action) {
+  return stableHash({
+    owner: action.owner,
+    kind: action.kind,
+    runtime: action.runtime,
+    transport: action.transport,
+    agentName: action.agentName,
+    message: action.message,
+    runtimeHandle: action.runtimeHandle,
+    caller: action.caller,
+    target: action.target,
+    timeoutMs: action.timeoutMs,
+    continuation: action.continuation,
+  });
+}
+
 function buildRuntimeAction(input) {
   const action = {
     schemaVersion: 1,
@@ -10416,19 +10453,7 @@ function buildRuntimeAction(input) {
     lifecycleError('invalidInput', `transport must be one of: ${[...DISPATCH_TRANSPORTS].join(', ')}`);
   }
   validateRuntimeActionTarget(action);
-  action.actionDigest = stableHash({
-    owner: action.owner,
-    kind: action.kind,
-    runtime: action.runtime,
-    transport: action.transport,
-    agentName: action.agentName,
-    message: action.message,
-    runtimeHandle: action.runtimeHandle,
-    caller: action.caller,
-    target: action.target,
-    timeoutMs: action.timeoutMs,
-    continuation: action.continuation,
-  });
+  action.actionDigest = runtimeActionDigest(action);
   return action;
 }
 
@@ -10772,7 +10797,7 @@ function stalledOwnerRecoveryPayload({ dispatchRecord, parentStatePath, ownerSta
   };
 }
 
-function workerHeartbeatLiveness(status, activeRuntime) {
+function workerHeartbeatLiveness(status, activeRuntime, heartbeatFreshMs = 300000) {
   const heartbeat = status.workerHeartbeat;
   if (!heartbeat) {
     return { state: 'heartbeatMissing', workerHeartbeat: null };
@@ -10786,30 +10811,86 @@ function workerHeartbeatLiveness(status, activeRuntime) {
   ) {
     return { state: 'heartbeatStale', reason: 'runtimeHandleMismatch', workerHeartbeat: heartbeat };
   }
+  const observedAtMs = Date.parse(heartbeat.observedAt);
+  if (Number.isNaN(observedAtMs)) {
+    return { state: 'heartbeatStale', reason: 'invalidObservedAt', workerHeartbeat: heartbeat };
+  }
+  const freshMs = isPositiveInteger(heartbeatFreshMs) ? heartbeatFreshMs : 300000;
+  if (Date.now() - observedAtMs > freshMs) {
+    return { state: 'heartbeatStale', reason: 'observedAtExpired', workerHeartbeat: heartbeat };
+  }
   return { state: 'heartbeatRecent', workerHeartbeat: heartbeat };
 }
 
-function continueWaitPayload({ dispatchId, statusId, status, activeRuntime, waitActionId = null, watchdogMs = null, probeReason = null }) {
-  const liveness = workerHeartbeatLiveness(status, activeRuntime);
+function waitLivenessPayload(status, activeRuntime, watchdogMs) {
+  const liveness = workerHeartbeatLiveness(status, activeRuntime, watchdogMs);
   return {
-    transition: 'continueWait',
+    ...liveness,
+    status: {
+      state: status.state,
+      checkpoint: status.checkpoint,
+      currentCommand: status.currentCommand,
+      updatedAt: status.updatedAt,
+    },
+    activeRuntime,
+  };
+}
+
+function runtimeWaitTimedOutPayload({ dispatchId, statusId, status, activeRuntime, waitActionId = null, watchdogMs = null, probeReason = null }) {
+  return {
+    transition: 'runtimeWaitTimedOut',
+    reason: 'runtimeLivenessUnknown',
     dispatchId,
     statusId,
-    liveness: {
-      ...liveness,
-      status: {
-        state: status.state,
-        checkpoint: status.checkpoint,
-        currentCommand: status.currentCommand,
-        updatedAt: status.updatedAt,
-      },
-      activeRuntime,
-    },
+    liveness: waitLivenessPayload(status, activeRuntime, watchdogMs),
     wait: {
       actionId: waitActionId || null,
       timeoutMs: isPositiveInteger(watchdogMs) ? watchdogMs : 300000,
       probeReason: probeReason || null,
       runtimeHandle: { kind: activeRuntime.kind, id: activeRuntime.id },
+    },
+  };
+}
+
+function runtimeWaitContinuesPayload(fixmeDir, dispatchRecord, { status, activeRuntime, waitActionId = null, watchdogMs = null, probeReason = null }) {
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const timeoutMs = isPositiveInteger(watchdogMs) ? watchdogMs : 300000;
+  const runtimeHandle = { kind: activeRuntime.kind, id: activeRuntime.id };
+  const continued = persistRuntimeAction(fixmeDir, {
+    owner: {
+      dispatchId: dispatchRecord.record.dispatchId,
+      statusId: dispatchRecord.record.statusId,
+      taskStatePath: durableInputs.taskStatePath || null,
+    },
+    kind: 'waitAgent',
+    runtime: durableInputs.runtime,
+    transport: durableInputs.transport,
+    agentName: durableInputs.agentName,
+    runtimeHandle,
+    target: {
+      targetAgentName: durableInputs.agentName,
+      targetStatusId: dispatchRecord.record.statusId,
+      targetRuntimeHandle: runtimeHandle,
+    },
+    timeoutMs,
+    continuation: {
+      mode: 'dispatchWait',
+      dispatchId: dispatchRecord.record.dispatchId,
+    },
+  });
+  return {
+    ...continued,
+    transition: 'runtimeWaitContinues',
+    reason: 'workerHeartbeatRecent',
+    dispatchId: dispatchRecord.record.dispatchId,
+    statusId: dispatchRecord.record.statusId,
+    liveness: waitLivenessPayload(status, activeRuntime, timeoutMs),
+    wait: {
+      actionId: waitActionId || null,
+      timeoutMs,
+      probeReason: probeReason || null,
+      runtimeHandle,
+      nextActionId: continued.runtimeAction.actionId,
     },
   };
 }
@@ -10846,6 +10927,64 @@ function recordOwnerStoppedBeforeDispatchCompletion(fixmeDir, dispatchRecord, da
   dispatchRecord.record.releaseState = outputData.releaseState;
   writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
   return outputData;
+}
+
+function completionIsOwnerStoppedBeforeDispatchCompletion(dispatchRecord) {
+  const completion = dispatchRecord && dispatchRecord.record && dispatchRecord.record.completion;
+  const failure = completion && completion.inputs && completion.inputs.failure;
+  return completion && completion.inputs && completion.inputs.status === 'failed' &&
+    failure && failure.reason === 'ownerStoppedBeforeDispatchCompletion';
+}
+
+function directOwnerCompletionPayload(fixmeDir, dispatchRecord, data, { repairedLegacyFailure = false } = {}) {
+  if (repairedLegacyFailure) {
+    delete dispatchRecord.record.completion;
+    delete dispatchRecord.record.releaseState;
+    writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
+  }
+  const output = dispatchRecord.record.output || {};
+  const completed = output.completionTemplates && output.completionTemplates.completed
+    ? output.completionTemplates.completed
+    : dispatchCompletionTemplates({
+        dispatchId: data.dispatchId,
+        statusId: data.childStatusId,
+        parentStatusId: data.ownerStatusId,
+      }).completed;
+  const failed = output.completionTemplates && output.completionTemplates.failed
+    ? output.completionTemplates.failed
+    : dispatchCompletionTemplates({
+        dispatchId: data.dispatchId,
+        statusId: data.childStatusId,
+        parentStatusId: data.ownerStatusId,
+      }).failed;
+  return {
+    transition: 'directOwnerCompletion',
+    recoveryId: data.recoveryId,
+    dispatchId: data.dispatchId,
+    statusId: data.childStatusId,
+    ownerStatusId: data.ownerStatusId,
+    childAgent: data.childAgent,
+    terminalChildStatus: data.terminalChildStatus,
+    repairedLegacyFailure,
+    completionTemplates: { completed, failed },
+    nextCommand: 'lifecycle dispatch complete',
+  };
+}
+
+function markRuntimeWaitTimedOutStatus(fixmeDir, statusId, status, dispatchId, waitActionId) {
+  const statusPath = runStatusPath(fixmeDir, statusId);
+  writeRunStatus(statusPath, preserveRunStatusRuntimeFields(status, {
+    ...status,
+    runtimeObservation: {
+      transition: 'runtimeWaitTimedOut',
+      reason: 'runtimeLivenessUnknown',
+      dispatchId,
+      waitActionId,
+      observedAt: new Date().toISOString(),
+    },
+    userStatus: 'owned, wait timed out, liveness unknown',
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
@@ -10972,7 +11111,21 @@ function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
     return dispatchWaitFailure('invalidStatus', `Run ${statusId} is terminal (${status.state}) with no durable task event for the parent active child`);
   }
 
-  return continueWaitPayload({
+  const liveness = workerHeartbeatLiveness(status, activeRuntime, watchdogMs);
+  if (liveness.state === 'heartbeatRecent') {
+    return runtimeWaitContinuesPayload(fixmeDir, dispatchRecord, {
+      status,
+      activeRuntime,
+      waitActionId,
+      watchdogMs,
+      probeReason,
+    });
+  }
+
+  if (markRuntimeTimeout) {
+    markRuntimeWaitTimedOutStatus(fixmeDir, statusId, status, dispatchId, waitActionId);
+  }
+  return runtimeWaitTimedOutPayload({
     dispatchId,
     statusId,
     status,
@@ -11010,13 +11163,15 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
     };
   }
   const status = evidence.waitOutcome === 'completed' ? 'completed' : 'failed';
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const completionRuntimeHandle = RESUMABLE_PRODUCER_AGENTS.has(durableInputs.agentName) && dispatchRecord.record.activeRuntime
+    ? { kind: dispatchRecord.record.activeRuntime.kind, id: dispatchRecord.record.activeRuntime.id }
+    : null;
   const completionInputs = {
     status,
     currentCommand: null,
     failure: status === 'failed' ? (evidence.failure || { message: 'child failed' }) : null,
-    runtimeHandle: dispatchRecord.record.activeRuntime
-      ? { kind: dispatchRecord.record.activeRuntime.kind, id: dispatchRecord.record.activeRuntime.id }
-      : null,
+    runtimeHandle: completionRuntimeHandle,
     checkpointData: evidence.checkpointData === undefined ? null : evidence.checkpointData,
   };
   if (dispatchRecord.record.completion !== undefined) {
@@ -11062,15 +11217,19 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
     output: outputData,
     completedAt: new Date().toISOString(),
   };
-  if (status === 'completed') {
-    maybeAttachRuntimeReleasePlan(fixmeDir, dispatchRecord, outputData, normalizeCallerEvidence(evidence));
-  } else {
-    dispatchRecord.record.releaseState = { status: 'notRequired', reason: 'failedDispatch' };
-    outputData.releaseState = dispatchRecord.record.releaseState;
-  }
+  attachDispatchCompletionReleaseState(fixmeDir, dispatchRecord, outputData, status, normalizeCallerEvidence(evidence));
   dispatchRecord.record.completion.output = outputData;
   writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
   return outputData;
+}
+
+function attachDispatchCompletionReleaseState(fixmeDir, dispatchRecord, outputData, status, callerEvidence) {
+  if (status === 'completed') {
+    maybeAttachRuntimeReleasePlan(fixmeDir, dispatchRecord, outputData, callerEvidence);
+    return;
+  }
+  dispatchRecord.record.releaseState = { status: 'notRequired', reason: 'failedDispatch' };
+  outputData.releaseState = dispatchRecord.record.releaseState;
 }
 
 function runtimeActionObservedOutput(fixmeDir, action, evidence) {
@@ -11646,7 +11805,7 @@ function selectProducerContinuation({ agentName, runtime, taskStatePath, allowPr
 }
 
 function preflightProducerContinuationFromCompletion(dispatchRecord, runtimeHandle, now) {
-  if (runtimeHandle === undefined) {
+  if (runtimeHandle === undefined || runtimeHandle === null) {
     return null;
   }
 
@@ -11789,6 +11948,58 @@ function dispatchTransportUsesRuntimeAction(transport) {
   return transport === 'agent' || transport === 'background';
 }
 
+function dispatchTaskStateOwnerPromptBlock(data, activeChild) {
+  if (isPlainObject(activeChild) && isNonEmptyString(activeChild.taskStatePath)) {
+    return {
+      ownerSkill: 'fixme-task',
+      resumeRef: activeChild.resumeRef || activeChild.taskStatePath,
+      taskStatePath: path.resolve(String(activeChild.taskStatePath)),
+    };
+  }
+  if (!data || !isNonEmptyString(data.taskStatePath)) {
+    return null;
+  }
+  const taskStatePath = path.resolve(String(data.taskStatePath));
+  const promptInputs = isPlainObject(data.promptInputs) ? data.promptInputs : {};
+  return {
+    ownerSkill: 'fixme-task',
+    resumeRef: isNonEmptyString(promptInputs.resumeRef) ? promptInputs.resumeRef : taskStatePath,
+    taskStatePath,
+  };
+}
+
+function repairDispatchPrepareProjection(fixmeDir, record, data) {
+  if (!record || !isPlainObject(record.output) || !isPlainObject(record.output.promptBlocks)) {
+    return record && record.output;
+  }
+  let changed = false;
+  const output = record.output;
+  const expectedTaskStateOwner = dispatchTaskStateOwnerPromptBlock(data, output.activeChild);
+  if (expectedTaskStateOwner && !jsonEqual(output.promptBlocks.taskStateOwner, expectedTaskStateOwner)) {
+    output.promptBlocks.taskStateOwner = expectedTaskStateOwner;
+    changed = true;
+  }
+  if (changed && isPlainObject(output.runtimeAction) && isNonEmptyString(output.runtimeAction.actionId)) {
+    const repairedMessage = buildDispatchRuntimeMessage(output);
+    output.runtimeAction.message = repairedMessage;
+    output.runtimeAction.actionDigest = runtimeActionDigest(output.runtimeAction);
+    const actionPath = runtimeActionPath(fixmeDir, output.runtimeAction.actionId);
+    if (fs.existsSync(actionPath)) {
+      const action = readJsonFileStrict(actionPath);
+      if (action.status === 'pending') {
+        action.message = repairedMessage;
+        action.actionDigest = runtimeActionDigest(action);
+        writeJsonAtomic(actionPath, action);
+      }
+    }
+  }
+  if (changed) {
+    record.output = output;
+    writeJsonAtomic(dispatchIdempotencyPath(fixmeDir, stableHash({ idempotencyKey: record.idempotencyKey })), record);
+  }
+  return output;
+}
+
 function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   try {
     assertKnownJsonFields(data, 'dispatch prepare', LIFECYCLE_DISPATCH_PREPARE_FIELDS);
@@ -11868,7 +12079,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
           : null,
       });
     }
-    return existing.output;
+    return repairDispatchPrepareProjection(fixmeDir, existing, data);
   }
 
   // Pre-dispatch checkpoint: advance task state before creating durable dispatch
@@ -11935,9 +12146,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
   const promptBlocks = {
     project: { projectRoot: path.dirname(fixmeDir), fixmeDir },
     usageContext,
-    taskStateOwner: activeChild
-      ? { ownerSkill: 'fixme-task', taskStatePath: activeChild.taskStatePath }
-      : null,
+    taskStateOwner: dispatchTaskStateOwnerPromptBlock(data, activeChild),
     parentContinuation: isPlainObject(data.parentContinuation) ? data.parentContinuation : null,
     continuation,
     activeChild,
@@ -11992,7 +12201,7 @@ function dispatchPrepareCore(fixmeDir, data, flags = {}) {
     promptBlocks,
   };
 
-  if (dispatchTransportUsesRuntimeAction(data.transport)) {
+  if (dispatchTransportUsesRuntimeAction(data.transport) && !flags.suppressRuntimeAction) {
     const isResume = continuation.mode === 'resume' && isPlainObject(continuation.runtimeHandle);
     const runtimeAction = buildRuntimeAction({
       owner: {
@@ -12202,6 +12411,7 @@ function lifecycleDispatchComplete(flags) {
       if (producerContinuationResult) {
         outputData.producerContinuation = producerContinuationResult.producerContinuation;
       }
+      attachDispatchCompletionReleaseState(fixmeDir, dispatchRecord, outputData, data.status, normalizeCallerEvidence(data));
       dispatchRecord.record.completion = {
         inputs: completionInputs,
         output: outputData,
@@ -12247,6 +12457,7 @@ function lifecycleDispatchComplete(flags) {
   if (producerContinuationResult) {
     outputData.producerContinuation = producerContinuationResult.producerContinuation;
   }
+  attachDispatchCompletionReleaseState(fixmeDir, dispatchRecord, outputData, data.status, normalizeCallerEvidence(data));
   dispatchRecord.record.completion = {
     inputs: completionInputs,
     output: outputData,
@@ -12607,7 +12818,8 @@ function lifecycleDispatchStalledOwnerRecover(flags) {
   if (dispatchRecord.record.statusId !== data.childStatusId) {
     lifecycleError('conflictingDuplicate', `childStatusId ${data.childStatusId} does not match dispatch ${data.dispatchId}`);
   }
-  if (dispatchRecord.record.completion !== undefined) {
+  const hasRepairableOwnerStoppedCompletion = completionIsOwnerStoppedBeforeDispatchCompletion(dispatchRecord);
+  if (dispatchRecord.record.completion !== undefined && !hasRepairableOwnerStoppedCompletion) {
     lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already has a completion record`);
   }
   const childStatusPath = runStatusPath(fixmeDir, data.childStatusId);
@@ -12685,20 +12897,9 @@ function lifecycleDispatchStalledOwnerRecover(flags) {
   }
   const ownerRuntime = ownerStatus.activeRuntime;
   if (!isPlainObject(ownerRuntime) || !isNonEmptyString(ownerRuntime.kind) || !isNonEmptyString(ownerRuntime.id)) {
-    const output = recordOwnerStoppedBeforeDispatchCompletion(
-      fixmeDir,
-      dispatchRecord,
-      data,
-      `Owner status ${data.ownerStatusId} has no resumable runtime handle before dispatch completion was consumed`,
-    );
-    return lifecycleOk({
-      transition: 'dispatchFailure',
-      completion: output,
-      dispatchFailure: {
-        reason: 'ownerStoppedBeforeDispatchCompletion',
-        message: `Owner status ${data.ownerStatusId} has no resumable runtime handle before dispatch completion was consumed`,
-      },
-    });
+    return lifecycleOk(directOwnerCompletionPayload(fixmeDir, dispatchRecord, data, {
+      repairedLegacyFailure: hasRepairableOwnerStoppedCompletion,
+    }));
   }
   const runtime = runtimeForHandleKind(ownerRuntime.kind);
   if (!runtime) {
@@ -12718,6 +12919,7 @@ function lifecycleDispatchStalledOwnerRecover(flags) {
     });
   }
   const runtimeHandle = { kind: ownerRuntime.kind, id: ownerRuntime.id };
+  const ownerAgent = validateRunAgent(ownerStatus.agent);
   const action = persistRuntimeAction(fixmeDir, {
     owner: {
       recoveryId: data.recoveryId,
@@ -12729,11 +12931,11 @@ function lifecycleDispatchStalledOwnerRecover(flags) {
     kind: 'resumeAgentAndSendInput',
     runtime,
     transport: 'agent',
-    agentName: data.childAgent,
+    agentName: ownerAgent,
     message: `Stalled owner recovery ${data.recoveryId}: child ${data.childStatusId} reached ${data.terminalChildStatus}; consume dispatch ${data.dispatchId} completion.`,
     runtimeHandle,
     target: {
-      targetAgentName: data.childAgent,
+      targetAgentName: ownerAgent,
       targetStatusId: data.ownerStatusId,
       targetRuntimeHandle: runtimeHandle,
     },
@@ -12810,7 +13012,12 @@ const LIFECYCLE_TASK_ATTENTION_OPEN_FIELDS = new Set([
   'routingContext',
   'idempotencyKey',
 ]);
-const LIFECYCLE_BROKER_ANSWER_FIELDS = new Set(['answer', 'answeredBy', 'answerKind', 'callerStatusId', 'callerRuntimeHandle']);
+const LIFECYCLE_BROKER_ANSWER_FIELDS = new Set([...RUN_ATTENTION_ANSWER_FIELDS]);
+const LIFECYCLE_BROKER_RESUME_EVIDENCE_FIELDS = new Set(['callerStatusId', 'callerRuntimeHandle']);
+const LIFECYCLE_BROKER_RESUME_FIELDS = new Set([
+  ...LIFECYCLE_BROKER_ANSWER_FIELDS,
+  ...LIFECYCLE_BROKER_RESUME_EVIDENCE_FIELDS,
+]);
 const LIFECYCLE_BROKER_RESUME_DISPATCH_FIELDS = new Set(['resumeMessage', 'launchMode', 'transport', 'runtime', 'runtimeAction', 'runtimeHandle']);
 const LIFECYCLE_BROKER_RESUME_FAILED_REQUIRED_STRING_FIELDS = ['launchMode', 'transport', 'runtime', 'runtimeAction', 'failureKind', 'failureMessage'];
 const LIFECYCLE_BROKER_RESUME_FAILED_REQUIRED_FIELDS = new Set([...LIFECYCLE_BROKER_RESUME_FAILED_REQUIRED_STRING_FIELDS, 'runtimeHandle']);
@@ -13573,7 +13780,7 @@ function lifecycleAttentionBrokerResume(flags) {
   const attentionId = validateAttentionId(flags['attention-id']);
   const data = resolveLifecycleData(flags);
   try {
-    assertKnownJsonFields(data, 'attention broker resume', LIFECYCLE_BROKER_ANSWER_FIELDS);
+    assertKnownJsonFields(data, 'attention broker resume', LIFECYCLE_BROKER_RESUME_FIELDS);
   } catch (e) {
     lifecycleError('unknownField', e.message);
   }
@@ -15556,7 +15763,7 @@ function lifecycleParentPrepareChild(flags) {
     promptInputs: lightweightPromptInputs,
   };
 
-  let launch = dispatchPrepareCore(fixmeDir, dispatchData, flags);
+  let launch = dispatchPrepareCore(fixmeDir, dispatchData, { ...flags, suppressRuntimeAction: true });
   launch = {
     ...launch,
     runtime: data.child.runtime,
@@ -16344,7 +16551,7 @@ function taskEventConsumeCore(fixmeDir, parentRunId, options = {}) {
 function lifecycleTaskEventConsume(flags) {
   const fixmeDir = resolveLifecycleFixmeDir(flags);
   let data = null;
-  if (flags.data !== undefined || flags['data-file'] !== undefined) {
+  if (hasJsonArgumentSource(flags)) {
     data = resolveLifecycleData(flags);
     try {
       assertKnownJsonFields(data, 'task-event consume', TASK_EVENT_CONSUME_FIELDS);
@@ -17626,7 +17833,7 @@ function buildCommandRegistry() {
       optionalFlags: ['agent-name', 'runtime', 'reason'],
       requiredDataFields: ['ownerFence', 'agentName', 'runtime', 'reason', 'idempotencyKey'],
       optionalDataFields: [],
-      enumValues: { runtime: setValues(VALID_RUNTIME_VALUES), reason: ['runtimeResumeFailed'] },
+      enumValues: { runtime: setValues(VALID_RUNTIME_VALUES), reason: ['runtimeResumeFailed', 'producerContinuationRejected', 'missingProducerDirective', 'runtimeLivenessUnknown'] },
       example: { flags: { state: '/absolute/task.state.json', dataFile: '/absolute/mark-bad.json' }, data: { ownerFence: {}, agentName: 'fixme-write-plan', runtime: 'codex', reason: 'runtimeResumeFailed', idempotencyKey: 'mark-bad-key' } },
       guidance: 'Attempt-managed runtime path. Use --state <task-state.json> --data-file <json>; flag-only mark-bad usage is not valid for fixme-task runtime paths.',
     }) },
@@ -17828,7 +18035,7 @@ function buildCommandRegistry() {
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', dataFile: '/absolute/reconcile.json' }, data: { parentStatePath: '/absolute/parent/state.json' } },
       audience: 'parent-facing',
-      guidance: 'Compatibility wait reconciliation. Prefer lifecycle dispatch probe. Nonterminal active children return continueWait with child-owned workerHeartbeat detail; updatedAt is the last status write, not a heartbeat.',
+      guidance: 'Compatibility wait reconciliation. Prefer lifecycle dispatch probe. A fresh matching child-owned workerHeartbeat returns runtimeWaitContinues with a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with reason runtimeLivenessUnknown. updatedAt is the last status write, not a heartbeat.',
     }) },
     { path: 'lifecycle dispatch probe', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch probe',
@@ -17841,7 +18048,7 @@ function buildCommandRegistry() {
         data: { parentStatePath: '/absolute/parent/state.json', waitActionId: 'runtimeAction_...', watchdogMs: 300000, probeReason: 'waitWatchdogTimeout' },
       },
       audience: 'parent-facing',
-      guidance: 'Parent wait watchdog probe. Read durable terminal events, attention, stalled-owner state, and child-owned workerHeartbeat. Nonterminal active children return continueWait; timeout is not terminal evidence.',
+      guidance: 'Parent wait watchdog probe. Read durable terminal events, attention, stalled-owner state, and child-owned workerHeartbeat. A fresh matching heartbeat returns runtimeWaitContinues with a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with reason runtimeLivenessUnknown. Timeout is not terminal evidence.',
     }) },
     { path: 'lifecycle runtime-action observe', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle runtime-action observe',
@@ -17854,7 +18061,7 @@ function buildCommandRegistry() {
         data: { actionId: 'runtimeAction_...', status: 'succeeded', runtimeHandle: { kind: 'codexAgentId', id: 'agent_...' } },
       },
       audience: 'dispatcher-facing',
-      guidance: 'Records exact host-runtime evidence for a sealed runtimeAction. waitAgent actions require waitOutcome and never accept status/live outcomes.',
+      guidance: 'Records exact host-runtime evidence for a sealed runtimeAction. Successful spawn/resume: {"actionId":"<spawn-action-id>","status":"succeeded","runtimeHandle":{"kind":"codexAgentId","id":"<agent-id>"}}. Completed wait: {"actionId":"<wait-action-id>","waitOutcome":"completed","result":{"status":"completed","output":"<agent final output>"}}. Failed wait: {"actionId":"<wait-action-id>","waitOutcome":"failed","failure":{"reason":"childFailed","message":"<short failure message>"}}. Timeout wait: {"actionId":"<wait-action-id>","waitOutcome":"timeout"}. waitAgent actions require waitOutcome and never accept status/live outcomes.',
     }) },
     { path: 'lifecycle attention broker answer', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle attention broker answer',
@@ -17873,7 +18080,7 @@ function buildCommandRegistry() {
       command: 'lifecycle attention broker resume',
       requiredFlags: ['fixme-dir', 'parent-run-id', 'status-id', 'attention-id'],
       requiredDataFields: setValues(LIFECYCLE_BROKER_ANSWER_FIELDS),
-      optionalDataFields: [],
+      optionalDataFields: setValues(LIFECYCLE_BROKER_RESUME_EVIDENCE_FIELDS),
       enumValues: { answerKind: setValues(RUN_ATTENTION_ANSWER_KINDS), answeredBy: ['user'] },
       example: {
         flags: { fixmeDir: '/absolute/.fixme', parentRunId: 'parent_...', statusId: 'run_...', attentionId: 'attn_...' },
@@ -18192,6 +18399,48 @@ function flagAlternatives(flagText) {
   return String(flagText).split('|').map(part => part.trim()).filter(Boolean);
 }
 
+const JSON_COMMANDS_WITH_FLAG_MODE = Object.freeze(new Set([
+  'lifecycle parent resolve',
+  'lifecycle task-event consume',
+  'task producer-continuation mark-bad',
+]));
+
+function payloadPlaceholderForField(field, enumValues = {}) {
+  const enumValue = enumValues[field];
+  if (Array.isArray(enumValue) && enumValue.length > 0) {
+    if (field === 'answeredBy' && enumValue.length === 1) return enumValue[0];
+    return enumValue.join('|');
+  }
+  if (field === 'answer') return '<raw user answer>';
+  return `<${field}>`;
+}
+
+function requiredDataShapeForHelp(help) {
+  const enumValues = help.enumValues || {};
+  const shape = {};
+  for (const field of help.requiredDataFields || []) {
+    shape[field] = payloadPlaceholderForField(field, enumValues);
+  }
+  return shape;
+}
+
+function jsonPayloadContractError(entry, code, message) {
+  throw new CliJsonError({
+    ok: false,
+    error: { code, message },
+    command: entry.path,
+    acceptedPayloadSources: [
+      "--data '<json-object>'",
+      '--data-file <absolute-json-file>',
+      '--data-stdin',
+    ],
+    requiredData: requiredDataShapeForHelp(entry.help),
+    optionalDataFields: entry.help.optionalDataFields || [],
+    enumValues: entry.help.enumValues || {},
+    mutation: 'none',
+  });
+}
+
 function validateFlagsAgainstRegisteredCommand(command, subcommand, args, flags) {
   const entry = registeredCommandEntry(command, subcommand, args);
   if (!entry) return;
@@ -18200,9 +18449,28 @@ function validateFlagsAgainstRegisteredCommand(command, subcommand, args, flags)
     ...(entry.help.optionalFlags || []),
   ].flatMap(flagAlternatives));
   const unknownFlags = Object.keys(flags).filter(flag => flag !== 'help' && !allowedFlags.has(flag));
-  if (unknownFlags.length === 0) return;
-  const allowedList = [...allowedFlags].sort().join(', ') || '(none)';
-  throw new Error(`Unsupported flag --${unknownFlags[0]} for ${entry.path}. Allowed flags: ${allowedList}`);
+  if (unknownFlags.length > 0) {
+    const allowedList = [...allowedFlags].sort().join(', ') || '(none)';
+    throw new Error(`Unsupported flag --${unknownFlags[0]} for ${entry.path}. Allowed flags: ${allowedList}`);
+  }
+
+  if (entry.kind === 'json') {
+    const dataSources = jsonSourceFlagsFor(flags, 'data');
+    if (dataSources.length === 0 && !JSON_COMMANDS_WITH_FLAG_MODE.has(entry.path)) {
+      jsonPayloadContractError(
+        entry,
+        'missingRequiredPayload',
+        `${entry.path} requires one JSON payload source: --data '<json-object>', --data-file <absolute-json-file>, or --data-stdin`,
+      );
+    }
+    if (dataSources.length > 1) {
+      jsonPayloadContractError(
+        entry,
+        'ambiguousPayloadSource',
+        `${entry.path} accepts exactly one JSON payload source; received ${dataSources.map(flag => `--${flag}`).join(', ')}`,
+      );
+    }
+  }
 }
 
 function rootCommand() {
