@@ -43,7 +43,7 @@ If the packet and an artifact disagree, trust the artifact after verifying it di
 
 ## Classification
 
-- **FIX** - the finding is valid and the needed specification change is unambiguous. The reviewer supplied concrete specification text or only one exact product, API, data, workflow, migration, or testability decision is consistent with the specification.
+- **FIX** - the finding is valid and the needed specification change is unambiguous. The reviewer supplied concrete specification text or only one exact product, API, data, workflow, migration, or testability decision remains after applying `fixme-howto-solution-shape`.
 - **FIX_UNCLEAR** - the finding is valid, but multiple reasonable specification decisions or specification text shapes exist. The issue's validity is not in question; the unresolved part is which behavior or wording to choose.
 - **ASK_USER** - the finding might be valid, but classification depends on product intent, scope, priority, ownership, or a decision not captured in the specification or decision log.
 - **REJECT_FALSE_POSITIVE** - the finding is factually wrong. The specification already defines exactly one behavior, or the reviewer misread the specification.
@@ -192,7 +192,7 @@ Use this shape for each finding:
 - **Why**: {1-2 sentences grounded in the specification}
 - **Specification evidence**: {clickable specification location, or nearest section for absence}
 - **Question**: {ASK_USER and FIX_UNCLEAR only; full decision card from fixme-howto-present-decisions}
-- **Specification update**: {FIX only; concrete text or exact instruction for the specification revision skill}
+- **Specification update**: {FIX only; concrete text or exact instruction for the specification revision skill. The Specification update field records the shape selected through `fixme-howto-solution-shape`}
 - **Risk**: {FIX only; what could go wrong with the specification update}
 ```
 
@@ -260,6 +260,7 @@ If the configured phase has no execute skill capable of revising the specificati
 - Read the specification before classifying. Do not trust the finding's characterization.
 - Do not accept the reviewer's stated premise as truth. Verify the premise first, then classify the finding.
 - Every `FIX` must include concrete specification text or exact specification-edit instructions.
+- Every `FIX` Specification update must apply `fixme-howto-solution-shape` while respecting scope, locked decisions, and the concrete specification-output format above.
 - Every `FIX_UNCLEAR` or `ASK_USER` must include a full decision card from `fixme-howto-present-decisions`.
 - If, after applying the Decision Eligibility Gate from `fixme-howto-present-decisions`, the user must decide whether the issue is real (validity is material and indeterminate), classify `ASK_USER`.
 - If the issue is real but the behavior or wording is a choice, classify `FIX_UNCLEAR`.

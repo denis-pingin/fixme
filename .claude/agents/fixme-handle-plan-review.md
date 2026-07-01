@@ -4,6 +4,7 @@ description: Triages plan review findings using the unified taxonomy plus edge-c
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-plan-review
+  - fixme-howto-solution-shape
   - fixme-howto-importance
   - fixme-howto-present-decisions
   - fixme-howto-code-map

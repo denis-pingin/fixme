@@ -418,13 +418,15 @@ For each unresolved `review_item`:
    - Does it apply to the current code state?
    - For edge-case review items, run the Edge-Case Validity Gate before assigning VERDICT.
 3. **Categorize**:
-   - `FIX`: Valid issue with a single clear solution - no ambiguity in how to fix it
-   - `FIX_UNCLEAR`: Valid issue but multiple viable approaches exist, or tradeoffs/design choices are involved
+   - `FIX`: Valid issue with a single clear simplest-best solution shape from `fixme-howto-solution-shape` - no material approach ambiguity remains
+   - `FIX_UNCLEAR`: Valid issue but multiple material solution shapes survive the Decision Eligibility Gate
    - `ASK_USER`: Cannot determine whether this is even a valid issue - need human input on validity (not just approach)
    - `REJECT_FALSE_POSITIVE`: Comment is incorrect or doesn't apply - the code is correct
    - `REJECT_ALREADY_FIXED`: Issue was already addressed
    - `REJECT_WONT_FIX`: Valid concern but intentional/out of scope
    - `FOLLOWUP_ONLY`: Valid concern, but not worth expanding the current PR because the fix is minor/high-complexity, informational, or outside the PR goal. **Note**: file-level overlap with another PR (existing, planned, or stack-mate) is not on its own a defer reason - it must be the *specific code path* the comment flags that another PR replaces or makes obsolete. "Same file" is not "same problem."
+
+Apply `fixme-howto-solution-shape` before deciding the fix shape. If it was not preloaded, read it at `~/.claude/skills/fixme-howto-solution-shape/SKILL.md` or `~/.codex/skills/fixme-howto-solution-shape/SKILL.md`. A broader root-cause fix is `PLAN_REQUIRED`, not scope creep, when the shared rubric selects a shape outside implement-only scope.
 
 ## Review Claim Verification Gate
 
@@ -548,12 +550,13 @@ An issue that is internal-only, fires only during an existing outage, and is tri
 - MINOR + MEDIUM or HIGH complexity routes to FOLLOWUP unless the user explicitly asks to include it.
 - INFO never triggers fixme-task dispatch.
 - LOW confidence on validity routes to ASK_USER.
-- Valid issues with multiple defensible approaches route to FIX_UNCLEAR and DECISION.
+- Valid issues with multiple defensible material solution shapes route to FIX_UNCLEAR and DECISION.
 - Duplicate comments about the same root cause become one issue group with all source IDs preserved.
 
 `ROUTE_SCOPE` rules:
 - Use `IMPLEMENT_ONLY` when the current plan remains correct and the fix is local implementation repair.
 - Use `PLAN_REQUIRED` when the fix changes the plan, architecture, public contract, persistence, migration, or acceptance criteria.
+- A broader root-cause fix is `PLAN_REQUIRED`, not scope creep, when `fixme-howto-solution-shape` selects a shape outside implement-only scope.
 - Use `NONE` for `FOLLOWUP`, `NO_ACTION`, and unresolved `DECISION` items.
 
 **Anti-pattern self-check for `FOLLOWUP_ONLY`.** Before finalizing this verdict, scan your draft justification for these tokens: `touches`, `touches heavily`, `area is being reworked`, `same file`, `pr-N touches`, `stack-mate`. If they appear without naming the *specific code path* the other work supersedes, STOP. File overlap is not a defer reason. Either name the exact line range/symbol another PR replaces, or drop the stack reasoning and judge the finding on its own merits (severity, complexity, scope fit).
@@ -580,7 +583,7 @@ apply:
 - The fix touches architecture or design patterns where a choice must be made
 - Performance vs. readability vs. correctness tradeoffs are involved
 - The reviewer's suggestion conflicts with existing patterns and either direction is defensible
-- Scope is unclear - the fix could be minimal or could warrant a broader refactor
+- Scope is unclear because the simplest-best root-cause shape may require plan, architecture, public contract, persistence, migration, or acceptance-criteria changes
 
 When in doubt after applying the Decision Eligibility Gate above - the surviving approaches are material and you cannot pick a winner from rules and evidence - classify as `FIX_UNCLEAR`. If the surviving approaches are behavior-identical or strictly dominated, the gate fails and the correct verdict is `FIX`, not `FIX_UNCLEAR`. An unnecessary escalation is a defect of equal weight to silently picking the wrong approach.
 
@@ -841,7 +844,7 @@ file-level overlap with other PRs as a standalone reason.
 
 Gather ALL `FIX_UNCLEAR`, `ASK_USER`, and `ROUTE: DECISION` items and present them to the user in a single structured write-up.
 
-**Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill.** If it was not preloaded, read it at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md`.
+**Follow the Decision Presentation Guidelines from the `fixme-howto-present-decisions` skill and the solution-shape rubric from `fixme-howto-solution-shape`.** If either was not preloaded, read `fixme-howto-present-decisions` at `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md`, and read `fixme-howto-solution-shape` at `~/.claude/skills/fixme-howto-solution-shape/SKILL.md` or `~/.codex/skills/fixme-howto-solution-shape/SKILL.md`.
 
 The PR comment analysis report has its own format, but embedded user decisions do not. Each `FIX_UNCLEAR` or `ASK_USER` item must be presented as a current decision card from `fixme-howto-present-decisions`.
 

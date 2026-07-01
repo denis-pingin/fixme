@@ -135,6 +135,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
   fixme-howto-write-technical-spec/ # Shared technical specification writing rubric
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use
   fixme-howto-importance/   # Shared importance axes, floor, scoring, suppression, and aggregation rubric
+  fixme-howto-solution-shape/ # Shared solution-shape selection rubric
   fixme-write-product-spec/   # Writes product specifications
   fixme-write-technical-spec/ # Writes technical specifications
   fixme-review-spec/        # Reviews specifications for deterministic implementability
@@ -196,6 +197,8 @@ Skills dispatched as sub-agents have corresponding agent definitions in `.claude
 | fixme-browser-verify | Browser verifier | Writes verification reports, never fixes code | opus | high | xhigh |
 
 Top-level user-invoked skills (fixme, fixme-session, fixme-pr-comments, fixme-rebase, fixme-ticket, fixme-config, fixme-brainstorm), lightweight dispatchers (fixme-tickets), and reusable howto skills do NOT have agent definitions.
+
+`fixme-howto-solution-shape` is the shared solution shape rubric for reviewers, handlers, PR comment analysis, plan revision, and research. It defines the simplest-best-from-first-principles target shape and owns the `[First-principles baseline]` decision-card label.
 
 Runtime selection is configurable via `.fixme/config.json` `models` section with quality/balanced/budget/inherit profiles. Claude uses short model tags only (`opus`, `sonnet`, `haiku`) plus agent-specific effort: `xhigh` for specification, planning, review, and classifier agents; `medium` for `fixme-execute-plan`; `high` elsewhere. Codex does not pin model names; it maps profiles to reasoning effort and preserves the user-selected Codex model. Default (no config): Codex `xhigh` for most agents, with `fixme-execute-plan` at `medium`.
 

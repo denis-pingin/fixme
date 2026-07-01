@@ -123,6 +123,8 @@ For each affected file, determine:
 
 Based on the code analysis, identify 1-3 feasible fix approaches.
 
+Always include the simplest-best root-cause shape from `fixme-howto-solution-shape` when it is feasible. Do not list only least-effort patch routes when a root-cause shape is available.
+
 A route is an approach candidate only after every hard requirement has supporting evidence. Hard requirements include source ownership, runtime compatibility, existing or installable dependencies, API contracts, auth paths, data access, deployment ownership, testability, and build compatibility.
 
 For each route:
@@ -132,7 +134,7 @@ For each route:
 3. If a route depends on an SDK, package, external API, runtime, build target, or deployment owner you have not verified, it is not a candidate yet.
 4. If verification would require code changes, dependency installation, credentials, private infrastructure access, or a build you cannot run in this research pass, keep that route out of the candidate list and record the exact missing proof.
 
-For each verified approach: describe what files change, what the change is, feasibility evidence, pros, and cons. Order by confidence, with the strongest evidence-backed approach first. Note test coverage gaps as risks.
+For each verified approach: describe what files change, what the change is, feasibility evidence, design fit under `fixme-howto-solution-shape`, pros, and cons. Order by confidence and design fit, with the strongest evidence-backed root-cause approach first unless another candidate has a decisive feasibility advantage. Note test coverage gaps as risks.
 
 Do not put unproven routes in `## Approach Candidates`. Put them in `## Unproven Alternatives` with the specific verification needed before they can become selectable.
 
@@ -174,6 +176,7 @@ Write the structured research file to `<output-dir>/research.md`:
 - **Change:** [what to modify]
 - **Files:** [list]
 - **Feasibility Evidence:** [specific files, command output, docs, package metadata, or spike result proving each hard requirement]
+- **Design fit:** [how this ranks under `fixme-howto-solution-shape`, with concrete codebase facts and any scope limits]
 - **Pros:** [advantages]
 - **Cons:** [disadvantages]
 

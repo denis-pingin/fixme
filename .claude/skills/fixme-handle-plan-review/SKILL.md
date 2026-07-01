@@ -34,7 +34,7 @@ If the packet/code map and an artifact disagree, trust the artifact after verify
 
 ## Classification
 
-- **FIX** - real issue that affects correctness, performance, security, or maintainability. Either a single clear fix approach exists, OR one approach clearly dominates all alternatives on merit (grounded in concrete tradeoffs, not editorial labels like "simpler"). If the reviewer presented multiple options, you MUST independently evaluate each before classifying as FIX - see Multi-Option Discipline.
+- **FIX** - real issue that affects correctness, performance, security, or maintainability. Either a single clear fix approach exists, OR one approach is selected by applying `fixme-howto-solution-shape` and no material, indeterminate alternative remains. If the reviewer presented multiple options, you MUST independently evaluate each before classifying as FIX - see Multi-Option Discipline.
 - **FIX_UNCLEAR** - real issue, but the fix approach is ambiguous. Multiple viable strategies exist with genuine tradeoffs. This is the default classification whenever the reviewer offered 2+ options and your own independent evaluation does not produce a clear winner on the dimensions that matter (performance on common vs. rare paths, correctness, maintainability, user-visible impact). The issue's validity is not in question - only the approach to resolving it.
 - **ASK_USER** - insufficient context to determine whether the finding is even valid. Depends on intent, constraints, or decisions not captured in the plan, spec, or codebase. Requires human input to determine validity (not just approach).
 - **REJECT_FALSE_POSITIVE** - finding is factually wrong. The plan is correct, the reviewer misunderstood the plan's approach, the codebase state, or the spec constraints.
@@ -147,6 +147,8 @@ This extends accepted-fix directives; it does not replace the taxonomy. For ever
 
 These fields travel with the plan-revision input packet (see the unified plan-revision input packet contract below) so the writer can re-derive the contract and its siblings.
 
+The target shape for `Generalized fix` comes from `fixme-howto-solution-shape`.
+
 ## Plan-Revision Input Packet Contract
 
 When routing a blocking finding back to the plan writer, produce one plan-revision input packet shared across `fixme-handle-plan-review` (`revisionSource: planReviewHandler`), `fixme-plan-readiness` (`revisionSource: readiness`), and `fixme-handle-code-review` (`revisionSource: codeReviewHandler`). Every packet lists: `revisionSource`, the accepted/blocking findings, the affected plan and artifact paths, the decision log path, and the four expansion fields (`Failure family`, `Generalized fix`, `Sibling surfaces to audit`, `Required proof updates`).
@@ -196,20 +198,18 @@ For each finding:
 
 ## Multi-Option Discipline
 
-When a finding's Suggestion presents 2+ plausible fix approaches (including "drop the fix" or "add a comment" as options), apply this discipline before classifying. This section exists because the default failure mode is to anchor on whichever option the reviewer labeled "simpler" and collapse the decision without evaluation.
+When a finding's Suggestion presents 2+ plausible fix approaches, including "drop the fix" or "add a comment", apply `fixme-howto-solution-shape` before classifying. This section only defines the local handler routing and output-field mapping after the shared rubric is applied to the plan revision.
 
-1. **Independently evaluate every option.** For each, assess concrete tradeoffs: correctness, performance on common vs. rare code paths, maintainability, user-visible behavior, security, effort, risk. Read the referenced code yourself. Do not outsource this evaluation to the reviewer - the reviewer's preference is a hypothesis, not the answer.
+1. **Apply the shared rubric independently.** The reviewer's preference is a hypothesis, not the answer.
 
-2. **Strike editorial shortcuts from your reasoning.** Words like "simpler", "easier", "cleaner", "lighter touch", "just X" are anchors, not arguments. A "simpler" option that makes every request pay an extra I/O round-trip is not simpler in the dimension that matters. If your justification for picking an option reduces to "the reviewer called it simpler", you have not done the evaluation.
+2. **Classify based on the rubric outcome:**
+   - **One approach is selected by `fixme-howto-solution-shape`** and no material, indeterminate alternative remains -> **FIX**. The Approach field records the shape selected through `fixme-howto-solution-shape` and the local evidence that makes it unambiguous.
+   - **Multiple options survive with material tradeoffs** and evidence cannot choose the winner -> **FIX_UNCLEAR**. The Question field presents a decision card from `fixme-howto-present-decisions`, with the first-principles baseline tagged when `fixme-howto-solution-shape` says it qualifies.
+   - **Every option is strictly worse than the status quo** -> **REJECT_WONT_FIX**, with per-option disqualifying flaws listed.
 
-3. **Classify based on the evaluation outcome:**
-   - **One option clearly dominates** on the dimensions that matter, with no material downside → **FIX**. The Approach field records that option and cites WHY it wins on the concrete tradeoff (e.g. "hoist with guard: same performance as inline duplication, and eliminates the overlap duplication"), not on editorial language.
-   - **Multiple options are viable** with genuine tradeoffs, or no option clearly dominates → **FIX_UNCLEAR**. The Question field presents a full decision card with compact option bullets from `fixme-howto-present-decisions`. Let the user choose. This is the default when your evaluation does not produce a clear winner.
-   - **Every option is strictly worse than the status quo** (including "drop the fix" as an option) → **REJECT_WONT_FIX**, with per-option disqualifying flaws listed. "Simpler to not do it" is not a disqualifying flaw.
+3. **Do not bypass the shared rubric for local shortcuts.** "Drop the fix", "just add a comment", and one-line plan revisions require either proving the original concern invalid or applying `fixme-howto-solution-shape` to the competing fix shapes.
 
-4. **"Drop the fix" or "just add a comment" is not a free answer.** These resolutions require either proving the original concern was invalid (→ REJECT_FALSE_POSITIVE with evidence) OR proving every alternative is strictly worse than leaving the code alone (→ REJECT_WONT_FIX with a per-option evaluation). Collapsing a multi-option finding into "drop it" because one option was labeled "simpler" is the exact failure mode this section exists to prevent.
-
-5. **Default to FIX_UNCLEAR when uncertain and the outcomes are material.** "Uncertain" here means material and indeterminate after the Decision Eligibility Gate from `fixme-howto-present-decisions`: you have evaluated every option, the surviving options differ observably, and you cannot confidently name a winner from rules and evidence. If the surviving options are behavior-identical or strictly dominated, the gate fails and you classify `FIX`, not `FIX_UNCLEAR`. When a genuine decision survives, the handler's job is to protect the user's ability to choose the best option, not to save them the decision by picking the path of least resistance.
+4. **Default to FIX_UNCLEAR only for genuine decisions.** "Uncertain" means material and indeterminate after the Decision Eligibility Gate from `fixme-howto-present-decisions`. If the surviving options are behavior-identical or strictly dominated after applying `fixme-howto-solution-shape`, classify `FIX`, not `FIX_UNCLEAR`.
 
 ## Output Format
 
@@ -260,7 +260,7 @@ Operational requirements:
 - If a finding is ambiguous after applying the Decision Eligibility Gate from `fixme-howto-present-decisions` (the surviving outcomes are material and indeterminate), classify as ASK_USER rather than guessing. If the finding is clearly valid but the fix approach is genuinely unclear among material survivors, classify as FIX_UNCLEAR. A wrong FIX wastes implementation time. A wrong REJECT hides a real issue. An unnecessary escalation is also a defect: it costs a cold context reload and erodes the signal of genuine decisions, so do not escalate an item the gate proves is determined.
 - If two findings would be resolved by the same change, group them and note it.
 - Locked decisions are presumed correct. A finding that contradicts a locked decision is REJECT_WONT_FIX unless it reveals a concrete problem not visible when the decision was made - in which case ASK_USER with new evidence.
-- Multi-option findings that pass the Decision Eligibility Gate (material and indeterminate survivors) default to FIX_UNCLEAR. Collapsing multiple alternatives into a single "simpler" FIX approach - or into REJECT_WONT_FIX or "add a comment" - requires an independent evaluation that names concrete tradeoffs, not editorial labels. When the surviving options are behavior-identical or strictly dominated, the gate fails and the correct classification is FIX, not FIX_UNCLEAR. See the Decision Eligibility Gate in `fixme-howto-present-decisions` and Multi-Option Discipline.
+- Multi-option findings that pass the Decision Eligibility Gate (material and indeterminate survivors) default to FIX_UNCLEAR. Collapsing alternatives into a single FIX, REJECT_WONT_FIX, or "add a comment" requires applying `fixme-howto-solution-shape`. When the shared rubric selects one option and no material, indeterminate survivor remains, the gate fails and the correct classification is FIX. See the Decision Eligibility Gate in `fixme-howto-present-decisions` and Multi-Option Discipline.
 
 ## Routing Directive
 

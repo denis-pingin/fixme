@@ -134,6 +134,8 @@ Required inputs (provided by orchestrator as arguments):
 
 In any plan revision mode (Plan Revision, Readiness-Driven Plan Revision, Code Revision) driven by a blocking plan-revision packet, run the First-Principles Expansion Gate before editing the plan. For each blocking finding:
 
+The First-Principles Expansion Gate is governed by `fixme-howto-solution-shape`; its target is the simplest-best root-cause shape, not the smallest symptom patch.
+
 1. Identify the invariant or failure family the reported symptom violates (use the packet's `Failure family` and `Generalized fix` fields when present).
 2. List the sibling cases governed by the same invariant: other call sites, states, transports, retries, idempotency keys, generated artifacts, and acceptance proofs.
 3. Update all affected plan sections and the task code map so the generalized fix and every sibling surface are covered, not just the reported instance.
@@ -183,7 +185,7 @@ Format and persist:
 - Build the matching task code map from the files actually verified during validation.
 
 Do not:
-- Substitute a "simpler", "cleaner", or "more idiomatic" approach for the one specified.
+- Substitute a "simpler", "cleaner", or "more idiomatic" approach for the one specified. If simplicity is relevant, use `fixme-howto-solution-shape`; never substitute a smaller band-aid.
 - Add scope (refactors, extra abstractions, "while we're here" cleanup) that the input did not request.
 - Reword the specified commit message.
 - Drop any TDD step, expected failure assertion, or verification command from the input.
@@ -301,7 +303,7 @@ These are exactly the conditions under which silent overrides happen. The gate e
    - If it contradicts a Stable Context or code map item, re-verify that item against the codebase
    - If it contradicts a locked decision, flag the conflict to the user - do not silently override
    - **Never silently drop a FIX item.** If you believe a FIX should not be implemented, that is not your call - flag it back to the user via the Input Audit as a new question with concrete evidence (what you read, what tradeoff changed your mind, what alternative you propose). "Drop it and add a clarifying comment" is only acceptable when the handler's Approach field explicitly specifies exactly that as the full resolution.
-   - **Never substitute your own "lighter touch" for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems "simpler" is a silent override and the exact failure mode the handler's Multi-Option Discipline exists to prevent.
+   - **Never substitute your own smaller band-aid for the handler's specified Approach.** If the handler classified a finding as FIX with a specific Approach, implement that Approach as written. If the handler classified as FIX_UNCLEAR, the user's answer in Locked Decisions is the source of truth - follow it. Replacing either with a smaller edit because it seems easier violates `fixme-howto-solution-shape` and silently overrides the handler/user decision.
    For readiness-driven plan revision mode, read the full readiness output and every readiness blocking finding. Re-read the referenced plan sections and source/code-map references. Apply the required plan changes directly. Do not require handler fields such as Classification, Route Scope, or Approach, and do not relabel readiness findings as handler FIX items.
 6. In **code revision only**: re-read all files that were modified during execution (listed in execution results, review context packet, or code map). The codebase has changed - file-level context is stale.
 7. Skip full codebase exploration. Only do targeted re-reads as described above.
@@ -724,7 +726,7 @@ Before saving the plan, verify:
 - [ ] Stable Context is compact and points to the code map instead of duplicating broad file-level notes
 - [ ] Code map includes all significant discoveries from codebase exploration with source references and line ranges where possible
 - [ ] Locked Decisions section carries forward all decisions from previous iterations (revision mode)
-- [ ] No FIX item was silently ignored, dropped, downgraded to a clarifying comment, or collapsed to a "simpler" substitute - each is either implemented using the handler's specified Approach (for FIX), resolved via the user's Locked Decision (for FIX_UNCLEAR), or flagged back to the user as a new question with concrete evidence
+- [ ] No FIX item was silently ignored, dropped, downgraded to a clarifying comment, collapsed to a smaller band-aid, or substituted away from the shape selected under `fixme-howto-solution-shape`
 - [ ] Every task has a structured Expected Outcome (Build/Lint/Tests/Behavior)
 - [ ] No step delegates design decisions to the executor - apply the Delegation Test to every create/modify step
 - [ ] New file steps include full content or detailed structural specification

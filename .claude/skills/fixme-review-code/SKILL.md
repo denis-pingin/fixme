@@ -431,7 +431,7 @@ For each suspected duplicate, line up the two pieces of code side-by-side. Norma
 5. **Inline:** if a wrapper or helper adds no value, remove it and inline its body at the single call site.
 6. **Implement the missing distinction:** if the names *should* encode distinct rules, the body of one of them is wrong - flag the missing rule explicitly so the executor fills it in.
 
-The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions.
+The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions. If all visible fixes are patches, also include the first-principles best-shape option selected by `fixme-howto-solution-shape`, including a root-cause redesign when the shared rubric selects it.
 
 **Severity:** BLOCKER by default. A duplicate or unjustified complexity introduced by the patch must be fixed before merge - once it has callers, the fix becomes more expensive. The only exception is a MINOR severity for a duplication that is clearly localized, has zero callers outside the patch, and the plan explicitly anticipated would be cleaned up later.
 
@@ -545,13 +545,13 @@ Validity outcomes:
 
 ## Multi-Option Suggestions
 
-When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity instead of collapsing it to a favorite.
+When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity and apply `fixme-howto-solution-shape`.
 
 - **List every genuinely distinct option.** If three approaches are viable, list three - not one option with a parenthetical "or alternatively...".
+- **Include the first-principles best-shape option.** When the visible options are only patches, add the option selected by `fixme-howto-solution-shape`. Mark which option is the first-principles solution so downstream decision cards can label it.
 - **For each option, give Approach / Pros / Cons / Impact / Effort.** Keep it tight but concrete. Pros and Cons must be grounded in this codebase, not generic ("cleaner code" is not a Pro).
-- **Do not use editorial shortcut labels** like "simpler", "easier", "cleaner", "lighter touch", "just do X" as the basis for preferring one option. These are anchors, not arguments. An option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters.
-- **If you can confidently recommend one option**, state the recommendation and cite the evidence (what you read, what you measured, what tradeoff is decisive). Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
-- **Dropping the fix entirely is itself an option** and must be evaluated the same way. "Keep the current code" is only acceptable when every alternative is demonstrably worse than the status quo - not when one alternative is just "simpler".
+- **If you can confidently recommend one option**, state the recommendation and cite the evidence, including why it wins under `fixme-howto-solution-shape`. Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
+- **Dropping the fix entirely is itself an option** only when it survives the Decision Eligibility Gate and is not strictly dominated by a root-cause fix.
 
 The downstream handler treats your Suggestion as a hypothesis. Single-option suggestions push the handler toward FIX. Multi-option suggestions push it toward FIX_UNCLEAR. Get this right or the user never sees the real choice.
 
@@ -566,7 +566,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | **Severity** | BLOCKER (broken/wrong behavior or must not ship) / MAJOR (works but with significant issues) / MINOR (nonblocking improvement) / INFO (observation only) |
 | **Issue** | What's wrong - specific, referencing actual code |
 | **Evidence** | The code that demonstrates the problem. For test issues: show both the test code and the production code it should be exercising |
-| **Suggestion** | How to fix it. Concrete: name the file, the function, what to change. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
+| **Suggestion** | How to fix it. Concrete: name the file, the function, what to change. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions and `fixme-howto-solution-shape`. |
 | **Confidence** | HIGH / MEDIUM / LOW |
 | **Review assessment** | `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>` from `fixme-howto-importance`. Reviewers do not assign handler classification, level route, numeric scores, or suppression. |
 
@@ -597,4 +597,4 @@ Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`.
 - TEST-QUALITY findings about reimplemented business logic are always BLOCKER severity. There are no exceptions. A test that doesn't exercise production code is not a test.
 - STUB-DETECTION findings for artifacts that the plan claimed to fully implement are BLOCKER severity. A stub masquerading as a complete implementation is a missed deliverable.
 - The "Verified OK" section is mandatory. If you can't list things you checked, you didn't review thoroughly enough. Missing per-file or high-risk-dimension receipts mean the review is incomplete.
-- When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
+- When a finding has multiple viable fix approaches, never collapse them to a favorite without applying `fixme-howto-solution-shape`. Either recommend the option selected by the shared rubric, or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR.

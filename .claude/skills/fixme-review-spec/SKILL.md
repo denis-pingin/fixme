@@ -25,6 +25,7 @@ Review a specification before implementation planning. The goal is to decide whe
 - **Use the shared specification review rubric.** This agent preloads `fixme-howto-review-spec`; if running standalone, read `~/.claude/skills/fixme-howto-review-spec/SKILL.md` or `~/.codex/skills/fixme-howto-review-spec/SKILL.md` before evaluating the specification.
 - **Use the shared importance rubric.** This agent preloads `fixme-howto-importance`; if running standalone, read `~/.claude/skills/fixme-howto-importance/SKILL.md` or `~/.codex/skills/fixme-howto-importance/SKILL.md` before emitting findings.
 - **Use the shared decision presentation rubric.** This agent preloads `fixme-howto-present-decisions`; if running standalone, read `~/.claude/skills/fixme-howto-present-decisions/SKILL.md` or `~/.codex/skills/fixme-howto-present-decisions/SKILL.md` before asking the user to decide anything.
+- **Use the shared solution-shape rubric.** This agent preloads `fixme-howto-solution-shape`; if running standalone, read `~/.claude/skills/fixme-howto-solution-shape/SKILL.md` or `~/.codex/skills/fixme-howto-solution-shape/SKILL.md` before writing recommended specification text.
 - **Every finding must cite specification evidence.** If the issue is an absence, cite the nearest section where the behavior should have been defined.
 
 ## Review assessment
@@ -92,6 +93,8 @@ For each stateful effect, verify the specification defines an Effect Lifecycle C
 9. **Behavioral proof**: the validation that would fail if the lifecycle contract is violated.
 
 If any field is missing, ambiguous, or contradicted by another section, emit a finding against the nearest section where the contract should have been defined.
+
+Recommended specification text must apply `fixme-howto-solution-shape` while respecting the specification's scope, locked decisions, and concrete output requirements. The recommended specification text must be the simplest-best shape selected by the shared rubric.
 
 ## Edge-Case Validity Gate
 

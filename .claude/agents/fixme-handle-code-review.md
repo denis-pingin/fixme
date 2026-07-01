@@ -4,6 +4,7 @@ description: Triages code review findings using the unified taxonomy plus edge-c
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-handle-code-review
+  - fixme-howto-solution-shape
   - fixme-howto-importance
   - fixme-howto-present-decisions
   - fixme-howto-code-map

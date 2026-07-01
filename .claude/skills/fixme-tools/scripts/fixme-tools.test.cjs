@@ -16955,6 +16955,124 @@ test('plan-process skills document failure-family expansion, State/Effect Contra
   assert(task.includes('before stall escalation'), 'fixme-task should sequence contract replan before stall escalation');
 });
 
+test('fixme solution-shape rubric exists and is installed by skill discovery', () => {
+  const skillPath = path.join(repoRoot, '.claude', 'skills', 'fixme-howto-solution-shape', 'SKILL.md');
+  assert(fs.existsSync(skillPath), 'solution-shape howto skill should exist');
+
+  const skill = fs.readFileSync(skillPath, 'utf8');
+  for (const required of [
+    'name: fixme-howto-solution-shape',
+    'simplest best solution shape',
+    'Simplicity is NOT measured by diff size, line count, or implementation effort.',
+    'The exact label string is `[First-principles baseline]`.',
+    'Leaving bad architecture in place is itself a material downside of a patch',
+    'gold-plating is its own band-aid',
+    'Reviewers (`fixme-review-code`, `fixme-review-plan`, `fixme-review-spec`)',
+    'Handlers (`fixme-handle-spec-review`, `fixme-handle-plan-review`, `fixme-handle-code-review`)',
+    'PR comment analysis (`fixme-pr-comments`)',
+    'Plan writer revision (`fixme-write-plan`)',
+    'Research (`fixme-research`)',
+  ]) {
+    assert(skill.includes(required), `solution-shape rubric should include: ${required}`);
+  }
+
+  const agentNames = [
+    'fixme-handle-code-review',
+    'fixme-handle-plan-review',
+    'fixme-handle-spec-review',
+    'fixme-review-code',
+    'fixme-review-plan',
+    'fixme-review-spec',
+    'fixme-write-plan',
+    'fixme-research',
+  ];
+
+  for (const agentName of agentNames) {
+    const agentPath = path.join(repoRoot, '.claude', 'agents', `${agentName}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('- fixme-howto-solution-shape'), `${agentName} should preload fixme-howto-solution-shape`);
+  }
+
+  const dir = createTmpDir();
+  const claudeDir = path.join(dir, '.claude');
+  const codexDir = path.join(dir, '.codex');
+  const skillsSrc = path.join(repoRoot, '.claude', 'skills');
+
+  const claudeInstall = runToolPath(TOOLS_PATH, `claude-skills install --skills-src "${skillsSrc}" --claude-dir "${claudeDir}"`, { cwd: repoRoot, timeout: 30000 });
+  assert(claudeInstall.ok, `claude-skills install should succeed, got ${JSON.stringify(claudeInstall)}`);
+  assert(claudeInstall.data.skills.includes('fixme-howto-solution-shape'), 'Claude skill install should include solution-shape skill');
+  assert(fs.existsSync(path.join(claudeDir, 'skills', 'fixme-howto-solution-shape', 'SKILL.md')), 'Claude install should write solution-shape skill');
+
+  const codexInstall = runToolPath(TOOLS_PATH, `codex-skills install --skills-src "${skillsSrc}" --codex-dir "${codexDir}"`, { cwd: repoRoot, timeout: 30000 });
+  assert(codexInstall.ok, `codex-skills install should succeed, got ${JSON.stringify(codexInstall)}`);
+  assert(codexInstall.data.skills.includes('fixme-howto-solution-shape'), 'Codex skill install should include solution-shape skill');
+  assert(fs.existsSync(path.join(codexDir, 'skills', 'fixme-howto-solution-shape', 'SKILL.md')), 'Codex install should write solution-shape skill');
+});
+
+test('fixme solution-shape consumers preload and reference shared rubric', () => {
+  const readSkill = name => fs.readFileSync(path.join(repoRoot, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+  const oldShortcutParagraph = 'Words like "simpler", "easier", "cleaner", "lighter touch", "just X" are anchors, not arguments.';
+
+  for (const handlerName of ['fixme-handle-code-review', 'fixme-handle-plan-review']) {
+    const handler = readSkill(handlerName);
+    assert(handler.includes('fixme-howto-solution-shape'), `${handlerName} should reference the shared solution-shape rubric`);
+    assert(handler.includes('The Approach field records the shape selected through `fixme-howto-solution-shape`'), `${handlerName} should record the rubric-selected FIX approach`);
+    assert(!handler.includes('Leaving bad architecture in place is itself a material downside of a patch'), `${handlerName} should not duplicate shared material-downside prose`);
+    assert(!handler.includes(oldShortcutParagraph), `${handlerName} should move duplicated editorial-shortcut wording into the shared rubric`);
+  }
+
+  const specHandler = readSkill('fixme-handle-spec-review');
+  assert(specHandler.includes('fixme-howto-solution-shape'), 'fixme-handle-spec-review should reference the shared solution-shape rubric');
+  assert(specHandler.includes('Specification update'), 'fixme-handle-spec-review should keep its Specification update field');
+  assert(specHandler.includes('The Specification update field records the shape selected through `fixme-howto-solution-shape`'), 'fixme-handle-spec-review should record the rubric-selected specification update');
+  assert(!specHandler.includes('Leaving bad architecture in place is itself a material downside of a patch'), 'fixme-handle-spec-review should not duplicate shared material-downside prose');
+  assert(!specHandler.includes(oldShortcutParagraph), 'fixme-handle-spec-review should move duplicated editorial-shortcut wording into the shared rubric');
+
+  for (const reviewerName of ['fixme-review-code', 'fixme-review-plan']) {
+    const reviewer = readSkill(reviewerName);
+    assert(reviewer.includes('fixme-howto-solution-shape'), `${reviewerName} should reference the shared solution-shape rubric`);
+    assert(reviewer.includes('Include the first-principles best-shape option'), `${reviewerName} should require reviewers to surface the root-cause option`);
+    assert(reviewer.includes('Mark which option is the first-principles solution'), `${reviewerName} should mark the first-principles option for downstream cards`);
+    assert(!reviewer.includes(oldShortcutParagraph), `${reviewerName} should move duplicated editorial-shortcut wording into the shared rubric`);
+  }
+
+  const specReview = readSkill('fixme-review-spec');
+  assert(specReview.includes('fixme-howto-solution-shape'), 'spec review should reference the shared solution-shape rubric');
+  assert(specReview.includes('recommended specification text must be the simplest-best shape'), 'spec review should apply the rubric to recommended specification text');
+
+  const writePlan = readSkill('fixme-write-plan');
+  assert(writePlan.includes('First-Principles Expansion Gate is governed by `fixme-howto-solution-shape`'), 'write-plan should define the expansion target through the solution-shape rubric');
+  assert(writePlan.includes('never substitute a smaller band-aid'), 'write-plan should reject smaller band-aid substitutions');
+});
+
+test('fixme decision, PR comment, and research surfaces expose first-principles solution shape', () => {
+  const readSkill = name => fs.readFileSync(path.join(repoRoot, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+
+  const decisions = readSkill('fixme-howto-present-decisions');
+  assert(decisions.includes('[First-principles baseline]'), 'decision cards should expose the baseline label');
+  assert(decisions.includes('label string is owned by `fixme-howto-solution-shape`'), 'decision skill should reference label ownership');
+  assert(decisions.includes('root-cause / redesign shape is a default option to consider'), 'decision cards should consider root-cause options by default');
+  assert(decisions.includes('recommendation defaults to the first-principles baseline'), 'decision recommendations should default to the baseline');
+
+  const prComments = readSkill('fixme-pr-comments');
+  assert(prComments.includes('fixme-howto-solution-shape'), 'PR comments should reference solution-shape rubric');
+  assert(prComments.includes('~/.claude/skills/fixme-howto-solution-shape/SKILL.md'), 'PR comments should include Claude read-at fallback');
+  assert(prComments.includes('~/.codex/skills/fixme-howto-solution-shape/SKILL.md'), 'PR comments should include Codex read-at fallback');
+  assert(prComments.includes('A broader root-cause fix is `PLAN_REQUIRED`, not scope creep'), 'PR comments should route broader root-cause fixes as plan-required');
+
+  const research = readSkill('fixme-research');
+  assert(research.includes('fixme-howto-solution-shape'), 'research should reference solution-shape rubric');
+  assert(research.includes('simplest-best root-cause shape'), 'research should include the root-cause candidate');
+  assert(research.includes('Design fit'), 'research output should rank candidates on design fit');
+});
+
+test('CLAUDE documents shared solution-shape rubric', () => {
+  const claude = fs.readFileSync(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
+  assert(claude.includes('fixme-howto-solution-shape/ # Shared solution-shape selection rubric'), 'CLAUDE skill layout should include solution-shape skill');
+  assert(claude.includes('solution shape'), 'CLAUDE should mention solution-shape guidance');
+  assert(claude.includes('[First-principles baseline]'), 'CLAUDE should document the baseline label');
+});
+
 console.log('\n=== usage source validation tests ===\n');
 
 test('usage start: invalid Codex artifact source-path fails before pending state', () => {

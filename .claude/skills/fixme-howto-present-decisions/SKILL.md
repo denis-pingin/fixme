@@ -220,7 +220,9 @@ Use this body when the decision is about fix approach:
 
 **Options**:
 
-### Option A: {option name}
+If one option qualifies as the first-principles baseline under `fixme-howto-solution-shape`, place it first as Option A. The label string is owned by `fixme-howto-solution-shape`: `[First-principles baseline]`. Omit the label when no option qualifies.
+
+### Option A: {option name} [First-principles baseline]
 
 **What**: {one sentence naming the change}
 
@@ -313,10 +315,12 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 - **Options must be genuinely distinct** approaches, not variations of the same thing. If two options only differ in a minor detail, merge them and note the variation.
 - **Cross-reference between options.** When Option B's main advantage is that it avoids Option A's biggest downside, say so explicitly. Do not make the reader connect the dots.
 - **Dropping the fix is a default option to consider, not an afterthought - but only when it is a material survivor of the Decision Eligibility Gate.** Before listing fix-shape options, ask whether keeping current behavior is viable AND survives the hard constraints. For MINOR or INFO severity findings whose "accept current behavior" outcome is eligible (it violates no project rule, locked decision, or shipped-and-tested contract) and materially differs from the fix outcomes, "accept current behavior" must appear as an option, framed with the same 6 sub-fields so the user can compare it on equal footing. Do not add "accept current behavior" as a strictly-dominated filler option when a hard constraint already rules it out.
+- **A root-cause / redesign shape is a default option to consider when options are competing solution shapes.** If one option is the first-principles baseline from `fixme-howto-solution-shape`, place it first as Option A and tag it. Alternatives appear only when each has a real named benefit over the baseline; otherwise they are strictly dominated and should be dropped.
 
 ## Recommendation Rules
 
 - **Recommendation is mandatory.** Always. No exceptions.
+- **When a first-principles baseline is tagged, the recommendation defaults to the first-principles baseline.** Recommend an alternative only when its named benefit is decisive, and explain why that benefit is worth the added tradeoff under `fixme-howto-solution-shape`.
 - **Every decision card surfaces the recommendation near the top.** Put it immediately after the `Decision needed` line.
 - **Option decisions get two recommendation lines.** Put the same recommendation in the opening block and after options.
 - **Spell out the recommendation before the option label.** Use `Choose Convex paginated result (Option A)`, not `Option A`.
@@ -362,7 +366,9 @@ If the decision cannot fit this budget, keep the opening block, options, and rec
 
 **Options**:
 
-### Option A: Convex paginated result
+In this example, Option A is tagged because the current hook already consumes Convex pagination and no adapter layer is needed.
+
+### Option A: Convex paginated result [First-principles baseline]
 
 **What**: Define the result as `{ page, isDone, continueCursor }`.
 

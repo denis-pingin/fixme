@@ -264,7 +264,7 @@ A stateful effect is any operation where correctness depends on more than local 
 - Step relies on a side effect of a previous step that is not guaranteed (ordering assumption)
 - Plan fights existing codebase patterns instead of working with them
 - Result would not be maintainable by someone who didn't write the plan
-- Simpler approaches exist that achieve the same outcome
+- A different approach would be selected by `fixme-howto-solution-shape`
 - Step introduces a performance regression not acknowledged in the plan (N+1 queries, unnecessary re-renders, large payloads)
 
 ### Dimension 5: Artifact Wiring
@@ -445,7 +445,7 @@ For each suspected case, write down what the plan tells the executor about the n
 5. **Centralize:** rewrite the plan to introduce a shared constant/helper/module instead of repeating the same value or logic across multiple steps.
 6. **Defer the split:** remove the speculative split from the plan; revisit when divergence actually arrives.
 
-The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions.
+The Suggestion must classify which case applies based on the plan's intent. When more than one fix is plausible, present them per Multi-Option Suggestions. If all visible fixes are patches, also include the first-principles best-shape option selected by `fixme-howto-solution-shape`, including a root-cause redesign when the shared rubric selects it.
 
 **Severity:** BLOCKER by default. A plan that asks the executor to write duplication is a defective plan and must be revised before execution. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly anticipates would be cleaned up in a follow-up step.
 
@@ -461,13 +461,13 @@ The Suggestion must classify which case applies based on the plan's intent. When
 
 ## Multi-Option Suggestions
 
-When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity instead of collapsing it to a favorite.
+When a finding admits more than one plausible fix, the Suggestion field must preserve that multiplicity and apply `fixme-howto-solution-shape`.
 
 - **List every genuinely distinct option.** If three approaches are viable, list three - not one option with a parenthetical "or alternatively...".
+- **Include the first-principles best-shape option.** When the visible options are only patches, add the option selected by `fixme-howto-solution-shape`. Mark which option is the first-principles solution so downstream decision cards can label it.
 - **For each option, give Approach / Pros / Cons / Impact / Effort.** Keep it tight but concrete. Pros and Cons must be grounded in this codebase, not generic ("cleaner code" is not a Pro).
-- **Do not use editorial shortcut labels** like "simpler", "easier", "cleaner", "lighter touch", "just do X" as the basis for preferring one option. These are anchors, not arguments. An option that is "simpler" in line count but slower on the common code path is not simpler in the dimension that matters.
-- **If you can confidently recommend one option**, state the recommendation and cite the evidence (what you read, what you measured, what tradeoff is decisive). Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
-- **Dropping the fix entirely is itself an option** and must be evaluated the same way. "Keep the current code" is only acceptable when every alternative is demonstrably worse than the status quo - not when one alternative is just "simpler".
+- **If you can confidently recommend one option**, state the recommendation and cite the evidence, including why it wins under `fixme-howto-solution-shape`. Otherwise, say explicitly: "Recommendation: none - classify as FIX_UNCLEAR, let the user choose."
+- **Dropping the fix entirely is itself an option** only when it survives the Decision Eligibility Gate and is not strictly dominated by a root-cause fix.
 
 The downstream handler treats your Suggestion as a hypothesis. Single-option suggestions push the handler toward FIX. Multi-option suggestions push it toward FIX_UNCLEAR. Get this right or the user never sees the real choice.
 
@@ -482,7 +482,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 | **Severity** | BLOCKER (plan will fail or must not execute) / MAJOR (plan will work but with significant issues) / MINOR (nonblocking improvement) / INFO (observation only) |
 | **Issue** | What's wrong - be specific. Reference actual file paths, function names, types |
 | **Evidence** | The code, spec section, or dependency doc that supports the claim |
-| **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions. |
+| **Suggestion** | How to fix it. Concrete enough to act on. If multiple viable approaches exist, list them as distinct options with Approach/Pros/Cons/Impact/Effort and either recommend one with evidence or mark the finding as "needs FIX_UNCLEAR classification". See Multi-Option Suggestions and `fixme-howto-solution-shape`. |
 | **Confidence** | HIGH / MEDIUM / LOW - be honest. LOW confidence findings are fine to include IF they're BLOCKER severity |
 | **Review assessment** | `reachability=<value>; state_contract=<value>; trigger_window=<value>; target_scale=<value>; impact=<value>; fix_risk=<value>; confidence=<value>` from `fixme-howto-importance`. Reviewers do not assign handler classification, level route, numeric scores, or suppression. |
 
@@ -511,4 +511,4 @@ Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`.
 - If unsure whether something is an issue, frame it as a question: "Does X handle Y? I couldn't confirm from reading [file]." Questions are cheaper than wrong findings.
 - Separate "the plan won't work" (correctness) from "the plan could be better" (suggestions). Don't mix them.
 - If the plan is good and there are no findings, say so. Don't manufacture issues to justify the review.
-- When a finding has multiple viable fix approaches, never collapse them to a single "simpler" favorite. Either recommend one with evidence grounded in concrete tradeoffs (performance, correctness, maintainability), or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR. Anchoring on editorial labels like "simpler" or "easier" is the exact pattern this rule forbids.
+- When a finding has multiple viable fix approaches, never collapse them to a favorite without applying `fixme-howto-solution-shape`. Either recommend the option selected by the shared rubric, or explicitly hand the choice to the handler via a Suggestion marked for FIX_UNCLEAR.

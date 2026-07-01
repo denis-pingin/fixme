@@ -4,6 +4,7 @@ description: Reviews specifications for deterministic implementability. Read-onl
 tools: Read, Bash, Grep, Glob
 skills:
   - fixme-review-spec
+  - fixme-howto-solution-shape
   - fixme-howto-review-spec
   - fixme-howto-importance
   - fixme-howto-present-decisions
