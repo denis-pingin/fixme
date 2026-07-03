@@ -255,6 +255,7 @@ Ticket operations go through `fixme-tickets` which routes to the configured back
 | `fixme-howto-code-map` | Shared task-scoped code map contract for planners, executors, and reviewers |
 | `fixme-howto-find-fixme-dir` | Shared rule for resolving `<fixme-dir>` instead of hardcoding `.fixme/` paths |
 | `fixme-howto-importance` | Shared importance axes, floor, scoring, suppression, and aggregation rubric |
+| `fixme-howto-plan-acceptance` | Shared plan acceptance contract for plan writers and plan reviewers |
 | `fixme-howto-present-decisions` | Shared user-facing decision presentation format |
 | `fixme-howto-review-spec` | Shared specification review rubric for reviewers or standalone use |
 | `fixme-howto-write-product-spec` | Shared product specification writing rubric for behavior-first specifications |

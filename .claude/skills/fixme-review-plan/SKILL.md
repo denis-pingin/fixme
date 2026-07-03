@@ -28,6 +28,14 @@ Resolve the plan to review in this order:
 
 Read the plan fully before proceeding. If a specification, context document, or task code map is referenced in the plan, read that too. If a review context packet is provided, read it for current-run decisions, prior fixes, and source references. The packet and code map are orientation, not authority; verify against the plan, specs, and codebase before making findings.
 
+## Shared Plan Acceptance Contract
+
+Use `fixme-howto-plan-acceptance` as the authoritative plan-quality contract shared with `fixme-write-plan`.
+
+Review the Plan Acceptance Receipt first. Verify each receipt row against the plan, task code map, specs, decisions, and current codebase before ordinary dimension review. For non-trivial implementation plans, a missing receipt is a blocker.
+
+Any missing, false, unknown, or contradicted receipt row is a blocker. A row is also a blocker when the receipt claims an invariant is proven but the proposed test is weaker than the behavior, observes only helper output/source shape, misses existing durable file content mutation, or allows a write before validation/replay/idempotency proof.
+
 ## Two-Pass Review Process
 
 **The review is a two-pass process. Do not emit findings as you discover them.**
@@ -47,7 +55,7 @@ Assign axes from verified plan, specification, and codebase evidence. Do not ass
 
 ### Pass 1: Investigation (internal, not in output)
 
-Read the plan, read the task code map if available, read the codebase, identify candidate issues. Use the code map to target source reads and avoid rediscovering unrelated neighboring context. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
+Read the plan, read the Plan Acceptance Receipt, read the task code map if available, read the codebase, identify candidate issues. Use the code map to target source reads and avoid rediscovering unrelated neighboring context. For each candidate, run it through the Pre-Review Gate below. This is your thinking process - none of it appears in the final output.
 
 - If gate-checking reveals the candidate is not actually an issue, discard it silently. Do NOT include retracted, dismissed, or "on further analysis, no issue" findings in the output. If you talked yourself out of it, it's not a finding.
 - If gate-checking reveals uncertainty, move it to Questions.
@@ -489,7 +497,7 @@ The downstream handler treats your Suggestion as a hypothesis. Single-option sug
 ### Final Output Structure
 
 1. **Summary**: 1-2 sentences - is this plan ready to execute, or does it need revision? Be direct.
-2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, **DRY-AND-SIMPLICITY first**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories. **Group stateful findings by failure family** where practical: when several findings about state transitions, idempotency, retries, lifecycle handoff, attention, generated artifacts, or semantic equality share one underlying invariant, report them as one failure-family cluster naming the cluster, the sibling-audit expectation (which other call sites, states, transports, or artifacts the same invariant governs), and the family-level proof gap, instead of one isolated symptom per finding.
+2. **Findings**: ordered by severity (BLOCKER first, then MAJOR, then MINOR, then INFO). Within severity, Plan Acceptance Receipt failures first, then **DRY-AND-SIMPLICITY**, then GOAL-ACHIEVEMENT and STEP-CORRECTNESS, then other categories. **Group stateful findings by failure family** where practical: when several findings about state transitions, idempotency, retries, lifecycle handoff, attention, generated artifacts, or semantic equality share one underlying invariant, report them as one failure-family cluster naming the cluster, the sibling-audit expectation (which other call sites, states, transports, or artifacts the same invariant governs), and the family-level proof gap, instead of one isolated symptom per finding.
 3. **Questions**: things that couldn't be determined from the code/spec that the plan author should clarify.
 4. **Scope**: plan reviewed, code map used if provided, and review context packet used if provided.
 5. **Machine footer**: end with the exact footer below so `fixme-task` can route zero-finding reviews without a no-op handler dispatch. This is a reviewer result, not a handler classification.
@@ -506,6 +514,7 @@ Only use `REVIEW_RESULT: CLEAN` when `FINDING_COUNT: 0` and `QUESTION_COUNT: 0`.
 ## Rules
 
 - Fewer high-quality findings >>> many low-quality ones. 5 real issues beats 20 maybes.
+- Review the Plan Acceptance Receipt first. For non-trivial implementation plans, a missing, false, unknown, or contradicted receipt row is a blocker because `fixme-write-plan` is not allowed to emit `PLAN_PATH` until the shared contract passes.
 - DRY-AND-SIMPLICITY findings where the plan asks the executor to introduce duplication, repeated logic, repeated literals, unjustified wrappers, single-call helpers, type aliases without domain difference, or two named entities without a specified behavioral delta are BLOCKER severity. Plans plant the duplication that ships in code. The only exception is MINOR severity for a plan-level duplicate that is clearly localized, has zero downstream callers, and the plan explicitly schedules its cleanup. Loose phrasing like "introduce named predicates" or "split for clarity" without a behavioral contract for each new entity is itself the finding - the plan is incomplete and will produce duplication.
 - NEVER critique what hasn't been verified against the codebase. "I think this API doesn't support X" is not a finding. Read the code, confirm, then report.
 - If unsure whether something is an issue, frame it as a question: "Does X handle Y? I couldn't confirm from reading [file]." Questions are cheaper than wrong findings.

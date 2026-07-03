@@ -3571,6 +3571,10 @@ function captureChangedFilesBaseline(projectRoot) {
 function installTaskOwner(statePath, state, runtime, transport, idempotencyKey, options = {}) {
   const now = new Date().toISOString();
   const changedFilesBaseline = captureChangedFilesBaseline(state.projectRoot);
+  const ownerStatusId = options.statusId || null;
+  if (!isNonEmptyString(ownerStatusId)) {
+    lifecycleError('ownerStatusMissing', 'installTaskOwner requires a run status id for every active task owner');
+  }
   const attempt = isPlainObject(state.currentAttempt)
     ? { ...state.currentAttempt }
     : {
@@ -3589,7 +3593,7 @@ function installTaskOwner(statePath, state, runtime, transport, idempotencyKey, 
     taskOwnerId: generateUsageId('taskOwner'),
     taskOwnerGeneration: generation,
     taskRunId: options.taskRunId || generateUsageId('taskRun'),
-    statusId: options.statusId || null,
+    statusId: ownerStatusId,
     runtime,
     transport,
     idempotencyKey,
@@ -3614,6 +3618,29 @@ function installTaskOwner(statePath, state, runtime, transport, idempotencyKey, 
   };
   writeJsonAtomic(statePath, next);
   return { state: next, ownerFence: ownerFenceFromState(statePath, next) };
+}
+
+function startTaskOwnerRunStatus(fixmeDir) {
+  return runStartCore({ 'fixme-dir': fixmeDir, agent: 'fixme-task' });
+}
+
+function repairTaskOwnerRunStatus(statePath, state, fixmeDir) {
+  if (!isPlainObject(state.taskOwner) || isNonEmptyString(state.taskOwner.statusId)) {
+    return null;
+  }
+  const ownerStatus = startTaskOwnerRunStatus(fixmeDir);
+  const owner = { ...state.taskOwner, statusId: ownerStatus.statusId };
+  const currentAttempt = isPlainObject(state.currentAttempt)
+    ? { ...state.currentAttempt, taskOwner: owner, state: state.currentAttempt.state || 'running', updatedAt: new Date().toISOString() }
+    : state.currentAttempt;
+  const next = {
+    ...state,
+    taskOwner: owner,
+    currentAttempt,
+    updatedAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(statePath, next);
+  return { state: next, ownerStatus, ownerFence: ownerFenceFromState(statePath, next) };
 }
 
 function parseTaskData(rawData) {
@@ -5024,6 +5051,37 @@ function applyCheckpointDataToTaskState(taskStatePath, checkpointData) {
   }
   writeJsonAtomic(resolved, next);
   return next;
+}
+
+function valueReflectsCheckpointPatch(current, patch) {
+  if (isPlainObject(patch)) {
+    if (!isPlainObject(current)) return false;
+    return Object.entries(patch).every(([key, value]) => valueReflectsCheckpointPatch(current[key], value));
+  }
+  return jsonEqual(current, patch);
+}
+
+function taskStateReflectsCheckpointPatch(state, checkpointData) {
+  if (!isPlainObject(checkpointData)) return true;
+  return Object.entries(checkpointData).every(([key, value]) => valueReflectsCheckpointPatch(state[key], value));
+}
+
+function repairDispatchCompletionCheckpointIfNeeded(fixmeDir, dispatchRecord) {
+  const record = dispatchRecord && dispatchRecord.record ? dispatchRecord.record : dispatchRecord;
+  const checkpointData = record && record.completion && record.completion.inputs && record.completion.inputs.checkpointData;
+  if (!isPlainObject(checkpointData)) return false;
+  const taskStatePath = record.durableInputs && record.durableInputs.taskStatePath;
+  if (!isNonEmptyString(taskStatePath)) {
+    lifecycleError('invalidInput', 'completion checkpointData requires taskStatePath on the prepared dispatch');
+  }
+  const resolved = path.resolve(String(taskStatePath));
+  if (!fs.existsSync(resolved)) {
+    lifecycleError('stateNotFound', `Task state file not found for checkpointData: ${resolved}`);
+  }
+  const state = readJsonFileStrict(resolved);
+  if (taskStateReflectsCheckpointPatch(state, checkpointData)) return false;
+  applyCheckpointDataToTaskState(resolved, checkpointData);
+  return true;
 }
 
 function taskProducerContinuationMarkBad(flags) {
@@ -10070,7 +10128,8 @@ function lifecycleTaskBeginDirect(flags, fixmeDir) {
   });
   assertCamelCaseJsonKeys(state, 'task state');
   writeJsonAtomic(identity.statePath, state);
-  const acquired = installTaskOwner(identity.statePath, state, 'codex', 'agent', idempotencyKey);
+  const ownerStatus = startTaskOwnerRunStatus(fixmeDir);
+  const acquired = installTaskOwner(identity.statePath, state, 'codex', 'agent', idempotencyKey, { statusId: ownerStatus.statusId });
   const outputData = {
     mode: identity.mode,
     taskRef: identity.taskRef,
@@ -10078,6 +10137,7 @@ function lifecycleTaskBeginDirect(flags, fixmeDir) {
     ticketPath: identity.ticketPath,
     task: taskStateContext(identity.statePath, acquired.state),
     ownerFence: acquired.ownerFence,
+    ownerStatus,
     beginRecordPath,
   };
   writeJsonAtomic(beginRecordPath, {
@@ -10204,6 +10264,21 @@ function lifecycleTaskContinue(flags, fixmeRoot) {
     });
   }
   if (isPlainObject(state.taskOwner)) {
+    const repaired = repairTaskOwnerRunStatus(statePath, state, fixmeDir);
+    if (repaired) {
+      return lifecycleOk({
+        action: 'resumeExistingOwner',
+        task: taskStateContext(statePath, repaired.state),
+        taskOwner: repaired.state.taskOwner,
+        ownerFence: repaired.ownerFence,
+        ownerStatus: repaired.ownerStatus,
+        nextCommands: {
+          checkpoint: 'task checkpoint',
+          resultWrite: 'task result write',
+          attentionOpen: 'lifecycle task attention open',
+        },
+      });
+    }
     return lifecycleOk({
       action: 'activeOwner',
       task: taskStateContext(statePath, state),
@@ -10225,12 +10300,14 @@ function lifecycleTaskContinue(flags, fixmeRoot) {
       reason: `task state is ${state.status}`,
     });
   }
-  const acquired = installTaskOwner(statePath, state, data.runtime, data.transport, data.idempotencyKey);
+  const ownerStatus = startTaskOwnerRunStatus(fixmeDir);
+  const acquired = installTaskOwner(statePath, state, data.runtime, data.transport, data.idempotencyKey, { statusId: ownerStatus.statusId });
   state = acquired.state;
   return lifecycleOk({
     action: state.currentAttempt && state.currentAttempt.attemptNumber > 1 ? 'spawnFreshOwner' : 'spawnFreshOwner',
     task: taskStateContext(statePath, state),
     ownerFence: acquired.ownerFence,
+    ownerStatus,
     nextCommands: {
       checkpoint: 'task checkpoint',
       resultWrite: 'task result write',
@@ -10880,6 +10957,7 @@ function waitLivenessPayload(status, activeRuntime, watchdogMs) {
 function runtimeWaitTimedOutPayload({ dispatchId, statusId, status, activeRuntime, waitActionId = null, watchdogMs = null, probeReason = null }) {
   return {
     transition: 'runtimeWaitTimedOut',
+    actualState: 'waitActionPendingLivenessUnknown',
     reason: 'runtimeLivenessUnknown',
     dispatchId,
     statusId,
@@ -10922,6 +11000,7 @@ function runtimeWaitContinuesPayload(fixmeDir, dispatchRecord, { status, activeR
   return {
     ...continued,
     transition: 'runtimeWaitContinues',
+    actualState: 'waitActionPendingChildRunning',
     reason: 'workerHeartbeatRecent',
     dispatchId: dispatchRecord.record.dispatchId,
     statusId: dispatchRecord.record.statusId,
@@ -11112,10 +11191,72 @@ function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
     }
   }
 
+  const workerResult = readWorkerResultForDispatch(fixmeDir, dispatchId);
+  if (workerResult && status.state !== 'completed' && status.state !== 'failed') {
+    if (workerResult.statusId !== statusId) {
+      return dispatchWaitFailure('runtimeIdentityConflict', `Worker result statusId ${workerResult.statusId} does not match child run status ${statusId}`);
+    }
+    const nextStatus = preserveRunStatusRuntimeFields(status, {
+      schemaVersion: 1,
+      statusId,
+      agent: validateRunAgent(status.agent),
+      state: workerResult.status,
+      checkpoint: 'done',
+      currentCommand: null,
+      updatedAt: new Date().toISOString(),
+    });
+    if (workerResult.failure) {
+      nextStatus.failure = workerResult.failure;
+    }
+    writeRunStatus(statusPath, nextStatus);
+    attachWorkerResultToDispatchRecord(dispatchRecord, workerResult);
+    const completion = completeDispatchFromWorkerResult(fixmeDir, dispatchRecord, workerResult);
+    return {
+      transition: 'resultWrittenChildNotTerminal',
+      dispatchId,
+      statusId,
+      childStatusId: statusId,
+      repairedChildStatus: workerResult.status,
+      resultId: workerResult.resultId,
+      resultPath: workerResult.resultPath,
+      resultDigest: workerResult.resultDigest,
+      completion,
+    };
+  }
+
   if (status.state === 'completed' || status.state === 'failed') {
     const durableInputs = dispatchRecord.record.durableInputs || {};
     const ownerStatusId = durableInputs.parentStatusId || durableInputs.callerStatusId || null;
     const childAgent = durableInputs.agentName || status.agent;
+    if (workerResult) {
+      if (dispatchRecord.record.completion !== undefined) {
+        repairDispatchCompletionCheckpointIfNeeded(fixmeDir, dispatchRecord);
+        const projection = attachWorkerResultToDispatchRecord(dispatchRecord, workerResult);
+        return {
+          transition: 'childResultConsumed',
+          dispatchId,
+          statusId,
+          childStatusId: statusId,
+          terminalChildStatus: status.state,
+          resultId: projection.resultId,
+          resultPath: projection.resultPath,
+          resultDigest: projection.resultDigest,
+          completion: dispatchRecord.record.completion.output,
+        };
+      }
+      const completion = completeDispatchFromWorkerResult(fixmeDir, dispatchRecord, workerResult);
+      return {
+        transition: 'childResultReady',
+        dispatchId,
+        statusId,
+        childStatusId: statusId,
+        terminalChildStatus: status.state,
+        resultId: workerResult.resultId,
+        resultPath: workerResult.resultPath,
+        resultDigest: workerResult.resultDigest,
+        completion,
+      };
+    }
     if (isNonEmptyString(ownerStatusId) && dispatchRecord.record.completion === undefined) {
       const ownerStatusPath = runStatusPath(fixmeDir, ownerStatusId);
       if (fs.existsSync(ownerStatusPath)) {
@@ -11149,7 +11290,16 @@ function classifyDurableWaitTimeout(fixmeDir, dispatchRecord, {
         }
       }
     }
-    return dispatchWaitFailure('invalidStatus', `Run ${statusId} is terminal (${status.state}) with no durable task event for the parent active child`);
+    return {
+      transition: 'childResultMissing',
+      reason: 'terminalChildMissingDurableResult',
+      dispatchId,
+      statusId,
+      childStatusId: statusId,
+      childAgent,
+      terminalChildStatus: status.state,
+      message: `Run ${statusId} is terminal (${status.state}) with no durable worker result for dispatch ${dispatchId}`,
+    };
   }
 
   const liveness = workerHeartbeatLiveness(status, activeRuntime, watchdogMs);
@@ -11253,6 +11403,14 @@ function completeDispatchFromWaitObservation(fixmeDir, action, evidence) {
   };
   if (next.failure !== undefined) outputData.failure = next.failure;
   if (producerContinuationResult) outputData.producerContinuation = producerContinuationResult.producerContinuation;
+  const workerResult = readWorkerResultForDispatch(fixmeDir, dispatchId);
+  if (workerResult) {
+    const projection = workerResultProjection(workerResult);
+    dispatchRecord.record.workerResult = projection;
+    outputData.resultId = projection.resultId;
+    outputData.resultPath = projection.resultPath;
+    outputData.resultDigest = projection.resultDigest;
+  }
   dispatchRecord.record.completion = {
     inputs: completionInputs,
     output: outputData,
@@ -11980,6 +12138,14 @@ function buildDispatchRuntimeMessage(out) {
     JSON.stringify(identity, null, 2),
     '</dispatch-identity>',
     '',
+    '<terminal-result>',
+    'before sending final response, persist the exact final response markdown through fixme-tools.',
+    'Completed result command:',
+    `node ${runtimeToolPath} lifecycle dispatch worker-complete --fixme-dir ${shellDoubleQuote(fixmeDir)} --dispatch-id ${out.dispatchId} --status-id ${statusId} --status completed --result-markdown-stdin`,
+    'Failed result command:',
+    `node ${runtimeToolPath} lifecycle dispatch worker-complete --fixme-dir ${shellDoubleQuote(fixmeDir)} --dispatch-id ${out.dispatchId} --status-id ${statusId} --status failed --failure-reason childFailed --failure-message "<short failure message>" --result-markdown-stdin`,
+    '</terminal-result>',
+    '',
     'Prompt input:',
     JSON.stringify(promptBlocks, null, 2),
   ].join('\n');
@@ -12334,14 +12500,7 @@ function resolveVerifiedCompletionRuntimeHandle(dispatchRecord, data) {
   return undefined;
 }
 
-function lifecycleDispatchComplete(flags) {
-  const fixmeDir = resolveLifecycleFixmeDir(flags);
-  const data = resolveLifecycleData(flags);
-  try {
-    assertKnownJsonFields(data, 'dispatch complete', LIFECYCLE_DISPATCH_COMPLETE_FIELDS);
-  } catch (e) {
-    lifecycleError('unknownField', e.message);
-  }
+function validateDispatchCompletePayload(data) {
   for (const field of ['dispatchId', 'statusId', 'status']) {
     if (!isNonEmptyString(data[field])) {
       lifecycleError('missingRequiredField', `${field} is required`);
@@ -12361,7 +12520,10 @@ function lifecycleDispatchComplete(flags) {
       lifecycleError('invalidInput', 'failure must be an object with a non-empty message');
     }
   }
+}
 
+function dispatchCompleteCore(fixmeDir, data) {
+  validateDispatchCompletePayload(data);
   const dispatchRecord = findDispatchRecordById(fixmeDir, data.dispatchId);
   if (!dispatchRecord) {
     lifecycleError('stateNotFound', `Prepared dispatch not found: ${data.dispatchId}`);
@@ -12402,8 +12564,9 @@ function lifecycleDispatchComplete(flags) {
     if (!jsonEqual(dispatchRecord.record.completion.inputs, completionInputs)) {
       lifecycleError('conflictingDuplicate', `dispatch ${data.dispatchId} already completed with different inputs`);
     }
+    repairDispatchCompletionCheckpointIfNeeded(fixmeDir, dispatchRecord);
     clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
-    return lifecycleOk(dispatchRecord.record.completion.output);
+    return dispatchRecord.record.completion.output;
   }
 
   const statusPath = runStatusPath(fixmeDir, data.statusId);
@@ -12460,7 +12623,7 @@ function lifecycleDispatchComplete(flags) {
       };
       writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
       clearDispatchParentWaitMarker(fixmeDir, data.parentStatusId);
-      return lifecycleOk(outputData);
+      return outputData;
     }
     lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot mark ${data.status}`);
   }
@@ -12510,7 +12673,224 @@ function lifecycleDispatchComplete(flags) {
   if (data.checkpointData !== undefined) {
     applyCheckpointDataToTaskState(dispatchRecord.record.durableInputs && dispatchRecord.record.durableInputs.taskStatePath, data.checkpointData);
   }
-  return lifecycleOk(outputData);
+  return outputData;
+}
+
+function lifecycleDispatchComplete(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const data = resolveLifecycleData(flags);
+  try {
+    assertKnownJsonFields(data, 'dispatch complete', LIFECYCLE_DISPATCH_COMPLETE_FIELDS);
+  } catch (e) {
+    lifecycleError('unknownField', e.message);
+  }
+  return lifecycleOk(dispatchCompleteCore(fixmeDir, data));
+}
+
+function dispatchWorkerResultPath(fixmeDir, dispatchId) {
+  return path.join(fixmeDir, 'dispatch', 'results', `${dispatchId}.json`);
+}
+
+function workerResultDigest(resultMarkdown) {
+  return `sha256:${crypto.createHash('sha256').update(String(resultMarkdown)).digest('hex')}`;
+}
+
+function workerResultProjection(record) {
+  return {
+    resultId: record.resultId,
+    resultPath: record.resultPath,
+    resultDigest: record.resultDigest,
+    status: record.status,
+    statusId: record.statusId,
+    completedAt: record.completedAt,
+  };
+}
+
+function readWorkerResultForDispatch(fixmeDir, dispatchId) {
+  const resultPath = dispatchWorkerResultPath(fixmeDir, dispatchId);
+  if (!fs.existsSync(resultPath)) return null;
+  const record = readJsonFileStrict(resultPath);
+  assertCamelCaseJsonKeys(record, 'worker result');
+  if (record.dispatchId !== dispatchId) {
+    lifecycleError('staleState', `worker result dispatchId does not match result path: ${dispatchId}`);
+  }
+  return record;
+}
+
+function attachWorkerResultToDispatchRecord(dispatchRecord, resultRecord) {
+  const projection = workerResultProjection(resultRecord);
+  let changed = false;
+  if (!jsonEqual(dispatchRecord.record.workerResult, projection)) {
+    dispatchRecord.record.workerResult = projection;
+    changed = true;
+  }
+  if (isPlainObject(dispatchRecord.record.completion)) {
+    const outputData = {
+      ...dispatchRecord.record.completion.output,
+      resultId: resultRecord.resultId,
+      resultPath: resultRecord.resultPath,
+      resultDigest: resultRecord.resultDigest,
+    };
+    if (!jsonEqual(dispatchRecord.record.completion.output, outputData)) {
+      dispatchRecord.record.completion.output = outputData;
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeJsonAtomic(dispatchRecord.recordPath, dispatchRecord.record);
+  }
+  return projection;
+}
+
+function validateWorkerResultReplay(existing, expected) {
+  if (
+    existing.status !== expected.status ||
+    existing.statusId !== expected.statusId ||
+    existing.dispatchId !== expected.dispatchId ||
+    existing.resultMarkdown !== expected.resultMarkdown ||
+    existing.resultDigest !== expected.resultDigest ||
+    !jsonEqual(existing.failure || null, expected.failure || null)
+  ) {
+    lifecycleError('conflictingDuplicate', `worker result for dispatch ${expected.dispatchId} already exists with different content`);
+  }
+}
+
+function persistDispatchWorkerResult(fixmeDir, dispatchRecord, data) {
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const now = new Date().toISOString();
+  const resultPath = dispatchWorkerResultPath(fixmeDir, data.dispatchId);
+  const expected = {
+    schemaVersion: 1,
+    resultId: `workerResult_${stableHash({ dispatchId: data.dispatchId, resultMarkdown: data.resultMarkdown }).slice(0, 16)}`,
+    dispatchId: data.dispatchId,
+    statusId: data.statusId,
+    agentName: durableInputs.agentName || null,
+    status: data.status,
+    resultMarkdown: data.resultMarkdown,
+    resultDigest: workerResultDigest(data.resultMarkdown),
+    failure: data.failure || null,
+    resultPath,
+    completedAt: now,
+  };
+
+  const existing = fs.existsSync(resultPath) ? readJsonFileStrict(resultPath) : null;
+  if (existing) {
+    validateWorkerResultReplay(existing, expected);
+    attachWorkerResultToDispatchRecord(dispatchRecord, existing);
+    return existing;
+  }
+
+  const statusPath = runStatusPath(fixmeDir, data.statusId);
+  if (!fs.existsSync(statusPath)) {
+    lifecycleError('stateNotFound', `Child run status not found: ${data.statusId}`);
+  }
+  const previous = readRunStatusFile(statusPath, data.statusId);
+  if (previous.state === 'completed' || previous.state === 'failed') {
+    if (previous.state !== data.status) {
+      lifecycleError('conflictingDuplicate', `Child already finalized as ${previous.state}, cannot record worker result as ${data.status}`);
+    }
+    if (!jsonEqual(previous.failure || null, data.failure || null)) {
+      lifecycleError('conflictingDuplicate', `Child already finalized with different failure payload for dispatch ${data.dispatchId}`);
+    }
+  }
+
+  assertCamelCaseJsonKeys(expected, 'worker result');
+  writeJsonAtomic(resultPath, expected);
+  const nextStatus = preserveRunStatusRuntimeFields(previous, {
+    schemaVersion: 1,
+    statusId: data.statusId,
+    agent: validateRunAgent(previous.agent),
+    state: data.status,
+    checkpoint: 'done',
+    currentCommand: null,
+    updatedAt: now,
+  });
+  if (data.failure) {
+    nextStatus.failure = data.failure;
+  }
+  writeRunStatus(statusPath, nextStatus);
+  attachWorkerResultToDispatchRecord(dispatchRecord, expected);
+  return expected;
+}
+
+function workerCompleteOutput(resultRecord, statusPath) {
+  return {
+    dispatchId: resultRecord.dispatchId,
+    statusId: resultRecord.statusId,
+    status: resultRecord.status,
+    resultId: resultRecord.resultId,
+    resultPath: resultRecord.resultPath,
+    resultDigest: resultRecord.resultDigest,
+    statusPath,
+  };
+}
+
+function lifecycleDispatchWorkerComplete(flags) {
+  const fixmeDir = resolveLifecycleFixmeDir(flags);
+  const dispatchId = flags['dispatch-id'] && flags['dispatch-id'] !== true ? String(flags['dispatch-id']) : null;
+  const statusId = flags['status-id'] && flags['status-id'] !== true ? String(flags['status-id']) : null;
+  const status = flags.status && flags.status !== true ? String(flags.status) : null;
+  if (!isNonEmptyString(dispatchId)) lifecycleError('missingRequiredField', '--dispatch-id is required');
+  if (!isNonEmptyString(statusId)) lifecycleError('missingRequiredField', '--status-id is required');
+  if (status !== 'completed' && status !== 'failed') lifecycleError('invalidInput', '--status must be one of: completed, failed');
+  if (!Object.prototype.hasOwnProperty.call(flags, 'result-markdown-stdin')) {
+    lifecycleError('missingRequiredField', '--result-markdown-stdin is required');
+  }
+  const resultMarkdown = fs.readFileSync(0, 'utf8');
+  const failureReason = flags['failure-reason'] && flags['failure-reason'] !== true ? String(flags['failure-reason']) : null;
+  const failureMessage = flags['failure-message'] && flags['failure-message'] !== true ? String(flags['failure-message']) : null;
+  let failure = null;
+  if (status === 'failed') {
+    if (!isNonEmptyString(failureReason) || !isNonEmptyString(failureMessage)) {
+      lifecycleError('missingRequiredField', '--failure-reason and --failure-message are required when --status failed');
+    }
+    failure = { reason: failureReason, message: failureMessage };
+  } else if (failureReason || failureMessage) {
+    lifecycleError('invalidInput', '--failure-reason and --failure-message are only allowed when --status failed');
+  }
+
+  const dispatchRecord = findDispatchRecordById(fixmeDir, dispatchId);
+  if (!dispatchRecord) {
+    lifecycleError('stateNotFound', `Prepared dispatch not found: ${dispatchId}`);
+  }
+  if (dispatchRecord.record.statusId !== statusId) {
+    lifecycleError('invalidInput', `statusId ${statusId} does not match prepared dispatch ${dispatchId}`);
+  }
+
+  const resultRecord = persistDispatchWorkerResult(fixmeDir, dispatchRecord, {
+    dispatchId,
+    statusId,
+    status,
+    resultMarkdown,
+    failure,
+  });
+  return lifecycleOk(workerCompleteOutput(resultRecord, runStatusPath(fixmeDir, statusId)));
+}
+
+function completeDispatchFromWorkerResult(fixmeDir, dispatchRecord, resultRecord) {
+  const durableInputs = dispatchRecord.record.durableInputs || {};
+  const completionData = {
+    dispatchId: resultRecord.dispatchId,
+    statusId: resultRecord.statusId,
+    status: resultRecord.status,
+    parentStatusId: durableInputs.parentStatusId || null,
+    currentCommand: null,
+  };
+  if (isPlainObject(durableInputs.checkpointData)) {
+    completionData.checkpointData = durableInputs.checkpointData;
+  }
+  if (resultRecord.status === 'failed') {
+    completionData.failure = resultRecord.failure || { reason: 'childFailed', message: 'child failed' };
+  }
+  const outputData = dispatchCompleteCore(fixmeDir, completionData);
+  const refreshedRecord = findDispatchRecordById(fixmeDir, resultRecord.dispatchId);
+  const resultProjection = attachWorkerResultToDispatchRecord(refreshedRecord || dispatchRecord, resultRecord);
+  return {
+    ...outputData,
+    resultId: resultProjection.resultId,
+    resultPath: resultProjection.resultPath,
+    resultDigest: resultProjection.resultDigest,
+  };
 }
 
 function dispatchReleaseCompleteDigest(data) {
@@ -17452,7 +17832,8 @@ const LIFECYCLE_ERROR_CODES = Object.freeze(new Set([
   'staleState', 'conflictingDuplicate', 'activeAttention', 'attentionBlocked',
   'unsupportedCommand', 'ioFailure', 'noPendingEvent', 'runtimeSelfTarget',
   'runtimeTargetUnproven', 'staleTaskOwner', 'directBeginRequiresContinue',
-  'attemptManagedAttentionRequiresTaskAttentionOpen', 'activeChildDispatch',
+  'ownerStatusMissing', 'attemptManagedAttentionRequiresTaskAttentionOpen',
+  'activeChildDispatch',
 ]));
 
 function lifecycleOk(data) {
@@ -18076,7 +18457,7 @@ function buildCommandRegistry() {
       enumValues: {},
       example: { flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', dataFile: '/absolute/reconcile.json' }, data: { parentStatePath: '/absolute/parent/state.json' } },
       audience: 'parent-facing',
-      guidance: 'Compatibility wait reconciliation. Prefer lifecycle dispatch probe. A fresh matching child-owned workerHeartbeat returns runtimeWaitContinues with a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with reason runtimeLivenessUnknown. updatedAt is the last status write, not a heartbeat.',
+      guidance: 'Compatibility wait reconciliation. Prefer lifecycle dispatch probe. A fresh matching child-owned workerHeartbeat returns runtimeWaitContinues with actualState waitActionPendingChildRunning and a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with actualState waitActionPendingLivenessUnknown and reason runtimeLivenessUnknown. updatedAt is the last status write, not a heartbeat.',
     }) },
     { path: 'lifecycle dispatch probe', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch probe',
@@ -18089,7 +18470,7 @@ function buildCommandRegistry() {
         data: { parentStatePath: '/absolute/parent/state.json', waitActionId: 'runtimeAction_...', watchdogMs: 300000, probeReason: 'waitWatchdogTimeout' },
       },
       audience: 'parent-facing',
-      guidance: 'Parent wait watchdog probe. Read durable terminal events, attention, stalled-owner state, and child-owned workerHeartbeat. A fresh matching heartbeat returns runtimeWaitContinues with a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with reason runtimeLivenessUnknown. Timeout is not terminal evidence.',
+      guidance: 'Parent wait watchdog probe. Read durable terminal events, durable worker results, attention, stalled-owner state, and child-owned workerHeartbeat. A durable result with nonterminal child liveness returns resultWrittenChildNotTerminal after repair. A fresh matching heartbeat returns runtimeWaitContinues with actualState waitActionPendingChildRunning and a sealed waitAgent runtimeAction; missing or stale heartbeat returns runtimeWaitTimedOut with actualState waitActionPendingLivenessUnknown and reason runtimeLivenessUnknown. Timeout is not terminal evidence.',
     }) },
     { path: 'lifecycle runtime-action observe', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle runtime-action observe',
@@ -18222,6 +18603,17 @@ function buildCommandRegistry() {
       enumValues: { status: ['completed', 'failed'] },
       example: { flags: { fixmeDir: '/absolute/.fixme' }, data: { dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed', checkpointData: { status: 'reviewing' } } },
       guidance: 'Build payloads from prepare output completionTemplates.completed or completionTemplates.failed; do not add runtime, transport, or result. Follow completionRuntimeHandlePolicy: when it is persistProducerContinuation, a completed runtimeHandle is persisted only when it matches the dispatch-owned activeRuntime from attach-runtime-handle, or omit it to derive the attached handle; when it is omit, do not include runtimeHandle. A mismatch fails before any mutation. Optional checkpointData applies a post-completion task checkpoint patch.',
+    }) },
+    { path: 'lifecycle dispatch worker-complete', kind: 'flags', help: commandHelpPayload({
+      command: 'lifecycle dispatch worker-complete',
+      requiredFlags: ['fixme-dir', 'dispatch-id', 'status-id', 'status', 'result-markdown-stdin'],
+      optionalFlags: ['failure-reason', 'failure-message'],
+      requiredDataFields: [],
+      optionalDataFields: [],
+      enumValues: { status: ['completed', 'failed'] },
+      example: { flags: { fixmeDir: '/absolute/.fixme', dispatchId: 'dispatch_...', statusId: 'run_...', status: 'completed', resultMarkdownStdin: true } },
+      audience: 'child-agent-facing',
+      guidance: 'Child agent terminal command. Pipe the exact final response markdown on stdin before sending the final response. Same payload replays; different markdown, status, or failure conflicts.',
     }) },
     { path: 'lifecycle dispatch attach-runtime-handle', kind: 'json', help: commandHelpPayload({
       command: 'lifecycle dispatch attach-runtime-handle',
@@ -18643,6 +19035,8 @@ function main() {
                 return lifecycleDispatchPrepare(flags, getFixmeRoot());
               case 'complete':
                 return lifecycleDispatchComplete(flags);
+              case 'worker-complete':
+                return lifecycleDispatchWorkerComplete(flags);
               case 'attach-runtime-handle':
                 return lifecycleDispatchAttachRuntimeHandle(flags);
               case 'release-complete':

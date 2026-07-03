@@ -4,6 +4,7 @@ description: Writes implementation plans and task-scoped code maps by reading th
 tools: Read, Write, Bash, Grep, Glob
 skills:
   - fixme-write-plan
+  - fixme-howto-plan-acceptance
   - fixme-howto-solution-shape
   - fixme-howto-code-comments
   - fixme-howto-code-map

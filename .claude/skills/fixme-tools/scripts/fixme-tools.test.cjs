@@ -202,6 +202,10 @@ function readJsonl(filePath) {
     .map(line => JSON.parse(line));
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function createUsageWorkspace() {
   const projectRoot = createTmpDir();
   const homeDir = createTmpDir();
@@ -3264,7 +3268,7 @@ function prepareResumableProducerDispatch(slug, idempotencyKey) {
   };
 }
 
-function prepareNonProducerDispatch(slug, idempotencyKey, agentName = 'fixme-plan-readiness') {
+function prepareNonProducerDispatch(slug, idempotencyKey, agentName = 'fixme-plan-readiness', options = {}) {
   const { projectRoot, fixmeDir, statePath } = initTaskState(slug);
   const prepare = runInDir(
     `lifecycle dispatch prepare --fixme-dir "${fixmeDir}" --data '${JSON.stringify({
@@ -3274,6 +3278,7 @@ function prepareNonProducerDispatch(slug, idempotencyKey, agentName = 'fixme-pla
       runtime: 'codex',
       taskStatePath: statePath,
       promptInputs: { mode: 'readiness' },
+      ...(options.checkpointData === undefined ? {} : { checkpointData: options.checkpointData }),
     })}'`,
     projectRoot,
   );
@@ -3367,6 +3372,10 @@ test('dispatch prepare returns sealed spawn action with dispatch identity block'
   assert(prepared.data.runtimeAction.message.includes('<liveness>'), 'message contains literal liveness block');
   assert(prepared.data.runtimeAction.message.includes(`statusId: ${prepared.data.statusId}`), 'liveness block exposes exact statusId');
   assert(prepared.data.runtimeAction.message.includes('run ping --fixme-dir'), 'liveness block includes exact ping command');
+  assert(prepared.data.runtimeAction.message.includes('<terminal-result>'), 'message contains terminal result block');
+  assert(prepared.data.runtimeAction.message.includes('lifecycle dispatch worker-complete'), 'terminal result block includes worker-complete command');
+  assert(prepared.data.runtimeAction.message.includes('--result-markdown-stdin'), 'terminal result block uses stdin for final markdown');
+  assert(prepared.data.runtimeAction.message.includes('before sending final response'), 'terminal result block orders durable write before final response');
 });
 
 test('dispatch prepare attach and complete require current owner fence', () => {
@@ -3426,6 +3435,21 @@ function observeSpawnForDispatch(setup, handleId) {
 function observeWaitForDispatch(setup, evidence) {
   const actionId = evidence.actionId || setup.waitActionId;
   return run(`lifecycle runtime-action observe --fixme-dir "${setup.fixmeDir}" --data '${JSON.stringify({ ...evidence, actionId })}'`);
+}
+
+function workerCompleteForDispatch(setup, resultMarkdown, overrides = {}) {
+  const status = overrides.status || 'completed';
+  const statusId = overrides.statusId || setup.statusId;
+  const dispatchId = overrides.dispatchId || setup.dispatchId;
+  const failureFlags = overrides.failure
+    ? ` --failure-reason ${shellQuote(overrides.failure.reason)} --failure-message ${shellQuote(overrides.failure.message)}`
+    : '';
+  return runToolPathWithInput(
+    TOOLS_PATH,
+    `lifecycle dispatch worker-complete --fixme-dir "${setup.fixmeDir}" --dispatch-id ${dispatchId} --status-id ${statusId} --status ${status} --result-markdown-stdin${failureFlags}`,
+    resultMarkdown,
+    { cwd: setup.projectRoot || path.dirname(setup.fixmeDir) },
+  );
 }
 
 function readRuntimeActionForTest(fixmeDir, actionId) {
@@ -3492,6 +3516,195 @@ test('non-producer wait completed observation omits producer runtime handle pers
   assert(!record.releaseState || record.releaseState.status === 'notRequired', `non-producer release should not be pending, got ${JSON.stringify(record.releaseState)}`);
 });
 
+test('dispatch worker-complete persists durable result and terminal liveness', () => {
+  const setup = prepareNonProducerDispatch('worker-complete-durable-result', 'worker-complete-durable-result-prepare', 'fixme-review-plan');
+  observeSpawnForDispatch(setup, 'agent_worker_complete_durable_result');
+  const resultMarkdown = 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 0\nQUESTION_COUNT: 0\n';
+
+  const completed = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(completed.ok, `worker-complete should succeed, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.dispatchId === setup.dispatchId, `worker-complete names dispatch, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.statusId === setup.statusId, `worker-complete names child status, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.status === 'completed', `worker-complete returns completed, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.resultDigest && completed.data.resultDigest.startsWith('sha256:'), `worker-complete returns digest, got ${JSON.stringify(completed.data)}`);
+  assert(completed.data.resultPath && fs.existsSync(completed.data.resultPath), `worker result file exists, got ${JSON.stringify(completed.data)}`);
+  assertNoSnakeCaseKeys(completed.data, 'worker-complete output');
+
+  const resultRecord = readJson(completed.data.resultPath);
+  assert(resultRecord.dispatchId === setup.dispatchId, `result record names dispatch, got ${JSON.stringify(resultRecord)}`);
+  assert(resultRecord.statusId === setup.statusId, `result record names child status, got ${JSON.stringify(resultRecord)}`);
+  assert(resultRecord.resultMarkdown === resultMarkdown, `result markdown persists exactly, got ${JSON.stringify(resultRecord)}`);
+  assert(resultRecord.resultDigest === completed.data.resultDigest, `result digest persists, got ${JSON.stringify(resultRecord)}`);
+  assertNoSnakeCaseKeys(resultRecord, 'worker result record');
+
+  const status = readJson(setup.statusPath);
+  assert(status.state === 'completed' && status.checkpoint === 'done', `worker-complete terminalizes child status, got ${JSON.stringify(status)}`);
+  assert(status.currentCommand === null, `worker-complete clears current command, got ${JSON.stringify(status)}`);
+  assert(status.activeRuntime && status.activeRuntime.id === 'agent_worker_complete_durable_result', `worker-complete preserves runtime handle, got ${JSON.stringify(status)}`);
+
+  const record = readJson(dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId));
+  assert(record.workerResult && record.workerResult.resultDigest === completed.data.resultDigest, `dispatch points at worker result, got ${JSON.stringify(record.workerResult)}`);
+
+  const beforeReplay = snapshotTaskDispatch(setup);
+  const replay = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(replay.ok && replay.data.resultDigest === completed.data.resultDigest, `identical worker-complete replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(beforeReplay), 'identical worker-complete replay must not mutate task, dispatch, or status');
+
+  const conflict = workerCompleteForDispatch(setup, 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 1\nQUESTION_COUNT: 0\n');
+  assert(!conflict.ok && conflict.data.error.code === 'conflictingDuplicate', `conflicting worker-complete replay should reject, got ${JSON.stringify(conflict.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(beforeReplay), 'conflicting worker-complete replay must reject before mutation');
+});
+
+test('wait timeout consumes durable worker result after parent interruption', () => {
+  const setup = prepareNonProducerDispatch('worker-complete-timeout-consume', 'worker-complete-timeout-consume-prepare', 'fixme-review-plan');
+  observeSpawnForDispatch(setup, 'agent_worker_complete_timeout_consume');
+  const resultMarkdown = 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 0\nQUESTION_COUNT: 0\n';
+  const completed = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(completed.ok, `worker-complete setup should pass, got ${JSON.stringify(completed.data)}`);
+
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout should consume durable worker result, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'childResultReady', `timeout should report childResultReady, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.dispatchId === setup.dispatchId, `timeout names dispatch, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.statusId === setup.statusId, `timeout names child status, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.resultDigest === completed.data.resultDigest, `timeout returns consumed result digest, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.completion && timeout.data.completion.status === 'completed', `timeout returns dispatch completion, got ${JSON.stringify(timeout.data)}`);
+
+  const record = readJson(dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId));
+  assert(record.completion && record.completion.output.status === 'completed', `durable result consumption records dispatch completion, got ${JSON.stringify(record.completion)}`);
+  assert(record.completion.output.resultDigest === completed.data.resultDigest, `dispatch completion names worker result, got ${JSON.stringify(record.completion.output)}`);
+
+  const replay = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(replay.ok, `timeout replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.transition === 'childResultReady' || replay.data.transition === 'childResultConsumed', `timeout replay reports durable result state, got ${JSON.stringify(replay.data)}`);
+});
+
+test('wait timeout durable worker result recovery applies dispatch checkpointData', () => {
+  const checkpointData = {
+    handoff: { reviewFindings: 'Recovered review result from durable worker output.' },
+  };
+  const setup = prepareNonProducerDispatch(
+    'worker-complete-timeout-checkpoint',
+    'worker-complete-timeout-checkpoint-prepare',
+    'fixme-review-plan',
+    { checkpointData },
+  );
+  observeSpawnForDispatch(setup, 'agent_worker_complete_timeout_checkpoint');
+  const stateAfterPrepare = readJson(setup.taskStatePath);
+  stateAfterPrepare.handoff.reviewFindings = null;
+  fs.writeFileSync(setup.taskStatePath, JSON.stringify(stateAfterPrepare, null, 2));
+  const resultMarkdown = 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 0\nQUESTION_COUNT: 0\n';
+  const completed = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(completed.ok, `worker-complete setup should pass, got ${JSON.stringify(completed.data)}`);
+
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout should consume durable worker result, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'childResultReady', `timeout should report childResultReady, got ${JSON.stringify(timeout.data)}`);
+  const stateAfterRecovery = readJson(setup.taskStatePath);
+  assert(
+    stateAfterRecovery.handoff.reviewFindings === checkpointData.handoff.reviewFindings,
+    `durable result recovery applies dispatch checkpointData, got ${JSON.stringify(stateAfterRecovery.handoff)}`,
+  );
+  const record = readJson(dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId));
+  assert(
+    JSON.stringify(record.completion.inputs.checkpointData) === JSON.stringify(checkpointData),
+    `dispatch completion records checkpointData used for recovery, got ${JSON.stringify(record.completion.inputs)}`,
+  );
+
+  const afterFirstRecovery = snapshotTaskDispatch(setup);
+  const replay = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(replay.ok, `timeout replay should succeed, got ${JSON.stringify(replay.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(afterFirstRecovery), 'timeout replay must not mutate recovered task, dispatch, or status');
+});
+
+test('wait timeout consumed durable worker result repairs missing completion checkpointData', () => {
+  const checkpointData = {
+    handoff: { reviewFindings: 'Recovered checkpoint after completion crash.' },
+  };
+  const setup = prepareNonProducerDispatch(
+    'worker-complete-timeout-checkpoint-repair',
+    'worker-complete-timeout-checkpoint-repair-prepare',
+    'fixme-review-plan',
+    { checkpointData },
+  );
+  observeSpawnForDispatch(setup, 'agent_worker_complete_timeout_checkpoint_repair');
+  const resultMarkdown = 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 0\nQUESTION_COUNT: 0\n';
+  const completed = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(completed.ok, `worker-complete setup should pass, got ${JSON.stringify(completed.data)}`);
+  const firstTimeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(firstTimeout.ok && firstTimeout.data.transition === 'childResultReady', `first timeout should consume result, got ${JSON.stringify(firstTimeout.data)}`);
+  const stateAfterCompletion = readJson(setup.taskStatePath);
+  stateAfterCompletion.handoff.reviewFindings = null;
+  fs.writeFileSync(setup.taskStatePath, JSON.stringify(stateAfterCompletion, null, 2));
+
+  const replay = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(replay.ok, `timeout replay should repair missing checkpointData, got ${JSON.stringify(replay.data)}`);
+  assert(replay.data.transition === 'childResultConsumed', `replay should report consumed result, got ${JSON.stringify(replay.data)}`);
+  const repairedState = readJson(setup.taskStatePath);
+  assert(
+    repairedState.handoff.reviewFindings === checkpointData.handoff.reviewFindings,
+    `consumed durable result replay repairs checkpointData, got ${JSON.stringify(repairedState.handoff)}`,
+  );
+});
+
+test('wait timeout recovers result-written child-not-terminal partial crash', () => {
+  const checkpointData = {
+    handoff: { reviewFindings: 'Recovered result-written child-not-terminal crash.' },
+  };
+  const setup = prepareNonProducerDispatch(
+    'worker-result-child-not-terminal',
+    'worker-result-child-not-terminal-prepare',
+    'fixme-review-plan',
+    { checkpointData },
+  );
+  observeSpawnForDispatch(setup, 'agent_worker_result_child_not_terminal');
+  const runningStatus = readJson(setup.statusPath);
+  const resultMarkdown = 'REVIEW_RESULT: CLEAN\nFINDING_COUNT: 0\nQUESTION_COUNT: 0\n';
+  const completed = workerCompleteForDispatch(setup, resultMarkdown);
+  assert(completed.ok, `worker-complete setup should pass, got ${JSON.stringify(completed.data)}`);
+  fs.writeFileSync(setup.statusPath, JSON.stringify(runningStatus, null, 2));
+  const dispatchPath = dispatchRecordPathForTest(setup.fixmeDir, setup.dispatchId);
+  const dispatchRecord = readJson(dispatchPath);
+  delete dispatchRecord.workerResult;
+  fs.writeFileSync(dispatchPath, JSON.stringify(dispatchRecord, null, 2));
+
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout should recover result-written child-not-terminal crash, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'resultWrittenChildNotTerminal', `timeout should report resultWrittenChildNotTerminal, got ${JSON.stringify(timeout.data)}`);
+  const repairedStatus = readJson(setup.statusPath);
+  assert(repairedStatus.state === 'completed' && repairedStatus.checkpoint === 'done', `child status should be terminalized, got ${JSON.stringify(repairedStatus)}`);
+  const repairedState = readJson(setup.taskStatePath);
+  assert(
+    repairedState.handoff.reviewFindings === checkpointData.handoff.reviewFindings,
+    `recovery applies checkpointData, got ${JSON.stringify(repairedState.handoff)}`,
+  );
+  const repairedDispatch = readJson(dispatchPath);
+  assert(repairedDispatch.workerResult && repairedDispatch.workerResult.resultDigest === completed.data.resultDigest, `dispatch pointer repaired, got ${JSON.stringify(repairedDispatch.workerResult)}`);
+  assert(repairedDispatch.completion && repairedDispatch.completion.output.status === 'completed', `dispatch completion recorded, got ${JSON.stringify(repairedDispatch.completion)}`);
+});
+
+test('wait timeout reports childResultMissing for terminal child without durable result', () => {
+  const setup = prepareNonProducerDispatch('terminal-child-missing-result', 'terminal-child-missing-result-prepare', 'fixme-review-plan');
+  observeSpawnForDispatch(setup, 'agent_terminal_child_missing_result');
+  const child = readJson(setup.statusPath);
+  fs.writeFileSync(setup.statusPath, JSON.stringify({
+    ...child,
+    state: 'completed',
+    checkpoint: 'done',
+    currentCommand: null,
+    updatedAt: '2026-06-12T00:00:00.000Z',
+  }, null, 2));
+  const before = snapshotTaskDispatch(setup);
+
+  const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
+  assert(timeout.ok, `timeout should classify missing result, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.transition === 'childResultMissing', `timeout should report childResultMissing, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.dispatchId === setup.dispatchId, `missing result names dispatch, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.childStatusId === setup.statusId, `missing result names child status, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.terminalChildStatus === 'completed', `missing result reports terminal status, got ${JSON.stringify(timeout.data)}`);
+  assert(JSON.stringify(snapshotTaskDispatch(setup)) === JSON.stringify(before), 'childResultMissing classification must not mutate task, dispatch, or child status');
+});
+
 test('wait failed observation records dispatch failure through runtime-action observe', () => {
   const setup = prepareResumableProducerDispatch('wait-failed-observe', 'wait-failed-observe-prepare');
   const started = observeSpawnForDispatch(setup, 'agent_wait_failed_observe');
@@ -3552,6 +3765,7 @@ test('wait timeout records liveness-unknown watchdog event and late completion s
   const timeout = observeWaitForDispatch(setup, { waitOutcome: 'timeout' });
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.transition === 'runtimeWaitTimedOut', `timeout should report liveness unknown instead of re-arming the wait, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.actualState === 'waitActionPendingLivenessUnknown', `timeout should expose actual wait state, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.reason === 'runtimeLivenessUnknown', `timeout reason should be runtimeLivenessUnknown, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.liveness.state === 'heartbeatMissing', `missing heartbeat should be reported as liveness detail, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.wait.actionId === setup.waitActionId, `timeout diagnostic should carry the same wait action, got ${JSON.stringify(timeout.data)}`);
@@ -3595,6 +3809,7 @@ test('wait timeout with fresh worker heartbeat returns another sealed wait actio
   assert(timeout.ok, `timeout observation should succeed, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.status === 'requiresRuntimeAction', `fresh heartbeat should return a runtime action, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.transition === 'runtimeWaitContinues', `fresh heartbeat should continue wait, got ${JSON.stringify(timeout.data)}`);
+  assert(timeout.data.actualState === 'waitActionPendingChildRunning', `fresh heartbeat should expose actual wait state, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.reason === 'workerHeartbeatRecent', `fresh heartbeat reason should be workerHeartbeatRecent, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.liveness.state === 'heartbeatRecent', `fresh heartbeat liveness should be reported, got ${JSON.stringify(timeout.data)}`);
   assert(timeout.data.runtimeAction.kind === 'waitAgent', `next action should wait on same agent, got ${JSON.stringify(timeout.data.runtimeAction)}`);
@@ -5952,6 +6167,29 @@ test('lifecycle task continue reports terminal state without acquiring a fresh o
   assert(!state.taskOwner || state.taskOwner.state !== 'active', `terminal continue must not acquire active owner, got ${JSON.stringify(state.taskOwner)}`);
 });
 
+test('lifecycle task continue creates run status for direct task owner', () => {
+  const init = initTaskState('continue-direct-owner-status');
+  const continued = run(`lifecycle task continue --fixme-dir "${init.fixmeDir}" --data '${JSON.stringify({
+    resumeRef: init.taskPath,
+    runtime: 'codex',
+    transport: 'agent',
+    topLevelInteractive: true,
+    idempotencyKey: 'continue-direct-owner-status',
+  })}'`);
+  assert(continued.ok, `continue should acquire direct owner, got ${JSON.stringify(continued.data)}`);
+  assert(continued.data.action === 'spawnFreshOwner' || continued.data.action === 'resumeExistingOwner', `continue returns executable owner action, got ${JSON.stringify(continued.data)}`);
+
+  const state = readJson(init.statePath);
+  assert(state.taskOwner && state.taskOwner.state === 'active', `task owner is active, got ${JSON.stringify(state.taskOwner)}`);
+  assert(state.taskOwner.statusId && state.taskOwner.statusId.startsWith('run_'), `direct owner has run status id, got ${JSON.stringify(state.taskOwner)}`);
+  assert(state.currentAttempt.taskOwner.statusId === state.taskOwner.statusId, `current attempt mirrors owner status id, got ${JSON.stringify(state.currentAttempt.taskOwner)}`);
+  const ownerStatusPath = path.join(init.fixmeDir, 'runs', state.taskOwner.statusId, 'status.json');
+  assert(fs.existsSync(ownerStatusPath), `direct owner status file exists at ${ownerStatusPath}`);
+  const ownerStatus = readJson(ownerStatusPath);
+  assert(ownerStatus.agent === 'fixme-task', `direct owner run status names fixme-task, got ${JSON.stringify(ownerStatus)}`);
+  assert(ownerStatus.state === 'running', `direct owner run status is running, got ${JSON.stringify(ownerStatus)}`);
+});
+
 test('lifecycle task retry archives failed attempt and leaves new attempt ownerless until continue', () => {
   const init = initTaskState('retry-terminal');
   const terminal = runInDir(`task result write --state "${init.statePath}" --data '${JSON.stringify({ status: 'failed', summaryMarkdown: 'failed once', changedFiles: [], artifactPaths: [], failure: { reason: 'runtimeError', message: 'old failure' } })}'`, init.projectRoot);
@@ -6641,6 +6879,22 @@ test('lifecycle task begin from launch id reuses persisted pipeline and creates 
   const state = readJson(prepared.data.childTask.statePath);
   assert(state.pipelineResolution.pipeline === payload.child.handoff.taskSaveData.pipelineResolution.pipeline, 'begin preserved persisted pipeline resolution');
   assert(state.parentContinuation.taskRunId === prepared.data.activeChild.taskRunId, 'begin hydrated parentContinuation from launch record');
+});
+
+test('lifecycle task begin rejects launch records without child owner status id', () => {
+  const fixmeDir = makeFixmeDir();
+  const payload = prepareChildPayload({ suffix: 'begin-launch-missing-status' });
+  const payloadPath = writeJsonFixture(path.dirname(fixmeDir), 'prepare-child-begin-launch-missing-status.json', payload);
+  const prepared = run(`lifecycle parent prepare-child --fixme-dir "${fixmeDir}" --data-file "${payloadPath}"`);
+  assert(prepared.ok, `prepare-child should succeed, got ${JSON.stringify(prepared.data)}`);
+  const launchRecord = readJson(prepared.data.launchRecordPath);
+  launchRecord.activeChild.statusId = null;
+  writeJsonFixture(path.dirname(prepared.data.launchRecordPath), path.basename(prepared.data.launchRecordPath), launchRecord);
+
+  const begin = run(`lifecycle task begin --fixme-dir "${fixmeDir}" --launch-id ${prepared.data.launchId}`);
+  assert(!begin.ok && begin.data.error.code === 'ownerStatusMissing', `begin should reject missing owner status id, got ${JSON.stringify(begin.data)}`);
+  const state = readJson(prepared.data.childTask.statePath);
+  assert(!state.taskOwner, `failed begin must not install task owner, got ${JSON.stringify(state.taskOwner)}`);
 });
 
 test('parent launch observe returns waitAgent as the next required runtime action', () => {
@@ -16953,6 +17207,51 @@ test('plan-process skills document failure-family expansion, State/Effect Contra
   const task = read('fixme-task');
   assert(/contract replan/i.test(task), 'fixme-task should document contract replan routing');
   assert(task.includes('before stall escalation'), 'fixme-task should sequence contract replan before stall escalation');
+});
+
+test('plan writer and reviewer share the Plan Acceptance Contract', () => {
+  const readSkill = name => fs.readFileSync(path.join(repoRoot, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+  const acceptancePath = path.join(repoRoot, '.claude', 'skills', 'fixme-howto-plan-acceptance', 'SKILL.md');
+  assert(fs.existsSync(acceptancePath), 'shared plan acceptance skill should exist');
+
+  const acceptance = fs.readFileSync(acceptancePath, 'utf8');
+  for (const required of [
+    'name: fixme-howto-plan-acceptance',
+    'Plan Acceptance Contract',
+    'Plan Acceptance Receipt',
+    'Goal-Backward Coverage',
+    'Invariant Proof Matrix',
+    'State/Effect Lifecycle Audit',
+    'Write-Before-Proof Scan',
+    'Behavioral Proof Strength',
+    'New Named Entity Delta Table',
+    'Sibling-Surface Audit',
+    'Dependency Ordering',
+    'Claim Verification',
+    'No `PLAN_PATH` may be emitted until every required receipt row passes.',
+    'Missing, false, unknown, or contradicted receipt entries are blocker findings.',
+  ]) {
+    assert(acceptance.includes(required), `plan acceptance contract should include: ${required}`);
+  }
+
+  const writePlan = readSkill('fixme-write-plan');
+  assert(writePlan.includes('fixme-howto-plan-acceptance'), 'fixme-write-plan should reference the shared plan acceptance contract');
+  assert(writePlan.includes('No `PLAN_PATH` may be emitted until the Plan Acceptance Receipt passes.'), 'fixme-write-plan should fail closed before emitting PLAN_PATH');
+  assert(writePlan.includes('Run the Plan Acceptance Contract before saving the plan'), 'fixme-write-plan should run the acceptance contract before saving');
+
+  const reviewPlan = readSkill('fixme-review-plan');
+  assert(reviewPlan.includes('fixme-howto-plan-acceptance'), 'fixme-review-plan should reference the shared plan acceptance contract');
+  assert(reviewPlan.includes('Review the Plan Acceptance Receipt first'), 'fixme-review-plan should audit the receipt first');
+  assert(reviewPlan.includes('missing, false, unknown, or contradicted receipt row is a blocker'), 'fixme-review-plan should treat failed receipt rows as blockers');
+
+  for (const agentName of ['fixme-write-plan', 'fixme-review-plan']) {
+    const agentPath = path.join(repoRoot, '.claude', 'agents', `${agentName}.md`);
+    const agent = fs.readFileSync(agentPath, 'utf8');
+    assert(agent.includes('- fixme-howto-plan-acceptance'), `${agentName} should preload fixme-howto-plan-acceptance`);
+  }
+
+  const claudeDoc = fs.readFileSync(path.join(repoRoot, 'CLAUDE.md'), 'utf8');
+  assert(claudeDoc.includes('fixme-howto-plan-acceptance/ # Shared plan acceptance contract'), 'CLAUDE skill layout should include plan acceptance skill');
 });
 
 test('fixme solution-shape rubric exists and is installed by skill discovery', () => {

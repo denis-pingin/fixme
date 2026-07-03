@@ -136,6 +136,7 @@ node ~/.claude/skills/fixme-tools/scripts/fixme-tools.cjs codex-agents install -
   fixme-howto-review-spec/  # Shared specification review rubric for reviewer agents or standalone use
   fixme-howto-importance/   # Shared importance axes, floor, scoring, suppression, and aggregation rubric
   fixme-howto-solution-shape/ # Shared solution-shape selection rubric
+  fixme-howto-plan-acceptance/ # Shared plan acceptance contract
   fixme-write-product-spec/   # Writes product specifications
   fixme-write-technical-spec/ # Writes technical specifications
   fixme-review-spec/        # Reviews specifications for deterministic implementability

@@ -50,6 +50,14 @@ Do not ask the user directly. If user input is genuinely required and `<task-sta
 
 Write implementation plans that leave nothing to interpretation, and task-scoped code maps that preserve verified codebase context for later cycles. The plan document and matching code map are the only writable artifacts - no source code modifications allowed.
 
+## Shared Plan Acceptance Contract
+
+Use `fixme-howto-plan-acceptance` as the authoritative plan-quality gate shared with `fixme-review-plan`.
+
+Run the Plan Acceptance Contract before saving the plan. Add a `## Plan Acceptance Receipt` to every non-trivial implementation plan and verify it against the draft, code map, specs, decisions, and current codebase.
+
+No `PLAN_PATH` may be emitted until the Plan Acceptance Receipt passes. If any required receipt row is missing, false, unknown, contradicted by the draft, or weaker than the invariant it claims to prove, revise the plan before saving. If the missing fact is a genuine user decision, use the Task-Bound User Input Contract or standalone prompt instead of emitting a plan.
+
 ## Why This Matters
 
 The plan is the foundation of a pipeline where each downstream step has less context and fewer decision-making capabilities than the one before it. A reviewer can only verify - it can't redesign. An executor can only follow instructions - it can't make architectural choices. A code reviewer can only catch bugs in what was built - it can't fix design flaws.
@@ -148,6 +156,8 @@ Do not close a blocking finding by patching only the single symptom. A targeted 
 When the plan touches durable state, idempotency, retries, lifecycle handoff, attention, generated artifacts, source-control staging, usage accounting, dispatch/wait behavior, or semantic equality, the plan MUST include a State/Effect Contract Matrix. Each row is one stateful effect, with these columns: State/artifact, Owner, Transition into it, Transition out of it, Durable evidence, Duplicate behavior, Stale input behavior, Retry behavior, Semantic equality rule, Consumer path, Behavioral proof.
 
 To reduce brittle pseudo-code, make invariants, exact behavior, public APIs, data shapes, and behavioral tests authoritative. Freeze internal ordering only when the ordering is itself the invariant.
+
+The State/Effect Contract Matrix is not enough by itself. The `fixme-howto-plan-acceptance` receipt must also prove write-before-proof ordering, behavioral proof strength, sibling-surface coverage, named-entity deltas, dependency ordering, and claim verification. A plan that states a lifecycle invariant but proposes a weaker test or later write ordering fails before save.
 
 ### Rewrite Mode
 
@@ -693,6 +703,8 @@ For TDD tasks, the natural commit point is after the full Red-Green-Refactor cyc
 
 After writing the complete plan, read it end-to-end as if you were the executor. Check:
 
+- **Plan Acceptance Contract.** Run `fixme-howto-plan-acceptance` against the draft before saving. The Plan Acceptance Receipt must pass on Goal-Backward Coverage, Invariant Proof Matrix, State/Effect Lifecycle Audit, Write-Before-Proof Scan, Behavioral Proof Strength, New Named Entity Delta Table, Sibling-Surface Audit, Dependency Ordering, and Claim Verification.
+
 - **Forward references.** Does step N depend on something created in step M where M > N? Reorder.
 - **File Map vs Tasks.** Does every file in the File Map appear in at least one task? Does every file touched in a task appear in the File Map?
 - **Expected Outcomes vs Steps.** Can every Expected Outcome be verified by the steps in the task? If an outcome mentions a test name, does a step create that test?
@@ -739,4 +751,6 @@ Before saving the plan, verify:
 - [ ] Every external side effect specifies the actual outbound request contract and retry/confirmation state machine
 - [ ] Every stateful effect has an Effect Lifecycle Contract translated into executable steps and behavioral proof
 - [ ] Revision mode: the approach is fundamentally different from any previously failed approach
+- [ ] The Plan Acceptance Receipt exists for non-trivial plans and every required row passes
+- [ ] No `PLAN_PATH` is emitted until the shared Plan Acceptance Contract passes
 - [ ] Final response ends with `PLAN_PATH: <absolute path to plan>` and `CODE_MAP_PATH: <absolute path to task code map>`
